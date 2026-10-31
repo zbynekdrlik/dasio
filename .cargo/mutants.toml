@@ -15,4 +15,6 @@ exclude_globs = [
   "crates/dante-asio/src/service/windows.rs",
 ]
 # The `win` modules of register.rs and bridge.rs: Windows-only too.
-exclude_re = ["\\bwin::"]
+# RotatingLog's flush: std's File writes unbuffered, so its flush is a
+# no-op and `Ok(())` in its place is the same program.
+exclude_re = ["\\bwin::", "RotatingLog>::flush"]

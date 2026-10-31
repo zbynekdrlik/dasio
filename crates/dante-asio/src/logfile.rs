@@ -229,4 +229,34 @@ mod tests {
         assert!(!e.due(t + s(309)));
         assert!(e.due(t + s(310)));
     }
+
+    #[test]
+    fn the_bound_is_10_mib_with_3_old_files() {
+        assert_eq!(MAX_BYTES, 10_485_760);
+        assert_eq!(KEEP, 3);
+    }
+
+    #[test]
+    fn a_record_that_just_fits_stays_in_the_file() {
+        let d = dir("fits");
+        let path = d.join("x.log");
+        let mut log = RotatingLog::open(&path, 10, 1).unwrap();
+        log.write_all(b"aaaaa\n").unwrap(); // 6
+        log.write_all(b"bbb\n").unwrap(); // 10 == 10: still fits
+        log.flush().unwrap();
+        assert_eq!(read(&path), "aaaaa\nbbb\n");
+        assert!(!d.join("x.log.1").exists());
+    }
+
+    #[test]
+    fn the_bound_counts_the_sum_of_what_is_in_the_file_and_the_record() {
+        let d = dir("sum");
+        let path = d.join("x.log");
+        let mut log = RotatingLog::open(&path, 10, 1).unwrap();
+        log.write_all(b"a").unwrap(); // 1
+        log.write_all(b"012345678\n").unwrap(); // 1 + 10 = 11 > 10
+        log.flush().unwrap();
+        assert_eq!(read(&path), "012345678\n");
+        assert_eq!(read(&d.join("x.log.1")), "a");
+    }
 }
