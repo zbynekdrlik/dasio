@@ -190,6 +190,12 @@ pub fn probe(instance: u32, seconds: u64) -> Result<Report, String> {
         if e != ASE_OK {
             return Err(format!("createBuffers {e}"));
         }
+        // This run's counters only: a process may probe several instances.
+        SWITCHES.store(0, Ordering::Relaxed);
+        MAX_GAP_US.store(0, Ordering::Relaxed);
+        MAX_SWITCH_US.store(0, Ordering::Relaxed);
+        GAPS_OVER_1MS.store(0, Ordering::Relaxed);
+        *LAST_SWITCH.lock().unwrap() = None;
         *STATE.lock().unwrap() = Some(State {
             bufs: infos
                 .iter()
