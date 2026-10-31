@@ -30,12 +30,14 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let filter =
         || tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
-    // `--log <path>`: appended to that file (the logon task has no console).
+    // `--log <path>`: appended to that file (the service has no console),
+    // bounded in size (old files beside it).
     match flag(&args, "--log").map(|p| {
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(p)
+        dante_asio::logfile::RotatingLog::open(
+            std::path::Path::new(&p),
+            dante_asio::logfile::MAX_BYTES,
+            dante_asio::logfile::KEEP,
+        )
     }) {
         Some(Ok(file)) => {
             tracing_subscriber::fmt()

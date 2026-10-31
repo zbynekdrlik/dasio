@@ -15,6 +15,7 @@ use shm::{Shape, Shared};
 use tracing::{info, warn};
 
 use crate::bridge::{Bridge, SharedLink};
+use crate::logfile::{COUNTS_EVERY, Every, STATUS_EVERY};
 
 /// Runs instance `instance` from the device config at `config` on `ip`
 /// with the media clock from `clock` (dantesync in production; the system
@@ -109,13 +110,14 @@ pub fn run(
     );
     let stop_event = StopEvent::create(instance).map_err(|e| format!("the stop event: {e}"))?;
     let start = Instant::now();
-    let mut logged = Instant::now();
+    let mut counts = Every::new(COUNTS_EVERY, start, false);
+    let mut status = Every::new(STATUS_EVERY, start, true);
     let why = loop {
         let h = shared.header();
         h.heartbeat_ms
             .store(start.elapsed().as_millis() as u64, Ordering::Release);
-        if logged.elapsed() >= Duration::from_secs(10) {
-            logged = Instant::now();
+        let now = Instant::now();
+        if counts.due(now) {
             let v = stats.view();
             info!(
                 seq = h.seq.load(Ordering::Relaxed),
@@ -131,7 +133,9 @@ pub fn run(
                 max_process_us = v.max_process_us,
                 "counts"
             );
-            info!(status = %iem_dante::ctl::answer("status", &media), "device status");
+            if status.due(now) {
+                info!(status = %iem_dante::ctl::answer("status", &media), "device status");
+            }
         }
         if asked.load(Ordering::Acquire)
             || stop_event.is_set()

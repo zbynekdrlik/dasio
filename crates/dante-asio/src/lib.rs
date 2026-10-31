@@ -9,6 +9,7 @@
 pub mod bridge;
 #[cfg(windows)]
 pub mod jitter;
+pub mod logfile;
 #[cfg(windows)]
 pub mod probe;
 pub mod register;
