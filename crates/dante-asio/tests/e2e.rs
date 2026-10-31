@@ -1,10 +1,13 @@
 //! The whole path as on the PC, on a GitHub-hosted Windows runner: the real
-//! `dante-asio` device process (on the runner's routed IPv4, the stack's
+//! `dante-asio` device processes (on the runner's routed IPv4, the stack's
 //! test-only system clock: the runner has no dantesync) and an ASIO host on
-//! the instance's driver in this process (the probe, as a DAW drives it).
-//! RX 1 is subscribed to our own TX 1 through the device's state file, so
-//! each impulse the host sends on output 1 goes out through Dante and comes
-//! back on input 1. Only our own device is subscribed.
+//! each instance's driver in this process (the probe, as a DAW drives it).
+//! Two devices share the runner's one address, as several instances share
+//! the PC's: the first on the stack's default ports, the second on its own
+//! ports and process id. In each, RX 1 is subscribed to its own TX 1
+//! through the device's state file, so each impulse the host sends on
+//! output 1 goes out through Dante and comes back on input 1. Only our own
+//! devices are subscribed.
 #![cfg(windows)]
 
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
@@ -15,29 +18,37 @@ use std::time::{Duration, Instant};
 use iem_dante::device::{DeviceConfig, DeviceState, Subscription};
 
 const TEST_DEVICE: &str = include_str!("../../../config/test-dante-device.toml");
-/// The instance the test runs (the driver's host tests use 5 to 10).
-const INSTANCE: u32 = 13;
-/// How long the device may take to publish its shared memory.
+/// The instances the test runs (the driver's host tests use 5 to 10, the
+/// service test 14).
+const FIRST: u32 = 13;
+const SECOND: u32 = 15;
+/// The second device's ARC, CMC and flow-control ports and its process id
+/// (the first keeps the stack's 4440, 8800, 4455 and 0).
+const SECOND_PORTS: &str = "arc_port = 4441\ncmc_port = 8801\nflows_port = 4456\nprocess_id = 1\n";
+/// How long a device may take to publish its shared memory.
 const READY: Duration = Duration::from_secs(20);
-/// How long the device may take to end after its stop.
+/// How long a device may take to end after its stop.
 const STOP: Duration = Duration::from_secs(15);
 
-/// The test device's config in `dir` at a 10 ms latency (a shared runner
-/// schedules a normal-priority thread over 1 ms late now and then: the
-/// path is under test here, real-time timing on the PC), with a state file
-/// that subscribes RX 1 to our own TX 1.
-fn device_in(dir: &Path) -> PathBuf {
+/// The test device's config in `dir` under `name`, with `extra` keys, at a
+/// 10 ms latency (a shared runner schedules a normal-priority thread over
+/// 1 ms late now and then: the path is under test here, real-time timing
+/// on the PC), with a state file that subscribes RX 1 to its own TX 1.
+fn device_in(dir: &Path, name: &str, extra: &str) -> PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
     let state = dir.join("state.toml");
     let text = format!(
-        "{}\nstate_file = {:?}\n",
+        "{}\n{extra}state_file = {:?}\n",
         TEST_DEVICE
             .lines()
             .filter(|l| !l.starts_with("state_file"))
             .map(|l| {
                 if l.starts_with("latency_ns") {
-                    "latency_ns = 10000000"
+                    "latency_ns = 10000000".to_string()
+                } else if l.starts_with("name ") {
+                    format!("name = {name:?}")
                 } else {
-                    l
+                    l.to_string()
                 }
             })
             .collect::<Vec<_>>()
@@ -68,16 +79,82 @@ fn routed_ipv4() -> Ipv4Addr {
     }
 }
 
-/// The device process; killed if the test ends without stopping it (a
+/// A device process; killed if the test ends without stopping it (a
 /// failed assertion), so it never outlives the test.
 struct Device {
+    instance: u32,
     child: Option<Child>,
     log: PathBuf,
 }
 
 impl Device {
+    /// `dante-asio run` for `instance` with `config` on `ip`, once its
+    /// shared memory is up.
+    fn start(instance: u32, config: &Path, ip: Ipv4Addr, log: PathBuf) -> Device {
+        let child = Command::new(exe())
+            .args(["run", "--instance", &instance.to_string(), "--config"])
+            .arg(config)
+            .args(["--ip", &ip.to_string(), "--clock", "system", "--log"])
+            .arg(&log)
+            .stdin(Stdio::null())
+            .spawn()
+            .expect("the device process");
+        let mut device = Device {
+            instance,
+            child: Some(child),
+            log,
+        };
+        let t = Instant::now();
+        while shm::Shared::open(instance).is_err() {
+            if let Some(status) = device.child.as_mut().unwrap().try_wait().unwrap() {
+                panic!(
+                    "instance {instance} ended at the start ({status}):\n{}",
+                    device.log()
+                );
+            }
+            assert!(
+                t.elapsed() < READY,
+                "instance {instance}: no shared memory after {READY:?}:\n{}",
+                device.log()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        device
+    }
+
     fn log(&self) -> String {
         std::fs::read_to_string(&self.log).unwrap_or_default()
+    }
+
+    /// A stop as `install.ps1` and the service ask it: the device ends
+    /// cleanly.
+    fn stop(mut self) {
+        let instance = self.instance;
+        let status = Command::new(exe())
+            .args(["stop", "--instance", &instance.to_string()])
+            .status()
+            .unwrap();
+        assert!(status.success(), "dante-asio stop {instance}: {status}");
+        let mut child = self.child.take().unwrap();
+        let t = Instant::now();
+        let ended = loop {
+            if let Some(s) = child.try_wait().unwrap() {
+                break s;
+            }
+            if t.elapsed() > STOP {
+                let _ = child.kill();
+                panic!(
+                    "instance {instance} did not end within {STOP:?}:\n{}",
+                    self.log()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert!(
+            ended.success(),
+            "instance {instance}'s exit: {ended}\n{}",
+            self.log()
+        );
     }
 }
 
@@ -86,7 +163,7 @@ impl Drop for Device {
         if let Some(mut c) = self.child.take() {
             let _ = c.kill();
             let _ = c.wait();
-            eprintln!("the device's log:\n{}", self.log());
+            eprintln!("instance {}'s log:\n{}", self.instance, self.log());
         }
     }
 }
@@ -95,58 +172,33 @@ fn exe() -> &'static str {
     env!("CARGO_BIN_EXE_dante-asio")
 }
 
-#[test]
-fn an_impulse_goes_out_through_dante_and_comes_back_to_the_host() {
-    let dir = std::env::temp_dir().join(format!("dante-asio-e2e-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let config = device_in(&dir);
-    let ip = routed_ipv4();
-    let log = dir.join("device.log");
-    let child = Command::new(exe())
-        .args(["run", "--instance", &INSTANCE.to_string(), "--config"])
-        .arg(&config)
-        .args(["--ip", &ip.to_string(), "--clock", "system", "--log"])
-        .arg(&log)
-        .stdin(Stdio::null())
-        .spawn()
-        .expect("the device process");
-    let mut device = Device {
-        child: Some(child),
-        log,
-    };
-
-    // Its shared memory, then a moment for the flow to be granted.
-    let t = Instant::now();
-    while shm::Shared::open(INSTANCE).is_err() {
-        if let Some(status) = device.child.as_mut().unwrap().try_wait().unwrap() {
-            panic!(
-                "the device ended at the start ({status}):\n{}",
-                device.log()
-            );
-        }
-        assert!(
-            t.elapsed() < READY,
-            "no shared memory after {READY:?}:\n{}",
-            device.log()
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    std::thread::sleep(Duration::from_secs(2));
-
-    // The host at High priority, as Ableton runs (and `dante-asio probe`).
-    dante_asio::probe::high_priority().expect("High priority");
-    let r = dante_asio::probe::probe(INSTANCE, 6).expect("the probe");
-    eprintln!("{r:?}");
+/// The host on `instance` for `seconds`: the device drives it, and each
+/// impulse comes back once over Dante, at one fixed round trip within the
+/// latencies the driver reports. Returns the report for the timing checks.
+fn round_trip(instance: u32, seconds: u64) -> dante_asio::probe::Report {
+    let r = dante_asio::probe::probe(instance, seconds).expect("the probe");
+    eprintln!("instance {instance}: {r:?}");
     let block = u64::from(r.block);
+    // This probe's own switches only, not an earlier probe's in this
+    // process too.
     assert!(
-        r.switches >= 6 * 96_000 / block * 9 / 10,
-        "the device drives the host: {} switches in 6 s at block {block}",
+        r.switches <= seconds * 96_000 / block * 11 / 10,
+        "instance {instance}: {} switches in {seconds} s at block {block}: more than the device drove",
         r.switches
     );
-    assert!(r.emitted >= 4, "impulses sent: {}", r.emitted);
+    assert!(
+        r.switches >= seconds * 96_000 / block * 9 / 10,
+        "instance {instance}: the device drives the host: {} switches in {seconds} s at block {block}",
+        r.switches
+    );
+    assert!(
+        r.emitted >= 4,
+        "instance {instance}: impulses sent: {}",
+        r.emitted
+    );
     assert!(
         r.round_trips.len() as u64 >= r.emitted - 1,
-        "impulses back: {} of {}",
+        "instance {instance}: impulses back: {} of {}",
         r.round_trips.len(),
         r.emitted
     );
@@ -154,21 +206,51 @@ fn an_impulse_goes_out_through_dante_and_comes_back_to_the_host() {
         *r.round_trips.iter().min().unwrap(),
         *r.round_trips.iter().max().unwrap(),
     );
-    assert_eq!(min, max, "one fixed round trip: {:?}", r.round_trips);
+    assert_eq!(
+        min, max,
+        "instance {instance}: one fixed round trip: {:?}",
+        r.round_trips
+    );
     // Out (the driver's output latency) and back in (its input latency):
     // the round trip the driver reports to the DAW is what the path takes.
     assert!(
         min <= (r.latency_in + r.latency_out) as u64 + block,
-        "round trip {min} against reported {} + {}",
+        "instance {instance}: round trip {min} against reported {} + {}",
         r.latency_in,
         r.latency_out
     );
+    r
+}
+
+#[test]
+fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_address() {
+    let dir = std::env::temp_dir().join(format!("dante-asio-e2e-{}", std::process::id()));
+    let ip = routed_ipv4();
+    let first = Device::start(
+        FIRST,
+        &device_in(&dir.join("first"), "test-device", ""),
+        ip,
+        dir.join("first.log"),
+    );
+    let second = Device::start(
+        SECOND,
+        &device_in(&dir.join("second"), "test-device-2", SECOND_PORTS),
+        ip,
+        dir.join("second.log"),
+    );
+    // A moment for the flows to be granted.
+    std::thread::sleep(Duration::from_secs(2));
+
+    // The hosts at High priority, as Ableton runs (and `dante-asio probe`).
+    dante_asio::probe::high_priority().expect("High priority");
+    let r = round_trip(FIRST, 6);
     // A late block is the device's fault unless the host itself lost its
     // CPU: a shared runner's VM deschedules a thread for tens of ms now and
     // then (a 48.9 ms gap, CI 41130881044). Each host gap over 1 ms may
     // cost at most the blocks it spans; any other late block fails (the
     // attach defect b0233cd fixed read late 3 with no gap). Real-time
     // timing is the FOH PC's gate (HIL, soak).
+    let block = u64::from(r.block);
     let block_us = block * 1_000_000 / 96_000;
     let explained = r.gaps_over_1ms * (r.max_gap_us / block_us + 1);
     assert!(
@@ -179,29 +261,10 @@ fn an_impulse_goes_out_through_dante_and_comes_back_to_the_host() {
         r.gaps_over_1ms,
         r.max_gap_us
     );
+    // The second device on the same address, beside the running first.
+    round_trip(SECOND, 4);
 
-    // A stop as `install.ps1` and the service ask it: the device ends cleanly.
-    let status = Command::new(exe())
-        .args(["stop", "--instance", &INSTANCE.to_string()])
-        .status()
-        .unwrap();
-    assert!(status.success(), "dante-asio stop: {status}");
-    let mut child = device.child.take().unwrap();
-    let t = Instant::now();
-    let ended = loop {
-        if let Some(s) = child.try_wait().unwrap() {
-            break s;
-        }
-        if t.elapsed() > STOP {
-            let _ = child.kill();
-            panic!("the device did not end within {STOP:?}:\n{}", device.log());
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
-    assert!(
-        ended.success(),
-        "the device's exit: {ended}\n{}",
-        device.log()
-    );
+    second.stop();
+    first.stop();
     let _ = std::fs::remove_dir_all(&dir);
 }
