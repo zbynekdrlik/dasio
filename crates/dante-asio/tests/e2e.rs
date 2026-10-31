@@ -232,16 +232,14 @@ fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_a
         ip,
         dir.join("first.log"),
     );
-    let second = Device::start(
-        SECOND,
-        &device_in(&dir.join("second"), "test-device-2", SECOND_PORTS),
-        ip,
-        dir.join("second.log"),
-    );
     // A moment for the flows to be granted.
     std::thread::sleep(Duration::from_secs(2));
 
-    // The hosts at High priority, as Ableton runs (and `dante-asio probe`).
+    // The host at High priority, as Ableton runs (and `dante-asio probe`).
+    // Timed with the first device alone: two unpinned devices spinning on
+    // a 4-CPU runner share its CPUs (31.10.2026: 2 late blocks with no
+    // host gap); on the PC each instance has its own CPUs, and that is the
+    // PC's gate (HIL, soak).
     dante_asio::probe::high_priority().expect("High priority");
     let r = round_trip(FIRST, 6);
     // A late block is the device's fault unless the host itself lost its
@@ -261,8 +259,26 @@ fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_a
         r.gaps_over_1ms,
         r.max_gap_us
     );
-    // The second device on the same address, beside the running first.
+
+    // The second device on the same address, beside the running first:
+    // on its own ports (ARC, CMC and flow control, each held by one of
+    // them, so this process cannot take it).
+    let second = Device::start(
+        SECOND,
+        &device_in(&dir.join("second"), "test-device-2", SECOND_PORTS),
+        ip,
+        dir.join("second.log"),
+    );
+    std::thread::sleep(Duration::from_secs(2));
+    for port in [4440, 8800, 4455, 4441, 8801, 4456] {
+        assert!(
+            UdpSocket::bind((ip, port)).is_err(),
+            "UDP {port} on {ip} is free: a device does not hold it"
+        );
+    }
+    // Both carry audio, each its own.
     round_trip(SECOND, 4);
+    round_trip(FIRST, 4);
 
     second.stop();
     first.stop();
