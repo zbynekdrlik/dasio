@@ -1,12 +1,13 @@
 # dante-asio: install or update one instance (plan Task 9). Run as administrator
 # from the unpacked bundle:
-#   .\install.ps1 -Instance 1 -InterfaceAlias Ethernet -Ip <free address> -PrefixLength 23 -Config <device.toml>
+#   .\install.ps1 -Instance 1 -Ip <the PC's address> -Config <device.toml>
 # - copies dante-asio.exe and dante_asio_driver.dll to C:\Program Files\dante-asio
 #   (a running instance is stopped first: its service, or the logon task an
 #   older install made, which is removed),
-# - adds -Ip to the interface (SkipAsSource: the PC's own traffic keeps its address)
-#   unless the interface has it already; an address it added is remembered in the
-#   instance's folder, so uninstall.ps1 removes only that,
+# - adds no address: -Ip is one the PC already has. Several instances share it
+#   (dstack's per-PC manager), each on its own ports and process id from its
+#   config (arc_port, cmc_port, flows_port, process_id); a config that clashes
+#   with another installed instance's is refused before anything changes,
 # - registers the driver for the instance (HKLM: its COM class and its ASIO entry),
 # - puts the device config at C:\ProgramData\dante-asio\instance-<n>\device.toml,
 # - makes the service "dante-asio-<n>" (LocalSystem, started at boot before any
@@ -14,9 +15,7 @@
 #   exit, the count reset after a day) and starts it.
 param(
     [Parameter(Mandatory)][ValidateRange(1, 16)][int]$Instance,
-    [Parameter(Mandatory)][string]$InterfaceAlias,
     [Parameter(Mandatory)][string]$Ip,
-    [Parameter(Mandatory)][ValidateRange(8, 30)][int]$PrefixLength,
     [Parameter(Mandatory)][string]$Config,
     # The name DAWs list the driver under (HKLM\SOFTWARE\ASIO), e.g. master-asio-dante.
     [string]$Name = "",
@@ -38,6 +37,36 @@ Get-Content (Join-Path $here "SHA256SUMS") | ForEach-Object {
     $hash, $file = $_ -split "  ", 2
     $got = (Get-FileHash (Join-Path $here $file) -Algorithm SHA256).Hash.ToLower()
     if ($got -ne $hash) { throw "$file does not match SHA256SUMS" }
+}
+
+# The address is the PC's own: no extra address any more.
+if (-not (Get-NetIPAddress -IPAddress $Ip -AddressFamily IPv4 -ErrorAction SilentlyContinue)) {
+    throw "$Ip is not one of this PC's addresses; nothing changed"
+}
+
+# The ports and process id each device takes on the shared address (the
+# stack's defaults when the config leaves them out).
+function Get-DeviceSlots([string]$Path) {
+    $slots = @{ arc_port = 4440; cmc_port = 8800; flows_port = 4455; process_id = 0 }
+    foreach ($line in Get-Content $Path) {
+        if ($line -match '^\s*(arc_port|cmc_port|flows_port|process_id)\s*=\s*(\d+)') {
+            $slots[$Matches[1]] = [int]$Matches[2]
+        }
+    }
+    $slots
+}
+$mine = Get-DeviceSlots $Config
+$root = Join-Path $env:ProgramData "dante-asio"
+Get-ChildItem $root -Directory -Filter "instance-*" -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne "instance-$Instance" } | ForEach-Object {
+    $other = Join-Path $_.FullName "device.toml"
+    if (Test-Path $other) {
+        $theirs = Get-DeviceSlots $other
+        $ports = @($theirs.arc_port, $theirs.cmc_port, $theirs.flows_port)
+        foreach ($key in "arc_port", "cmc_port", "flows_port") {
+            if ($ports -contains $mine[$key]) { throw "$key $($mine[$key]) is taken by $($_.Name); nothing changed" }
+        }
+        if ($mine.process_id -eq $theirs.process_id) { throw "process_id $($mine.process_id) is taken by $($_.Name); nothing changed" }
+    }
 }
 
 $installed = Join-Path $env:ProgramFiles "dante-asio\dante-asio.exe"
@@ -64,12 +93,6 @@ New-Item -ItemType Directory -Force $bin, $data | Out-Null
 Copy-Item (Join-Path $here "dante-asio.exe"), (Join-Path $here "dante_asio_driver.dll") $bin -Force
 $cfg = Join-Path $data "device.toml"
 Copy-Item $Config $cfg -Force
-
-$added = Join-Path $data "added-ip"
-if (-not (Get-NetIPAddress -IPAddress $Ip -ErrorAction SilentlyContinue)) {
-    New-NetIPAddress -InterfaceAlias $InterfaceAlias -IPAddress $Ip -PrefixLength $PrefixLength -SkipAsSource $true | Out-Null
-    Set-Content -Path $added -Value $Ip
-}
 
 $exe = Join-Path $bin "dante-asio.exe"
 $named = @()

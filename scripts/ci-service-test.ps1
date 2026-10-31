@@ -1,7 +1,7 @@
 # CI (bundle job, windows-2025, administrator): the bundle installed as the PC
 # installs it, run as its service, killed and brought back by the SCM, then
-# removed. The device runs on the runner's routed IPv4 (install.ps1 adds no
-# address: the interface has it) with the stack's test clock (no dantesync on
+# removed. The device runs on the runner's routed IPv4 (the PC's own address;
+# install.ps1 adds none) with the stack's test clock (no dantesync on
 # a runner).
 #   .\ci-service-test.ps1 -Bundle <staged bundle> -DeviceConfig <test-dante-device.toml>
 param(
@@ -28,9 +28,7 @@ function Get-ServicePid {
 
 $route = Find-NetRoute -RemoteIPAddress 192.0.2.1 | Where-Object { $_.IPAddress } | Select-Object -First 1
 $ip = $route.IPAddress
-$alias = (Get-NetIPAddress -IPAddress $ip).InterfaceAlias
-$prefix = (Get-NetIPAddress -IPAddress $ip).PrefixLength
-Write-Output "runner address $ip on $alias /$prefix"
+Write-Output "runner address $ip"
 
 # The test device at 10 ms (a shared runner's scheduling), its state file in
 # a writable folder.
@@ -44,7 +42,23 @@ $text += "state_file = `"$state`""
 $cfg = Join-Path $work "device.toml"
 Set-Content -Path $cfg -Value $text
 
-& (Join-Path $Bundle "install.ps1") -Instance $instance -InterfaceAlias $alias -Ip $ip -PrefixLength $prefix -Config $cfg -Name "ci-asio-dante" -TestClock
+# Refused before anything changes: an address the PC does not have (no
+# extra addresses), then a config whose ports clash with an installed
+# instance's (several instances share the PC's address).
+function Assert-Refused([scriptblock]$Install, [string]$Why) {
+    $refused = $false
+    try { & $Install } catch { $refused = $_.Exception.Message -match $Why; Write-Output "refused: $($_.Exception.Message)" }
+    if (-not $refused) { throw "install was not refused for: $Why" }
+    if (Get-Service -Name $service -ErrorAction SilentlyContinue) { throw "a refused install made $service" }
+}
+Assert-Refused { & (Join-Path $Bundle "install.ps1") -Instance $instance -Ip 192.0.2.77 -Config $cfg -Name "ci-asio-dante" -TestClock } "not one of this PC's addresses"
+$other = Join-Path $env:ProgramData "dante-asio\instance-15"
+New-Item -ItemType Directory -Force $other | Out-Null
+Set-Content -Path (Join-Path $other "device.toml") -Value "arc_port = 4441`ncmc_port = 8800`nflows_port = 4456`nprocess_id = 1"
+Assert-Refused { & (Join-Path $Bundle "install.ps1") -Instance $instance -Ip $ip -Config $cfg -Name "ci-asio-dante" -TestClock } "cmc_port 8800 is taken by instance-15"
+Remove-Item -Recurse -Force $other
+
+& (Join-Path $Bundle "install.ps1") -Instance $instance -Ip $ip -Config $cfg -Name "ci-asio-dante" -TestClock
 $svc = Get-CimInstance Win32_Service -Filter "Name='$service'"
 if ($svc.StartMode -ne "Auto") { throw "start mode $($svc.StartMode), not Auto" }
 if ($svc.StartName -ne "LocalSystem") { throw "account $($svc.StartName), not LocalSystem" }
