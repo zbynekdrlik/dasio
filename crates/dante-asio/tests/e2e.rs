@@ -254,21 +254,19 @@ fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_a
     dante_asio::probe::high_priority().expect("High priority");
     let r = round_trip(FIRST, 6);
     // A late block is the device's fault unless the host itself lost its
-    // CPU: a shared runner's VM deschedules a thread for tens of ms now and
-    // then (a 48.9 ms gap, CI 41130881044). Each host gap over 1 ms may
-    // cost at most the blocks it spans; any other late block fails (the
-    // attach defect b0233cd fixed read late 3 with no gap). Real-time
-    // timing is the FOH PC's gate (HIL, soak).
-    let block = u64::from(r.block);
-    let block_us = block * 1_000_000 / 96_000;
-    let explained = r.gaps_over_1ms * (r.max_gap_us / block_us + 1);
+    // CPU: a shared runner's VM deschedules a thread now and then (a 48.9
+    // ms gap, CI 41130881044; a 763 us one at block 32, CI 41340984953,
+    // past the 667 us work margin). Each host gap over 1.5 blocks may cost
+    // at most the blocks it spans; any other late block fails (the attach
+    // defect b0233cd fixed read late 3 with no gap). Real-time timing is
+    // the FOH PC's gate (HIL, soak).
     assert!(
-        r.late <= explained,
-        "{} late blocks, {} explained by {} host gaps over 1 ms (longest {} us)",
+        r.late <= r.gap_blocks,
+        "{} late blocks, {} explained by the host's gaps (longest {} us, {} over 1 ms)",
         r.late,
-        explained,
-        r.gaps_over_1ms,
-        r.max_gap_us
+        r.gap_blocks,
+        r.max_gap_us,
+        r.gaps_over_1ms
     );
 
     // The second device on the same address, beside the running first:
