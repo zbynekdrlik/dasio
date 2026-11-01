@@ -92,6 +92,47 @@ Stop-Process -Id $before -Force
 Wait-Until { (Get-Service $service).Status -eq "Running" -and (Get-ServicePid) -ne $before -and (Get-ServicePid) -ne 0 } 15 "a restart after the kill"
 Write-Output "restarted: pid $before -> $(Get-ServicePid)"
 
+# A second instance installed while the first runs: both share the one
+# installed dante-asio.exe, which the running service holds open.
+$second = 15
+$work2 = Join-Path $env:RUNNER_TEMP "dante-asio-service-2"
+New-Item -ItemType Directory -Force $work2 | Out-Null
+$state2 = (Join-Path $work2 "state.toml") -replace '\\', '/'
+$text2 = $text | Where-Object { $_ -notmatch '^state_file' } | ForEach-Object {
+    if ($_ -match '^name ') { 'name = "ci-device-2"' } else { $_ }
+}
+$text2 += "state_file = `"$state2`""
+$text2 += "arc_port = 4441", "cmc_port = 8801", "flows_port = 4456", "process_id = 1"
+$cfg2 = Join-Path $work2 "device.toml"
+Set-Content -Path $cfg2 -Value $text2
+$first = Get-ServicePid
+& (Join-Path $Bundle "install.ps1") -Instance $second -Ip $ip -Config $cfg2 -Name "ci-asio-dante-2" -TestClock
+if ((Get-Service "dante-asio-$second").Status -ne "Running") { throw "the second instance is not running" }
+if ((Get-ServicePid) -ne $first) { throw "the same binary restarted the first instance: pid $first -> $(Get-ServicePid)" }
+Write-Output "second instance installed beside the first (pid $first kept)"
+
+# A new binary while both run: every running instance stops for the copy and
+# runs the new binary after it.
+$newer = Join-Path $env:RUNNER_TEMP "bundle-newer"
+Copy-Item -Recurse -Force $Bundle $newer
+# One byte past the image: a different file Windows still runs.
+[System.IO.File]::AppendAllText((Join-Path $newer "dante-asio.exe"), " ")
+$sums = Get-Content (Join-Path $newer "SHA256SUMS") | ForEach-Object {
+    $hash, $file = $_ -split "  ", 2
+    "$((Get-FileHash (Join-Path $newer $file) -Algorithm SHA256).Hash.ToLower())  $file"
+}
+Set-Content -Path (Join-Path $newer "SHA256SUMS") -Value $sums
+& (Join-Path $newer "install.ps1") -Instance $second -Ip $ip -Config $cfg2 -Name "ci-asio-dante-2" -TestClock
+$want = (Get-FileHash (Join-Path $newer "dante-asio.exe")).Hash
+if ((Get-FileHash $exe).Hash -ne $want) { throw "the installed binary is not the new one" }
+foreach ($n in $instance, $second) {
+    if ((Get-Service "dante-asio-$n").Status -ne "Running") { throw "dante-asio-$n is not running after the update" }
+}
+if ((Get-ServicePid) -eq $first) { throw "the first instance still runs the old binary (pid $first)" }
+Write-Output "both instances run the new binary"
+& (Join-Path $newer "uninstall.ps1") -Instance $second -Ip $ip -Name "ci-asio-dante-2"
+Wait-Until { -not (Get-Service -Name "dante-asio-$second" -ErrorAction SilentlyContinue) } 15 "the second service's removal"
+
 & (Join-Path $Bundle "uninstall.ps1") -Instance $instance -Ip $ip -Name "ci-asio-dante"
 Wait-Until { -not (Get-Service -Name $service -ErrorAction SilentlyContinue) } 15 "the service's removal"
 if (-not (Get-NetIPAddress -IPAddress $ip -ErrorAction SilentlyContinue)) { throw "uninstall removed the runner's own address" }
