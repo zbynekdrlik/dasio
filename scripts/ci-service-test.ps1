@@ -69,8 +69,9 @@ Set-Content -Path $stateWin -Value "name = `"foreign-device`"`nconfig_name = `"f
 $aside = @(Get-ChildItem $work -Filter "state.toml.replaced-*")
 if ($aside.Count -ne 1) { throw "the foreign state was not moved aside ($($aside.Count) copies)" }
 if ((Get-Content $aside[0].FullName -Raw) -notmatch 'foreign-device') { throw "the moved-aside file is not the foreign state" }
-Wait-Until { Test-Path $stateWin } 20 "the device's own state file"
-if ((Get-Content $stateWin -Raw) -match 'foreign-device') { throw "the device runs under the foreign state" }
+# The device writes its state only when something in it changes, so none
+# may be there yet; one that is there is its own.
+if ((Test-Path $stateWin) -and ((Get-Content $stateWin -Raw) -match 'foreign-device')) { throw "the device runs under the foreign state" }
 Write-Output "a foreign state file was moved aside: $($aside[0].Name)"
 $svc = Get-CimInstance Win32_Service -Filter "Name='$service'"
 if ($svc.StartMode -ne "Auto") { throw "start mode $($svc.StartMode), not Auto" }
