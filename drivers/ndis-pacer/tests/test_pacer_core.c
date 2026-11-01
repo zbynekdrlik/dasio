@@ -160,88 +160,150 @@ static void classify(void)
     CHECK(pacer_classify(f, 60) == PACER_OTHER);
 }
 
-static void budget(void)
+/* 100 ns units. */
+#define US 10u
+#define MS 10000u
+
+static void pacing(void)
 {
     struct pacer p;
+    /* 100 MB/s = 100 bytes per microsecond, burst 10 000 bytes. */
+    const uint64_t rate = 100000000u;
 
-    pacer_init(&p, 64000);
-    CHECK(p.budget == 64000 && p.in_flight == 0 && p.queued == 0);
+    pacer_init(&p, rate, 10000, 1000);
+    CHECK(p.rate == rate && p.burst == 10000 && p.tokens == 10000 && p.last == 1000);
+    CHECK(p.queued == 0 && p.admitted == 0);
 
-    /* Under the budget everything goes down. */
-    CHECK(pacer_offer(&p, 30000) == 1);
-    CHECK(pacer_offer(&p, 34000) == 1);
-    CHECK(p.in_flight == 64000);
-    /* Exactly full: the next byte waits. */
-    CHECK(pacer_offer(&p, 1) == 0);
-    CHECK(p.queued == 1 && p.queued_bytes == 1 && p.deferred == 1);
-    /* While something waits, a new send waits too (order). */
-    CHECK(pacer_offer(&p, 1500) == 0);
-    CHECK(p.queued == 2 && p.queued_bytes == 1501);
-    /* Nothing fits yet. */
-    CHECK(pacer_take(&p, 1) == 0);
-    /* A completion makes room for the head, then the next. */
-    pacer_complete(&p, 30000);
-    CHECK(p.in_flight == 34000);
-    CHECK(pacer_take(&p, 1) == 1);
-    CHECK(pacer_take(&p, 1500) == 1);
-    CHECK(p.queued == 0 && p.queued_bytes == 0);
-    CHECK(p.in_flight == 35501);
-    CHECK(pacer_take(&p, 10) == 0); /* empty queue */
-    CHECK(p.admitted == 4);
+    /* The burst goes down at once. */
+    CHECK(pacer_offer(&p, 6000, 1000) == 1);
+    CHECK(pacer_offer(&p, 4000, 1000) == 1);
+    CHECK(p.tokens == 0);
+    /* No tokens left: the next send waits. */
+    CHECK(pacer_offer(&p, 1500, 1000) == 0);
+    CHECK(p.queued == 1 && p.queued_bytes == 1500 && p.deferred == 1);
+    /* While something waits, a new send waits too (order), even with tokens. */
+    CHECK(pacer_offer(&p, 100, 1000 + 100 * US) == 0);
+    CHECK(p.queued == 2 && p.queued_bytes == 1600);
     CHECK(p.max_queued == 2);
-    CHECK(p.max_in_flight == 64000);
+    /* 100 us later 10 000 bytes were earned: the head goes, then the next. */
+    CHECK(pacer_take(&p, 1500, 1000 + 100 * US) == 1);
+    CHECK(p.tokens == 10000 - 1500);
+    CHECK(pacer_take(&p, 100, 1000 + 100 * US) == 1);
+    CHECK(p.queued == 0 && p.queued_bytes == 0);
+    CHECK(pacer_take(&p, 100, 1000 + 100 * US) == 0); /* empty */
+    CHECK(p.admitted == 4);
 
-    /* One send larger than the budget still moves when nothing is in flight. */
-    pacer_init(&p, 1000);
-    CHECK(pacer_offer(&p, 65536) == 1);
-    CHECK(pacer_offer(&p, 1) == 0);
-    pacer_complete(&p, 65536);
-    CHECK(p.in_flight == 0);
-    CHECK(pacer_take(&p, 1) == 1);
-    /* The queue's head too. */
-    pacer_init(&p, 1000);
-    CHECK(pacer_offer(&p, 900) == 1);
-    CHECK(pacer_offer(&p, 5000) == 0);
-    CHECK(pacer_take(&p, 5000) == 0);
-    pacer_complete(&p, 900);
-    CHECK(pacer_take(&p, 5000) == 1);
-    CHECK(p.in_flight == 5000);
+    /* Tokens never exceed the burst, however long the pause. */
+    pacer_init(&p, rate, 10000, 0);
+    CHECK(pacer_offer(&p, 1, 0) == 1);
+    CHECK(pacer_offer(&p, 1, 3600u * 1000u * MS) == 1);
+    CHECK(p.tokens == 10000 - 1);
 
-    /* Completions never take in-flight below zero. */
-    pacer_init(&p, 1000);
-    CHECK(pacer_offer(&p, 100) == 1);
-    pacer_complete(&p, 500);
-    CHECK(p.in_flight == 0);
+    /* A send larger than the tokens left still goes; the debt is paid by
+     * waiting: 60 000 bytes at 100 B/us leave tokens at -50 000. */
+    pacer_init(&p, rate, 10000, 0);
+    CHECK(pacer_offer(&p, 60000, 0) == 1);
+    CHECK(p.tokens == -50000);
+    CHECK(pacer_offer(&p, 1, 0) == 0);
+    /* Until tokens reach 1 byte: 50 001 bytes = 500.01 us -> 5001 ticks. */
+    CHECK(pacer_wait(&p, 0) == 5001);
+    CHECK(pacer_take(&p, 1, 5000) == 0);
+    CHECK(pacer_wait(&p, 5000) == 1);
+    CHECK(pacer_take(&p, 1, 5001) == 1);
+    CHECK(pacer_wait(&p, 5001) == 0); /* nothing waits */
+
+    /* Waiting with tokens left: no wait. */
+    pacer_init(&p, rate, 10000, 0);
+    CHECK(pacer_offer(&p, 10000, 0) == 1);
+    CHECK(pacer_offer(&p, 10, 0) == 0);
+    CHECK(pacer_wait(&p, 0) == 1);
+    CHECK(pacer_wait(&p, 1) == 0);
+
+    /* A clock that goes back earns nothing and does not break. */
+    pacer_init(&p, rate, 10000, 5000);
+    CHECK(pacer_offer(&p, 10000, 5000) == 1);
+    CHECK(pacer_offer(&p, 10, 4000) == 0);
+    CHECK(p.tokens == 0 && p.last == 5000);
+
+    /* Rate 0: no pacing, everything goes, tokens untouched. */
+    pacer_init(&p, 0, 0, 0);
+    CHECK(pacer_offer(&p, 1000000, 0) == 1);
+    CHECK(pacer_offer(&p, 1000000, 0) == 1);
+    CHECK(p.tokens == 0 && p.admitted == 2);
+    CHECK(pacer_wait(&p, 0) == 0);
+
+    /* Earning is proportional: 25 us at 100 B/us = 2500 bytes. */
+    pacer_init(&p, rate, 10000, 0);
+    CHECK(pacer_offer(&p, 10000, 0) == 1);
+    CHECK(pacer_offer(&p, 2400, 25 * US) == 1);
+    CHECK(p.tokens == 100);
+
+    /* A realistic link: 2.5 Gbit/s at 85 % (265 625 000 B/s), drained by a
+     * 0.5 ms timer (Windows' timer granularity). The burst must cover one
+     * tick (rate x 0.5 ms = 132 812 bytes) or the rate falls with the
+     * timer: a 1.5 MB answer then leaves in ~5.6 ms, and at most one tick
+     * of it sits ahead of a priority frame. */
+    {
+        const uint64_t r = 265625000u;
+        const uint32_t tick = 5000; /* 0.5 ms */
+        uint64_t t = 0;
+        uint32_t sent = 0;
+        int i;
+        pacer_init(&p, r, 132812, 0);
+        for (i = 0; i < 1000; i++) {
+            if (pacer_offer(&p, 1514, 0)) {
+                sent++;
+            }
+        }
+        CHECK(sent == 88); /* 132 812 / 1514 rounded up */
+        while (p.queued > 0 && t < 100u * MS) {
+            t += tick;
+            while (pacer_take(&p, 1514, t)) {
+            }
+        }
+        CHECK(p.queued == 0);
+        CHECK(t >= 5u * MS && t <= 6u * MS);
+
+        /* A burst below one tick throttles the rate to burst per tick:
+         * 32 KiB per 0.5 ms, so the same answer takes ~23 ms. */
+        pacer_init(&p, r, 32768, 0);
+        for (i = 0; i < 1000; i++) {
+            (void)pacer_offer(&p, 1514, 0);
+        }
+        t = 0;
+        while (p.queued > 0 && t < 100u * MS) {
+            t += tick;
+            while (pacer_take(&p, 1514, t)) {
+            }
+        }
+        CHECK(p.queued == 0);
+        CHECK(t >= 20u * MS);
+    }
 
     /* Dropping queued sends (pause, cancel). */
-    pacer_init(&p, 100);
-    CHECK(pacer_offer(&p, 100) == 1);
-    CHECK(pacer_offer(&p, 50) == 0);
-    CHECK(pacer_offer(&p, 60) == 0);
+    pacer_init(&p, rate, 100, 0);
+    CHECK(pacer_offer(&p, 100, 0) == 1);
+    CHECK(pacer_offer(&p, 50, 0) == 0);
+    CHECK(pacer_offer(&p, 60, 0) == 0);
     pacer_drop_queued(&p, 2, 110);
     CHECK(p.queued == 0 && p.queued_bytes == 0);
     pacer_drop_queued(&p, 3, 10);
     CHECK(p.queued == 0 && p.queued_bytes == 0);
-    CHECK(pacer_offer(&p, 50) == 0); /* still full in flight */
+    CHECK(pacer_offer(&p, 50, 0) == 0);
     pacer_drop_queued(&p, 1, 20);
     CHECK(p.queued == 0 && p.queued_bytes == 30);
 
-    /* Priority sends are counted apart and never in flight. */
-    pacer_init(&p, 100);
+    /* Priority sends are counted apart and use no tokens. */
+    pacer_init(&p, rate, 100, 0);
     pacer_note_priority(&p);
     pacer_note_priority(&p);
-    CHECK(p.priority_sent == 2 && p.in_flight == 0 && p.admitted == 0);
-
-    /* Budget arithmetic does not overflow near 4 GB. */
-    pacer_init(&p, 0xFFFFFFF0u);
-    CHECK(pacer_offer(&p, 0xFFFFFFF0u) == 1);
-    CHECK(pacer_offer(&p, 0x20u) == 0);
+    CHECK(p.priority_sent == 2 && p.tokens == 100 && p.admitted == 0);
 }
 
 int main(void)
 {
     classify();
-    budget();
+    pacing();
     printf("%d checks, %d failed\n", checks, failed);
     return failed == 0 ? 0 : 1;
 }

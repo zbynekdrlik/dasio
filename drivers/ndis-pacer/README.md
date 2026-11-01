@@ -12,9 +12,12 @@ the wait.
 
 **What it does.** Priority frames (IPv4/IPv6 DSCP 46 or 56, PTP over
 Ethernet, PTP over UDP 319/320) go to the miniport at once. All other frames
-go down only while the other bytes the miniport holds stay under a budget
-(default 64 KiB, ~0.2 ms at 2.5 Gbit/s); the rest wait in the filter, in
-order, and go down as the miniport completes earlier sends.
+are paced in time: a token bucket at 85 % of the link speed with a burst of
+one timer tick (~0.5 ms, Windows' high-resolution timer), so at most one
+tick of other data sits ahead of a priority frame. What does not fit waits
+in the filter, in order, for the timer or a send completion. (A cap on bytes
+"in flight" does not work: the Realtek miniport completes a whole burst
+before it is on the wire; measured on iem-snv, dasio#1.)
 
 **Layout.**
 - `core/` the decisions (classifier, budget queue), plain C with no kernel

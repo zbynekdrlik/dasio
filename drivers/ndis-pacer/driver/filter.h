@@ -343,11 +343,18 @@ typedef struct _MS_FILTER
     struct pacer                    Pacer;
     PNET_BUFFER_LIST                PaceHead;
     PNET_BUFFER_LIST                PaceTail;
+    // Sends the queue's head when tokens are back (high resolution).
+    PEX_TIMER                       PaceTimer;
+    BOOLEAN                         PaceTimerArmed;
 
 }MS_FILTER, * PMS_FILTER;
 
-// Bytes of other traffic the miniport may hold: ~0.2 ms at 2.5 Gbit/s.
-#define PACER_DEFAULT_BUDGET        (64u * 1024u)
+// Other traffic goes at this share of the link speed...
+#define PACER_RATE_PERCENT          85u
+// ...in bursts of one timer tick (Windows timers: ~0.5 ms), so at most one
+// tick of other data sits ahead of a priority frame.
+#define PACER_TICK_100NS            5000u
+#define PACER_MIN_BURST             16384u
 // Header bytes the classifier reads: Ethernet, two VLAN tags, IPv6 or
 // IPv4 with options, then the UDP ports.
 #define PACER_HEADER_BYTES          128u

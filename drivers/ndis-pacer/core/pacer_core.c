@@ -83,11 +83,16 @@ enum pacer_class pacer_classify(const uint8_t *frame, uint32_t len)
     return PACER_OTHER;
 }
 
-void pacer_init(struct pacer *p, uint32_t budget)
+#define TICKS_PER_SECOND 10000000u
+
+void pacer_init(struct pacer *p, uint64_t rate, uint32_t burst, uint64_t now)
 {
     struct pacer zero = {0};
     *p = zero;
-    p->budget = budget;
+    p->rate = rate;
+    p->burst = burst;
+    p->tokens = burst;
+    p->last = now;
 }
 
 void pacer_note_priority(struct pacer *p)
@@ -95,23 +100,54 @@ void pacer_note_priority(struct pacer *p)
     p->priority_sent++;
 }
 
-static int fits(const struct pacer *p, uint32_t bytes)
+/* Adds the tokens earned since the last refill, never above the burst.
+ * The time a fraction of a byte would take is kept for the next refill,
+ * so the rate holds however often this runs. A clock that went back adds
+ * nothing. */
+static void refill(struct pacer *p, uint64_t now)
 {
-    return p->in_flight == 0 || (uint64_t)p->in_flight + bytes <= p->budget;
+    uint64_t missing;
+    uint64_t full;
+    uint64_t elapsed;
+    uint64_t earned;
+
+    if (now <= p->last || p->rate == 0) {
+        return;
+    }
+    missing = (uint64_t)((int64_t)p->burst - p->tokens);
+    /* Ticks until the bucket is full again. */
+    full = missing * TICKS_PER_SECOND / p->rate + 1u;
+    elapsed = now - p->last;
+    if (elapsed >= full) {
+        p->tokens = p->burst;
+        p->last = now;
+        return;
+    }
+    earned = elapsed * p->rate / TICKS_PER_SECOND;
+    p->tokens += (int64_t)earned;
+    p->last += earned * TICKS_PER_SECOND / p->rate;
+}
+
+static int may_go(struct pacer *p, uint64_t now)
+{
+    if (p->rate == 0) {
+        return 1;
+    }
+    refill(p, now);
+    return p->tokens > 0;
 }
 
 static void go_down(struct pacer *p, uint32_t bytes)
 {
-    p->in_flight += bytes;
-    p->admitted++;
-    if (p->in_flight > p->max_in_flight) {
-        p->max_in_flight = p->in_flight;
+    if (p->rate != 0) {
+        p->tokens -= bytes;
     }
+    p->admitted++;
 }
 
-int pacer_offer(struct pacer *p, uint32_t bytes)
+int pacer_offer(struct pacer *p, uint32_t bytes, uint64_t now)
 {
-    if (p->queued == 0 && fits(p, bytes)) {
+    if (p->queued == 0 && may_go(p, now)) {
         go_down(p, bytes);
         return 1;
     }
@@ -124,9 +160,9 @@ int pacer_offer(struct pacer *p, uint32_t bytes)
     return 0;
 }
 
-int pacer_take(struct pacer *p, uint32_t bytes)
+int pacer_take(struct pacer *p, uint32_t bytes, uint64_t now)
 {
-    if (p->queued == 0 || !fits(p, bytes)) {
+    if (p->queued == 0 || !may_go(p, now)) {
         return 0;
     }
     p->queued--;
@@ -135,9 +171,19 @@ int pacer_take(struct pacer *p, uint32_t bytes)
     return 1;
 }
 
-void pacer_complete(struct pacer *p, uint32_t bytes)
+uint64_t pacer_wait(struct pacer *p, uint64_t now)
 {
-    p->in_flight = p->in_flight >= bytes ? p->in_flight - bytes : 0;
+    uint64_t missing;
+    if (p->queued == 0 || p->rate == 0) {
+        return 0;
+    }
+    refill(p, now);
+    if (p->tokens > 0) {
+        return 0;
+    }
+    /* Tokens must reach 1 byte. */
+    missing = (uint64_t)(1 - p->tokens);
+    return (missing * TICKS_PER_SECOND + p->rate - 1u) / p->rate;
 }
 
 void pacer_drop_queued(struct pacer *p, uint32_t count, uint64_t bytes)

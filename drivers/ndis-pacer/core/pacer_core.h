@@ -2,11 +2,12 @@
  *
  * Windows sends every frame of a single-queue NIC in one FIFO, so a
  * Dante packet waits behind whatever bulk data (a 1.5 MB TCP answer) is
- * already queued for the miniport: up to ~5 ms at 2.5 Gbit/s (dasio#1).
- * Linux avoids this with BQL (a cap on bytes in the NIC) and fq_codel.
- * This filter does the same below TCP/IP: priority frames go down at
- * once; all other frames go down only while the bytes of other traffic
- * the miniport holds stay under a budget, and wait here otherwise.
+ * already queued for the NIC: up to ~5 ms at 2.5 Gbit/s (dasio#1). Linux
+ * avoids this with BQL and fq_codel. The Realtek miniport takes a whole
+ * burst and completes it before it is on the wire (measured), so a cap on
+ * bytes "in flight" bounds nothing; this filter paces in time instead:
+ * priority frames go down at once, other frames at a rate below the
+ * link's with a small burst, and wait here otherwise.
  *
  * The NDIS glue (filter.c) calls these functions under its own lock. */
 #ifndef PACER_CORE_H
@@ -42,10 +43,16 @@ enum pacer_class {
 enum pacer_class pacer_classify(const uint8_t *frame, uint32_t len);
 
 struct pacer {
-    /* Bytes of other traffic the miniport may hold at once. */
-    uint32_t budget;
-    /* Other bytes sent down and not yet completed. */
-    uint32_t in_flight;
+    /* Other traffic may go down at `rate` bytes per second, with at most
+     * `burst` bytes at once: the miniport is never handed more than that
+     * ahead of a priority frame. 0 = no pacing (everything goes down). */
+    uint64_t rate;
+    uint32_t burst;
+    /* Bytes that may go down now; below zero after a send larger than
+     * what was there (the debt is paid before the next send). */
+    int64_t tokens;
+    /* Time of the last refill, 100 ns units (the caller's clock). */
+    uint64_t last;
     /* Other sends waiting here, in order, and their bytes. */
     uint32_t queued;
     uint64_t queued_bytes;
@@ -54,28 +61,29 @@ struct pacer {
     uint64_t admitted;
     uint64_t deferred;
     uint32_t max_queued;
-    uint32_t max_in_flight;
 };
 
-void pacer_init(struct pacer *p, uint32_t budget);
+/* `rate` bytes per second (0 = no pacing), `burst` bytes, starting full at
+ * time `now` (100 ns units). */
+void pacer_init(struct pacer *p, uint64_t rate, uint32_t burst, uint64_t now);
 
-/* A priority send: it goes down at once and is never counted against
- * the budget. */
+/* A priority send: it goes down at once and never uses tokens. */
 void pacer_note_priority(struct pacer *p);
 
-/* A new other send of `bytes`. Returns 1 when it may go down now (it is
- * then counted in flight), 0 when it must wait at the end of the queue
- * (counted as queued). Order is kept: while anything waits, a new send
- * waits too. One send always goes down when nothing is in flight, so a
- * send larger than the budget still moves. */
-int pacer_offer(struct pacer *p, uint32_t bytes);
+/* A new other send of `bytes` at time `now`. Returns 1 when it may go down
+ * now (it then uses tokens), 0 when it must wait at the end of the queue.
+ * Order is kept: while anything waits, a new send waits too. A send goes
+ * down whenever some tokens are left, even a larger one (the debt is paid
+ * by waiting before the next). */
+int pacer_offer(struct pacer *p, uint32_t bytes, uint64_t now);
 
-/* The head of the queue holds `bytes`. Returns 1 when it may go down now
- * (it then leaves the queue and is counted in flight), 0 otherwise. */
-int pacer_take(struct pacer *p, uint32_t bytes);
+/* The head of the queue holds `bytes`. Returns 1 when it may go down at
+ * time `now` (it then leaves the queue and uses tokens), 0 otherwise. */
+int pacer_take(struct pacer *p, uint32_t bytes, uint64_t now);
 
-/* The miniport completed an other send of `bytes` that went down. */
-void pacer_complete(struct pacer *p, uint32_t bytes);
+/* Time (100 ns units) from `now` until the queue's head may go down: 0 when
+ * it may now or nothing waits. The caller arms its timer with it. */
+uint64_t pacer_wait(struct pacer *p, uint64_t now);
 
 /* `count` queued sends of `bytes` in all left the queue without going
  * down (pause, cancel). */
