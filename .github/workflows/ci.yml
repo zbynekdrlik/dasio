@@ -102,7 +102,10 @@ jobs:
           # integration (_NT_TARGET_VERSION empty, CI 41360597269).
           nuget restore drivers\ndis-pacer\driver\packages.config -PackagesDirectory drivers\ndis-pacer\driver\packages -NonInteractive
           if ($LASTEXITCODE -ne 0) { throw "nuget restore failed ($LASTEXITCODE)" }
-          & $msbuild drivers\ndis-pacer\driver\dasiopacer.vcxproj /p:Configuration=Release /p:Platform=x64 /p:SpectreMitigation=false /m /nologo /v:minimal
+          # The NuGet WDK carries stampinf only for x64/ARM64 hosts, while
+          # its targets looked in x86 (CI 41360816365: TRK0005 stampinf.exe).
+          $wdkBin = (Resolve-Path "drivers\ndis-pacer\driver\packages\Microsoft.Windows.WDK.x64.10.0.28000.2526\c\bin\10.0.28000.0").Path
+          & $msbuild drivers\ndis-pacer\driver\dasiopacer.vcxproj /p:Configuration=Release /p:Platform=x64 /p:SpectreMitigation=false "/p:InfToolPath=$wdkBin\x64\" /m /nologo /v:minimal
           if ($LASTEXITCODE -ne 0) { throw "driver build failed ($LASTEXITCODE)" }
           $pkg = Get-ChildItem drivers\ndis-pacer\driver -Recurse -Filter dasiopacer.sys | Where-Object { $_.FullName -match 'Release' } | Select-Object -First 1
           if (-not $pkg) { throw "no dasiopacer.sys built" }
