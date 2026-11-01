@@ -274,7 +274,7 @@ fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_a
     // The second device on the same address, beside the running first:
     // on its own ports (ARC, CMC and flow control, each held by one of
     // them, so this process cannot take it).
-    let second = Device::start(
+    let mut second = Device::start(
         SECOND,
         &device_in(&dir.join("second"), "test-device-2", SECOND_PORTS),
         ip,
