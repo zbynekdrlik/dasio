@@ -14,6 +14,13 @@ Abstract:
 
 #include "precomp.h"
 
+// dasio send pacer helpers (defined before FilterSendNetBufferListsComplete).
+static ULONG pacerNblBytes(_In_ PNET_BUFFER_LIST Nbl);
+static enum pacer_class pacerNblClass(_In_ PNET_BUFFER_LIST Nbl);
+static VOID pacerSendTaken(_In_ PMS_FILTER Filter, _In_opt_ PNET_BUFFER_LIST Taken, _In_ BOOLEAN DispatchLevel);
+static PNET_BUFFER_LIST pacerTakeLocked(_In_ PMS_FILTER Filter);
+static VOID pacerCompleteUnsent(_In_ PMS_FILTER Filter, _In_opt_ PNET_BUFFER_LIST Nbls, _In_ NDIS_STATUS Status, _In_ BOOLEAN DispatchLevel);
+
 #define __FILENUMBER    'PNPF'
 
 // This directive puts the DriverEntry function into the INIT segment of the
