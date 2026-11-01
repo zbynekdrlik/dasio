@@ -12,6 +12,7 @@
 #   with another installed instance's is refused before anything changes,
 # - registers the driver for the instance (HKLM: its COM class and its ASIO entry),
 # - puts the device config at C:\ProgramData\dante-asio\instance-<n>\device.toml,
+#   and moves aside a state file another config left at its state path,
 # - makes the service "dante-asio-<n>" (LocalSystem, started at boot before any
 #   logon; the SCM restarts it after 2 s, 5 s, then 30 s, also after an error
 #   exit, the count reset after a day) and starts it.
@@ -119,6 +120,29 @@ try {
 }
 $cfg = Join-Path $data "device.toml"
 Copy-Item $Config $cfg -Force
+
+# The config's state file is this device's memory (its names and its
+# subscriptions). One another config left there is another device's: it is
+# moved aside, dated, so this device does not start under that name with
+# those subscriptions. Kept: a state its own config made (a name set in
+# Dante Controller stays).
+function Get-TomlString([string]$Path, [string]$Key) {
+    foreach ($line in Get-Content $Path) {
+        if ($line -match "^\s*$Key\s*=\s*([`"'])(.*)\1\s*$") { return $Matches[2] }
+    }
+    $null
+}
+$configName = Get-TomlString $cfg "name"
+$stateFile = Get-TomlString $cfg "state_file"
+if ($stateFile -and (Test-Path $stateFile)) {
+    $madeBy = Get-TomlString $stateFile "config_name"
+    if (-not $madeBy) { $madeBy = Get-TomlString $stateFile "name" }
+    if ($madeBy -ne $configName) {
+        $aside = "$stateFile.replaced-$(Get-Date -Format yyyyMMdd-HHmmss)"
+        Move-Item $stateFile $aside
+        Write-Output "moved aside the state of '$madeBy' (not this config's '$configName'): $aside"
+    }
+}
 
 $exe = Join-Path $bin "dante-asio.exe"
 $named = @()
