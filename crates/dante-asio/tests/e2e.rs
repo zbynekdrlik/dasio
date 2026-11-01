@@ -122,6 +122,17 @@ impl Device {
         device
     }
 
+    /// The process still runs (a device that ended on its own fails).
+    fn assert_running(&mut self) {
+        if let Some(status) = self.child.as_mut().unwrap().try_wait().unwrap() {
+            panic!(
+                "instance {} ended on its own ({status}):\n{}",
+                self.instance,
+                self.log()
+            );
+        }
+    }
+
     fn log(&self) -> String {
         std::fs::read_to_string(&self.log).unwrap_or_default()
     }
@@ -280,7 +291,14 @@ fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_a
     round_trip(SECOND, 4);
     round_trip(FIRST, 4);
 
-    second.stop();
+    // The first device manages the address (it bound 8700 first). Its
+    // stop must not end the second: it keeps its audio and takes the
+    // address over (1.11.2026, iem-snv: the member ended with os error
+    // 10054 when the manager stopped, and the SCM restarted it).
     first.stop();
+    std::thread::sleep(Duration::from_secs(4));
+    second.assert_running();
+    round_trip(SECOND, 4);
+    second.stop();
     let _ = std::fs::remove_dir_all(&dir);
 }
