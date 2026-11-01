@@ -98,7 +98,11 @@ jobs:
           $msbuild = Join-Path $vs "MSBuild\Current\Bin\MSBuild.exe"
           Write-Output "MSBuild: $msbuild"
           Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Include" -ErrorAction SilentlyContinue | ForEach-Object { "Windows Kits include: $($_.Name)" }
-          & $msbuild drivers\ndis-pacer\driver\dasiopacer.vcxproj /p:Configuration=Release /p:Platform=x64 /m /nologo /v:minimal
+          # The WDK and SDK from NuGet: this image's Visual Studio has no WDK
+          # integration (_NT_TARGET_VERSION empty, CI 41360597269).
+          nuget restore drivers\ndis-pacer\driver\packages.config -PackagesDirectory drivers\ndis-pacer\driver\packages -NonInteractive
+          if ($LASTEXITCODE -ne 0) { throw "nuget restore failed ($LASTEXITCODE)" }
+          & $msbuild drivers\ndis-pacer\driver\dasiopacer.vcxproj /p:Configuration=Release /p:Platform=x64 /p:SpectreMitigation=false /m /nologo /v:minimal
           if ($LASTEXITCODE -ne 0) { throw "driver build failed ($LASTEXITCODE)" }
           $pkg = Get-ChildItem drivers\ndis-pacer\driver -Recurse -Filter dasiopacer.sys | Where-Object { $_.FullName -match 'Release' } | Select-Object -First 1
           if (-not $pkg) { throw "no dasiopacer.sys built" }
