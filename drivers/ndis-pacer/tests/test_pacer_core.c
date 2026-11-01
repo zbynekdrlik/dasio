@@ -18,9 +18,9 @@ static int checks;
 
 /* An Ethernet frame with `tags` VLAN tags, then an IPv4 header with
  * `dscp`, `proto`, fragment field `frag`, then UDP/TCP ports. */
-static size_t ipv4(uint8_t *f, int tags, uint8_t dscp, uint8_t proto, uint16_t frag, uint16_t dport)
+static uint32_t ipv4(uint8_t *f, int tags, uint8_t dscp, uint8_t proto, uint16_t frag, uint16_t dport)
 {
-    size_t at = 12;
+    uint32_t at = 12;
     int i;
     memset(f, 0, 128);
     for (i = 0; i < tags; i++) {
@@ -41,7 +41,7 @@ static size_t ipv4(uint8_t *f, int tags, uint8_t dscp, uint8_t proto, uint16_t f
     return at + 20 + 8;
 }
 
-static size_t ipv6(uint8_t *f, uint8_t dscp, uint8_t next, uint16_t dport)
+static uint32_t ipv6(uint8_t *f, uint8_t dscp, uint8_t next, uint16_t dport)
 {
     uint8_t tclass = (uint8_t)(dscp << 2);
     memset(f, 0, 128);
@@ -58,7 +58,7 @@ static size_t ipv6(uint8_t *f, uint8_t dscp, uint8_t next, uint16_t dport)
 static void classify(void)
 {
     uint8_t f[128];
-    size_t n;
+    uint32_t n;
 
     /* Dante audio (EF) and PTP/control (CS7), whatever the protocol. */
     n = ipv4(f, 0, 46, 17, 0, 14336);

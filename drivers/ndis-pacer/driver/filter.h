@@ -297,6 +297,8 @@ typedef struct _FILTER_REQUEST
 //
 // Define the filter struct
 //
+#include "../core/pacer_core.h"
+
 typedef struct _MS_FILTER
 {
     LIST_ENTRY                     FilterModuleLink;

@@ -12,8 +12,17 @@
 #ifndef PACER_CORE_H
 #define PACER_CORE_H
 
+#if defined(_KERNEL_MODE)
+/* The driver: kernel types, no user-mode C library headers. */
+#include <ntdef.h>
+typedef UCHAR uint8_t;
+typedef USHORT uint16_t;
+typedef ULONG uint32_t;
+typedef ULONG64 uint64_t;
+#else
 #include <stddef.h>
 #include <stdint.h>
+#endif
 
 /* DSCP values that mark priority traffic: Dante audio (EF) and Dante
  * PTP / control (CS7). */
@@ -30,7 +39,7 @@ enum pacer_class {
  * 0x88F7) or PTP over UDP (destination port 319 or 320); everything else,
  * and anything too short to read, is other. One or two VLAN tags are
  * skipped. */
-enum pacer_class pacer_classify(const uint8_t *frame, size_t len);
+enum pacer_class pacer_classify(const uint8_t *frame, uint32_t len);
 
 struct pacer {
     /* Bytes of other traffic the miniport may hold at once. */

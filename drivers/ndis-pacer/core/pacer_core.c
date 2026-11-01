@@ -23,9 +23,9 @@ static int is_ptp_port(uint16_t port)
     return port == PTP_EVENT_PORT || port == PTP_GENERAL_PORT;
 }
 
-enum pacer_class pacer_classify(const uint8_t *frame, size_t len)
+enum pacer_class pacer_classify(const uint8_t *frame, uint32_t len)
 {
-    size_t at = 12;
+    uint32_t at = 12;
     uint16_t type;
     int tags;
 
@@ -46,14 +46,14 @@ enum pacer_class pacer_classify(const uint8_t *frame, size_t len)
         return PACER_PRIORITY;
     }
     if (type == ETHERTYPE_IPV4) {
-        size_t ihl;
+        uint32_t ihl;
         if (len < at + 20 || (frame[at] >> 4) != 4) {
             return PACER_OTHER;
         }
         if (is_priority_dscp((uint8_t)(frame[at + 1] >> 2))) {
             return PACER_PRIORITY;
         }
-        ihl = (size_t)(frame[at] & 0x0F) * 4u;
+        ihl = (uint32_t)(frame[at] & 0x0F) * 4u;
         if (ihl < 20 || frame[at + 9] != IPPROTO_UDP_) {
             return PACER_OTHER;
         }
