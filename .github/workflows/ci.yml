@@ -79,6 +79,40 @@ jobs:
           cl /nologo /W4 /WX /Fe:test-msvc.exe core\pacer_core.c tests\test_pacer_core.c || exit /b 1
           test-msvc.exe
 
+  # The NDIS send pacer driver, built with the image's WDK and test-signed
+  # by the WDK build (test signing on the target PC). The package (.sys,
+  # .inf, .cat) is an artifact.
+  pacer-driver:
+    needs: pacer-core
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the driver
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
+          $msbuild = Join-Path $vs "MSBuild\Current\Bin\MSBuild.exe"
+          Write-Output "MSBuild: $msbuild"
+          Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Include" -ErrorAction SilentlyContinue | ForEach-Object { "Windows Kits include: $($_.Name)" }
+          & $msbuild drivers\ndis-pacer\driver\dasiopacer.vcxproj /p:Configuration=Release /p:Platform=x64 /m /nologo /v:minimal
+          if ($LASTEXITCODE -ne 0) { throw "driver build failed ($LASTEXITCODE)" }
+          $pkg = Get-ChildItem drivers\ndis-pacer\driver -Recurse -Filter dasiopacer.sys | Where-Object { $_.FullName -match 'Release' } | Select-Object -First 1
+          if (-not $pkg) { throw "no dasiopacer.sys built" }
+          $out = "pacer-package"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          Get-ChildItem $pkg.DirectoryName -Recurse -Include dasiopacer.sys, dasiopacer.inf, dasiopacer.cat, *.cer | Copy-Item -Destination $out
+          Get-ChildItem $out | ForEach-Object { "$($_.Name) $($_.Length)" }
+          foreach ($f in "dasiopacer.sys", "dasiopacer.inf", "dasiopacer.cat") { if (-not (Test-Path "$out\$f")) { throw "package lacks $f" } }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dasiopacer-${{ github.sha }}
+          path: pacer-package/
+          if-no-files-found: error
+
   # Line coverage of the whole workspace may not drop: each OS has its own
   # floor (the Windows run also covers the driver, the mapping and the
   # device's Windows code). Raise a floor whenever coverage rises.
