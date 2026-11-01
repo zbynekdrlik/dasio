@@ -160,7 +160,7 @@ fn probe(instance: u32, seconds: u64, affinity: Option<usize>) -> Result<(), Str
     let min = r.round_trips.iter().min();
     let max = r.round_trips.iter().max();
     println!(
-        "probe instance {instance}: block {} latency_in {} latency_out {} switches {} emitted {} arrived {} round_trip_min {:?} round_trip_max {:?} late {} max_gap_us {} gaps_over_1ms {} max_switch_us {}",
+        "probe instance {instance}: block {} latency_in {} latency_out {} switches {} emitted {} arrived {} round_trip_min {:?} round_trip_max {:?} late {} max_gap_us {} gaps_over_1ms {} gap_blocks {} max_switch_us {}",
         r.block,
         r.latency_in,
         r.latency_out,
@@ -172,6 +172,7 @@ fn probe(instance: u32, seconds: u64, affinity: Option<usize>) -> Result<(), Str
         r.late,
         r.max_gap_us,
         r.gaps_over_1ms,
+        r.gap_blocks,
         r.max_switch_us
     );
     for (second, (peak, at)) in r.rx_peaks.iter().enumerate() {
