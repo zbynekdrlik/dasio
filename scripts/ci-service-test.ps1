@@ -130,6 +130,30 @@ foreach ($n in $instance, $second) {
 }
 if ((Get-ServicePid) -eq $first) { throw "the first instance still runs the old binary (pid $first)" }
 Write-Output "both instances run the new binary"
+
+# Updates back and forth, each instance in turn, as an update of the PC
+# runs them: each new binary pauses the other instance, and the device
+# managing the address stops while the other is a member. No instance may
+# end on its own (1.11.2026, iem-snv: with dstack v0.4.21 every such
+# replay ended the member with os error 10054 and the SCM restarted it).
+$mark = Get-Date
+foreach ($round in 1..3) {
+    foreach ($from in $Bundle, $newer) {
+        & (Join-Path $from "install.ps1") -Instance $instance -Ip $ip -Config $cfg -Name "ci-asio-dante" -TestClock | Out-Null
+        & (Join-Path $from "install.ps1") -Instance $second -Ip $ip -Config $cfg2 -Name "ci-asio-dante-2" -TestClock | Out-Null
+    }
+}
+Start-Sleep -Seconds 5
+$exits = @(Get-WinEvent -FilterHashtable @{ LogName = "System"; ProviderName = "Service Control Manager"; StartTime = $mark } -ErrorAction SilentlyContinue |
+    Where-Object { $_.Id -in 7024, 7031, 7034 -and $_.Message -match "dante-asio instance" })
+if ($exits.Count -gt 0) {
+    $exits | ForEach-Object { Write-Output "$($_.TimeCreated) $($_.Id) $($_.Message)" }
+    throw "$($exits.Count) service error exits during the updates"
+}
+foreach ($n in $instance, $second) {
+    if ((Get-Service "dante-asio-$n").Status -ne "Running") { throw "dante-asio-$n is not running after the updates" }
+}
+Write-Output "six updates in turn: no instance ended on its own"
 & (Join-Path $newer "uninstall.ps1") -Instance $second -Ip $ip -Name "ci-asio-dante-2"
 Wait-Until { -not (Get-Service -Name "dante-asio-$second" -ErrorAction SilentlyContinue) } 15 "the second service's removal"
 
