@@ -41,6 +41,44 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
 
+  # The NDIS send pacer's decisions (drivers/ndis-pacer/core): plain C, no
+  # kernel types. Linux: gcc with ASan/UBSan and a line-coverage floor;
+  # Windows: MSVC at /W4 /WX, the compiler the driver is built with.
+  pacer-core:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test with gcc, sanitizers and coverage
+        if: runner.os == 'Linux'
+        working-directory: drivers/ndis-pacer
+        run: |
+          set -euo pipefail
+          gcc -std=c99 -Wall -Wextra -Werror -pedantic -fsanitize=address,undefined -fno-sanitize-recover=all -g \
+            -o test-san core/pacer_core.c tests/test_pacer_core.c
+          ./test-san
+          gcc -std=c99 --coverage -O0 -o test-cov core/pacer_core.c tests/test_pacer_core.c
+          ./test-cov
+          # Measured 100 % of lines (81).
+          line=$(gcov -n test-cov-pacer_core.gcda | grep -A1 "core/pacer_core.c'" | grep -o '[0-9.]*%' | head -1)
+          echo "pacer_core.c lines: $line"
+          awk -v l="${line%\%}" 'BEGIN { exit !(l >= 100) }'
+      - name: Test with MSVC
+        if: runner.os == 'Windows'
+        working-directory: drivers/ndis-pacer
+        shell: cmd
+        run: |
+          for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set VS=%%i
+          call "%VS%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          cl /nologo /W4 /WX /Fe:test-msvc.exe core\pacer_core.c tests\test_pacer_core.c || exit /b 1
+          test-msvc.exe
+
   # Line coverage of the whole workspace may not drop: each OS has its own
   # floor (the Windows run also covers the driver, the mapping and the
   # device's Windows code). Raise a floor whenever coverage rises.
