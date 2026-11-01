@@ -3,7 +3,9 @@
 #   .\install.ps1 -Instance 1 -Ip <the PC's address> -Config <device.toml>
 # - copies dante-asio.exe and dante_asio_driver.dll to C:\Program Files\dante-asio
 #   (a running instance is stopped first: its service, or the logon task an
-#   older install made, which is removed),
+#   older install made, which is removed); unchanged files stay, and a new
+#   dante-asio.exe stops the other running instances for the copy and starts
+#   them again,
 # - adds no address: -Ip is one the PC already has. Several instances share it
 #   (dstack's per-PC manager), each on its own ports and process id from its
 #   config (arc_port, cmc_port, flows_port, process_id); a config that clashes
@@ -90,7 +92,31 @@ if (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue) {
 }
 
 New-Item -ItemType Directory -Force $bin, $data | Out-Null
-Copy-Item (Join-Path $here "dante-asio.exe"), (Join-Path $here "dante_asio_driver.dll") $bin -Force
+# The files all instances share. An unchanged file stays (a running
+# instance holds dante-asio.exe open). A new dante-asio.exe stops every
+# other running instance for the copy and starts it again after.
+$changed = @("dante-asio.exe", "dante_asio_driver.dll") | Where-Object {
+    $there = Join-Path $bin $_
+    -not (Test-Path $there) -or (Get-FileHash $there).Hash -ne (Get-FileHash (Join-Path $here $_)).Hash
+}
+$paused = @()
+if ($changed -contains "dante-asio.exe") {
+    $paused = @(Get-Service -Name "dante-asio-*" | Where-Object { $_.Name -ne $service -and $_.Status -eq "Running" })
+    foreach ($s in $paused) {
+        Write-Output "stopping $($s.Name) for the new binary"
+        Stop-Service -Name $s.Name
+        $s.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(15))
+    }
+}
+try {
+    foreach ($file in $changed) { Copy-Item (Join-Path $here $file) $bin -Force }
+} finally {
+    foreach ($s in $paused) {
+        Start-Service -Name $s.Name
+        (Get-Service -Name $s.Name).WaitForStatus("Running", [TimeSpan]::FromSeconds(10))
+        Write-Output "$($s.Name) runs the new binary"
+    }
+}
 $cfg = Join-Path $data "device.toml"
 Copy-Item $Config $cfg -Force
 
