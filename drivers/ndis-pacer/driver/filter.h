@@ -368,6 +368,10 @@ typedef struct _MS_FILTER
     ULONG64                         PaceTimerFires;
     ULONG64                         PacePumps;
     ULONG64                         PacePumpSent;
+    ULONG64                         PaceOtherNbls;
+    ULONG64                         PaceOtherNbs;
+    ULONG64                         PaceMaxNbs;
+    ULONG64                         PaceMaxNblBytes;
 
 }MS_FILTER, * PMS_FILTER;
 

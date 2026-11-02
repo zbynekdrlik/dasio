@@ -1627,8 +1627,26 @@ Routine Description:
         else
         {
             ULONG Bytes = pacerNblBytes(CurrNbl);
+            ULONG Nbs = 0;
             ULONG64 Now = pacerNow();
+            PNET_BUFFER Nb;
+            for (Nb = NET_BUFFER_LIST_FIRST_NB(CurrNbl); Nb != NULL; Nb = NET_BUFFER_NEXT_NB(Nb))
+            {
+                Nbs++;
+            }
             FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
+            // What tcpip hands down: a whole NBL goes down at once, so its
+            // size bounds what the pacer can spread (dasio#1).
+            pFilter->PaceOtherNbls++;
+            pFilter->PaceOtherNbs += Nbs;
+            if (Nbs > pFilter->PaceMaxNbs)
+            {
+                pFilter->PaceMaxNbs = Nbs;
+            }
+            if (Bytes > pFilter->PaceMaxNblBytes)
+            {
+                pFilter->PaceMaxNblBytes = Bytes;
+            }
             if (pFilter->State == FilterRunning &&
                 PortNumber == NDIS_DEFAULT_PORT_NUMBER &&
                 pFilter->PaceRing != NULL &&

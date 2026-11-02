@@ -299,6 +299,10 @@ FilterDeviceIoControl(
                 Out->Pumps = pFilter->PacePumps;
                 Out->PumpSent = pFilter->PacePumpSent;
                 Out->Pumping = pFilter->PacePumping;
+                Out->OtherNbls = pFilter->PaceOtherNbls;
+                Out->OtherNbs = pFilter->PaceOtherNbs;
+                Out->MaxNbs = pFilter->PaceMaxNbs;
+                Out->MaxNblBytes = pFilter->PaceMaxNblBytes;
                 FILTER_RELEASE_LOCK(&pFilter->Lock, bTrue);
                 InfoLength += (ULONG)sizeof(DASIO_PACER_STATUS);
             }
