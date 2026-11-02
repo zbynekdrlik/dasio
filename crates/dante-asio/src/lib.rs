@@ -48,7 +48,7 @@ pub fn latencies(cfg: &DeviceConfig) -> (u32, u32) {
 /// (CPUs 0 to 63): the process must hold them, or pinning a thread there
 /// fails (Windows error 87).
 pub fn own_cpus(cfg: &DeviceConfig) -> usize {
-    [cfg.pump_cpu, cfg.io_cpu]
+    [cfg.pump_cpu, cfg.io_cpu, cfg.rx_cpu]
         .into_iter()
         .flatten()
         .filter(|&c| c < 64)
