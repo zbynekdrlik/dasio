@@ -81,8 +81,8 @@ dependencies = [
 
 [[package]]
 name = "dstack"
-version = "0.5.12"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.5.12#7a388ae06cca881b1aa747427a998270e18188a4"
+version = "0.5.13"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.5.13#18a22c545f70c24bb959fea9eeae3d0388921d81"
 dependencies = [
  "dstack-audio-io",
  "dsync-ptp",
@@ -104,8 +104,8 @@ dependencies = [
 
 [[package]]
 name = "dstack-audio-io"
-version = "0.5.12"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.5.12#7a388ae06cca881b1aa747427a998270e18188a4"
+version = "0.5.13"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.5.13#18a22c545f70c24bb959fea9eeae3d0388921d81"
 
 [[package]]
 name = "dsync-ptp"
