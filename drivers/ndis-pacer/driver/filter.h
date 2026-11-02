@@ -362,6 +362,14 @@ typedef struct _MS_FILTER
     // A pump runs: a nested call (a send completed inline) returns at once
     // and the running pump goes on, so the stack never grows per NBL.
     BOOLEAN                         PacePumping;
+    // What IOCTL_DASIO_PACER_STATUS reports (under Lock).
+    ULONG64                         PaceLinkAtAttach;
+    ULONG64                         PaceLinkLast;
+    ULONG64                         PaceLinkUpdates;
+    ULONG64                         PaceTimerArms;
+    ULONG64                         PaceTimerFires;
+    ULONG64                         PacePumps;
+    ULONG64                         PacePumpSent;
 
 }MS_FILTER, * PMS_FILTER;
 

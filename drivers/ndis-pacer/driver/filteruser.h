@@ -26,6 +26,8 @@
 #define IOCTL_FILTER_WRITE_ADAPTER_CONFIG   _NDIS_CONTROL_CODE(11, METHOD_BUFFERED)
 #define IOCTL_FILTER_READ_INSTANCE_CONFIG   _NDIS_CONTROL_CODE(12, METHOD_BUFFERED)
 #define IOCTL_FILTER_WRITE_INSTANCE_CONFIG  _NDIS_CONTROL_CODE(13, METHOD_BUFFERED)
+// dasio: the pacer's state, one DASIO_PACER_STATUS per bound adapter.
+#define IOCTL_DASIO_PACER_STATUS            _NDIS_CONTROL_CODE(14, METHOD_BUFFERED)
 
 
 #define MAX_FILTER_INSTANCE_NAME_LENGTH     256
@@ -85,6 +87,37 @@ typedef struct _FILTER_WRITE_CONFIG
     NDIS_STATUS             Status;
     UCHAR                   Data[sizeof(ULONG)];
 }FILTER_WRITE_CONFIG, *PFILTER_WRITE_CONFIG;
+
+// dasio: one bound adapter's pacer, read under its lock. All fields 64 bit,
+// so user mode reads it as an array of UINT64 in this order.
+#define DASIO_PACER_STATUS_VERSION          1
+typedef struct _DASIO_PACER_STATUS
+{
+    ULONG64         Version;
+    ULONG64         IfIndex;
+    ULONG64         State;            // FILTER_STATE: 3 = running
+    ULONG64         LinkAtAttach;     // bits/s the attach reported
+    ULONG64         LinkLast;         // bits/s the last link-state reported
+    ULONG64         LinkUpdates;
+    ULONG64         Rate;             // bytes/s, 0 = no pacing
+    ULONG64         Burst;            // bytes
+    LONG64          Tokens;
+    ULONG64         Last;             // last refill, 100 ns
+    ULONG64         Now;              // when read, 100 ns
+    ULONG64         Queued;
+    ULONG64         QueuedBytes;
+    ULONG64         RingCount;
+    ULONG64         MaxQueued;
+    ULONG64         PrioritySent;
+    ULONG64         Admitted;
+    ULONG64         Deferred;
+    ULONG64         TimerArms;
+    ULONG64         TimerFires;
+    ULONG64         TimerArmed;
+    ULONG64         Pumps;
+    ULONG64         PumpSent;
+    ULONG64         Pumping;
+} DASIO_PACER_STATUS, *PDASIO_PACER_STATUS;
 
 #endif //__FILTERUSER_H__
 

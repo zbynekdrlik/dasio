@@ -232,6 +232,58 @@ FilterDeviceIoControl(
             break;
 
 
+        case IOCTL_DASIO_PACER_STATUS:
+            // One status per bound adapter, each read under its filter's
+            // lock (the list lock held outside it, as attach and detach do).
+            OutputBuffer = (PUCHAR)Irp->AssociatedIrp.SystemBuffer;
+            OutputBufferLength = IrpSp->Parameters.DeviceIoControl.OutputBufferLength;
+            FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
+            for (Link = FilterModuleList.Flink; Link != &FilterModuleList; Link = Link->Flink)
+            {
+                PDASIO_PACER_STATUS Out;
+                BOOLEAN bTrue = TRUE;
+                pFilter = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
+                if (InfoLength + (ULONG)sizeof(DASIO_PACER_STATUS) > OutputBufferLength)
+                {
+                    Status = STATUS_BUFFER_TOO_SMALL;
+                    break;
+                }
+                Out = (PDASIO_PACER_STATUS)(OutputBuffer + InfoLength);
+                FILTER_ACQUIRE_LOCK(&pFilter->Lock, bTrue);
+                Out->Version = DASIO_PACER_STATUS_VERSION;
+                Out->IfIndex = pFilter->MiniportIfIndex;
+                Out->State = (ULONG64)pFilter->State;
+                Out->LinkAtAttach = pFilter->PaceLinkAtAttach;
+                Out->LinkLast = pFilter->PaceLinkLast;
+                Out->LinkUpdates = pFilter->PaceLinkUpdates;
+                Out->Rate = pFilter->Pacer.rate;
+                Out->Burst = pFilter->Pacer.burst;
+                Out->Tokens = pFilter->Pacer.tokens;
+                Out->Last = pFilter->Pacer.last;
+                Out->Now = KeQueryInterruptTime();
+                Out->Queued = pFilter->Pacer.queued;
+                Out->QueuedBytes = pFilter->Pacer.queued_bytes;
+                Out->RingCount = pFilter->PaceRingCount;
+                Out->MaxQueued = pFilter->Pacer.max_queued;
+                Out->PrioritySent = pFilter->Pacer.priority_sent;
+                Out->Admitted = pFilter->Pacer.admitted;
+                Out->Deferred = pFilter->Pacer.deferred;
+                Out->TimerArms = pFilter->PaceTimerArms;
+                Out->TimerFires = pFilter->PaceTimerFires;
+                Out->TimerArmed = pFilter->PaceTimerArmed;
+                Out->Pumps = pFilter->PacePumps;
+                Out->PumpSent = pFilter->PacePumpSent;
+                Out->Pumping = pFilter->PacePumping;
+                FILTER_RELEASE_LOCK(&pFilter->Lock, bTrue);
+                InfoLength += (ULONG)sizeof(DASIO_PACER_STATUS);
+            }
+            FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
+            if (Status == STATUS_BUFFER_TOO_SMALL)
+            {
+                InfoLength = 0;
+            }
+            break;
+
         default:
             break;
     }

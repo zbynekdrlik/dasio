@@ -383,6 +383,8 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
             pacer_init(&pFilter->Pacer, Rate, Burst, pacerNow());
             pFilter->PaceTimerArmed = FALSE;
             pFilter->PacePumping = FALSE;
+            pFilter->PaceLinkAtAttach = AttachParameters->XmitLinkSpeed;
+            pFilter->PaceLinkLast = AttachParameters->XmitLinkSpeed;
         }
         pFilter->State = FilterPaused;
 
@@ -1136,6 +1138,8 @@ NOTE: called at <= DISPATCH_LEVEL
         BOOLEAN PassiveLevel = FALSE;
         pacerRateFor(LinkState->XmitLinkSpeed, &Rate, &Burst);
         FILTER_ACQUIRE_LOCK(&pFilter->Lock, PassiveLevel);
+        pFilter->PaceLinkLast = LinkState->XmitLinkSpeed;
+        pFilter->PaceLinkUpdates++;
         if (pFilter->PaceTimer != NULL && pFilter->PaceRing != NULL)
         {
             pFilter->Pacer.rate = Rate;
@@ -1370,6 +1374,7 @@ pacerArmLocked(
         Wait = 1;
     }
     Filter->PaceTimerArmed = TRUE;
+    Filter->PaceTimerArms++;
     ExSetTimer(Filter->PaceTimer, -(LONG64)Wait, 0, NULL);
 }
 
@@ -1390,6 +1395,7 @@ pacerPump(
     if (FromTimer)
     {
         Filter->PaceTimerArmed = FALSE;
+        Filter->PaceTimerFires++;
     }
     if (Filter->PacePumping)
     {
@@ -1398,6 +1404,7 @@ pacerPump(
         return;
     }
     Filter->PacePumping = TRUE;
+    Filter->PacePumps++;
     FILTER_RELEASE_LOCK(&Filter->Lock, DispatchLevel);
 
     do
@@ -1412,6 +1419,7 @@ pacerPump(
             Filter->PaceRingHead = (Filter->PaceRingHead + 1) % PACER_RING_SIZE;
             Filter->PaceRingCount--;
         }
+        Filter->PacePumpSent += Count;
         if (Count < PACER_TAKE_BATCH)
         {
             // The last pass: done pumping, the timer covers the rest.
