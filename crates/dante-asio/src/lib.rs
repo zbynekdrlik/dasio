@@ -83,6 +83,9 @@ mod tests {
         // The RX thread on a CPU of its own (gen3 step 2: TX and RX apart).
         cfg.rx_cpu = Some(28);
         assert_eq!(own_cpus(&cfg), 1 << 31 | 1 << 29 | 1 << 28);
+        // RX and TX on one CPU (the stack's default): one bit.
+        cfg.rx_cpu = Some(29);
+        assert_eq!(own_cpus(&cfg), 1 << 31 | 1 << 29);
         // Past the mask's 64 bits: left to the stack's own refusal.
         cfg.rx_cpu = Some(64);
         assert_eq!(own_cpus(&cfg), 1 << 31 | 1 << 29);
