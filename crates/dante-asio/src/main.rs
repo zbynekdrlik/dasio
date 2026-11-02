@@ -108,9 +108,9 @@ fn main() -> ExitCode {
                 return usage();
             };
             // `--clock system`: a test machine's own clock (CI has no
-            // dantesync); never on a real Dante network.
+            // dsync); never on a real Dante network.
             let system_clock = match flag(&args, "--clock").as_deref() {
-                None | Some("dantesync") => false,
+                None | Some("dsync") => false,
                 Some("system") => true,
                 Some(_) => return usage(),
             };
@@ -209,7 +209,7 @@ fn clock(system: bool) -> dstack::host::ClockSource {
     if system {
         dstack::host::ClockSource::System
     } else {
-        dstack::host::ClockSource::Dantesync
+        dstack::host::ClockSource::Dsync
     }
 }
 
