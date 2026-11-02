@@ -18,6 +18,11 @@ use dante_asio_driver::ident::clsid;
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Report {
     pub switches: u64,
+    /// The samples the host's timeline ran (the driver's sample position
+    /// at the end, from the first switch's).
+    pub samples: u64,
+    /// The blocks the driver counted the host missing in this run.
+    pub missed: u64,
     pub emitted: u64,
     pub round_trips: Vec<u64>,
     pub late: u64,
@@ -46,7 +51,14 @@ struct State {
     bufs: Vec<[usize; 2]>,
     rx: usize,
     block: usize,
+    /// The driver's sample position at the first switch.
+    origin: Option<u64>,
+    /// The samples from `origin` to this block (the DAW's timeline).
     position: u64,
+    /// One host stall of this many ms, a few blocks after the first
+    /// impulse left (while it is on its way): 0 for none.
+    stall_ms: u64,
+    stalled: bool,
     next_emit: u64,
     last_emit: Option<u64>,
     round_trips: Vec<u64>,
@@ -65,7 +77,26 @@ static BLOCK_US: AtomicU64 = AtomicU64::new(0);
 static LAST_SWITCH: Mutex<Option<Instant>> = Mutex::new(None);
 static RUNNING: AtomicU32 = AtomicU32::new(0);
 
+/// The DAW's callback with the driver's time info, as Ableton takes it:
+/// the block's sample position is the host's timeline.
+unsafe extern "C" fn switch_time(
+    time: *mut ASIOTime,
+    half: i32,
+    direct: ASIOBool,
+) -> *mut ASIOTime {
+    // SAFETY: the driver's ASIOTime for this callback.
+    let pos = unsafe { (*time).timeInfo.samplePosition }.get();
+    // SAFETY: the same callback, timed.
+    unsafe { timed(half, direct, Some(pos)) };
+    core::ptr::null_mut()
+}
+
 unsafe extern "C" fn switch(half: i32, direct: ASIOBool) {
+    // SAFETY: the same callback, timed.
+    unsafe { timed(half, direct, None) };
+}
+
+unsafe fn timed(half: i32, direct: ASIOBool, pos: Option<u64>) {
     let entered = Instant::now();
     {
         let mut last = LAST_SWITCH.lock().unwrap();
@@ -83,7 +114,7 @@ unsafe extern "C" fn switch(half: i32, direct: ASIOBool) {
         *last = Some(entered);
     }
     // SAFETY: the same callback, timed.
-    unsafe { switch_body(half, direct) };
+    unsafe { switch_body(half, direct, pos) };
     MAX_SWITCH_US.fetch_max(entered.elapsed().as_micros() as u64, Ordering::Relaxed);
 }
 
@@ -98,10 +129,33 @@ pub fn blocks_in_gap(gap_us: u64, block_us: u64) -> u64 {
     }
 }
 
-unsafe fn switch_body(half: i32, _direct: ASIOBool) {
+unsafe fn switch_body(half: i32, _direct: ASIOBool, pos: Option<u64>) {
     let mut guard = STATE.lock().unwrap();
     let Some(s) = guard.as_mut() else { return };
     let h = half as usize;
+    // The driver's timeline when it gives one: blocks the host missed are
+    // in it, as a sound card's sample position counts them.
+    if let Some(pos) = pos {
+        let origin = *s.origin.get_or_insert(pos);
+        s.position = pos.saturating_sub(origin);
+    }
+    // An impulse second the timeline skipped is not sent.
+    while s.next_emit < s.position {
+        s.next_emit += 96_000;
+    }
+    if s.stall_ms > 0
+        && !s.stalled
+        && s.last_emit
+            .is_some_and(|e| s.position >= e + 4 * s.block as u64)
+    {
+        s.stalled = true;
+        // Spun, not slept: a sleep rounds to the timer's tick (15.6 ms by
+        // default), past the impulse's return.
+        let until = Instant::now() + Duration::from_millis(s.stall_ms);
+        while Instant::now() < until {
+            std::hint::spin_loop();
+        }
+    }
     let n = s.block;
     // Inputs are bufs[0..rx], outputs bufs[rx..].
     let tx = s.bufs.len() - s.rx;
@@ -151,7 +205,8 @@ unsafe fn switch_body(half: i32, _direct: ASIOBool) {
 
 unsafe extern "C" fn message(sel: i32, val: i32, _m: *mut c_void, _o: *mut f64) -> i32 {
     match (sel, val) {
-        (K_ASIO_SELECTOR_SUPPORTED, K_ASIO_RESET_REQUEST) => 1,
+        (K_ASIO_SELECTOR_SUPPORTED, K_ASIO_RESET_REQUEST | K_ASIO_SUPPORTS_TIME_INFO) => 1,
+        (K_ASIO_SUPPORTS_TIME_INFO, _) => 1,
         (K_ASIO_RESET_REQUEST, _) => {
             RUNNING.store(0, Ordering::Release);
             1
@@ -162,6 +217,13 @@ unsafe extern "C" fn message(sel: i32, val: i32, _m: *mut c_void, _o: *mut f64) 
 
 /// Runs the probe on instance `instance` for `seconds`.
 pub fn probe(instance: u32, seconds: u64) -> Result<Report, String> {
+    probe_stalled(instance, seconds, 0)
+}
+
+/// [`probe`] with the host stalling once for `stall_ms` while the first
+/// impulse is on its way (a DAW that lost its CPU): the round trip on the
+/// host's timeline must not change.
+pub fn probe_stalled(instance: u32, seconds: u64, stall_ms: u64) -> Result<Report, String> {
     let id = clsid(instance).ok_or("no such instance")?;
     let mut factory: *mut c_void = core::ptr::null_mut();
     // SAFETY: valid pointers, as COM passes them.
@@ -182,6 +244,7 @@ pub fn probe(instance: u32, seconds: u64) -> Result<Report, String> {
     // SAFETY: a live driver.
     let v = unsafe { &**(d as *const *const IAsioVtbl) };
     let mut report = Report::default();
+    let missed_before;
     // SAFETY: the driver's methods as a host calls them.
     unsafe {
         if (v.init)(d, core::ptr::null_mut()) != ASIO_TRUE {
@@ -206,7 +269,7 @@ pub fn probe(instance: u32, seconds: u64) -> Result<Report, String> {
             bufferSwitch: Some(switch),
             sampleRateDidChange: None,
             asioMessage: Some(message),
-            bufferSwitchTimeInfo: None,
+            bufferSwitchTimeInfo: Some(switch_time),
         };
         let e = (v.createBuffers)(d, infos.as_mut_ptr(), infos.len() as i32, pref, &cb);
         if e != ASE_OK {
@@ -227,13 +290,19 @@ pub fn probe(instance: u32, seconds: u64) -> Result<Report, String> {
                 .collect(),
             rx: ins as usize,
             block: pref as usize,
+            origin: None,
             position: 0,
+            stall_ms,
+            stalled: false,
             next_emit: 96_000,
             last_emit: None,
             round_trips: Vec::new(),
             emitted: 0,
             peaks: Vec::new(),
         });
+        missed_before = shm::Shared::open(instance)
+            .map(|sh| sh.header().missed.load(Ordering::Relaxed))
+            .unwrap_or(0);
         RUNNING.store(1, Ordering::Release);
         if (v.start)(d) != ASE_OK {
             return Err("start refused".into());
@@ -251,8 +320,14 @@ pub fn probe(instance: u32, seconds: u64) -> Result<Report, String> {
     }
     if let Ok(shared) = shm::Shared::open(instance) {
         report.late = shared.header().late.load(Ordering::Relaxed);
+        report.missed = shared
+            .header()
+            .missed
+            .load(Ordering::Relaxed)
+            .saturating_sub(missed_before);
     }
     let s = STATE.lock().unwrap().take().unwrap();
+    report.samples = s.position + s.block as u64;
     report.switches = SWITCHES.load(Ordering::Relaxed);
     report.max_gap_us = MAX_GAP_US.load(Ordering::Relaxed);
     report.max_switch_us = MAX_SWITCH_US.load(Ordering::Relaxed);

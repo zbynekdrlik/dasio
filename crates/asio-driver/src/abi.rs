@@ -85,6 +85,11 @@ impl Asio64 {
             lo: v as u32,
         }
     }
+
+    /// The value, as a host reads it.
+    pub fn get(self) -> u64 {
+        (u64::from(self.hi) << 32) | u64::from(self.lo)
+    }
 }
 
 pub type ASIOSamples = Asio64;
@@ -219,6 +224,13 @@ pub const CLASS_E_NOAGGREGATION: HRESULT = 0x8004_0110_u32 as i32;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_64_bit_value_reads_back_as_written() {
+        for v in [0, 1, 0x1_0000_0000, 0x1234_5678_9abc_def0, u64::MAX] {
+            assert_eq!(super::Asio64::new(v).get(), v);
+        }
+    }
+
     use super::*;
 
     /// The values the ASIO SDK's asio.h defines: a DAW compares against

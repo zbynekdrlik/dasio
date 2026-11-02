@@ -187,7 +187,13 @@ fn exe() -> &'static str {
 /// impulse comes back once over Dante, at one fixed round trip within the
 /// latencies the driver reports. Returns the report for the timing checks.
 fn round_trip(instance: u32, seconds: u64) -> dante_asio::probe::Report {
-    let r = dante_asio::probe::probe(instance, seconds).expect("the probe");
+    round_trip_stalled(instance, seconds, 0)
+}
+
+/// [`round_trip`] with the host stalling once for `stall_ms` while an
+/// impulse is on its way.
+fn round_trip_stalled(instance: u32, seconds: u64, stall_ms: u64) -> dante_asio::probe::Report {
+    let r = dante_asio::probe::probe_stalled(instance, seconds, stall_ms).expect("the probe");
     eprintln!("instance {instance}: {r:?}");
     let block = u64::from(r.block);
     // This probe's own switches only, not an earlier probe's in this
@@ -202,15 +208,19 @@ fn round_trip(instance: u32, seconds: u64) -> dante_asio::probe::Report {
         "instance {instance}: the device drives the host: {} switches in {seconds} s at block {block}",
         r.switches
     );
-    // One impulse at each whole second inside the samples the host ran
-    // (switches x block, the impulse at 1 s the first): a probe a few
-    // blocks short of 4 s sends 3 (CI 41375343538: 11996 switches of 32,
-    // 3 impulses).
-    let whole_seconds = (r.switches * block).saturating_sub(1) / 96_000;
-    assert_eq!(
-        r.emitted, whole_seconds,
-        "instance {instance}: impulses sent at each second of {} switches",
-        r.switches
+    // One impulse at each whole second inside the samples the host's
+    // timeline ran (the impulse at 1 s the first): a probe a few blocks
+    // short of 4 s sends 3 (CI 41375343538: 11996 switches of 32, 3
+    // impulses). A second the timeline skipped (the host missed it) sends
+    // none.
+    let whole_seconds = r.samples.saturating_sub(1) / 96_000;
+    assert!(
+        r.emitted <= whole_seconds
+            && r.emitted + (r.missed * block).div_ceil(96_000) >= whole_seconds,
+        "instance {instance}: {} impulses sent in {} samples ({} blocks missed)",
+        r.emitted,
+        r.samples,
+        r.missed
     );
     assert!(
         r.emitted + 1 >= seconds,
@@ -277,6 +287,17 @@ fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_a
         r.gap_blocks,
         r.max_gap_us,
         r.gaps_over_1ms
+    );
+
+    // A host that loses its CPU while an impulse is on its way (CI
+    // 41375781285: a 57 ms runner gap, one round trip of 640 among 1120):
+    // the driver's sample position counts the blocks it missed, as a sound
+    // card's does, so the DAW's timeline keeps the round trip it reports.
+    let r = round_trip_stalled(FIRST, 4, 5);
+    assert!(
+        r.missed > 0,
+        "the 5 ms host stall missed no block (max gap {} us)",
+        r.max_gap_us
     );
 
     // The second device on the same address, beside the running first:
