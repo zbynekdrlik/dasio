@@ -309,7 +309,7 @@ typedef struct _PACER_ENTRY
 // Waiting sends at most; with a full ring a send goes down unpaced.
 #define PACER_RING_SIZE             4096u
 // Sends taken off the ring per locked pass.
-#define PACER_TAKE_BATCH            64u
+#define PACER_TAKE_BATCH            16u
 
 typedef struct _MS_FILTER
 {
@@ -359,6 +359,9 @@ typedef struct _MS_FILTER
     // Sends the queue's head when tokens are back (high resolution).
     PEX_TIMER                       PaceTimer;
     BOOLEAN                         PaceTimerArmed;
+    // A pump runs: a nested call (a send completed inline) returns at once
+    // and the running pump goes on, so the stack never grows per NBL.
+    BOOLEAN                         PacePumping;
 
 }MS_FILTER, * PMS_FILTER;
 

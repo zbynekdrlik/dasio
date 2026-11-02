@@ -382,6 +382,7 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
             }
             pacer_init(&pFilter->Pacer, Rate, Burst, pacerNow());
             pFilter->PaceTimerArmed = FALSE;
+            pFilter->PacePumping = FALSE;
         }
         pFilter->State = FilterPaused;
 
@@ -1385,16 +1386,25 @@ pacerPump(
     ULONG Count;
     ULONG i;
 
+    FILTER_ACQUIRE_LOCK(&Filter->Lock, DispatchLevel);
+    if (FromTimer)
+    {
+        Filter->PaceTimerArmed = FALSE;
+    }
+    if (Filter->PacePumping)
+    {
+        // The running pump takes what is due and re-arms the timer.
+        FILTER_RELEASE_LOCK(&Filter->Lock, DispatchLevel);
+        return;
+    }
+    Filter->PacePumping = TRUE;
+    FILTER_RELEASE_LOCK(&Filter->Lock, DispatchLevel);
+
     do
     {
         ULONG64 Now = pacerNow();
         Count = 0;
         FILTER_ACQUIRE_LOCK(&Filter->Lock, DispatchLevel);
-        if (FromTimer)
-        {
-            Filter->PaceTimerArmed = FALSE;
-            FromTimer = FALSE;
-        }
         while (Count < PACER_TAKE_BATCH && Filter->PaceRingCount > 0 &&
                pacer_take(&Filter->Pacer, pacerNblBytes(Filter->PaceRing[Filter->PaceRingHead].Nbl), Now))
         {
@@ -1402,7 +1412,12 @@ pacerPump(
             Filter->PaceRingHead = (Filter->PaceRingHead + 1) % PACER_RING_SIZE;
             Filter->PaceRingCount--;
         }
-        pacerArmLocked(Filter, Now);
+        if (Count < PACER_TAKE_BATCH)
+        {
+            // The last pass: done pumping, the timer covers the rest.
+            Filter->PacePumping = FALSE;
+            pacerArmLocked(Filter, Now);
+        }
         FILTER_RELEASE_LOCK(&Filter->Lock, DispatchLevel);
 
         for (i = 0; i < Count; i++)
