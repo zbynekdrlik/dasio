@@ -262,29 +262,85 @@ int pacer_split_done(struct pacer_split *s, int32_t status)
 
 uint16_t pacer_ipv4_checksum(const uint8_t *hdr, uint32_t len)
 {
-    (void)hdr;
-    (void)len;
-    return 0;
+    uint32_t sum = 0;
+    uint32_t i;
+    for (i = 0; i + 1 < len; i += 2) {
+        sum += ((uint32_t)hdr[i] << 8) | hdr[i + 1];
+    }
+    if (len & 1u) {
+        sum += (uint32_t)hdr[len - 1] << 8;
+    }
+    while (sum >> 16) {
+        sum = (sum & 0xffffu) + (sum >> 16);
+    }
+    return (uint16_t)~sum;
+}
+
+static void put16(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v >> 8);
+    p[1] = (uint8_t)v;
+}
+
+static void put64(uint8_t *p, uint64_t v)
+{
+    int i;
+    for (i = 7; i >= 0; i--) {
+        p[i] = (uint8_t)v;
+        v >>= 8;
+    }
 }
 
 uint32_t pacer_ktx_frame(uint8_t *frame, const struct pacer_ktx_addr *a, uint32_t payload, uint16_t ip_id,
                          uint64_t seq, uint64_t time_100ns)
 {
-    (void)frame;
-    (void)a;
-    (void)payload;
-    (void)ip_id;
-    (void)seq;
-    (void)time_100ns;
-    return 0;
+    uint8_t *ip = frame + 14;
+    uint8_t *udp = frame + 34;
+    uint32_t i;
+    if (payload < PACER_KTX_MIN_PAYLOAD || payload > PACER_KTX_MAX_PAYLOAD) {
+        return 0;
+    }
+    for (i = 0; i < 6; i++) {
+        frame[i] = a->dst_mac[i];
+        frame[6 + i] = a->src_mac[i];
+    }
+    put16(frame + 12, 0x0800u);
+    ip[0] = 0x45;
+    ip[1] = (uint8_t)(a->dscp << 2);
+    put16(ip + 2, 20u + 8u + payload);
+    put16(ip + 4, ip_id);
+    put16(ip + 6, 0x4000u);
+    ip[8] = 64;
+    ip[9] = 17;
+    put16(ip + 10, 0);
+    for (i = 0; i < 4; i++) {
+        ip[12 + i] = a->src_ip[i];
+        ip[16 + i] = a->dst_ip[i];
+    }
+    put16(ip + 10, pacer_ipv4_checksum(ip, 20));
+    put16(udp, a->src_port);
+    put16(udp + 2, a->dst_port);
+    put16(udp + 4, 8u + payload);
+    put16(udp + 6, 0);
+    put64(frame + PACER_KTX_HEADER, seq);
+    put64(frame + PACER_KTX_HEADER + 8, time_100ns);
+    for (i = PACER_KTX_MIN_PAYLOAD; i < payload; i++) {
+        frame[PACER_KTX_HEADER + i] = 0;
+    }
+    return PACER_KTX_HEADER + payload;
 }
 
 uint32_t pacer_ktx_due(uint64_t start, uint64_t now, uint64_t interval_100ns, uint64_t sent, uint32_t max)
 {
-    (void)start;
-    (void)now;
-    (void)interval_100ns;
-    (void)sent;
-    (void)max;
-    return 0;
+    uint64_t total;
+    uint64_t due;
+    if (interval_100ns == 0 || now < start) {
+        return 0;
+    }
+    total = (now - start) / interval_100ns + 1;
+    if (total <= sent) {
+        return 0;
+    }
+    due = total - sent;
+    return due > max ? max : (uint32_t)due;
 }
