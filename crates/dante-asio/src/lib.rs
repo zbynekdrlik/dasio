@@ -17,9 +17,9 @@ pub mod register;
 pub mod run;
 pub mod service;
 
-use iem_dante::clock::latency_samples;
-use iem_dante::device::DeviceConfig;
-use iem_dante::stream::Timing;
+use dstack::clock::latency_samples;
+use dstack::device::DeviceConfig;
+use dstack::stream::Timing;
 
 /// The pump's timing on `cfg`: B = its block, P = its latency, W = its
 /// work margin (the DAW's time to return a block).

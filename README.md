@@ -6,6 +6,6 @@ each with its own Dante name, channels and buffer, set from a tray icon. They sh
 PC's own address, each on its own ports (dstack's per-PC manager).
 
 Built on the Dante stack of [iemmixer](https://github.com/zbynekdrlik/iemmixer)
-(`iem-dante`, from [dstack](https://github.com/zbynekdrlik/dstack)). Design: `docs/design/`; plan: `docs/plans/`.
+(`dstack`, from [dstack](https://github.com/zbynekdrlik/dstack)). Design: `docs/design/`; plan: `docs/plans/`.
 
 License: GPL-3.0-or-later.

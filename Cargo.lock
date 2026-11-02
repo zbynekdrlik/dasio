@@ -36,8 +36,8 @@ name = "dante-asio"
 version = "0.1.1"
 dependencies = [
  "asio-driver",
- "dante-audio-io",
- "dante-stack",
+ "dstack",
+ "dstack-audio-io",
  "shm",
  "tracing",
  "tracing-subscriber",
@@ -46,16 +46,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "dante-audio-io"
-version = "0.4.38"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.4.38#bb73bb5158ece9e4d64a4d9604abb2e865e7c07e"
-
-[[package]]
-name = "dante-stack"
-version = "0.4.38"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.4.38#bb73bb5158ece9e4d64a4d9604abb2e865e7c07e"
+name = "dstack"
+version = "0.5.0"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.5.0#09a10083d7531932379412e53b7f3e39535e5f87"
 dependencies = [
- "dante-audio-io",
+ "dstack-audio-io",
  "if-addrs",
  "libc",
  "mdns-sd",
@@ -71,6 +66,11 @@ dependencies = [
  "tracing-subscriber",
  "windows-sys",
 ]
+
+[[package]]
+name = "dstack-audio-io"
+version = "0.5.0"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.5.0#09a10083d7531932379412e53b7f3e39535e5f87"
 
 [[package]]
 name = "equivalent"

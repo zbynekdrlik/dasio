@@ -6,7 +6,7 @@ Read `docs/HANDOFF.md` too: it holds the full state and the gotchas. This file a
 
 MVP proven by the owner's listening test on 2026-10-30: master Ableton on the driver at 64 samples, stage rack on our TX, "hra to dobre a akusticky je to bez problemov". Production was switched back: master on VB-Matrix, every receiver on the console card. Device process stays on the FOH PC as task `dante-asio-1`. Nothing here is in production yet.
 
-Next: consume `dante-stack` instead of the local `iem-dante` copy once that repo has its first tag. Dante protocol bugs go to dante-stack; this project only moves the version.
+The Dante code is the `dstack` and `dstack-audio-io` crates from dstack, pinned to a tag. Dante protocol bugs go to dstack; this project only moves the version.
 
 ## Machines
 
@@ -33,7 +33,7 @@ Private, on this account: `~/.config/dasio/SITE.md`, `ablfoh-1.toml`, `master.to
 
 ## Runners
 
-None needed for now: CI runs on GitHub-hosted Linux and Windows. The real-hardware gate lives in dante-stack.
+None needed for now: CI runs on GitHub-hosted Linux and Windows. The real-hardware gate lives in dstack.
 
 ## Backlog
 
@@ -44,11 +44,11 @@ Owner-requested (29.10.):
 - Patchable and renamable in Dante Controller.
 - Both Abletons directly on Dante at the lowest latency, replacing VB-Matrix.
 
-Open from the MVP, in order: `docs/HANDOFF.md` "Open" list 1-6. Items 1-3 and 5 are Dante stack questions for dante-stack.
+Open from the MVP, in order: `docs/HANDOFF.md` "Open" list 1-6. Items 1-3 and 5 are Dante stack questions for dstack.
 
 Proposed by a session, not yet asked for by the owner: none.
 
 ## Knowledge left in other projects
 
-- iemmixer: the session history of 29-30.10. and `.claude/rules/asio-spike.md`. Ask iemmixer through dante-stack's channel, or the owner.
-- dante-stack: everything Dante protocol.
+- iemmixer: the session history of 29-30.10. and `.claude/rules/asio-spike.md`. Ask iemmixer through dstack's channel, or the owner.
+- dstack: everything Dante protocol.

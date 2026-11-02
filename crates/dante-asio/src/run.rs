@@ -7,10 +7,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use iem_dante::daemon::{Options, Place};
-use iem_dante::host::{self, Signals, Stopped};
-use iem_dante::media::source::Source;
-use iem_dante::stream::{self, Map, Pump, PumpStats};
+use dstack::daemon::{Options, Place};
+use dstack::host::{self, Signals, Stopped};
+use dstack::media::source::Source;
+use dstack::stream::{self, Map, Pump, PumpStats};
 use shm::{Shape, Shared};
 use tracing::{info, warn};
 
@@ -43,7 +43,7 @@ pub fn run(
         crate::probe::set_affinity(mask)?;
         info!(mask = format!("{mask:#x}"), "the process's CPUs");
         // Its threads alone on those CPUs: the process at REALTIME, so its
-        // media threads run at 31 (iem_dante's ask_realtime on Windows).
+        // media threads run at 31 (dstack's ask_realtime on Windows).
         realtime_class()?;
     }
     let shape = Shape::new(cfg.rx.len() as u32, cfg.tx.len() as u32, cfg.block as u32)
@@ -130,7 +130,7 @@ pub fn run(
                 "counts"
             );
             if status.due(now) {
-                info!(status = %iem_dante::ctl::answer("status", &media), "device status");
+                info!(status = %dstack::ctl::answer("status", &media), "device status");
             }
         }
         if asked.load(Ordering::Acquire)

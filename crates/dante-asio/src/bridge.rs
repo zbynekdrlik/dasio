@@ -8,7 +8,7 @@
 //! silence and a late count. The cost is one block on the way out
 //! (`latencies` counts it).
 
-use audio_io::{Block, Process};
+use dstack_audio_io::{Block, Process};
 
 /// The DAW side of the shared memory, as the bridge uses it (the mapping on
 /// Windows, a stand-in in the tests).

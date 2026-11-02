@@ -205,11 +205,11 @@ fn run(
 }
 
 #[cfg(windows)]
-fn clock(system: bool) -> iem_dante::host::ClockSource {
+fn clock(system: bool) -> dstack::host::ClockSource {
     if system {
-        iem_dante::host::ClockSource::System
+        dstack::host::ClockSource::System
     } else {
-        iem_dante::host::ClockSource::Dantesync
+        dstack::host::ClockSource::Dantesync
     }
 }
 

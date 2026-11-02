@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use iem_dante::device::{DeviceConfig, DeviceState, Subscription};
+use dstack::device::{DeviceConfig, DeviceState, Subscription};
 
 const TEST_DEVICE: &str = include_str!("../../../config/test-dante-device.toml");
 /// The instances the test runs (the driver's host tests use 5 to 10, the
