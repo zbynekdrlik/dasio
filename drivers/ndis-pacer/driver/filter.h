@@ -404,6 +404,10 @@ VOID pacerApplyRateLocked(_In_ PMS_FILTER Filter);
 // tick of other data sits ahead of a priority frame.
 #define PACER_TICK_100NS            5000u
 #define PACER_MIN_BURST             16384u
+// The burst other traffic gets by default (dasio#1 HIL 5: at 85 % of a
+// 2.5 Gbit/s link, 16 KB keeps a priority packet's worst wait ~0.3 ms with
+// full TCP throughput; one 0.5 ms tick, 133 KB, gave ~0.8 ms).
+#define PACER_DEFAULT_BURST         16384u
 // Header bytes the classifier reads: Ethernet, two VLAN tags, IPv6 or
 // IPv4 with options, then the UDP ports.
 #define PACER_HEADER_BYTES          128u

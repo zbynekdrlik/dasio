@@ -1,7 +1,8 @@
 # dasio NDIS send pacer: set, live for all bound adapters, the share of the
 # link other traffic gets and its burst (IOCTL_DASIO_PACER_SET). Run as
 # administrator. -RatePercent 0 = no pacing; -BurstBytes 0 = one timer tick.
-# Not kept across a restart of the filter (the defaults come back).
+# Defaults after a restart of the filter: 85 % and 16384 B.
+# Not kept across a restart of the filter.
 param(
     [Parameter(Mandatory)][ValidateRange(0, 100)][int]$RatePercent,
     [Parameter(Mandatory)][ValidateRange(0, 16777216)][int]$BurstBytes

@@ -1366,7 +1366,7 @@ pacerNow(
 // IOCTL_DASIO_PACER_SET for all bound adapters (0 % = no pacing, burst 0 =
 // one timer tick). Written under FilterListLock and each filter's Lock.
 ULONG PacerRatePercent = PACER_RATE_PERCENT;
-ULONG PacerBurstBytes = 0;
+ULONG PacerBurstBytes = PACER_DEFAULT_BURST;
 
 // Rate (bytes/s) and burst for a link speed (bits/s), from the settings
 // above. An unknown or zero speed means no pacing.
