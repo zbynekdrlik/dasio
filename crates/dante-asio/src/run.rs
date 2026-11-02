@@ -32,11 +32,7 @@ pub fn run(
     // The process on its own cores first: it starts with its parent's set
     // (on the FOH PC Process Lasso moves it later), and a thread cannot be
     // pinned outside its process's set (error 87 there).
-    let own: usize = [cfg.pump_cpu, cfg.io_cpu]
-        .into_iter()
-        .flatten()
-        .filter(|&c| c < 64)
-        .fold(0, |m, c| m | 1 << c);
+    let own = crate::own_cpus(&cfg);
     if own != 0 {
         // The media threads pin to `own`; the process keeps the CPUs it
         // started with too, for its other threads (the device's runtime,
