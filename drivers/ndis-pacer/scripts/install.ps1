@@ -4,8 +4,11 @@
 #   .\install.ps1 -Adapter <the Dante NIC's name, e.g. Ethernet>
 # Needs test signing on (bcdedit /set testsigning on, then a reboot); the
 # script checks it and changes nothing when it is off.
+#   -RxdCpu <n>: deferred receive on, its DPC on CPU n, kept across reboots
+#   (the service's Parameters: RxdEnable, RxdCpu); -RxdCpu -1 turns it off.
 param(
-    [Parameter(Mandatory)][string]$Adapter
+    [Parameter(Mandatory)][string]$Adapter,
+    [ValidateRange(-2, 1023)][int]$RxdCpu = -2
 )
 $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -40,3 +43,14 @@ Get-NetAdapterBinding -ComponentID $component -AllBindings | ForEach-Object {
 Get-NetAdapterBinding -ComponentID $component -AllBindings | Select-Object Name, Enabled | Format-Table -AutoSize | Out-String | Write-Output
 $svc = Get-Service dasiopacer
 Write-Output "dasiopacer service: $($svc.Status); bound to $($nic.Name)"
+
+# Deferred receive: kept in the service's Parameters (read when the driver
+# loads) and applied now.
+if ($RxdCpu -ne -2) {
+    $params = "HKLM:\SYSTEM\CurrentControlSet\Services\dasiopacer\Parameters"
+    New-Item -Path $params -Force | Out-Null
+    $on = if ($RxdCpu -ge 0) { 1 } else { 0 }
+    New-ItemProperty -Path $params -Name RxdEnable -Value $on -PropertyType DWord -Force | Out-Null
+    New-ItemProperty -Path $params -Name RxdCpu -Value ([int32]$RxdCpu) -PropertyType DWord -Force | Out-Null
+    & (Join-Path $here "rxd.ps1") $(if ($on) { "on" } else { "off" }) -Cpu $RxdCpu
+}

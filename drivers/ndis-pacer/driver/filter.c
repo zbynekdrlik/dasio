@@ -25,6 +25,7 @@ static EXT_CALLBACK pacerTimer;
 static EXT_CALLBACK ktxTimer;
 static KDEFERRED_ROUTINE rxdDpc;
 static VOID rxdDrop(_In_ PMS_FILTER Filter);
+static VOID rxdReadRegistry(_In_ PUNICODE_STRING RegistryPath);
 static VOID ktxSetup(_In_ PMS_FILTER Filter, _In_ PNDIS_FILTER_ATTACH_PARAMETERS AttachParameters);
 static VOID ktxTeardown(_In_ PMS_FILTER Filter);
 static VOID ktxDone(_In_ PMS_FILTER Filter, _In_ PNET_BUFFER_LIST Nbl, _In_ BOOLEAN DispatchLevel);
@@ -95,9 +96,11 @@ Return Value:
     NDIS_STRING FriendlyName = RTL_CONSTANT_STRING(FILTER_FRIENDLY_NAME);
     BOOLEAN bFalse = FALSE;
 
-    UNREFERENCED_PARAMETER(RegistryPath);
-
     DEBUGP(DL_TRACE, "===>DriverEntry...\n");
+
+    // Deferred receive from the service's Parameters key (RxdEnable,
+    // RxdCpu), before any attach applies it.
+    rxdReadRegistry(RegistryPath);
 
     FilterDriverObject = DriverObject;
 
@@ -2944,4 +2947,52 @@ rxdDrop(
     {
         NdisFReturnNetBufferLists(Filter->FilterHandle, Chain, 0);
     }
+}
+
+
+// RxdEnable and RxdCpu (REG_DWORD; RxdCpu 0xFFFFFFFF = -1) from
+// <service>\Parameters. Missing key or values: off, as before.
+static VOID
+rxdReadRegistry(
+    _In_ PUNICODE_STRING RegistryPath
+    )
+{
+    RTL_QUERY_REGISTRY_TABLE Table[4];
+    ULONG Enable = 0;
+    ULONG Cpu = (ULONG)-1;
+    ULONG DefaultEnable = 0;
+    ULONG DefaultCpu = (ULONG)-1;
+    PWCHAR Path;
+    USHORT Chars = RegistryPath->Length / sizeof(WCHAR);
+
+    // The path NUL-terminated (a UNICODE_STRING need not be).
+    Path = (PWCHAR)ExAllocatePool2(POOL_FLAG_PAGED, (Chars + 1) * sizeof(WCHAR), FILTER_ALLOC_TAG);
+    if (Path == NULL)
+    {
+        return;
+    }
+    RtlCopyMemory(Path, RegistryPath->Buffer, Chars * sizeof(WCHAR));
+    Path[Chars] = L'\0';
+
+    RtlZeroMemory(Table, sizeof(Table));
+    Table[0].Flags = RTL_QUERY_REGISTRY_SUBKEY;
+    Table[0].Name = L"Parameters";
+    Table[1].Flags = RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK;
+    Table[1].Name = L"RxdEnable";
+    Table[1].EntryContext = &Enable;
+    Table[1].DefaultType = (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD;
+    Table[1].DefaultData = &DefaultEnable;
+    Table[1].DefaultLength = sizeof(ULONG);
+    Table[2].Flags = RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK;
+    Table[2].Name = L"RxdCpu";
+    Table[2].EntryContext = &Cpu;
+    Table[2].DefaultType = (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD;
+    Table[2].DefaultData = &DefaultCpu;
+    Table[2].DefaultLength = sizeof(ULONG);
+    if (NT_SUCCESS(RtlQueryRegistryValues(RTL_REGISTRY_ABSOLUTE, Path, Table, NULL, NULL)))
+    {
+        RxdEnable = Enable != 0;
+        RxdCpuSetting = (LONG)Cpu;
+    }
+    ExFreePoolWithTag(Path, FILTER_ALLOC_TAG);
 }
