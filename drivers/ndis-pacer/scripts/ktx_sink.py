@@ -7,7 +7,8 @@ are the kernel's receive timestamps (SO_TIMESTAMPNS), so the receiving host's
 own scheduling does not show. The delay of a frame is its arrival minus its
 send time, less the smallest delay seen (the clocks differ by a constant);
 a stall below the sender's timer shows as delay, a lost frame as a missing
-sequence. With the stream's interval given, the schedule delay is also
+sequence. Both are taken less their least-squares line over time (the
+clocks drift). With the stream's interval given, the schedule delay is also
 reported: arrival minus the frame's slot in the schedule (sequence x
 interval), less its smallest; it shows a late timer fire on the sender too.
 
@@ -61,10 +62,25 @@ def pct(values: list[int], p: float) -> int:
     return v[min(len(v) - 1, int(p * len(v)))]
 
 
+def detrend(t: list[int], y: list[int]) -> list[int]:
+    """y less its least-squares line over t: the two hosts' clocks drift
+    apart by some ppm, which over minutes is more than the delays measured."""
+    n = len(t)
+    mt = sum(t) / n
+    my = sum(y) / n
+    var = sum((x - mt) ** 2 for x in t)
+    k = sum((x - mt) * (v - my) for x, v in zip(t, y)) / var if var else 0.0
+    return [int(v - my - k * (x - mt)) for x, v in zip(t, y)]
+
+
 def report(frames: list[tuple[int, int, int]], interval_us: int = 0) -> dict:
     if not frames:
         raise SystemExit("no frames received")
-    base = min(a - s for _q, s, a in frames)
+    arrivals = [a for _q, _s, a in frames]
+    raw = detrend(arrivals, [a - s for _q, s, a in frames])
+    lo_raw = min(raw)
+    frames = [(q, a - (r - lo_raw), a) for (q, _s, a), r in zip(frames, raw)]
+    base = 0
     t0 = frames[0][2]
     seqs = [q for q, _s, _a in frames]
     lost = (max(seqs) - min(seqs) + 1) - len(set(seqs))
@@ -83,7 +99,7 @@ def report(frames: list[tuple[int, int, int]], interval_us: int = 0) -> dict:
     sched = {}
     if interval_us > 0:
         q0 = frames[0][0]
-        late = [a - (q - q0) * interval_us * 1000 for q, _s, a in frames]
+        late = detrend(arrivals, [a - (q - q0) * interval_us * 1000 for q, _s, a in frames])
         lo = min(late)
         sd = [(x - lo) // 1000 for x in late]
         sched = {"schedule_delay_us": {"p50": pct(sd, 0.5), "p99": pct(sd, 0.99), "p999": pct(sd, 0.999),
