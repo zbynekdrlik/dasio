@@ -191,3 +191,32 @@ void pacer_drop_queued(struct pacer *p, uint32_t count, uint64_t bytes)
     p->queued = p->queued >= count ? p->queued - count : 0;
     p->queued_bytes = p->queued_bytes >= bytes ? p->queued_bytes - bytes : 0;
 }
+
+/* As the driver's pump ran up to dasio#1 HIL 3c (moved here unchanged). */
+void pacer_pump(uint32_t *pumping, const struct pacer_pump_ops *ops, void *ctx)
+{
+    struct pacer_taken taken[PACER_PUMP_BATCH];
+    uint32_t count;
+    uint32_t i;
+
+    ops->lock(ctx);
+    if (*pumping) {
+        ops->unlock(ctx);
+        return;
+    }
+    *pumping = 1;
+    ops->unlock(ctx);
+
+    do {
+        ops->lock(ctx);
+        count = ops->take(ctx, taken, PACER_PUMP_BATCH);
+        if (count < PACER_PUMP_BATCH) {
+            *pumping = 0;
+            ops->idle(ctx);
+        }
+        ops->unlock(ctx);
+        for (i = 0; i < count; i++) {
+            ops->send(ctx, &taken[i]);
+        }
+    } while (count == PACER_PUMP_BATCH);
+}

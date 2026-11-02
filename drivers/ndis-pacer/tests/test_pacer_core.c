@@ -300,10 +300,145 @@ static void pacing(void)
     CHECK(p.priority_sent == 2 && p.tokens == 100 && p.admitted == 0);
 }
 
+/* A model of the driver around the pump: a queue of numbered sends, a
+ * token count that lets `due` of them go per take, and a miniport that
+ * completes each send inline, which calls the pump again from inside the
+ * send (dasio#1: the HIL 2 / 3c double faults, a kernel stack overflow). */
+struct model {
+    uint32_t pumping;
+    uint32_t locked;
+    uint32_t next;     /* next entry to take */
+    uint32_t count;    /* entries in all */
+    uint32_t due;      /* entries a take may move, then 0 until refilled */
+    uint32_t refill;   /* `due` after each send (time passes) */
+    uint32_t sent;
+    uint32_t in_order;
+    uint32_t depth;
+    uint32_t max_depth;
+    uint32_t idles;
+    uint32_t lock_errors;
+};
+
+static void m_lock(void *ctx)
+{
+    struct model *m = ctx;
+    if (m->locked) {
+        m->lock_errors++;
+    }
+    m->locked = 1;
+}
+
+static void m_unlock(void *ctx)
+{
+    struct model *m = ctx;
+    if (!m->locked) {
+        m->lock_errors++;
+    }
+    m->locked = 0;
+}
+
+static uint32_t m_take(void *ctx, struct pacer_taken *out, uint32_t max)
+{
+    struct model *m = ctx;
+    uint32_t n = 0;
+    if (!m->locked) {
+        m->lock_errors++;
+    }
+    while (n < max && m->due > 0 && m->next < m->count) {
+        out[n].item = (void *)(uintptr_t)(m->next + 1);
+        out[n].flags = m->next;
+        m->next++;
+        m->due--;
+        n++;
+    }
+    return n;
+}
+
+static void m_idle(void *ctx)
+{
+    struct model *m = ctx;
+    if (!m->locked) {
+        m->lock_errors++;
+    }
+    m->idles++;
+}
+
+static const struct pacer_pump_ops model_ops;
+
+static void m_send(void *ctx, const struct pacer_taken *t)
+{
+    struct model *m = ctx;
+    if (m->locked) {
+        m->lock_errors++;
+    }
+    if ((uintptr_t)t->item == (uintptr_t)m->sent + 1 && t->flags == m->sent) {
+        m->in_order++;
+    }
+    m->sent++;
+    m->due += m->refill;
+    /* The miniport completes the send inline: the completion pumps. */
+    m->depth++;
+    if (m->depth > m->max_depth) {
+        m->max_depth = m->depth;
+    }
+    pacer_pump(&m->pumping, &model_ops, m);
+    m->depth--;
+}
+
+static const struct pacer_pump_ops model_ops = {m_lock, m_unlock, m_take, m_idle, m_send};
+
+static void pump(void)
+{
+    struct model m;
+    uint32_t refill;
+
+    /* Tokens for one send at a time, refilled by each send: every take
+     * finds one due entry, the case where a pump started from inside a
+     * send would take the next and recurse once per queued entry. */
+    for (refill = 0; refill <= 1; refill++) {
+        memset(&m, 0, sizeof m);
+        m.count = 200;
+        m.due = 1;
+        m.refill = refill;
+        pacer_pump(&m.pumping, &model_ops, &m);
+        CHECK(m.sent == (refill ? 200u : 1u));
+        CHECK(m.in_order == m.sent);
+        /* The pump inside a send returns at once: one level, whatever the
+         * queue holds. */
+        CHECK(m.max_depth == 1);
+        CHECK(m.pumping == 0);
+        CHECK(m.idles >= 1);
+        CHECK(m.lock_errors == 0);
+        CHECK(m.locked == 0);
+    }
+
+    /* Many due at once: whole batches, in order, then the rest. */
+    memset(&m, 0, sizeof m);
+    m.count = 3 * PACER_PUMP_BATCH + 5;
+    m.due = m.count;
+    pacer_pump(&m.pumping, &model_ops, &m);
+    CHECK(m.sent == m.count && m.in_order == m.count);
+    CHECK(m.max_depth == 1 && m.pumping == 0 && m.lock_errors == 0);
+
+    /* Nothing waits: no send, the caller still gets its idle (timer). */
+    memset(&m, 0, sizeof m);
+    pacer_pump(&m.pumping, &model_ops, &m);
+    CHECK(m.sent == 0 && m.idles == 1 && m.pumping == 0);
+
+    /* One runs: a second call sends nothing and changes nothing. */
+    memset(&m, 0, sizeof m);
+    m.count = 5;
+    m.due = 5;
+    m.pumping = 1;
+    pacer_pump(&m.pumping, &model_ops, &m);
+    CHECK(m.sent == 0 && m.idles == 0 && m.pumping == 1 && m.lock_errors == 0);
+}
+
 int main(void)
 {
     classify();
     pacing();
+    pump();
     printf("%d checks, %d failed\n", checks, failed);
     return failed == 0 ? 0 : 1;
 }

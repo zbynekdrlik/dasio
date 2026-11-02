@@ -90,4 +90,34 @@ uint64_t pacer_wait(struct pacer *p, uint64_t now);
  * down (pause, cancel). */
 void pacer_drop_queued(struct pacer *p, uint32_t count, uint64_t bytes);
 
+/* The pump: sends the waiting entries that are due, outside the caller's
+ * lock, and lets the caller arm its timer for the rest. One pump runs at a
+ * time: a call while one runs (the timer on another CPU, or a send the
+ * miniport completes inline, which calls the pump again from inside that
+ * send) returns at once and the running pump goes on, so the stack never
+ * grows with the queue. */
+#define PACER_PUMP_BATCH 16u
+
+/* One entry taken off the caller's queue: its send and its flags. */
+struct pacer_taken {
+    void *item;
+    uint32_t flags;
+};
+
+struct pacer_pump_ops {
+    void (*lock)(void *ctx);
+    void (*unlock)(void *ctx);
+    /* Under the lock: moves up to `max` due entries, in order, into `out`
+     * and returns their number (0 when nothing is due). */
+    uint32_t (*take)(void *ctx, struct pacer_taken *out, uint32_t max);
+    /* Under the lock: nothing is due now; arm the timer for what waits. */
+    void (*idle)(void *ctx);
+    /* Outside the lock: one entry goes down. */
+    void (*send)(void *ctx, const struct pacer_taken *t);
+};
+
+/* Runs the pump unless one runs. `pumping` is the caller's flag, read and
+ * written only under its lock. */
+void pacer_pump(uint32_t *pumping, const struct pacer_pump_ops *ops, void *ctx);
+
 #endif
