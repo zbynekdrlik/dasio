@@ -21,6 +21,7 @@ typedef USHORT uint16_t;
 typedef ULONG uint32_t;
 typedef ULONG64 uint64_t;
 typedef LONG64 int64_t;
+typedef LONG int32_t;
 #else
 #include <stddef.h>
 #include <stdint.h>
