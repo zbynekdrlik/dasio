@@ -371,6 +371,12 @@ typedef struct _MS_FILTER
 
 }MS_FILTER, * PMS_FILTER;
 
+// The pacer settings (filter.c) and applying them to one filter, under its
+// Lock (IOCTL_DASIO_PACER_SET).
+extern ULONG PacerRatePercent;
+extern ULONG PacerBurstBytes;
+VOID pacerApplyRateLocked(_In_ PMS_FILTER Filter);
+
 // Other traffic goes at this share of the link speed...
 #define PACER_RATE_PERCENT          85u
 // ...in bursts of one timer tick (Windows timers: ~0.5 ms), so at most one

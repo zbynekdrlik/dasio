@@ -438,10 +438,43 @@ static void pump(void)
     CHECK(m.sent == 0 && m.idles == 0 && m.pumping == 1 && m.lock_errors == 0);
 }
 
+static void rates(void)
+{
+    uint64_t rate = 1;
+    uint32_t burst = 1;
+
+    /* 85 % of 2.5 Gbit/s, one 0.5 ms tick of it. */
+    pacer_rate_for(2500000000u, 85, 0, 5000, 16384, &rate, &burst);
+    CHECK(rate == 265625000u && burst == 132812u);
+    /* A set burst wins over the tick; never below the minimum. */
+    pacer_rate_for(2500000000u, 50, 32768, 5000, 16384, &rate, &burst);
+    CHECK(rate == 156250000u && burst == 32768u);
+    pacer_rate_for(2500000000u, 50, 1000, 5000, 16384, &rate, &burst);
+    CHECK(burst == 16384u);
+    pacer_rate_for(100000000u, 85, 0, 5000, 16384, &rate, &burst);
+    CHECK(rate == 10625000u && burst == 16384u);
+    /* Above 100 % is the link. */
+    pacer_rate_for(1000000000u, 250, 0, 5000, 0, &rate, &burst);
+    CHECK(rate == 125000000u && burst == 62500u);
+    /* No pacing: 0 %, a zero or unknown link speed. */
+    pacer_rate_for(2500000000u, 0, 32768, 5000, 16384, &rate, &burst);
+    CHECK(rate == 0 && burst == 0);
+    rate = burst = 1;
+    pacer_rate_for(0, 85, 0, 5000, 16384, &rate, &burst);
+    CHECK(rate == 0 && burst == 0);
+    rate = burst = 1;
+    pacer_rate_for(UINT64_MAX, 85, 0, 5000, 16384, &rate, &burst);
+    CHECK(rate == 0 && burst == 0);
+    /* A burst beyond 32 bits is capped. */
+    pacer_rate_for(UINT64_MAX - 1, 100, 0, 10000000, 0, &rate, &burst);
+    CHECK(burst == UINT32_MAX);
+}
+
 int main(void)
 {
     classify();
     pacing();
+    rates();
     pump();
     printf("%d checks, %d failed\n", checks, failed);
     return failed == 0 ? 0 : 1;

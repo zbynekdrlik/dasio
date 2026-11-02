@@ -1152,22 +1152,11 @@ NOTE: called at <= DISPATCH_LEVEL
         StatusIndication->StatusBufferSize >= sizeof(NDIS_LINK_STATE))
     {
         PNDIS_LINK_STATE LinkState = (PNDIS_LINK_STATE)StatusIndication->StatusBuffer;
-        ULONG64 Rate;
-        ULONG Burst;
         BOOLEAN PassiveLevel = FALSE;
-        pacerRateFor(LinkState->XmitLinkSpeed, &Rate, &Burst);
         FILTER_ACQUIRE_LOCK(&pFilter->Lock, PassiveLevel);
         pFilter->PaceLinkLast = LinkState->XmitLinkSpeed;
         pFilter->PaceLinkUpdates++;
-        if (pFilter->PaceTimer != NULL && pFilter->PaceRing != NULL)
-        {
-            pFilter->Pacer.rate = Rate;
-            pFilter->Pacer.burst = Burst;
-            if (pFilter->Pacer.tokens > (LONG64)Burst)
-            {
-                pFilter->Pacer.tokens = Burst;
-            }
-        }
+        pacerApplyRateLocked(pFilter);
         FILTER_RELEASE_LOCK(&pFilter->Lock, PassiveLevel);
     }
 
@@ -1349,8 +1338,14 @@ pacerNow(
     return KeQueryInterruptTimePrecise(&Qpc);
 }
 
-// Rate (bytes/s) and burst (one tick) for a link speed (bits/s). An
-// unknown or zero speed means no pacing.
+// The share of the link and the burst other traffic gets: set live by
+// IOCTL_DASIO_PACER_SET for all bound adapters (0 % = no pacing, burst 0 =
+// one timer tick). Written under FilterListLock and each filter's Lock.
+ULONG PacerRatePercent = PACER_RATE_PERCENT;
+ULONG PacerBurstBytes = 0;
+
+// Rate (bytes/s) and burst for a link speed (bits/s), from the settings
+// above. An unknown or zero speed means no pacing.
 static VOID
 pacerRateFor(
     _In_ ULONG64 LinkBitsPerSecond,
@@ -1358,20 +1353,33 @@ pacerRateFor(
     _Out_ ULONG *Burst
     )
 {
-    ULONG64 B;
-    if (LinkBitsPerSecond == 0 || LinkBitsPerSecond == NDIS_LINK_SPEED_UNKNOWN)
+    uint64_t R;
+    uint32_t B;
+    pacer_rate_for(LinkBitsPerSecond, PacerRatePercent, PacerBurstBytes, PACER_TICK_100NS, PACER_MIN_BURST, &R, &B);
+    *Rate = R;
+    *Burst = B;
+}
+
+// Under Lock: the rate and burst for the link speed last reported and the
+// current settings; tokens above the new burst are dropped.
+VOID
+pacerApplyRateLocked(
+    _In_ PMS_FILTER Filter
+    )
+{
+    ULONG64 Rate;
+    ULONG Burst;
+    if (Filter->PaceTimer == NULL || Filter->PaceRing == NULL)
     {
-        *Rate = 0;
-        *Burst = 0;
         return;
     }
-    *Rate = LinkBitsPerSecond / 8u * PACER_RATE_PERCENT / 100u;
-    B = *Rate * PACER_TICK_100NS / 10000000u;
-    if (B < PACER_MIN_BURST)
+    pacerRateFor(Filter->PaceLinkLast, &Rate, &Burst);
+    Filter->Pacer.rate = Rate;
+    Filter->Pacer.burst = Burst;
+    if (Filter->Pacer.tokens > (LONG64)Burst)
     {
-        B = PACER_MIN_BURST;
+        Filter->Pacer.tokens = Burst;
     }
-    *Burst = (ULONG)B;
 }
 
 // Under Lock: arms the timer for the ring's head unless it is armed or

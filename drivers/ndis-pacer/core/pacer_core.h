@@ -64,6 +64,14 @@ struct pacer {
     uint32_t max_queued;
 };
 
+/* The rate (bytes/s) and burst (bytes) for a link of `link_bps` bits/s:
+ * `percent` of the link (0 = no pacing; above 100 counts as 100), and
+ * `burst_bytes`, or when that is 0 the bytes of one `tick_100ns` at the
+ * rate; never below `min_burst`. A zero or unknown (all ones) link speed
+ * means no pacing: rate and burst 0. */
+void pacer_rate_for(uint64_t link_bps, uint32_t percent, uint32_t burst_bytes, uint32_t tick_100ns,
+                    uint32_t min_burst, uint64_t *rate, uint32_t *burst);
+
 /* `rate` bytes per second (0 = no pacing), `burst` bytes, starting full at
  * time `now` (100 ns units). */
 void pacer_init(struct pacer *p, uint64_t rate, uint32_t burst, uint64_t now);

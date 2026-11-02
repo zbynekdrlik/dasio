@@ -232,6 +232,31 @@ FilterDeviceIoControl(
             break;
 
 
+        case IOCTL_DASIO_PACER_SET:
+            // New settings for all bound adapters, applied under each
+            // filter's lock (the list lock held outside it).
+            InputBuffer = (PUCHAR)Irp->AssociatedIrp.SystemBuffer;
+            InputBufferLength = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
+            if (InputBufferLength < sizeof(DASIO_PACER_SET) ||
+                ((PDASIO_PACER_SET)InputBuffer)->RatePercent > 100)
+            {
+                Status = STATUS_INVALID_PARAMETER;
+                break;
+            }
+            FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
+            PacerRatePercent = ((PDASIO_PACER_SET)InputBuffer)->RatePercent;
+            PacerBurstBytes = ((PDASIO_PACER_SET)InputBuffer)->BurstBytes;
+            for (Link = FilterModuleList.Flink; Link != &FilterModuleList; Link = Link->Flink)
+            {
+                BOOLEAN bTrue = TRUE;
+                pFilter = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
+                FILTER_ACQUIRE_LOCK(&pFilter->Lock, bTrue);
+                pacerApplyRateLocked(pFilter);
+                FILTER_RELEASE_LOCK(&pFilter->Lock, bTrue);
+            }
+            FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
+            break;
+
         case IOCTL_DASIO_PACER_STATUS:
             // One status per bound adapter, each read under its filter's
             // lock (the list lock held outside it, as attach and detach do).

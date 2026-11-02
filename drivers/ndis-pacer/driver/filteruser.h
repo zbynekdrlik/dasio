@@ -28,6 +28,9 @@
 #define IOCTL_FILTER_WRITE_INSTANCE_CONFIG  _NDIS_CONTROL_CODE(13, METHOD_BUFFERED)
 // dasio: the pacer's state, one DASIO_PACER_STATUS per bound adapter.
 #define IOCTL_DASIO_PACER_STATUS            _NDIS_CONTROL_CODE(14, METHOD_BUFFERED)
+// dasio: set the pacer's share of the link and its burst, for all bound
+// adapters, live (input: DASIO_PACER_SET).
+#define IOCTL_DASIO_PACER_SET               _NDIS_CONTROL_CODE(15, METHOD_BUFFERED)
 
 
 #define MAX_FILTER_INSTANCE_NAME_LENGTH     256
@@ -118,6 +121,14 @@ typedef struct _DASIO_PACER_STATUS
     ULONG64         PumpSent;
     ULONG64         Pumping;
 } DASIO_PACER_STATUS, *PDASIO_PACER_STATUS;
+
+// dasio: other traffic gets RatePercent of the link (0 = no pacing, at most
+// 100) in bursts of BurstBytes (0 = one timer tick).
+typedef struct _DASIO_PACER_SET
+{
+    ULONG           RatePercent;
+    ULONG           BurstBytes;
+} DASIO_PACER_SET, *PDASIO_PACER_SET;
 
 #endif //__FILTERUSER_H__
 

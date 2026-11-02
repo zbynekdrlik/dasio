@@ -8,6 +8,7 @@
 #define ETHERTYPE_QINQ 0x88A8u
 #define ETHERTYPE_PTP 0x88F7u
 #define IPPROTO_UDP_ 17u
+#define TICKS_PER_SECOND 10000000u
 #define PTP_EVENT_PORT 319u
 #define PTP_GENERAL_PORT 320u
 
@@ -83,7 +84,26 @@ enum pacer_class pacer_classify(const uint8_t *frame, uint32_t len)
     return PACER_OTHER;
 }
 
-#define TICKS_PER_SECOND 10000000u
+void pacer_rate_for(uint64_t link_bps, uint32_t percent, uint32_t burst_bytes, uint32_t tick_100ns,
+                    uint32_t min_burst, uint64_t *rate, uint32_t *burst)
+{
+    uint64_t b;
+
+    if (link_bps == 0 || link_bps == (uint64_t)-1 || percent == 0) {
+        *rate = 0;
+        *burst = 0;
+        return;
+    }
+    if (percent > 100) {
+        percent = 100;
+    }
+    *rate = link_bps / 8u * percent / 100u;
+    b = burst_bytes != 0 ? burst_bytes : *rate * tick_100ns / TICKS_PER_SECOND;
+    if (b < min_burst) {
+        b = min_burst;
+    }
+    *burst = b > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)b;
+}
 
 void pacer_init(struct pacer *p, uint64_t rate, uint32_t burst, uint64_t now)
 {
