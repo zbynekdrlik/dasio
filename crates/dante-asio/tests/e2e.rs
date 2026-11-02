@@ -202,9 +202,19 @@ fn round_trip(instance: u32, seconds: u64) -> dante_asio::probe::Report {
         "instance {instance}: the device drives the host: {} switches in {seconds} s at block {block}",
         r.switches
     );
+    // One impulse at each whole second inside the samples the host ran
+    // (switches x block, the impulse at 1 s the first): a probe a few
+    // blocks short of 4 s sends 3 (CI 41375343538: 11996 switches of 32,
+    // 3 impulses).
+    let whole_seconds = (r.switches * block).saturating_sub(1) / 96_000;
+    assert_eq!(
+        r.emitted, whole_seconds,
+        "instance {instance}: impulses sent at each second of {} switches",
+        r.switches
+    );
     assert!(
-        r.emitted >= 4,
-        "instance {instance}: impulses sent: {}",
+        r.emitted + 1 >= seconds,
+        "instance {instance}: impulses sent: {} in {seconds} s",
         r.emitted
     );
     assert!(
