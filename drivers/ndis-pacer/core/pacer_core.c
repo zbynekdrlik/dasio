@@ -344,3 +344,10 @@ uint32_t pacer_ktx_due(uint64_t start, uint64_t now, uint64_t interval_100ns, ui
     due = total - sent;
     return due > max ? max : (uint32_t)due;
 }
+
+int pacer_rx_defer(const uint8_t *frame, uint32_t len)
+{
+    (void)frame;
+    (void)len;
+    return 0;
+}

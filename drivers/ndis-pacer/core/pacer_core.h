@@ -146,6 +146,14 @@ void pacer_split_init(struct pacer_split *s, uint32_t children);
  * the last: the parent completes now with `s->status`. */
 int pacer_split_done(struct pacer_split *s, int32_t status);
 
+/* Deferred receive (rxd, dasio#1): which received frames wait for the
+ * filter's own DPC. Only bulk and chatter whose upper-layer work may be
+ * long: TCP, discovery (mDNS 5353, LLMNR 5355, NetBIOS 137/138, SSDP 1900)
+ * and Ethernet broadcast. Everything else, Dante audio of any DSCP, PTP
+ * and control included, goes up at once from the NIC's DPC. Returns 1 to
+ * defer, 0 to indicate at once; anything unreadable goes up at once. */
+int pacer_rx_defer(const uint8_t *frame, uint32_t len);
+
 /* The kernel test stream (ktx): the filter sends timed UDP frames of its
  * own straight to the miniport, below tcpip and WFP, to measure whether a
  * frame sent from the kernel goes out on time while the socket path

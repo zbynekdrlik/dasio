@@ -597,6 +597,78 @@ static void ktx(void)
     CHECK(pacer_ktx_due(1000, 11000, 0, 0, 100) == 0);
 }
 
+static void rx_defer(void)
+{
+    uint8_t f[128];
+    uint32_t n;
+
+    /* Dante audio without any DSCP (a sender without a QoS policy): at once. */
+    n = ipv4(f, 0, 0, 17, 0, 14336);
+    CHECK(pacer_rx_defer(f, n) == 0);
+    /* With EF, and PTP, and a Dante control port: at once. */
+    n = ipv4(f, 0, PACER_DSCP_EF, 17, 0, 14336);
+    CHECK(pacer_rx_defer(f, n) == 0);
+    n = ipv4(f, 0, 0, 17, 0, 319);
+    CHECK(pacer_rx_defer(f, n) == 0);
+    n = ipv4(f, 0, 0, 17, 0, 4440);
+    CHECK(pacer_rx_defer(f, n) == 0);
+    /* TCP: deferred, also tagged and over IPv6. */
+    n = ipv4(f, 0, 0, 6, 0, 80);
+    CHECK(pacer_rx_defer(f, n) == 1);
+    n = ipv4(f, 1, 0, 6, 0, 443);
+    CHECK(pacer_rx_defer(f, n) == 1);
+    n = ipv4(f, 2, 0, 6, 0, 443);
+    CHECK(pacer_rx_defer(f, n) == 1);
+    n = ipv6(f, 0, 6, 80);
+    CHECK(pacer_rx_defer(f, n) == 1);
+    /* Discovery chatter: deferred. */
+    n = ipv4(f, 0, 0, 17, 0, 5353);
+    CHECK(pacer_rx_defer(f, n) == 1);
+    n = ipv4(f, 0, 0, 17, 0, 5355);
+    CHECK(pacer_rx_defer(f, n) == 1);
+    n = ipv4(f, 0, 0, 17, 0, 137);
+    CHECK(pacer_rx_defer(f, n) == 1);
+    n = ipv4(f, 0, 0, 17, 0, 138);
+    CHECK(pacer_rx_defer(f, n) == 1);
+    n = ipv4(f, 0, 0, 17, 0, 1900);
+    CHECK(pacer_rx_defer(f, n) == 1);
+    n = ipv6(f, 0, 17, 5353);
+    CHECK(pacer_rx_defer(f, n) == 1);
+    n = ipv6(f, 0, 17, 14336);
+    CHECK(pacer_rx_defer(f, n) == 0);
+    /* Ethernet broadcast: deferred, whatever it carries. */
+    n = ipv4(f, 0, 0, 17, 0, 14336);
+    memset(f, 0xff, 6);
+    CHECK(pacer_rx_defer(f, n) == 1);
+    /* ARP, a later fragment, a short or empty frame: at once. */
+    memset(f, 0, sizeof f);
+    f[12] = 0x08;
+    f[13] = 0x06;
+    CHECK(pacer_rx_defer(f, 60) == 0);
+    n = ipv4(f, 0, 0, 17, 0x0010, 5353);
+    CHECK(pacer_rx_defer(f, n) == 0);
+    n = ipv4(f, 0, 0, 6, 0, 80);
+    CHECK(pacer_rx_defer(f, 20) == 0);
+    CHECK(pacer_rx_defer(NULL, 0) == 0);
+    /* TCP needs only the IPv4 header; a UDP port needs its 4 bytes. */
+    CHECK(pacer_rx_defer(f, 34) == 1);
+    n = ipv4(f, 0, 0, 17, 0, 5353);
+    CHECK(pacer_rx_defer(f, 34 + 3) == 0);
+    /* A broken IPv4 version or header length: at once. */
+    n = ipv4(f, 0, 0, 6, 0, 80);
+    f[14] = 0x65;
+    CHECK(pacer_rx_defer(f, n) == 0);
+    f[14] = 0x41;
+    CHECK(pacer_rx_defer(f, n) == 0);
+    /* A truncated VLAN tag or IPv6 header: at once. */
+    n = ipv4(f, 1, 0, 6, 0, 80);
+    CHECK(pacer_rx_defer(f, 15) == 0);
+    n = ipv6(f, 0, 6, 80);
+    CHECK(pacer_rx_defer(f, 40) == 0);
+    f[14] = 0x40;
+    CHECK(pacer_rx_defer(f, n) == 0);
+}
+
 int main(void)
 {
     classify();
@@ -605,6 +677,7 @@ int main(void)
     split();
     pump();
     ktx();
+    rx_defer();
     printf("%d checks, %d failed\n", checks, failed);
     return failed == 0 ? 0 : 1;
 }
