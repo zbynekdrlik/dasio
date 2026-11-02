@@ -23,6 +23,8 @@ static VOID pacerRateFor(_In_ ULONG64 LinkBitsPerSecond, _Out_ ULONG64 *Rate, _O
 static VOID pacerArmLocked(_In_ PMS_FILTER Filter, _In_ ULONG64 Now);
 static EXT_CALLBACK pacerTimer;
 static EXT_CALLBACK ktxTimer;
+static KDEFERRED_ROUTINE rxdDpc;
+static VOID rxdDrop(_In_ PMS_FILTER Filter);
 static VOID ktxSetup(_In_ PMS_FILTER Filter, _In_ PNDIS_FILTER_ATTACH_PARAMETERS AttachParameters);
 static VOID ktxTeardown(_In_ PMS_FILTER Filter);
 static VOID ktxDone(_In_ PMS_FILTER Filter, _In_ PNET_BUFFER_LIST Nbl, _In_ BOOLEAN DispatchLevel);
@@ -406,6 +408,13 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
         }
         // The kernel test stream's slots, pool and timer (none: no stream).
         ktxSetup(pFilter, AttachParameters);
+        // Deferred receive: its DPC and empty queue, applied from the
+        // settings (off by default).
+        KeInitializeDpc(&pFilter->RxdDpc, rxdDpc, pFilter);
+        pFilter->RxdHead = NULL;
+        pFilter->RxdTail = &pFilter->RxdHead;
+        pFilter->RxdCpu = -1;
+        rxdApply(pFilter);
         pFilter->State = FilterPaused;
 
         FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
@@ -480,6 +489,9 @@ N.B.: When the filter is in Pausing state, it can still process OID requests,
     // The kernel test stream sends nothing more; its frames that are out
     // complete before pause returns (the wait below).
     ktxStop(pFilter);
+    // Deferred receive: what waits goes back to the miniport unindicated,
+    // and a DPC that already runs finishes (KeFlushQueuedDpcs below).
+    rxdDrop(pFilter);
 
     //
     // Do whatever work is required to bring the filter into the Paused state.
@@ -2111,6 +2123,44 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
             FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
         }
 
+        // dasio deferred receive: the NBLs wait for our DPC and the NIC's
+        // DPC returns at once. Not when they cannot pend (the miniport
+        // needs them back now) or on another port.
+        if (NDIS_TEST_RECEIVE_CAN_PEND(ReceiveFlags) && PortNumber == NDIS_DEFAULT_PORT_NUMBER)
+        {
+            BOOLEAN Queued = FALSE;
+            FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
+            if (pFilter->RxdEnabled && pFilter->State == FilterRunning)
+            {
+                PNET_BUFFER_LIST Last = NetBufferLists;
+                while (NET_BUFFER_LIST_NEXT_NBL(Last) != NULL)
+                {
+                    Last = NET_BUFFER_LIST_NEXT_NBL(Last);
+                }
+                *pFilter->RxdTail = NetBufferLists;
+                pFilter->RxdTail = &NET_BUFFER_LIST_NEXT_NBL(Last);
+                pFilter->RxdQueued += NumberOfNetBufferLists;
+                pFilter->RxdDeferred += NumberOfNetBufferLists;
+                Queued = TRUE;
+            }
+            else
+            {
+                pFilter->RxdInline += NumberOfNetBufferLists;
+            }
+            FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
+            if (Queued)
+            {
+                KeInsertQueueDpc(&pFilter->RxdDpc, NULL, NULL);
+                break;
+            }
+        }
+        else
+        {
+            FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
+            pFilter->RxdInline += NumberOfNetBufferLists;
+            FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
+        }
+
         NdisFIndicateReceiveNetBufferLists(
                    pFilter->FilterHandle,
                    NetBufferLists,
@@ -2759,4 +2809,109 @@ ktxDone(
         Filter->KtxOut--;
     }
     FILTER_RELEASE_LOCK(&Filter->Lock, DispatchLevel);
+}
+
+
+//
+// Deferred receive (rxd, dasio#1): the NIC's receive DPC queues its NBLs
+// here and returns; this DPC, on its own CPU, indicates them up in order.
+//
+
+ULONG RxdEnable = 0;
+LONG RxdCpuSetting = -1;
+
+// The settings onto one filter (outside its Lock: the DPC's target is set
+// with no lock held, before the flag that lets receives queue).
+_Use_decl_annotations_
+VOID
+rxdApply(
+    PMS_FILTER Filter
+    )
+{
+    BOOLEAN bFalse = FALSE;
+    LONG Cpu = RxdCpuSetting;
+    if (Cpu >= 0 && (ULONG)Cpu < KeQueryActiveProcessorCountEx(ALL_PROCESSOR_GROUPS))
+    {
+        PROCESSOR_NUMBER Number;
+        if (NT_SUCCESS(KeGetProcessorNumberFromIndex((ULONG)Cpu, &Number)) &&
+            NT_SUCCESS(KeSetTargetProcessorDpcEx(&Filter->RxdDpc, &Number)))
+        {
+            Filter->RxdCpu = Cpu;
+        }
+    }
+    FILTER_ACQUIRE_LOCK(&Filter->Lock, bFalse);
+    Filter->RxdEnabled = RxdEnable != 0;
+    FILTER_RELEASE_LOCK(&Filter->Lock, bFalse);
+}
+
+// Indicates everything queued, in order, as one chain per run.
+_Use_decl_annotations_
+static VOID
+rxdDpc(
+    PKDPC Dpc,
+    PVOID DeferredContext,
+    PVOID SystemArgument1,
+    PVOID SystemArgument2
+    )
+{
+    PMS_FILTER Filter = (PMS_FILTER)DeferredContext;
+    PNET_BUFFER_LIST Chain;
+    ULONG Count;
+    BOOLEAN bTrue = TRUE;
+
+    UNREFERENCED_PARAMETER(Dpc);
+    UNREFERENCED_PARAMETER(SystemArgument1);
+    UNREFERENCED_PARAMETER(SystemArgument2);
+    for (;;)
+    {
+        FILTER_ACQUIRE_LOCK(&Filter->Lock, bTrue);
+        Chain = Filter->RxdHead;
+        Count = Filter->RxdQueued;
+        Filter->RxdHead = NULL;
+        Filter->RxdTail = &Filter->RxdHead;
+        Filter->RxdQueued = 0;
+        if (Chain != NULL)
+        {
+            Filter->RxdDpcRuns++;
+            if (Count > Filter->RxdMaxBatch)
+            {
+                Filter->RxdMaxBatch = Count;
+            }
+        }
+        FILTER_RELEASE_LOCK(&Filter->Lock, bTrue);
+        if (Chain == NULL)
+        {
+            return;
+        }
+        NdisFIndicateReceiveNetBufferLists(Filter->FilterHandle, Chain, NDIS_DEFAULT_PORT_NUMBER, Count,
+                                           NDIS_RECEIVE_FLAGS_DISPATCH_LEVEL);
+    }
+}
+
+// Pause: what waits goes back to the miniport unindicated.
+static VOID
+rxdDrop(
+    _In_ PMS_FILTER Filter
+    )
+{
+    PNET_BUFFER_LIST Chain;
+    ULONG Count;
+    BOOLEAN bFalse = FALSE;
+
+    FILTER_ACQUIRE_LOCK(&Filter->Lock, bFalse);
+    Chain = Filter->RxdHead;
+    Count = Filter->RxdQueued;
+    Filter->RxdHead = NULL;
+    Filter->RxdTail = &Filter->RxdHead;
+    Filter->RxdQueued = 0;
+    Filter->RxdDropped += Count;
+    if (Filter->TrackReceives)
+    {
+        Filter->OutstandingRcvs -= Count;
+    }
+    FILTER_RELEASE_LOCK(&Filter->Lock, bFalse);
+    if (Chain != NULL)
+    {
+        NdisFReturnNetBufferLists(Filter->FilterHandle, Chain, 0);
+    }
 }

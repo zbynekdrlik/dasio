@@ -37,6 +37,11 @@
 #define IOCTL_DASIO_KTX_START               _NDIS_CONTROL_CODE(16, METHOD_BUFFERED)
 #define IOCTL_DASIO_KTX_STOP                _NDIS_CONTROL_CODE(17, METHOD_BUFFERED)
 #define IOCTL_DASIO_KTX_STATUS              _NDIS_CONTROL_CODE(18, METHOD_BUFFERED)
+// dasio: deferred receive (rxd, dasio#1): on or off for all bound adapters,
+// and the CPU its DPC runs on (input: DASIO_RXD_SET); each bound adapter's
+// DASIO_RXD_STATUS.
+#define IOCTL_DASIO_RXD_SET                 _NDIS_CONTROL_CODE(19, METHOD_BUFFERED)
+#define IOCTL_DASIO_RXD_STATUS              _NDIS_CONTROL_CODE(20, METHOD_BUFFERED)
 
 
 #define MAX_FILTER_INSTANCE_NAME_LENGTH     256
@@ -186,6 +191,33 @@ typedef struct _DASIO_KTX_STATUS
     ULONG64         MaxBatch;         // most frames sent in one fire
     ULONG64         MaxLate;          // 100 ns: a fire after its first due frame
 } DASIO_KTX_STATUS, *PDASIO_KTX_STATUS;
+
+// dasio: deferred receive. The miniport's receive DPC hands its NBLs to the
+// filter, which queues them and returns at once; a DPC of the filter's own,
+// on Cpu, indicates them up. tcpip's and WFP's work for a received packet
+// then runs there, not inside the NIC's DPC (with Realtek 10.72/10.79 the
+// NIC sends nothing while its DPC runs, dasio#1). Cpu -1 = the receiving
+// CPU. Off after a restart of the filter.
+typedef struct _DASIO_RXD_SET
+{
+    ULONG           Enable;
+    LONG            Cpu;
+} DASIO_RXD_SET, *PDASIO_RXD_SET;
+
+#define DASIO_RXD_STATUS_VERSION            1
+typedef struct _DASIO_RXD_STATUS
+{
+    ULONG64         Version;
+    ULONG64         IfIndex;
+    ULONG64         Enabled;
+    LONG64          Cpu;
+    ULONG64         Deferred;         // NBLs queued and indicated by our DPC
+    ULONG64         Inline;           // NBLs indicated at once (cannot pend, or off)
+    ULONG64         DpcRuns;
+    ULONG64         MaxBatch;         // most NBLs one DPC run indicated
+    ULONG64         Queued;           // waiting now
+    ULONG64         Dropped;          // returned unindicated (pause)
+} DASIO_RXD_STATUS, *PDASIO_RXD_STATUS;
 
 #endif //__FILTERUSER_H__
 

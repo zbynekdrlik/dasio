@@ -417,6 +417,20 @@ typedef struct _MS_FILTER
     ULONG64                         KtxMaxBatch;
     ULONG64                         KtxMaxLate;
 
+    // dasio deferred receive (rxd, dasio#1): received NBLs queued in
+    // order (under Lock) and indicated up by RxdDpc.
+    BOOLEAN                         RxdEnabled;
+    LONG                            RxdCpu;
+    KDPC                            RxdDpc;
+    PNET_BUFFER_LIST                RxdHead;
+    PNET_BUFFER_LIST               *RxdTail;
+    ULONG                           RxdQueued;
+    ULONG64                         RxdDeferred;
+    ULONG64                         RxdInline;
+    ULONG64                         RxdDpcRuns;
+    ULONG64                         RxdMaxBatch;
+    ULONG64                         RxdDropped;
+
 }MS_FILTER, * PMS_FILTER;
 
 // A split parent: the NBL tcpip sent and its children's bookkeeping. Each
@@ -440,6 +454,12 @@ VOID pacerApplyRateLocked(_In_ PMS_FILTER Filter);
 // (outside any lock: cancels the timer).
 NTSTATUS ktxStartLocked(_In_ PMS_FILTER Filter, _In_ const DASIO_KTX_START *Start);
 VOID ktxStop(_In_ PMS_FILTER Filter);
+
+// Deferred receive (filter.c): settings for all filters, applied under
+// each filter's Lock; the DPC's target CPU is set outside any lock.
+extern ULONG RxdEnable;
+extern LONG RxdCpuSetting;
+VOID rxdApply(_In_ PMS_FILTER Filter);
 
 // Other traffic goes at this share of the link speed...
 #define PACER_RATE_PERCENT          85u

@@ -398,6 +398,62 @@ FilterDeviceIoControl(
             }
             break;
 
+        case IOCTL_DASIO_RXD_SET:
+            // Deferred receive on or off for all bound adapters.
+            InputBuffer = (PUCHAR)Irp->AssociatedIrp.SystemBuffer;
+            InputBufferLength = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
+            if (InputBufferLength < sizeof(DASIO_RXD_SET))
+            {
+                Status = STATUS_INVALID_PARAMETER;
+                break;
+            }
+            FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
+            RxdEnable = ((PDASIO_RXD_SET)InputBuffer)->Enable;
+            RxdCpuSetting = ((PDASIO_RXD_SET)InputBuffer)->Cpu;
+            for (Link = FilterModuleList.Flink; Link != &FilterModuleList; Link = Link->Flink)
+            {
+                pFilter = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
+                rxdApply(pFilter);
+            }
+            FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
+            break;
+
+        case IOCTL_DASIO_RXD_STATUS:
+            OutputBuffer = (PUCHAR)Irp->AssociatedIrp.SystemBuffer;
+            OutputBufferLength = IrpSp->Parameters.DeviceIoControl.OutputBufferLength;
+            FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
+            for (Link = FilterModuleList.Flink; Link != &FilterModuleList; Link = Link->Flink)
+            {
+                PDASIO_RXD_STATUS Out;
+                BOOLEAN bTrue = TRUE;
+                pFilter = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
+                if (InfoLength + (ULONG)sizeof(DASIO_RXD_STATUS) > OutputBufferLength)
+                {
+                    Status = STATUS_BUFFER_TOO_SMALL;
+                    break;
+                }
+                Out = (PDASIO_RXD_STATUS)(OutputBuffer + InfoLength);
+                FILTER_ACQUIRE_LOCK(&pFilter->Lock, bTrue);
+                Out->Version = DASIO_RXD_STATUS_VERSION;
+                Out->IfIndex = pFilter->MiniportIfIndex;
+                Out->Enabled = pFilter->RxdEnabled;
+                Out->Cpu = pFilter->RxdCpu;
+                Out->Deferred = pFilter->RxdDeferred;
+                Out->Inline = pFilter->RxdInline;
+                Out->DpcRuns = pFilter->RxdDpcRuns;
+                Out->MaxBatch = pFilter->RxdMaxBatch;
+                Out->Queued = pFilter->RxdQueued;
+                Out->Dropped = pFilter->RxdDropped;
+                FILTER_RELEASE_LOCK(&pFilter->Lock, bTrue);
+                InfoLength += (ULONG)sizeof(DASIO_RXD_STATUS);
+            }
+            FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
+            if (Status == STATUS_BUFFER_TOO_SMALL)
+            {
+                InfoLength = 0;
+            }
+            break;
+
         default:
             break;
     }
