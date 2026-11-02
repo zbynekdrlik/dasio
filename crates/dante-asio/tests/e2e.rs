@@ -211,21 +211,25 @@ fn round_trip_stalled(instance: u32, seconds: u64, stall_ms: u64) -> dante_asio:
     // One impulse at each whole second inside the samples the host's
     // timeline ran (the impulse at 1 s the first): a probe a few blocks
     // short of 4 s sends 3 (CI 41375343538: 11996 switches of 32, 3
-    // impulses). A second the timeline skipped (the host missed it) sends
-    // none.
+    // impulses). A second the timeline jumped past sends none: the host
+    // missed its block, or the device's pump skipped it, which the
+    // timeline keeps since it runs on media time (CI 41415967913: 3 sent
+    // in 385120 samples, no block missed, one second jumped).
     let whole_seconds = r.samples.saturating_sub(1) / 96_000;
-    assert!(
-        r.emitted <= whole_seconds
-            && r.emitted + (r.missed * block).div_ceil(96_000) >= whole_seconds,
-        "instance {instance}: {} impulses sent in {} samples ({} blocks missed)",
+    assert_eq!(
+        r.emitted + r.skipped,
+        whole_seconds,
+        "instance {instance}: {} impulses sent and {} skipped in {} samples ({} blocks missed)",
         r.emitted,
+        r.skipped,
         r.samples,
         r.missed
     );
     assert!(
-        r.emitted + 1 >= seconds,
-        "instance {instance}: impulses sent: {} in {seconds} s",
-        r.emitted
+        r.emitted + r.skipped + 1 >= seconds,
+        "instance {instance}: impulses sent: {} and skipped: {} in {seconds} s",
+        r.emitted,
+        r.skipped
     );
     assert!(
         r.round_trips.len() as u64 >= r.emitted - 1,

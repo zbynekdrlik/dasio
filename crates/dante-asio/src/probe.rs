@@ -24,6 +24,9 @@ pub struct Report {
     /// The blocks the driver counted the host missing in this run.
     pub missed: u64,
     pub emitted: u64,
+    /// Impulse seconds the host's timeline jumped past (blocks the host
+    /// missed or the device's pump skipped): no impulse is sent for them.
+    pub skipped: u64,
     pub round_trips: Vec<u64>,
     pub late: u64,
     pub block: u32,
@@ -63,6 +66,7 @@ struct State {
     last_emit: Option<u64>,
     round_trips: Vec<u64>,
     emitted: u64,
+    skipped: u64,
     peaks: Vec<(i32, u64)>,
 }
 
@@ -142,6 +146,7 @@ unsafe fn switch_body(half: i32, _direct: ASIOBool, pos: Option<u64>) {
     // An impulse second the timeline skipped is not sent.
     while s.next_emit < s.position {
         s.next_emit += 96_000;
+        s.skipped += 1;
     }
     if s.stall_ms > 0
         && !s.stalled
@@ -298,6 +303,7 @@ pub fn probe_stalled(instance: u32, seconds: u64, stall_ms: u64) -> Result<Repor
             last_emit: None,
             round_trips: Vec::new(),
             emitted: 0,
+            skipped: 0,
             peaks: Vec::new(),
         });
         missed_before = shm::Shared::open(instance)
@@ -334,6 +340,7 @@ pub fn probe_stalled(instance: u32, seconds: u64, stall_ms: u64) -> Result<Repor
     report.gaps_over_1ms = GAPS_OVER_1MS.load(Ordering::Relaxed);
     report.gap_blocks = GAP_BLOCKS.load(Ordering::Relaxed);
     report.emitted = s.emitted;
+    report.skipped = s.skipped;
     report.round_trips = s.round_trips;
     report.rx_peaks = s.peaks;
     Ok(report)
