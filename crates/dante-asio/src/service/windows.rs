@@ -16,7 +16,7 @@ use windows_service::service::{
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
 use windows_service::{define_windows_service, service_dispatcher};
 
-use super::{Answer, Control, STOP_HINT, answer, exit_code, name};
+use super::{Answer, Control, STOP_HINT, address_held, answer, exit_code, name, wait_for_address};
 
 /// What `dante-asio service` was started with.
 struct Args {
@@ -114,6 +114,16 @@ fn service_main(_args: Vec<OsString>) {
         error!(%e, "Running not reported");
     }
     info!(instance = args.instance, "service running");
+    // At boot the service starts before the NIC has its address; after a
+    // link reset it comes back later. The device starts once it is there.
+    let ip = std::net::IpAddr::V4(args.ip);
+    if !wait_for_address(|| address_held(ip), &stop, std::thread::sleep) {
+        info!("service stopped before the address came");
+        if let Err(e) = h.set_service_status(status(ServiceState::Stopped, 0, Duration::ZERO)) {
+            error!(%e, "Stopped not reported");
+        }
+        return;
+    }
     let result = crate::run::run(
         args.instance,
         args.config.clone(),

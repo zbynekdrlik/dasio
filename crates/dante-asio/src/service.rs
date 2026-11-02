@@ -71,10 +71,30 @@ pub fn address_held(ip: IpAddr) -> bool {
 pub fn wait_for_address(
     mut held: impl FnMut() -> bool,
     stop: &AtomicBool,
-    _pause: impl FnMut(Duration),
+    mut pause: impl FnMut(Duration),
 ) -> bool {
-    let _ = stop.load(Ordering::Acquire);
-    held()
+    let mut waited = Duration::ZERO;
+    loop {
+        if held() {
+            tracing::info!(
+                waited_ms = waited.as_millis() as u64,
+                "the box holds the device's address"
+            );
+            return true;
+        }
+        if stop.load(Ordering::Acquire) {
+            tracing::info!("a stop was asked while waiting for the address");
+            return false;
+        }
+        if waited.as_millis().is_multiple_of(10_000) {
+            tracing::warn!(
+                waited_s = waited.as_secs(),
+                "no interface of this box holds the device's address yet: waiting"
+            );
+        }
+        pause(ADDRESS_POLL);
+        waited += ADDRESS_POLL;
+    }
 }
 
 #[cfg(windows)]
