@@ -65,7 +65,7 @@ jobs:
           ./test-san
           gcc -std=c99 --coverage -O0 -o test-cov core/pacer_core.c tests/test_pacer_core.c
           ./test-cov
-          # Measured 100 % of lines (198).
+          # Measured 100 % of lines (239).
           line=$(gcov -n test-cov-pacer_core.gcda | grep -A1 "core/pacer_core.c'" | grep -o '[0-9.]*%' | head -1)
           echo "pacer_core.c lines: $line"
           awk -v l="${line%\%}" 'BEGIN { exit !(l >= 100) }'

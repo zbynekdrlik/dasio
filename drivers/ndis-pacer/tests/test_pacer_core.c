@@ -663,6 +663,8 @@ static void rx_defer(void)
     /* A truncated VLAN tag or IPv6 header: at once. */
     n = ipv4(f, 1, 0, 6, 0, 80);
     CHECK(pacer_rx_defer(f, 15) == 0);
+    n = ipv6(f, 0, 58, 0);
+    CHECK(pacer_rx_defer(f, n) == 0);
     n = ipv6(f, 0, 6, 80);
     CHECK(pacer_rx_defer(f, 40) == 0);
     f[14] = 0x40;
