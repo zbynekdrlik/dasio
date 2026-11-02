@@ -31,6 +31,12 @@
 // dasio: set the pacer's share of the link and its burst, for all bound
 // adapters, live (input: DASIO_PACER_SET).
 #define IOCTL_DASIO_PACER_SET               _NDIS_CONTROL_CODE(15, METHOD_BUFFERED)
+// dasio: the kernel test stream (ktx, dasio#1): start one on the adapter
+// with the given IfIndex (input: DASIO_KTX_START), stop all, read each
+// bound adapter's DASIO_KTX_STATUS.
+#define IOCTL_DASIO_KTX_START               _NDIS_CONTROL_CODE(16, METHOD_BUFFERED)
+#define IOCTL_DASIO_KTX_STOP                _NDIS_CONTROL_CODE(17, METHOD_BUFFERED)
+#define IOCTL_DASIO_KTX_STATUS              _NDIS_CONTROL_CODE(18, METHOD_BUFFERED)
 
 
 #define MAX_FILTER_INSTANCE_NAME_LENGTH     256
@@ -137,6 +143,49 @@ typedef struct _DASIO_PACER_SET
     ULONG           RatePercent;
     ULONG           BurstBytes;
 } DASIO_PACER_SET, *PDASIO_PACER_SET;
+
+// dasio: a kernel test stream of UDP frames the filter builds and sends
+// itself, straight to the miniport (below tcpip and WFP). One frame every
+// IntervalUs from the start for DurationS seconds; the payload starts with
+// the sequence number and the send time (100 ns interrupt time), both
+// 8-byte big endian. The source MAC is the adapter's own.
+typedef struct _DASIO_KTX_START
+{
+    ULONG           IfIndex;
+    UCHAR           DstMac[6];
+    UCHAR           DstIp[4];
+    UCHAR           SrcIp[4];
+    USHORT          DstPort;
+    USHORT          SrcPort;
+    UCHAR           Dscp;
+    UCHAR           Reserved[3];
+    ULONG           PayloadBytes;     // 16..1472
+    ULONG           IntervalUs;       // 50..1000000
+    ULONG           DurationS;        // 1..86400
+} DASIO_KTX_START, *PDASIO_KTX_START;
+
+// dasio: one bound adapter's test stream, read under its lock. All fields
+// 64 bit, read in this order.
+#define DASIO_KTX_STATUS_VERSION            1
+typedef struct _DASIO_KTX_STATUS
+{
+    ULONG64         Version;
+    ULONG64         IfIndex;
+    ULONG64         Active;
+    ULONG64         Ready;            // its slots, pool and timer exist
+    ULONG64         Start;            // 100 ns interrupt time
+    ULONG64         End;
+    ULONG64         Now;
+    ULONG64         IntervalUs;
+    ULONG64         Sent;             // frames handed to the miniport
+    ULONG64         Completed;
+    ULONG64         Failed;           // completed with an error status
+    ULONG64         Out;              // not completed yet
+    ULONG64         NoSlot;           // due frames dropped: every slot out
+    ULONG64         Fires;
+    ULONG64         MaxBatch;         // most frames sent in one fire
+    ULONG64         MaxLate;          // 100 ns: a fire after its first due frame
+} DASIO_KTX_STATUS, *PDASIO_KTX_STATUS;
 
 #endif //__FILTERUSER_H__
 

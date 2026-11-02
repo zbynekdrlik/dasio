@@ -317,6 +317,87 @@ FilterDeviceIoControl(
             }
             break;
 
+        case IOCTL_DASIO_KTX_START:
+            // A test stream on the adapter with the given IfIndex, started
+            // under its filter's lock (the list lock held outside it).
+            InputBuffer = (PUCHAR)Irp->AssociatedIrp.SystemBuffer;
+            InputBufferLength = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
+            if (InputBufferLength < sizeof(DASIO_KTX_START))
+            {
+                Status = STATUS_INVALID_PARAMETER;
+                break;
+            }
+            Status = STATUS_NOT_FOUND;
+            FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
+            for (Link = FilterModuleList.Flink; Link != &FilterModuleList; Link = Link->Flink)
+            {
+                BOOLEAN bTrue = TRUE;
+                pFilter = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
+                if (pFilter->MiniportIfIndex != ((PDASIO_KTX_START)InputBuffer)->IfIndex)
+                {
+                    continue;
+                }
+                FILTER_ACQUIRE_LOCK(&pFilter->Lock, bTrue);
+                Status = ktxStartLocked(pFilter, (PDASIO_KTX_START)InputBuffer);
+                FILTER_RELEASE_LOCK(&pFilter->Lock, bTrue);
+                break;
+            }
+            FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
+            break;
+
+        case IOCTL_DASIO_KTX_STOP:
+            FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
+            for (Link = FilterModuleList.Flink; Link != &FilterModuleList; Link = Link->Flink)
+            {
+                pFilter = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
+                ktxStop(pFilter);
+            }
+            FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
+            break;
+
+        case IOCTL_DASIO_KTX_STATUS:
+            // One status per bound adapter, each read under its filter's lock.
+            OutputBuffer = (PUCHAR)Irp->AssociatedIrp.SystemBuffer;
+            OutputBufferLength = IrpSp->Parameters.DeviceIoControl.OutputBufferLength;
+            FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
+            for (Link = FilterModuleList.Flink; Link != &FilterModuleList; Link = Link->Flink)
+            {
+                PDASIO_KTX_STATUS Out;
+                BOOLEAN bTrue = TRUE;
+                pFilter = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
+                if (InfoLength + (ULONG)sizeof(DASIO_KTX_STATUS) > OutputBufferLength)
+                {
+                    Status = STATUS_BUFFER_TOO_SMALL;
+                    break;
+                }
+                Out = (PDASIO_KTX_STATUS)(OutputBuffer + InfoLength);
+                FILTER_ACQUIRE_LOCK(&pFilter->Lock, bTrue);
+                Out->Version = DASIO_KTX_STATUS_VERSION;
+                Out->IfIndex = pFilter->MiniportIfIndex;
+                Out->Active = pFilter->KtxActive;
+                Out->Ready = pFilter->KtxReady;
+                Out->Start = pFilter->KtxStart;
+                Out->End = pFilter->KtxEnd;
+                Out->Now = KeQueryInterruptTime();
+                Out->IntervalUs = pFilter->KtxInterval / 10;
+                Out->Sent = pFilter->KtxSent;
+                Out->Completed = pFilter->KtxCompleted;
+                Out->Failed = pFilter->KtxFailed;
+                Out->Out = pFilter->KtxOut;
+                Out->NoSlot = pFilter->KtxNoSlot;
+                Out->Fires = pFilter->KtxFires;
+                Out->MaxBatch = pFilter->KtxMaxBatch;
+                Out->MaxLate = pFilter->KtxMaxLate;
+                FILTER_RELEASE_LOCK(&pFilter->Lock, bTrue);
+                InfoLength += (ULONG)sizeof(DASIO_KTX_STATUS);
+            }
+            FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
+            if (Status == STATUS_BUFFER_TOO_SMALL)
+            {
+                InfoLength = 0;
+            }
+            break;
+
         default:
             break;
     }

@@ -22,6 +22,10 @@ static ULONG64 pacerNow(VOID);
 static VOID pacerRateFor(_In_ ULONG64 LinkBitsPerSecond, _Out_ ULONG64 *Rate, _Out_ ULONG *Burst);
 static VOID pacerArmLocked(_In_ PMS_FILTER Filter, _In_ ULONG64 Now);
 static EXT_CALLBACK pacerTimer;
+static EXT_CALLBACK ktxTimer;
+static VOID ktxSetup(_In_ PMS_FILTER Filter, _In_ PNDIS_FILTER_ATTACH_PARAMETERS AttachParameters);
+static VOID ktxTeardown(_In_ PMS_FILTER Filter);
+static VOID ktxDone(_In_ PMS_FILTER Filter, _In_ PNET_BUFFER_LIST Nbl, _In_ BOOLEAN DispatchLevel);
 static VOID pacerComplete(_In_ PMS_FILTER Filter, _In_opt_ PNET_BUFFER_LIST Nbls, _In_ BOOLEAN SetStatus, _In_ NDIS_STATUS Status, _In_ BOOLEAN DispatchLevel, _In_ ULONG UpFlags);
 
 #define __FILENUMBER    'PNPF'
@@ -400,6 +404,8 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
             pFilter->PaceLinkAtAttach = AttachParameters->XmitLinkSpeed;
             pFilter->PaceLinkLast = AttachParameters->XmitLinkSpeed;
         }
+        // The kernel test stream's slots, pool and timer (none: no stream).
+        ktxSetup(pFilter, AttachParameters);
         pFilter->State = FilterPaused;
 
         FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
@@ -471,6 +477,10 @@ N.B.: When the filter is in Pausing state, it can still process OID requests,
     pFilter->State = FilterPausing;
     FILTER_RELEASE_LOCK(&pFilter->Lock, bFalse);
 
+    // The kernel test stream sends nothing more; its frames that are out
+    // complete before pause returns (the wait below).
+    ktxStop(pFilter);
+
     //
     // Do whatever work is required to bring the filter into the Paused state.
     //
@@ -525,13 +535,16 @@ N.B.: When the filter is in Pausing state, it can still process OID requests,
         {
             ULONG Pumping;
             ULONG64 ChildrenOut;
+            ULONG64 KtxOut;
             FILTER_ACQUIRE_LOCK(&pFilter->Lock, bFalse);
             Pumping = pFilter->PacePumping;
             ChildrenOut = pFilter->PaceChildrenOut;
+            KtxOut = pFilter->KtxOut;
             FILTER_RELEASE_LOCK(&pFilter->Lock, bFalse);
             // Our child NBLs below complete to us; their parents go up
-            // with the last one, before pause returns.
-            if (!Pumping && ChildrenOut == 0)
+            // with the last one, before pause returns. So do the test
+            // stream's frames.
+            if (!Pumping && ChildrenOut == 0 && KtxOut == 0)
             {
                 break;
             }
@@ -769,6 +782,9 @@ NOTE: Called at PASSIVE_LEVEL and the filter is in paused state
         ExDeleteTimer(pFilter->PaceTimer, TRUE, TRUE, NULL);
         pFilter->PaceTimer = NULL;
     }
+    // The test stream's timer, frames (all completed: pause waited) and
+    // slots.
+    ktxTeardown(pFilter);
     // Every child has completed (pause waited for them).
     if (pFilter->PaceNblPool != NULL)
     {
@@ -1616,6 +1632,11 @@ pacerComplete(
         {
             pacerChildDone(Filter, Nbl, DispatchLevel, &UpTail);
         }
+        else if (Filter->KtxPool != NULL && NdisGetPoolFromNetBufferList(Nbl) == Filter->KtxPool)
+        {
+            // A test stream frame: ours, it never goes up.
+            ktxDone(Filter, Nbl, DispatchLevel);
+        }
         else
         {
             *UpTail = Nbl;
@@ -2458,3 +2479,284 @@ Return Value:
     NdisSetEvent(&FilterRequest->ReqEvent);
 }
 
+
+
+//
+// The kernel test stream (ktx, dasio#1): UDP frames the filter builds in
+// slots of its own and hands straight to the miniport from a high
+// resolution timer, below tcpip and WFP. It shows whether a frame sent
+// from the kernel goes out on time while the socket path stalls.
+//
+
+// Slots, their MDLs, the NBL pool and the timer. Any failure leaves the
+// filter without a test stream (KtxReady FALSE), never without the pacer.
+static VOID
+ktxSetup(
+    _In_ PMS_FILTER Filter,
+    _In_ PNDIS_FILTER_ATTACH_PARAMETERS AttachParameters
+    )
+{
+    ULONG i;
+    NET_BUFFER_LIST_POOL_PARAMETERS PoolParams;
+
+    Filter->KtxReady = FALSE;
+    Filter->KtxActive = FALSE;
+    if (AttachParameters->MacAddressLength == 6)
+    {
+        NdisMoveMemory(Filter->KtxSrcMac, AttachParameters->CurrentMacAddress, 6);
+    }
+    Filter->KtxBuf = (PUCHAR)NdisAllocateMemoryWithTagPriority(
+        FilterDriverHandle, KTX_SLOTS * KTX_SLOT_BYTES, FILTER_ALLOC_TAG, NormalPoolPriority);
+    if (Filter->KtxBuf == NULL)
+    {
+        return;
+    }
+    for (i = 0; i < KTX_SLOTS; i++)
+    {
+        Filter->KtxMdl[i] = NdisAllocateMdl(Filter->FilterHandle, Filter->KtxBuf + i * KTX_SLOT_BYTES, KTX_SLOT_BYTES);
+        if (Filter->KtxMdl[i] == NULL)
+        {
+            ktxTeardown(Filter);
+            return;
+        }
+        Filter->KtxFree[i] = i;
+    }
+    Filter->KtxFreeCount = KTX_SLOTS;
+
+    NdisZeroMemory(&PoolParams, sizeof(PoolParams));
+    PoolParams.Header.Type = NDIS_OBJECT_TYPE_DEFAULT;
+    PoolParams.Header.Revision = NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1;
+    PoolParams.Header.Size = NDIS_SIZEOF_NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1;
+    PoolParams.ProtocolId = NDIS_PROTOCOL_ID_DEFAULT;
+    PoolParams.fAllocateNetBuffer = TRUE;
+    PoolParams.ContextSize = PACER_CHILD_CONTEXT;
+    PoolParams.PoolTag = FILTER_ALLOC_TAG;
+    PoolParams.DataSize = 0;
+    Filter->KtxPool = NdisAllocateNetBufferListPool(Filter->FilterHandle, &PoolParams);
+    Filter->KtxTimer = ExAllocateTimer(ktxTimer, Filter, EX_TIMER_HIGH_RESOLUTION);
+    if (Filter->KtxPool == NULL || Filter->KtxTimer == NULL)
+    {
+        ktxTeardown(Filter);
+        return;
+    }
+    Filter->KtxReady = TRUE;
+}
+
+// Frees what ktxSetup made. At PASSIVE, with no stream and no frame out
+// (detach after pause, or a failed setup).
+static VOID
+ktxTeardown(
+    _In_ PMS_FILTER Filter
+    )
+{
+    ULONG i;
+
+    Filter->KtxReady = FALSE;
+    Filter->KtxActive = FALSE;
+    if (Filter->KtxTimer != NULL)
+    {
+        ExDeleteTimer(Filter->KtxTimer, TRUE, TRUE, NULL);
+        Filter->KtxTimer = NULL;
+    }
+    if (Filter->KtxPool != NULL)
+    {
+        NdisFreeNetBufferListPool(Filter->KtxPool);
+        Filter->KtxPool = NULL;
+    }
+    for (i = 0; i < KTX_SLOTS; i++)
+    {
+        if (Filter->KtxMdl[i] != NULL)
+        {
+            NdisFreeMdl(Filter->KtxMdl[i]);
+            Filter->KtxMdl[i] = NULL;
+        }
+    }
+    Filter->KtxFreeCount = 0;
+    if (Filter->KtxBuf != NULL)
+    {
+        NdisFreeMemory(Filter->KtxBuf, 0, 0);
+        Filter->KtxBuf = NULL;
+    }
+}
+
+_Use_decl_annotations_
+NTSTATUS
+ktxStartLocked(
+    PMS_FILTER Filter,
+    const DASIO_KTX_START *Start
+    )
+{
+    ULONG64 Now;
+
+    if (!Filter->KtxReady || Filter->State != FilterRunning)
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    if (Start->PayloadBytes < PACER_KTX_MIN_PAYLOAD || Start->PayloadBytes > PACER_KTX_MAX_PAYLOAD ||
+        Start->IntervalUs < 50 || Start->IntervalUs > 1000000 ||
+        Start->DurationS < 1 || Start->DurationS > 86400)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    NdisMoveMemory(Filter->KtxAddr.dst_mac, Start->DstMac, 6);
+    NdisMoveMemory(Filter->KtxAddr.src_mac, Filter->KtxSrcMac, 6);
+    NdisMoveMemory(Filter->KtxAddr.dst_ip, Start->DstIp, 4);
+    NdisMoveMemory(Filter->KtxAddr.src_ip, Start->SrcIp, 4);
+    Filter->KtxAddr.dst_port = Start->DstPort;
+    Filter->KtxAddr.src_port = Start->SrcPort;
+    Filter->KtxAddr.dscp = Start->Dscp;
+    Filter->KtxPayload = Start->PayloadBytes;
+    Filter->KtxInterval = (ULONG64)Start->IntervalUs * 10;
+    Now = pacerNow();
+    // The first frame 1 ms from now; the timer's first fire then.
+    Filter->KtxStart = Now + KTX_TIMER_PERIOD;
+    Filter->KtxEnd = Filter->KtxStart + (ULONG64)Start->DurationS * 10000000;
+    Filter->KtxSent = 0;
+    Filter->KtxCompleted = 0;
+    Filter->KtxFailed = 0;
+    Filter->KtxNoSlot = 0;
+    Filter->KtxFires = 0;
+    Filter->KtxMaxBatch = 0;
+    Filter->KtxMaxLate = 0;
+    Filter->KtxActive = TRUE;
+    ExSetTimer(Filter->KtxTimer, -(LONG64)KTX_TIMER_PERIOD, KTX_TIMER_PERIOD, NULL);
+    return STATUS_SUCCESS;
+}
+
+_Use_decl_annotations_
+VOID
+ktxStop(
+    PMS_FILTER Filter
+    )
+{
+    BOOLEAN bFalse = FALSE;
+    FILTER_ACQUIRE_LOCK(&Filter->Lock, bFalse);
+    Filter->KtxActive = FALSE;
+    FILTER_RELEASE_LOCK(&Filter->Lock, bFalse);
+    if (Filter->KtxTimer != NULL)
+    {
+        ExCancelTimer(Filter->KtxTimer, NULL);
+    }
+}
+
+// The timer (DISPATCH_LEVEL): builds every frame due by now in free slots
+// and sends them down in one chain. A late fire sends the frames it missed
+// at once; with every slot out a due frame is dropped and counted (its
+// sequence number is skipped, so the receiver sees the hole).
+_Use_decl_annotations_
+static VOID
+ktxTimer(
+    PEX_TIMER Timer,
+    PVOID Context
+    )
+{
+    PMS_FILTER Filter = (PMS_FILTER)Context;
+    PNET_BUFFER_LIST Head = NULL;
+    PNET_BUFFER_LIST *Tail = &Head;
+    ULONG64 Now = pacerNow();
+    BOOLEAN bTrue = TRUE;
+    BOOLEAN Stop = FALSE;
+    ULONG Due;
+    ULONG Batch = 0;
+    ULONG i;
+
+    UNREFERENCED_PARAMETER(Timer);
+    FILTER_ACQUIRE_LOCK(&Filter->Lock, bTrue);
+    if (!Filter->KtxActive || Filter->State != FilterRunning)
+    {
+        FILTER_RELEASE_LOCK(&Filter->Lock, bTrue);
+        return;
+    }
+    Filter->KtxFires++;
+    if (Now >= Filter->KtxEnd)
+    {
+        Filter->KtxActive = FALSE;
+        Stop = TRUE;
+    }
+    else
+    {
+        Due = pacer_ktx_due(Filter->KtxStart, Now, Filter->KtxInterval, Filter->KtxSent, KTX_MAX_BATCH);
+        if (Due > 0)
+        {
+            ULONG64 First = Filter->KtxStart + Filter->KtxSent * Filter->KtxInterval;
+            if (Now - First > Filter->KtxMaxLate)
+            {
+                Filter->KtxMaxLate = Now - First;
+            }
+        }
+        for (i = 0; i < Due; i++)
+        {
+            ULONG Slot;
+            ULONG Len;
+            PNET_BUFFER_LIST Nbl;
+            if (Filter->KtxFreeCount == 0)
+            {
+                Filter->KtxNoSlot++;
+                Filter->KtxSent++;
+                continue;
+            }
+            Slot = Filter->KtxFree[--Filter->KtxFreeCount];
+            Len = pacer_ktx_frame(Filter->KtxBuf + Slot * KTX_SLOT_BYTES, &Filter->KtxAddr, Filter->KtxPayload,
+                                  (USHORT)Filter->KtxSent, Filter->KtxSent, Now);
+            Nbl = NdisAllocateNetBufferAndNetBufferList(Filter->KtxPool, PACER_CHILD_CONTEXT, 0,
+                                                        Filter->KtxMdl[Slot], 0, Len);
+            if (Nbl == NULL)
+            {
+                Filter->KtxFree[Filter->KtxFreeCount++] = Slot;
+                Filter->KtxNoSlot++;
+                Filter->KtxSent++;
+                continue;
+            }
+            Nbl->SourceHandle = Filter->FilterHandle;
+            *(PULONG)NET_BUFFER_LIST_CONTEXT_DATA_START(Nbl) = Slot;
+            *Tail = Nbl;
+            Tail = &NET_BUFFER_LIST_NEXT_NBL(Nbl);
+            Filter->KtxSent++;
+            Filter->KtxOut++;
+            Batch++;
+        }
+        if (Batch > Filter->KtxMaxBatch)
+        {
+            Filter->KtxMaxBatch = Batch;
+        }
+    }
+    FILTER_RELEASE_LOCK(&Filter->Lock, bTrue);
+
+    if (Stop)
+    {
+        ExCancelTimer(Filter->KtxTimer, NULL);
+    }
+    if (Head != NULL)
+    {
+        NdisFSendNetBufferLists(Filter->FilterHandle, Head, NDIS_DEFAULT_PORT_NUMBER, NDIS_SEND_FLAGS_DISPATCH_LEVEL);
+    }
+}
+
+// A test stream frame completed: its NBL is freed and its slot is free.
+static VOID
+ktxDone(
+    _In_ PMS_FILTER Filter,
+    _In_ PNET_BUFFER_LIST Nbl,
+    _In_ BOOLEAN DispatchLevel
+    )
+{
+    ULONG Slot = *(PULONG)NET_BUFFER_LIST_CONTEXT_DATA_START(Nbl);
+    NDIS_STATUS Status = NET_BUFFER_LIST_STATUS(Nbl);
+
+    NdisFreeNetBufferList(Nbl);
+    FILTER_ACQUIRE_LOCK(&Filter->Lock, DispatchLevel);
+    if (Slot < KTX_SLOTS && Filter->KtxFreeCount < KTX_SLOTS)
+    {
+        Filter->KtxFree[Filter->KtxFreeCount++] = Slot;
+    }
+    Filter->KtxCompleted++;
+    if (Status != NDIS_STATUS_SUCCESS)
+    {
+        Filter->KtxFailed++;
+    }
+    if (Filter->KtxOut > 0)
+    {
+        Filter->KtxOut--;
+    }
+    FILTER_RELEASE_LOCK(&Filter->Lock, DispatchLevel);
+}

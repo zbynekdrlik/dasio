@@ -299,6 +299,16 @@ typedef struct _FILTER_REQUEST
 //
 #include "../core/pacer_core.h"
 
+// Kernel test stream: frames that may be out at once (a 30 ms stall at
+// 250 us is 120 frames) and the bytes of one slot.
+#define KTX_SLOTS_DECL              256
+#define KTX_SLOTS                   256u
+#define KTX_SLOT_BYTES              1536u
+// Frames sent in one timer fire at most (a late fire catches up).
+#define KTX_MAX_BATCH               128u
+// The timer's period (100 ns): 1 ms.
+#define KTX_TIMER_PERIOD            10000
+
 // One waiting send: the NBL and the flags it was sent with (default port).
 typedef struct _PACER_ENTRY
 {
@@ -380,6 +390,33 @@ typedef struct _MS_FILTER
     ULONG64                         PaceSplitFails;
     ULONG64                         PaceChildrenOut;
 
+    // dasio kernel test stream (ktx, dasio#1): frames built in slots of
+    // the filter's own and sent straight down from a high resolution
+    // timer. Slots, pool and timer are made at attach (no stream, no
+    // sends); all fields under Lock.
+    UCHAR                           KtxSrcMac[6];
+    BOOLEAN                         KtxReady;
+    BOOLEAN                         KtxActive;
+    PUCHAR                          KtxBuf;          // KTX_SLOTS frames of KTX_SLOT_BYTES
+    PMDL                            KtxMdl[KTX_SLOTS_DECL];
+    ULONG                           KtxFree[KTX_SLOTS_DECL];
+    ULONG                           KtxFreeCount;
+    NDIS_HANDLE                     KtxPool;
+    PEX_TIMER                       KtxTimer;
+    struct pacer_ktx_addr           KtxAddr;
+    ULONG                           KtxPayload;
+    ULONG64                         KtxInterval;     // 100 ns
+    ULONG64                         KtxStart;        // 100 ns interrupt time
+    ULONG64                         KtxEnd;
+    ULONG64                         KtxSent;
+    ULONG64                         KtxCompleted;
+    ULONG64                         KtxFailed;
+    ULONG64                         KtxOut;
+    ULONG64                         KtxNoSlot;
+    ULONG64                         KtxFires;
+    ULONG64                         KtxMaxBatch;
+    ULONG64                         KtxMaxLate;
+
 }MS_FILTER, * PMS_FILTER;
 
 // A split parent: the NBL tcpip sent and its children's bookkeeping. Each
@@ -397,6 +434,12 @@ typedef struct _PACER_SPLIT_REC
 extern ULONG PacerRatePercent;
 extern ULONG PacerBurstBytes;
 VOID pacerApplyRateLocked(_In_ PMS_FILTER Filter);
+
+// The kernel test stream (filter.c): start on this filter under its Lock
+// (STATUS_DEVICE_NOT_READY when it has no slots or is not running), stop it
+// (outside any lock: cancels the timer).
+NTSTATUS ktxStartLocked(_In_ PMS_FILTER Filter, _In_ const DASIO_KTX_START *Start);
+VOID ktxStop(_In_ PMS_FILTER Filter);
 
 // Other traffic goes at this share of the link speed...
 #define PACER_RATE_PERCENT          85u
