@@ -502,6 +502,23 @@ N.B.: When the filter is in Pausing state, it can still process OID requests,
             ExCancelTimer(pFilter->PaceTimer, NULL);
         }
         pacerCompleteUnsent(pFilter, Queued, NDIS_STATUS_PAUSED, FALSE);
+
+        // A timer callback or a pump that already runs may still hold NBLs
+        // it took: paused means none of ours goes down any more. The state
+        // is not running, so a pump that starts now takes nothing.
+        KeFlushQueuedDpcs();
+        for (;;)
+        {
+            ULONG Pumping;
+            FILTER_ACQUIRE_LOCK(&pFilter->Lock, bFalse);
+            Pumping = pFilter->PacePumping;
+            FILTER_RELEASE_LOCK(&pFilter->Lock, bFalse);
+            if (!Pumping)
+            {
+                break;
+            }
+            NdisMSleep(100);
+        }
     }
 
     Status = NDIS_STATUS_SUCCESS;
@@ -727,12 +744,14 @@ NOTE: Called at PASSIVE_LEVEL and the filter is in paused state
     }
 
 
-    FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
+    // The timer goes first, at PASSIVE: deleting it waits for a running
+    // callback, which is not allowed under a spin lock.
     if (pFilter->PaceTimer != NULL)
     {
         ExDeleteTimer(pFilter->PaceTimer, TRUE, TRUE, NULL);
         pFilter->PaceTimer = NULL;
     }
+    FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
     if (pFilter->PaceRing != NULL)
     {
         NdisFreeMemory(pFilter->PaceRing, 0, 0);
@@ -1378,8 +1397,99 @@ pacerArmLocked(
     ExSetTimer(Filter->PaceTimer, -(LONG64)Wait, 0, NULL);
 }
 
-// Sends what the tokens allow, a batch per locked pass, and arms the timer
-// for the rest. Each NBL goes down alone with the flags it came with.
+// The pump (pacer_pump in the core) around this filter: its lock, its
+// ring, its timer and NdisFSendNetBufferLists. One runs at a time; a send
+// the miniport completes inline calls it again and that call returns at
+// once (dasio#1: the HIL 2 / 3c double faults).
+typedef struct _PACER_PUMP_CTX
+{
+    PMS_FILTER  Filter;
+    BOOLEAN     DispatchLevel;
+} PACER_PUMP_CTX, *PPACER_PUMP_CTX;
+
+static VOID
+pacerPumpLock(
+    _In_ PVOID Ctx
+    )
+{
+    PPACER_PUMP_CTX C = (PPACER_PUMP_CTX)Ctx;
+    FILTER_ACQUIRE_LOCK(&C->Filter->Lock, C->DispatchLevel);
+}
+
+static VOID
+pacerPumpUnlock(
+    _In_ PVOID Ctx
+    )
+{
+    PPACER_PUMP_CTX C = (PPACER_PUMP_CTX)Ctx;
+    FILTER_RELEASE_LOCK(&C->Filter->Lock, C->DispatchLevel);
+}
+
+// Under Lock: the due NBLs off the ring's head, in order. Nothing while the
+// filter is not running (pause completes the ring itself).
+static uint32_t
+pacerPumpTake(
+    _In_ PVOID Ctx,
+    _Out_writes_to_(Max, return) struct pacer_taken *Out,
+    _In_ uint32_t Max
+    )
+{
+    PMS_FILTER Filter = ((PPACER_PUMP_CTX)Ctx)->Filter;
+    ULONG64 Now = pacerNow();
+    uint32_t Count = 0;
+
+    Filter->PacePumps++;
+    if (Filter->State != FilterRunning)
+    {
+        return 0;
+    }
+    while (Count < Max && Filter->PaceRingCount > 0 &&
+           pacer_take(&Filter->Pacer, pacerNblBytes(Filter->PaceRing[Filter->PaceRingHead].Nbl), Now))
+    {
+        Out[Count].item = Filter->PaceRing[Filter->PaceRingHead].Nbl;
+        Out[Count].flags = Filter->PaceRing[Filter->PaceRingHead].SendFlags;
+        Filter->PaceRingHead = (Filter->PaceRingHead + 1) % PACER_RING_SIZE;
+        Filter->PaceRingCount--;
+        Count++;
+    }
+    Filter->PacePumpSent += Count;
+    return Count;
+}
+
+// Under Lock: nothing is due; the timer covers what waits.
+static VOID
+pacerPumpIdle(
+    _In_ PVOID Ctx
+    )
+{
+    PMS_FILTER Filter = ((PPACER_PUMP_CTX)Ctx)->Filter;
+    if (Filter->State == FilterRunning)
+    {
+        pacerArmLocked(Filter, pacerNow());
+    }
+}
+
+// Outside Lock: one NBL goes down alone with the flags it came with.
+static VOID
+pacerPumpSend(
+    _In_ PVOID Ctx,
+    _In_ const struct pacer_taken *Taken
+    )
+{
+    PPACER_PUMP_CTX C = (PPACER_PUMP_CTX)Ctx;
+    ULONG Flags = Taken->flags & ~NDIS_SEND_FLAGS_DISPATCH_LEVEL;
+    if (C->DispatchLevel)
+    {
+        Flags |= NDIS_SEND_FLAGS_DISPATCH_LEVEL;
+    }
+    NdisFSendNetBufferLists(C->Filter->FilterHandle, (PNET_BUFFER_LIST)Taken->item, NDIS_DEFAULT_PORT_NUMBER, Flags);
+}
+
+static const struct pacer_pump_ops PacerPumpOps =
+{
+    pacerPumpLock, pacerPumpUnlock, pacerPumpTake, pacerPumpIdle, pacerPumpSend
+};
+
 static VOID
 pacerPump(
     _In_ PMS_FILTER Filter,
@@ -1387,58 +1497,17 @@ pacerPump(
     _In_ BOOLEAN FromTimer
     )
 {
-    PACER_ENTRY Taken[PACER_TAKE_BATCH];
-    ULONG Count;
-    ULONG i;
-
-    FILTER_ACQUIRE_LOCK(&Filter->Lock, DispatchLevel);
+    PACER_PUMP_CTX Ctx;
+    Ctx.Filter = Filter;
+    Ctx.DispatchLevel = DispatchLevel;
     if (FromTimer)
     {
+        FILTER_ACQUIRE_LOCK(&Filter->Lock, DispatchLevel);
         Filter->PaceTimerArmed = FALSE;
         Filter->PaceTimerFires++;
-    }
-    if (Filter->PacePumping)
-    {
-        // The running pump takes what is due and re-arms the timer.
         FILTER_RELEASE_LOCK(&Filter->Lock, DispatchLevel);
-        return;
     }
-    Filter->PacePumping = TRUE;
-    Filter->PacePumps++;
-    FILTER_RELEASE_LOCK(&Filter->Lock, DispatchLevel);
-
-    do
-    {
-        ULONG64 Now = pacerNow();
-        Count = 0;
-        FILTER_ACQUIRE_LOCK(&Filter->Lock, DispatchLevel);
-        while (Count < PACER_TAKE_BATCH && Filter->PaceRingCount > 0 &&
-               pacer_take(&Filter->Pacer, pacerNblBytes(Filter->PaceRing[Filter->PaceRingHead].Nbl), Now))
-        {
-            Taken[Count++] = Filter->PaceRing[Filter->PaceRingHead];
-            Filter->PaceRingHead = (Filter->PaceRingHead + 1) % PACER_RING_SIZE;
-            Filter->PaceRingCount--;
-        }
-        Filter->PacePumpSent += Count;
-        if (Count < PACER_TAKE_BATCH)
-        {
-            // The last pass: done pumping, the timer covers the rest.
-            Filter->PacePumping = FALSE;
-            pacerArmLocked(Filter, Now);
-        }
-        FILTER_RELEASE_LOCK(&Filter->Lock, DispatchLevel);
-
-        for (i = 0; i < Count; i++)
-        {
-            ULONG Flags = Taken[i].SendFlags & ~NDIS_SEND_FLAGS_DISPATCH_LEVEL;
-            if (DispatchLevel)
-            {
-                Flags |= NDIS_SEND_FLAGS_DISPATCH_LEVEL;
-            }
-            NdisFSendNetBufferLists(Filter->FilterHandle, Taken[i].Nbl, NDIS_DEFAULT_PORT_NUMBER, Flags);
-        }
-    }
-    while (Count == PACER_TAKE_BATCH);
+    pacer_pump(&Filter->PacePumping, &PacerPumpOps, &Ctx);
 }
 
 // The timer: sends what the tokens now allow and re-arms for the rest.
@@ -1524,6 +1593,16 @@ Routine Description:
     PNET_BUFFER_LIST    CurrNbl = NetBufferLists;
     PNET_BUFFER_LIST    Down = NULL;
     PNET_BUFFER_LIST   *DownTail = &Down;
+
+    // Paused or pausing: nothing goes down (as Microsoft's sample does).
+    FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
+    if (pFilter->State != FilterRunning)
+    {
+        FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
+        pacerCompleteUnsent(pFilter, NetBufferLists, NDIS_STATUS_PAUSED, DispatchLevel);
+        return;
+    }
+    FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
 
     while (CurrNbl != NULL)
     {

@@ -95,7 +95,7 @@ typedef struct _DASIO_PACER_STATUS
 {
     ULONG64         Version;
     ULONG64         IfIndex;
-    ULONG64         State;            // FILTER_STATE: 3 = running
+    ULONG64         State;            // FILTER_STATE: 4 = running
     ULONG64         LinkAtAttach;     // bits/s the attach reported
     ULONG64         LinkLast;         // bits/s the last link-state reported
     ULONG64         LinkUpdates;

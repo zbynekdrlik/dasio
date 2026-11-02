@@ -192,7 +192,9 @@ void pacer_drop_queued(struct pacer *p, uint32_t count, uint64_t bytes)
     p->queued_bytes = p->queued_bytes >= bytes ? p->queued_bytes - bytes : 0;
 }
 
-/* As the driver's pump ran up to dasio#1 HIL 3c (moved here unchanged). */
+/* The flag stays set while the taken entries go down, so a pump called
+ * from inside one of those sends (an inline completion) returns at once;
+ * it is cleared only by a pass that finds nothing due, under the lock. */
 void pacer_pump(uint32_t *pumping, const struct pacer_pump_ops *ops, void *ctx)
 {
     struct pacer_taken taken[PACER_PUMP_BATCH];
@@ -205,18 +207,18 @@ void pacer_pump(uint32_t *pumping, const struct pacer_pump_ops *ops, void *ctx)
         return;
     }
     *pumping = 1;
-    ops->unlock(ctx);
-
-    do {
-        ops->lock(ctx);
+    for (;;) {
         count = ops->take(ctx, taken, PACER_PUMP_BATCH);
-        if (count < PACER_PUMP_BATCH) {
+        if (count == 0) {
             *pumping = 0;
             ops->idle(ctx);
+            ops->unlock(ctx);
+            return;
         }
         ops->unlock(ctx);
         for (i = 0; i < count; i++) {
             ops->send(ctx, &taken[i]);
         }
-    } while (count == PACER_PUMP_BATCH);
+        ops->lock(ctx);
+    }
 }
