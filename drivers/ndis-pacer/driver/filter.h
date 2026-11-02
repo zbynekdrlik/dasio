@@ -299,6 +299,18 @@ typedef struct _FILTER_REQUEST
 //
 #include "../core/pacer_core.h"
 
+// One waiting send: the NBL and the flags it was sent with (default port).
+typedef struct _PACER_ENTRY
+{
+    PNET_BUFFER_LIST    Nbl;
+    ULONG               SendFlags;
+} PACER_ENTRY, *PPACER_ENTRY;
+
+// Waiting sends at most; with a full ring a send goes down unpaced.
+#define PACER_RING_SIZE             4096u
+// Sends taken off the ring per locked pass.
+#define PACER_TAKE_BATCH            64u
+
 typedef struct _MS_FILTER
 {
     LIST_ENTRY                     FilterModuleLink;
@@ -337,12 +349,13 @@ typedef struct _MS_FILTER
     PNDIS_OID_REQUEST               PendingOidRequest;
 
     // dasio send pacer (all under Lock): the decisions and the other
-    // sends waiting for room in the miniport, in order, linked through
-    // NET_BUFFER_LIST_NEXT_NBL; each waiting NBL keeps its port number in
-    // its Scratch field.
+    // sends waiting for tokens, in order, in a ring of the filter's own
+    // (no field of a waiting NBL is touched: the protocol above owns its
+    // Scratch and reserved fields).
     struct pacer                    Pacer;
-    PNET_BUFFER_LIST                PaceHead;
-    PNET_BUFFER_LIST                PaceTail;
+    struct _PACER_ENTRY            *PaceRing;
+    ULONG                           PaceRingHead;
+    ULONG                           PaceRingCount;
     // Sends the queue's head when tokens are back (high resolution).
     PEX_TIMER                       PaceTimer;
     BOOLEAN                         PaceTimerArmed;

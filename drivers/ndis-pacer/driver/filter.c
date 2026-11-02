@@ -17,8 +17,7 @@ Abstract:
 // dasio send pacer helpers (defined before FilterSendNetBufferListsComplete).
 static ULONG pacerNblBytes(_In_ PNET_BUFFER_LIST Nbl);
 static enum pacer_class pacerNblClass(_In_ PNET_BUFFER_LIST Nbl);
-static VOID pacerSendTaken(_In_ PMS_FILTER Filter, _In_opt_ PNET_BUFFER_LIST Taken, _In_ BOOLEAN DispatchLevel);
-static PNET_BUFFER_LIST pacerTakeLocked(_In_ PMS_FILTER Filter, _In_ ULONG64 Now);
+static VOID pacerPump(_In_ PMS_FILTER Filter, _In_ BOOLEAN DispatchLevel, _In_ BOOLEAN FromTimer);
 static ULONG64 pacerNow(VOID);
 static VOID pacerRateFor(_In_ ULONG64 LinkBitsPerSecond, _Out_ ULONG64 *Rate, _Out_ ULONG *Burst);
 static VOID pacerArmLocked(_In_ PMS_FILTER Filter, _In_ ULONG64 Now);
@@ -371,9 +370,13 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
             ULONG Burst;
             pacerRateFor(AttachParameters->XmitLinkSpeed, &Rate, &Burst);
             pFilter->PaceTimer = ExAllocateTimer(pacerTimer, pFilter, EX_TIMER_HIGH_RESOLUTION);
-            if (pFilter->PaceTimer == NULL)
+            pFilter->PaceRing = (PPACER_ENTRY)NdisAllocateMemoryWithTagPriority(
+                FilterDriverHandle, sizeof(PACER_ENTRY) * PACER_RING_SIZE, FILTER_ALLOC_TAG, NormalPoolPriority);
+            pFilter->PaceRingHead = 0;
+            pFilter->PaceRingCount = 0;
+            if (pFilter->PaceTimer == NULL || pFilter->PaceRing == NULL)
             {
-                // No timer, no pacing: nothing may wait without one.
+                // No timer or ring, no pacing: nothing may wait without them.
                 Rate = 0;
                 Burst = 0;
             }
@@ -470,16 +473,22 @@ N.B.: When the filter is in Pausing state, it can still process OID requests,
         PNET_BUFFER_LIST Queued;
         ULONG Count = 0;
         ULONG64 Bytes = 0;
-        PNET_BUFFER_LIST CurrNbl;
 
         FILTER_ACQUIRE_LOCK(&pFilter->Lock, bFalse);
-        Queued = pFilter->PaceHead;
-        pFilter->PaceHead = NULL;
-        pFilter->PaceTail = NULL;
-        for (CurrNbl = Queued; CurrNbl != NULL; CurrNbl = NET_BUFFER_LIST_NEXT_NBL(CurrNbl))
+        Queued = NULL;
         {
-            Count++;
-            Bytes += pacerNblBytes(CurrNbl);
+            PNET_BUFFER_LIST *Tail = &Queued;
+            while (pFilter->PaceRingCount > 0)
+            {
+                PNET_BUFFER_LIST Nbl = pFilter->PaceRing[pFilter->PaceRingHead].Nbl;
+                pFilter->PaceRingHead = (pFilter->PaceRingHead + 1) % PACER_RING_SIZE;
+                pFilter->PaceRingCount--;
+                NET_BUFFER_LIST_NEXT_NBL(Nbl) = NULL;
+                *Tail = Nbl;
+                Tail = &NET_BUFFER_LIST_NEXT_NBL(Nbl);
+                Count++;
+                Bytes += pacerNblBytes(Nbl);
+            }
         }
         pacer_drop_queued(&pFilter->Pacer, Count, Bytes);
         pFilter->PaceTimerArmed = FALSE;
@@ -720,6 +729,11 @@ NOTE: Called at PASSIVE_LEVEL and the filter is in paused state
     {
         ExDeleteTimer(pFilter->PaceTimer, TRUE, TRUE, NULL);
         pFilter->PaceTimer = NULL;
+    }
+    if (pFilter->PaceRing != NULL)
+    {
+        NdisFreeMemory(pFilter->PaceRing, 0, 0);
+        pFilter->PaceRing = NULL;
     }
     RemoveEntryList(&pFilter->FilterModuleLink);
     FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
@@ -1121,7 +1135,7 @@ NOTE: called at <= DISPATCH_LEVEL
         BOOLEAN PassiveLevel = FALSE;
         pacerRateFor(LinkState->XmitLinkSpeed, &Rate, &Burst);
         FILTER_ACQUIRE_LOCK(&pFilter->Lock, PassiveLevel);
-        if (pFilter->PaceTimer != NULL)
+        if (pFilter->PaceTimer != NULL && pFilter->PaceRing != NULL)
         {
             pFilter->Pacer.rate = Rate;
             pFilter->Pacer.burst = Burst;
@@ -1301,26 +1315,6 @@ pacerNblClass(
     return pacer_classify(Header, Length);
 }
 
-// Sends queued NBLs down, one call each (each keeps its own port number).
-static VOID
-pacerSendTaken(
-    _In_ PMS_FILTER Filter,
-    _In_opt_ PNET_BUFFER_LIST Taken,
-    _In_ BOOLEAN DispatchLevel
-    )
-{
-    while (Taken != NULL)
-    {
-        PNET_BUFFER_LIST Next = NET_BUFFER_LIST_NEXT_NBL(Taken);
-        NDIS_PORT_NUMBER Port = (NDIS_PORT_NUMBER)(ULONG_PTR)Taken->Scratch;
-        NET_BUFFER_LIST_NEXT_NBL(Taken) = NULL;
-        Taken->Scratch = NULL;
-        NdisFSendNetBufferLists(Filter->FilterHandle, Taken, Port,
-                                DispatchLevel ? NDIS_SEND_FLAGS_DISPATCH_LEVEL : 0);
-        Taken = Next;
-    }
-}
-
 // Now, in 100 ns units (the interrupt time, precise).
 static ULONG64
 pacerNow(
@@ -1356,7 +1350,7 @@ pacerRateFor(
     *Burst = (ULONG)B;
 }
 
-// Under Lock: arms the timer for the queue's head unless it is armed or
+// Under Lock: arms the timer for the ring's head unless it is armed or
 // nothing waits.
 static VOID
 pacerArmLocked(
@@ -1365,7 +1359,7 @@ pacerArmLocked(
     )
 {
     ULONG64 Wait;
-    if (Filter->PaceTimerArmed || Filter->PaceHead == NULL || Filter->PaceTimer == NULL)
+    if (Filter->PaceTimerArmed || Filter->PaceRingCount == 0 || Filter->PaceTimer == NULL)
     {
         return;
     }
@@ -1378,6 +1372,52 @@ pacerArmLocked(
     ExSetTimer(Filter->PaceTimer, -(LONG64)Wait, 0, NULL);
 }
 
+// Sends what the tokens allow, a batch per locked pass, and arms the timer
+// for the rest. Each NBL goes down alone with the flags it came with.
+static VOID
+pacerPump(
+    _In_ PMS_FILTER Filter,
+    _In_ BOOLEAN DispatchLevel,
+    _In_ BOOLEAN FromTimer
+    )
+{
+    PACER_ENTRY Taken[PACER_TAKE_BATCH];
+    ULONG Count;
+    ULONG i;
+
+    do
+    {
+        ULONG64 Now = pacerNow();
+        Count = 0;
+        FILTER_ACQUIRE_LOCK(&Filter->Lock, DispatchLevel);
+        if (FromTimer)
+        {
+            Filter->PaceTimerArmed = FALSE;
+            FromTimer = FALSE;
+        }
+        while (Count < PACER_TAKE_BATCH && Filter->PaceRingCount > 0 &&
+               pacer_take(&Filter->Pacer, pacerNblBytes(Filter->PaceRing[Filter->PaceRingHead].Nbl), Now))
+        {
+            Taken[Count++] = Filter->PaceRing[Filter->PaceRingHead];
+            Filter->PaceRingHead = (Filter->PaceRingHead + 1) % PACER_RING_SIZE;
+            Filter->PaceRingCount--;
+        }
+        pacerArmLocked(Filter, Now);
+        FILTER_RELEASE_LOCK(&Filter->Lock, DispatchLevel);
+
+        for (i = 0; i < Count; i++)
+        {
+            ULONG Flags = Taken[i].SendFlags & ~NDIS_SEND_FLAGS_DISPATCH_LEVEL;
+            if (DispatchLevel)
+            {
+                Flags |= NDIS_SEND_FLAGS_DISPATCH_LEVEL;
+            }
+            NdisFSendNetBufferLists(Filter->FilterHandle, Taken[i].Nbl, NDIS_DEFAULT_PORT_NUMBER, Flags);
+        }
+    }
+    while (Count == PACER_TAKE_BATCH);
+}
+
 // The timer: sends what the tokens now allow and re-arms for the rest.
 _Use_decl_annotations_
 static VOID
@@ -1386,45 +1426,8 @@ pacerTimer(
     PVOID Context
     )
 {
-    PMS_FILTER Filter = (PMS_FILTER)Context;
-    PNET_BUFFER_LIST Taken;
-    ULONG64 Now = pacerNow();
-
     UNREFERENCED_PARAMETER(Timer);
-
-    FILTER_ACQUIRE_LOCK(&Filter->Lock, TRUE);
-    Filter->PaceTimerArmed = FALSE;
-    Taken = pacerTakeLocked(Filter, Now);
-    pacerArmLocked(Filter, Now);
-    FILTER_RELEASE_LOCK(&Filter->Lock, TRUE);
-
-    pacerSendTaken(Filter, Taken, TRUE);
-}
-
-// Under Lock: moves the queue's head NBLs that may go now onto a list the
-// caller sends after releasing the lock.
-static PNET_BUFFER_LIST
-pacerTakeLocked(
-    _In_ PMS_FILTER Filter,
-    _In_ ULONG64 Now
-    )
-{
-    PNET_BUFFER_LIST Head = NULL;
-    PNET_BUFFER_LIST *Tail = &Head;
-    while (Filter->PaceHead != NULL &&
-           pacer_take(&Filter->Pacer, pacerNblBytes(Filter->PaceHead), Now))
-    {
-        PNET_BUFFER_LIST Nbl = Filter->PaceHead;
-        Filter->PaceHead = NET_BUFFER_LIST_NEXT_NBL(Nbl);
-        if (Filter->PaceHead == NULL)
-        {
-            Filter->PaceTail = NULL;
-        }
-        NET_BUFFER_LIST_NEXT_NBL(Nbl) = NULL;
-        *Tail = Nbl;
-        Tail = &NET_BUFFER_LIST_NEXT_NBL(Nbl);
-    }
-    return Head;
+    pacerPump((PMS_FILTER)Context, TRUE, TRUE);
 }
 
 // Completes NBLs that never went down with Status (pause, cancel).
@@ -1444,7 +1447,6 @@ pacerCompleteUnsent(
     for (Nbl = Nbls; Nbl != NULL; Nbl = NET_BUFFER_LIST_NEXT_NBL(Nbl))
     {
         NET_BUFFER_LIST_STATUS(Nbl) = Status;
-        Nbl->Scratch = NULL;
     }
     NdisFSendNetBufferListsComplete(Filter->FilterHandle, Nbls,
                                     DispatchLevel ? NDIS_SEND_COMPLETE_FLAGS_DISPATCH_LEVEL : 0);
@@ -1468,16 +1470,9 @@ Routine Description:
 {
     PMS_FILTER         pFilter = (PMS_FILTER)FilterModuleContext;
     BOOLEAN            DispatchLevel = NDIS_TEST_SEND_COMPLETE_AT_DISPATCH_LEVEL(SendCompleteFlags);
-    PNET_BUFFER_LIST   Taken;
-    ULONG64            Now = pacerNow();
 
     // A completion is a chance to send what the tokens allow by now.
-    FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
-    Taken = pacerTakeLocked(pFilter, Now);
-    pacerArmLocked(pFilter, Now);
-    FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
-
-    pacerSendTaken(pFilter, Taken, DispatchLevel);
+    pacerPump(pFilter, DispatchLevel, FALSE);
 
     NdisFSendNetBufferListsComplete(pFilter->FilterHandle, NetBufferLists, SendCompleteFlags);
 }
@@ -1524,18 +1519,16 @@ Routine Description:
             ULONG Bytes = pacerNblBytes(CurrNbl);
             ULONG64 Now = pacerNow();
             FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
-            if (pFilter->State == FilterRunning && !pacer_offer(&pFilter->Pacer, Bytes, Now))
+            if (pFilter->State == FilterRunning &&
+                PortNumber == NDIS_DEFAULT_PORT_NUMBER &&
+                pFilter->PaceRing != NULL &&
+                pFilter->PaceRingCount < PACER_RING_SIZE &&
+                !pacer_offer(&pFilter->Pacer, Bytes, Now))
             {
-                CurrNbl->Scratch = (PVOID)(ULONG_PTR)PortNumber;
-                if (pFilter->PaceTail == NULL)
-                {
-                    pFilter->PaceHead = CurrNbl;
-                }
-                else
-                {
-                    NET_BUFFER_LIST_NEXT_NBL(pFilter->PaceTail) = CurrNbl;
-                }
-                pFilter->PaceTail = CurrNbl;
+                PPACER_ENTRY Entry = &pFilter->PaceRing[(pFilter->PaceRingHead + pFilter->PaceRingCount) % PACER_RING_SIZE];
+                Entry->Nbl = CurrNbl;
+                Entry->SendFlags = SendFlags;
+                pFilter->PaceRingCount++;
                 GoesDown = FALSE;
                 pacerArmLocked(pFilter, Now);
             }
@@ -1806,39 +1799,33 @@ Routine Description:
 --*/
 {
     PMS_FILTER          pFilter = (PMS_FILTER)FilterModuleContext;
-    PNET_BUFFER_LIST    Kept = NULL;
-    PNET_BUFFER_LIST   *KeptTail = &Kept;
     PNET_BUFFER_LIST    Cancelled = NULL;
     PNET_BUFFER_LIST   *CancelledTail = &Cancelled;
-    PNET_BUFFER_LIST    CurrNbl;
-    PNET_BUFFER_LIST    LastKept = NULL;
+    ULONG               Kept = 0;
+    ULONG               i;
     ULONG               Count = 0;
     ULONG64             Bytes = 0;
     BOOLEAN             bFalse = FALSE;
 
     FILTER_ACQUIRE_LOCK(&pFilter->Lock, bFalse);
-    CurrNbl = pFilter->PaceHead;
-    while (CurrNbl != NULL)
+    for (i = 0; i < pFilter->PaceRingCount; i++)
     {
-        PNET_BUFFER_LIST Next = NET_BUFFER_LIST_NEXT_NBL(CurrNbl);
-        NET_BUFFER_LIST_NEXT_NBL(CurrNbl) = NULL;
-        if (NDIS_GET_NET_BUFFER_LIST_CANCEL_ID(CurrNbl) == CancelId)
+        PACER_ENTRY Entry = pFilter->PaceRing[(pFilter->PaceRingHead + i) % PACER_RING_SIZE];
+        if (NDIS_GET_NET_BUFFER_LIST_CANCEL_ID(Entry.Nbl) == CancelId)
         {
             Count++;
-            Bytes += pacerNblBytes(CurrNbl);
-            *CancelledTail = CurrNbl;
-            CancelledTail = &NET_BUFFER_LIST_NEXT_NBL(CurrNbl);
+            Bytes += pacerNblBytes(Entry.Nbl);
+            NET_BUFFER_LIST_NEXT_NBL(Entry.Nbl) = NULL;
+            *CancelledTail = Entry.Nbl;
+            CancelledTail = &NET_BUFFER_LIST_NEXT_NBL(Entry.Nbl);
         }
         else
         {
-            *KeptTail = CurrNbl;
-            KeptTail = &NET_BUFFER_LIST_NEXT_NBL(CurrNbl);
-            LastKept = CurrNbl;
+            pFilter->PaceRing[(pFilter->PaceRingHead + Kept) % PACER_RING_SIZE] = Entry;
+            Kept++;
         }
-        CurrNbl = Next;
     }
-    pFilter->PaceHead = Kept;
-    pFilter->PaceTail = LastKept;
+    pFilter->PaceRingCount = Kept;
     pacer_drop_queued(&pFilter->Pacer, Count, Bytes);
     FILTER_RELEASE_LOCK(&pFilter->Lock, bFalse);
 
