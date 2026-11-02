@@ -17,7 +17,9 @@ use std::sync::atomic::{AtomicU32, AtomicU64};
 /// `"DASI"`.
 pub const MAGIC: u32 = u32::from_le_bytes(*b"DASI");
 /// The layout's version.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
+/// [`Header::start`] of a block with no media time (no clock).
+pub const NO_START: u64 = u64::MAX;
 /// Every buffer starts on this boundary.
 pub const ALIGN: usize = 64;
 /// The most channels each way.
@@ -60,6 +62,10 @@ pub struct Header {
     /// Blocks the driver never handed to the DAW (the device's seq moved on
     /// by more than one between two hand-overs).
     pub missed: AtomicU64,
+    /// The media time of each half's block, its first input sample
+    /// (written before its seq; [`NO_START`] without a clock): the DAW's
+    /// sample position runs on it.
+    pub start: [AtomicU64; 2],
 }
 
 /// The layout's shape: channels each way and the block.

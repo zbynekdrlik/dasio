@@ -77,7 +77,7 @@ impl<L: Link> Process for Bridge<L> {
                 *d = to_i32(x);
             }
         }
-        self.link.publish(self.seq, None);
+        self.link.publish(self.seq, block.start());
     }
 }
 
@@ -125,8 +125,12 @@ mod win {
             }
         }
 
-        fn publish(&self, seq: u64, _start: Option<u64>) {
-            self.0.header().seq.store(seq, Ordering::Release);
+        fn publish(&self, seq: u64, start: Option<u64>) {
+            let h = self.0.header();
+            // The half's media time before its seq: a driver that sees the
+            // seq sees the start.
+            h.start[(seq % 2) as usize].store(start.unwrap_or(shm::NO_START), Ordering::Relaxed);
+            h.seq.store(seq, Ordering::Release);
             self.0.signal_block();
         }
 

@@ -748,8 +748,9 @@ impl Job {
                     // The DAW's timeline runs on the device's media time
                     // (see Timeline): what it measures keeps the latencies
                     // it was told.
+                    let start = s.header().start[(seq % 2) as usize].load(Ordering::Relaxed);
                     let pos = timeline.next(
-                        None,
+                        (start != shm::NO_START).then_some(start),
                         seq.saturating_sub(last),
                         self.rt.position.load(Ordering::Acquire),
                         u64::from(self.shape.block),
