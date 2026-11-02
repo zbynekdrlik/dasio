@@ -93,7 +93,7 @@ typedef struct _FILTER_WRITE_CONFIG
 
 // dasio: one bound adapter's pacer, read under its lock. All fields 64 bit,
 // so user mode reads it as an array of UINT64 in this order.
-#define DASIO_PACER_STATUS_VERSION          2
+#define DASIO_PACER_STATUS_VERSION          3
 typedef struct _DASIO_PACER_STATUS
 {
     ULONG64         Version;
@@ -124,6 +124,10 @@ typedef struct _DASIO_PACER_STATUS
     ULONG64         OtherNbs;         // their NET_BUFFERs (packets)
     ULONG64         MaxNbs;           // most packets in one NBL
     ULONG64         MaxNblBytes;      // most bytes in one NBL
+    ULONG64         Splits;           // multi-packet NBLs split
+    ULONG64         SplitChildren;    // child NBLs made
+    ULONG64         SplitFails;       // splits that could not allocate (sent whole)
+    ULONG64         ChildrenOut;      // children not completed yet
 } DASIO_PACER_STATUS, *PDASIO_PACER_STATUS;
 
 // dasio: other traffic gets RatePercent of the link (0 = no pacing, at most

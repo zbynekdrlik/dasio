@@ -128,4 +128,21 @@ struct pacer_pump_ops {
  * written only under its lock. */
 void pacer_pump(uint32_t *pumping, const struct pacer_pump_ops *ops, void *ctx);
 
+/* A send of many packets in one NBL (tcpip hands a TCP burst down as one
+ * NBL of up to hundreds of packets, dasio#1) is split into child sends of
+ * one packet each, paced one by one. The parent completes upward when its
+ * last child has completed, with the first failure among them. Called
+ * under the caller's lock. */
+struct pacer_split {
+    uint32_t pending;
+    int32_t status;
+};
+
+/* A parent split into `children` (at least 1). */
+void pacer_split_init(struct pacer_split *s, uint32_t children);
+
+/* One child completed with `status` (0 = success). Returns 1 when it was
+ * the last: the parent completes now with `s->status`. */
+int pacer_split_done(struct pacer_split *s, int32_t status);
+
 #endif

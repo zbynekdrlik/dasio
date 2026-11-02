@@ -470,11 +470,38 @@ static void rates(void)
     CHECK(burst == UINT32_MAX);
 }
 
+static void split(void)
+{
+    struct pacer_split s;
+
+    /* All children succeed: the parent completes once, with success. */
+    pacer_split_init(&s, 3);
+    CHECK(pacer_split_done(&s, 0) == 0);
+    CHECK(pacer_split_done(&s, 0) == 0);
+    CHECK(pacer_split_done(&s, 0) == 1);
+    CHECK(s.status == 0);
+
+    /* The first failure is the parent's status; later ones do not replace it. */
+    pacer_split_init(&s, 3);
+    CHECK(pacer_split_done(&s, 0) == 0);
+    CHECK(pacer_split_done(&s, -5) == 0);
+    CHECK(pacer_split_done(&s, -7) == 1);
+    CHECK(s.status == -5);
+
+    /* One child. */
+    pacer_split_init(&s, 1);
+    CHECK(pacer_split_done(&s, -9) == 1 && s.status == -9);
+
+    /* A completion past the last does not wrap the count. */
+    CHECK(pacer_split_done(&s, 0) == 1 && s.pending == 0);
+}
+
 int main(void)
 {
     classify();
     pacing();
     rates();
+    split();
     pump();
     printf("%d checks, %d failed\n", checks, failed);
     return failed == 0 ? 0 : 1;

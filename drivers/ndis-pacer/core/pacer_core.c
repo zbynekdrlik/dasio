@@ -242,3 +242,20 @@ void pacer_pump(uint32_t *pumping, const struct pacer_pump_ops *ops, void *ctx)
         ops->lock(ctx);
     }
 }
+
+void pacer_split_init(struct pacer_split *s, uint32_t children)
+{
+    s->pending = children;
+    s->status = 0;
+}
+
+int pacer_split_done(struct pacer_split *s, int32_t status)
+{
+    if (s->status == 0) {
+        s->status = status;
+    }
+    if (s->pending > 0) {
+        s->pending--;
+    }
+    return s->pending == 0;
+}

@@ -17,7 +17,7 @@ public static class DasioPacer {
     public static ulong[] Read() {
         using (var h = CreateFile(@"\\.\dasiopacer", 0xC0000000u, 3u, IntPtr.Zero, 3u, 0u, IntPtr.Zero)) {
             if (h.IsInvalid) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "open \\\\.\\dasiopacer");
-            var buf = new byte[8 * 28 * 16];
+            var buf = new byte[8 * 32 * 16];
             uint got;
             if (!DeviceIoControl(h, IOCTL_DASIO_PACER_STATUS, IntPtr.Zero, 0, buf, (uint)buf.Length, out got, IntPtr.Zero))
                 throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "IOCTL_DASIO_PACER_STATUS");
@@ -32,12 +32,13 @@ public static class DasioPacer {
 # The fields of DASIO_PACER_STATUS (filteruser.h), in order.
 $names = "Version", "IfIndex", "State", "LinkAtAttach", "LinkLast", "LinkUpdates", "Rate", "Burst", "Tokens", "Last", "Now",
     "Queued", "QueuedBytes", "RingCount", "MaxQueued", "PrioritySent", "Admitted", "Deferred", "TimerArms", "TimerFires",
-    "TimerArmed", "Pumps", "PumpSent", "Pumping", "OtherNbls", "OtherNbs", "MaxNbs", "MaxNblBytes"
+    "TimerArmed", "Pumps", "PumpSent", "Pumping", "OtherNbls", "OtherNbs", "MaxNbs", "MaxNblBytes",
+    "Splits", "SplitChildren", "SplitFails", "ChildrenOut"
 for ($n = 0; $n -lt $Count; $n++) {
     $v = [DasioPacer]::Read()
     if ($v.Length % $names.Count -ne 0) { throw "status of $($v.Length * 8) bytes is not a whole number of records" }
     for ($i = 0; $i -lt $v.Length; $i += $names.Count) {
-        if ($v[$i] -ne 2) { throw "status version $($v[$i]), this script reads 2" }
+        if ($v[$i] -ne 3) { throw "status version $($v[$i]), this script reads 3" }
         $o = [ordered]@{ Time = (Get-Date -Format o) }
         for ($k = 0; $k -lt $names.Count; $k++) {
             $o[$names[$k]] = if ($names[$k] -eq "Tokens") { [BitConverter]::ToInt64([BitConverter]::GetBytes($v[$i + $k]), 0) } else { $v[$i + $k] }

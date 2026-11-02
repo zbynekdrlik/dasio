@@ -22,7 +22,7 @@ static ULONG64 pacerNow(VOID);
 static VOID pacerRateFor(_In_ ULONG64 LinkBitsPerSecond, _Out_ ULONG64 *Rate, _Out_ ULONG *Burst);
 static VOID pacerArmLocked(_In_ PMS_FILTER Filter, _In_ ULONG64 Now);
 static EXT_CALLBACK pacerTimer;
-static VOID pacerCompleteUnsent(_In_ PMS_FILTER Filter, _In_opt_ PNET_BUFFER_LIST Nbls, _In_ NDIS_STATUS Status, _In_ BOOLEAN DispatchLevel);
+static VOID pacerComplete(_In_ PMS_FILTER Filter, _In_opt_ PNET_BUFFER_LIST Nbls, _In_ BOOLEAN SetStatus, _In_ NDIS_STATUS Status, _In_ BOOLEAN DispatchLevel, _In_ ULONG UpFlags);
 
 #define __FILENUMBER    'PNPF'
 
@@ -383,6 +383,20 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
             pacer_init(&pFilter->Pacer, Rate, Burst, pacerNow());
             pFilter->PaceTimerArmed = FALSE;
             pFilter->PacePumping = FALSE;
+            {
+                NET_BUFFER_LIST_POOL_PARAMETERS PoolParams;
+                NdisZeroMemory(&PoolParams, sizeof(PoolParams));
+                PoolParams.Header.Type = NDIS_OBJECT_TYPE_DEFAULT;
+                PoolParams.Header.Revision = NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1;
+                PoolParams.Header.Size = NDIS_SIZEOF_NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1;
+                PoolParams.ProtocolId = NDIS_PROTOCOL_ID_DEFAULT;
+                PoolParams.fAllocateNetBuffer = TRUE;
+                PoolParams.ContextSize = PACER_CHILD_CONTEXT;
+                PoolParams.PoolTag = FILTER_ALLOC_TAG;
+                PoolParams.DataSize = 0;
+                // No pool, no split: a multi-packet NBL then goes as a whole.
+                pFilter->PaceNblPool = NdisAllocateNetBufferListPool(pFilter->FilterHandle, &PoolParams);
+            }
             pFilter->PaceLinkAtAttach = AttachParameters->XmitLinkSpeed;
             pFilter->PaceLinkLast = AttachParameters->XmitLinkSpeed;
         }
@@ -501,7 +515,7 @@ N.B.: When the filter is in Pausing state, it can still process OID requests,
         {
             ExCancelTimer(pFilter->PaceTimer, NULL);
         }
-        pacerCompleteUnsent(pFilter, Queued, NDIS_STATUS_PAUSED, FALSE);
+        pacerComplete(pFilter, Queued, TRUE, NDIS_STATUS_PAUSED, FALSE, 0);
 
         // A timer callback or a pump that already runs may still hold NBLs
         // it took: paused means none of ours goes down any more. The state
@@ -510,10 +524,14 @@ N.B.: When the filter is in Pausing state, it can still process OID requests,
         for (;;)
         {
             ULONG Pumping;
+            ULONG64 ChildrenOut;
             FILTER_ACQUIRE_LOCK(&pFilter->Lock, bFalse);
             Pumping = pFilter->PacePumping;
+            ChildrenOut = pFilter->PaceChildrenOut;
             FILTER_RELEASE_LOCK(&pFilter->Lock, bFalse);
-            if (!Pumping)
+            // Our child NBLs below complete to us; their parents go up
+            // with the last one, before pause returns.
+            if (!Pumping && ChildrenOut == 0)
             {
                 break;
             }
@@ -750,6 +768,12 @@ NOTE: Called at PASSIVE_LEVEL and the filter is in paused state
     {
         ExDeleteTimer(pFilter->PaceTimer, TRUE, TRUE, NULL);
         pFilter->PaceTimer = NULL;
+    }
+    // Every child has completed (pause waited for them).
+    if (pFilter->PaceNblPool != NULL)
+    {
+        NdisFreeNetBufferListPool(pFilter->PaceNblPool);
+        pFilter->PaceNblPool = NULL;
     }
     FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
     if (pFilter->PaceRing != NULL)
@@ -1530,26 +1554,190 @@ pacerTimer(
     pacerPump((PMS_FILTER)Context, TRUE, TRUE);
 }
 
-// Completes NBLs that never went down with Status (pause, cancel).
+// One child completed: freed; its parent goes onto *UpTail when it was the
+// last child.
 static VOID
-pacerCompleteUnsent(
+pacerChildDone(
+    _In_ PMS_FILTER Filter,
+    _In_ PNET_BUFFER_LIST Child,
+    _In_ BOOLEAN DispatchLevel,
+    _Inout_ PNET_BUFFER_LIST **UpTail
+    )
+{
+    PPACER_SPLIT_REC Rec = *(PPACER_SPLIT_REC *)NET_BUFFER_LIST_CONTEXT_DATA_START(Child);
+    NDIS_STATUS Status = NET_BUFFER_LIST_STATUS(Child);
+    int Last;
+
+    NdisFreeNetBufferList(Child);
+    FILTER_ACQUIRE_LOCK(&Filter->Lock, DispatchLevel);
+    Last = pacer_split_done(&Rec->Split, Status);
+    if (Filter->PaceChildrenOut > 0)
+    {
+        Filter->PaceChildrenOut--;
+    }
+    FILTER_RELEASE_LOCK(&Filter->Lock, DispatchLevel);
+    if (Last)
+    {
+        PNET_BUFFER_LIST Parent = Rec->Parent;
+        NET_BUFFER_LIST_STATUS(Parent) = Rec->Split.status;
+        NET_BUFFER_LIST_NEXT_NBL(Parent) = NULL;
+        **UpTail = Parent;
+        *UpTail = &NET_BUFFER_LIST_NEXT_NBL(Parent);
+        NdisFreeMemory(Rec, 0, 0);
+    }
+}
+
+// Completes a chain upward: our child NBLs complete into their parents,
+// the others go up as they are. SetStatus: they never went down (pause,
+// cancel), with Status.
+static VOID
+pacerComplete(
     _In_ PMS_FILTER Filter,
     _In_opt_ PNET_BUFFER_LIST Nbls,
+    _In_ BOOLEAN SetStatus,
     _In_ NDIS_STATUS Status,
+    _In_ BOOLEAN DispatchLevel,
+    _In_ ULONG UpFlags
+    )
+{
+    PNET_BUFFER_LIST Up = NULL;
+    PNET_BUFFER_LIST *UpTail = &Up;
+    PNET_BUFFER_LIST Nbl = Nbls;
+
+    while (Nbl != NULL)
+    {
+        PNET_BUFFER_LIST Next = NET_BUFFER_LIST_NEXT_NBL(Nbl);
+        NET_BUFFER_LIST_NEXT_NBL(Nbl) = NULL;
+        if (SetStatus)
+        {
+            NET_BUFFER_LIST_STATUS(Nbl) = Status;
+        }
+        if (Filter->PaceNblPool != NULL && NdisGetPoolFromNetBufferList(Nbl) == Filter->PaceNblPool)
+        {
+            pacerChildDone(Filter, Nbl, DispatchLevel, &UpTail);
+        }
+        else
+        {
+            *UpTail = Nbl;
+            UpTail = &NET_BUFFER_LIST_NEXT_NBL(Nbl);
+        }
+        Nbl = Next;
+    }
+    if (Up != NULL)
+    {
+        if (DispatchLevel)
+        {
+            UpFlags |= NDIS_SEND_COMPLETE_FLAGS_DISPATCH_LEVEL;
+        }
+        NdisFSendNetBufferListsComplete(Filter->FilterHandle, Up, UpFlags);
+    }
+}
+
+// Splits an NBL of Nbs packets into child NBLs of one packet each, from
+// the filter's pool, over the parent's buffers. NULL when it cannot (the
+// NBL then goes as a whole).
+static PNET_BUFFER_LIST
+pacerSplit(
+    _In_ PMS_FILTER Filter,
+    _In_ PNET_BUFFER_LIST Nbl,
+    _In_ ULONG Nbs,
     _In_ BOOLEAN DispatchLevel
     )
 {
-    PNET_BUFFER_LIST Nbl;
-    if (Nbls == NULL)
+    PPACER_SPLIT_REC Rec = NULL;
+    PNET_BUFFER_LIST Head = NULL;
+    PNET_BUFFER_LIST *Tail = &Head;
+    PNET_BUFFER Nb;
+    BOOLEAN Failed = FALSE;
+
+    if (Filter->PaceNblPool != NULL)
     {
-        return;
+        Rec = (PPACER_SPLIT_REC)NdisAllocateMemoryWithTagPriority(
+            FilterDriverHandle, sizeof(PACER_SPLIT_REC), FILTER_ALLOC_TAG, NormalPoolPriority);
     }
-    for (Nbl = Nbls; Nbl != NULL; Nbl = NET_BUFFER_LIST_NEXT_NBL(Nbl))
+    if (Rec == NULL)
     {
-        NET_BUFFER_LIST_STATUS(Nbl) = Status;
+        Failed = TRUE;
     }
-    NdisFSendNetBufferListsComplete(Filter->FilterHandle, Nbls,
-                                    DispatchLevel ? NDIS_SEND_COMPLETE_FLAGS_DISPATCH_LEVEL : 0);
+    else
+    {
+        Rec->Parent = Nbl;
+        pacer_split_init(&Rec->Split, Nbs);
+        for (Nb = NET_BUFFER_LIST_FIRST_NB(Nbl); Nb != NULL; Nb = NET_BUFFER_NEXT_NB(Nb))
+        {
+            PNET_BUFFER_LIST Child = NdisAllocateNetBufferAndNetBufferList(
+                Filter->PaceNblPool, PACER_CHILD_CONTEXT, 0,
+                NET_BUFFER_CURRENT_MDL(Nb), NET_BUFFER_CURRENT_MDL_OFFSET(Nb), NET_BUFFER_DATA_LENGTH(Nb));
+            if (Child == NULL)
+            {
+                Failed = TRUE;
+                break;
+            }
+            Child->SourceHandle = Filter->FilterHandle;
+            Child->ParentNetBufferList = Nbl;
+            NdisCopySendNetBufferListInfo(Child, Nbl);
+            NDIS_SET_NET_BUFFER_LIST_CANCEL_ID(Child, NDIS_GET_NET_BUFFER_LIST_CANCEL_ID(Nbl));
+            *(PPACER_SPLIT_REC *)NET_BUFFER_LIST_CONTEXT_DATA_START(Child) = Rec;
+            *Tail = Child;
+            Tail = &NET_BUFFER_LIST_NEXT_NBL(Child);
+        }
+        if (Failed)
+        {
+            while (Head != NULL)
+            {
+                PNET_BUFFER_LIST Next = NET_BUFFER_LIST_NEXT_NBL(Head);
+                NdisFreeNetBufferList(Head);
+                Head = Next;
+            }
+            NdisFreeMemory(Rec, 0, 0);
+        }
+    }
+
+    FILTER_ACQUIRE_LOCK(&Filter->Lock, DispatchLevel);
+    if (Failed)
+    {
+        Filter->PaceSplitFails++;
+    }
+    else
+    {
+        Filter->PaceSplits++;
+        Filter->PaceSplitChildren += Nbs;
+        Filter->PaceChildrenOut += Nbs;
+    }
+    FILTER_RELEASE_LOCK(&Filter->Lock, DispatchLevel);
+    return Failed ? NULL : Head;
+}
+
+// One send of Bytes: TRUE when it goes down now, FALSE when it waits in
+// the ring (in order, for the timer or a completion).
+static BOOLEAN
+pacerAdmit(
+    _In_ PMS_FILTER Filter,
+    _In_ PNET_BUFFER_LIST Nbl,
+    _In_ ULONG Bytes,
+    _In_ NDIS_PORT_NUMBER PortNumber,
+    _In_ ULONG SendFlags,
+    _In_ BOOLEAN DispatchLevel
+    )
+{
+    BOOLEAN Down = TRUE;
+    ULONG64 Now = pacerNow();
+    FILTER_ACQUIRE_LOCK(&Filter->Lock, DispatchLevel);
+    if (Filter->State == FilterRunning &&
+        PortNumber == NDIS_DEFAULT_PORT_NUMBER &&
+        Filter->PaceRing != NULL &&
+        Filter->PaceRingCount < PACER_RING_SIZE &&
+        !pacer_offer(&Filter->Pacer, Bytes, Now))
+    {
+        PPACER_ENTRY Entry = &Filter->PaceRing[(Filter->PaceRingHead + Filter->PaceRingCount) % PACER_RING_SIZE];
+        Entry->Nbl = Nbl;
+        Entry->SendFlags = SendFlags;
+        Filter->PaceRingCount++;
+        Down = FALSE;
+        pacerArmLocked(Filter, Now);
+    }
+    FILTER_RELEASE_LOCK(&Filter->Lock, DispatchLevel);
+    return Down;
 }
 
 _Use_decl_annotations_
@@ -1574,7 +1762,9 @@ Routine Description:
     // A completion is a chance to send what the tokens allow by now.
     pacerPump(pFilter, DispatchLevel, FALSE);
 
-    NdisFSendNetBufferListsComplete(pFilter->FilterHandle, NetBufferLists, SendCompleteFlags);
+    // Our child NBLs complete into their parents; the rest go up as is.
+    pacerComplete(pFilter, NetBufferLists, FALSE, NDIS_STATUS_SUCCESS, DispatchLevel,
+                  SendCompleteFlags & ~NDIS_SEND_COMPLETE_FLAGS_DISPATCH_LEVEL);
 }
 
 _Use_decl_annotations_
@@ -1607,7 +1797,7 @@ Routine Description:
     if (pFilter->State != FilterRunning)
     {
         FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
-        pacerCompleteUnsent(pFilter, NetBufferLists, NDIS_STATUS_PAUSED, DispatchLevel);
+        pacerComplete(pFilter, NetBufferLists, TRUE, NDIS_STATUS_PAUSED, DispatchLevel, 0);
         return;
     }
     FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
@@ -1628,15 +1818,15 @@ Routine Description:
         {
             ULONG Bytes = pacerNblBytes(CurrNbl);
             ULONG Nbs = 0;
-            ULONG64 Now = pacerNow();
             PNET_BUFFER Nb;
+            PNET_BUFFER_LIST Children = NULL;
             for (Nb = NET_BUFFER_LIST_FIRST_NB(CurrNbl); Nb != NULL; Nb = NET_BUFFER_NEXT_NB(Nb))
             {
                 Nbs++;
             }
             FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
-            // What tcpip hands down: a whole NBL goes down at once, so its
-            // size bounds what the pacer can spread (dasio#1).
+            // What tcpip hands down: a TCP burst comes as NBLs of up to
+            // hundreds of packets (dasio#1), so they are split below.
             pFilter->PaceOtherNbls++;
             pFilter->PaceOtherNbs += Nbs;
             if (Nbs > pFilter->PaceMaxNbs)
@@ -1647,20 +1837,34 @@ Routine Description:
             {
                 pFilter->PaceMaxNblBytes = Bytes;
             }
-            if (pFilter->State == FilterRunning &&
-                PortNumber == NDIS_DEFAULT_PORT_NUMBER &&
-                pFilter->PaceRing != NULL &&
-                pFilter->PaceRingCount < PACER_RING_SIZE &&
-                !pacer_offer(&pFilter->Pacer, Bytes, Now))
-            {
-                PPACER_ENTRY Entry = &pFilter->PaceRing[(pFilter->PaceRingHead + pFilter->PaceRingCount) % PACER_RING_SIZE];
-                Entry->Nbl = CurrNbl;
-                Entry->SendFlags = SendFlags;
-                pFilter->PaceRingCount++;
-                GoesDown = FALSE;
-                pacerArmLocked(pFilter, Now);
-            }
             FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
+
+            if (Nbs > 1 && PortNumber == NDIS_DEFAULT_PORT_NUMBER)
+            {
+                Children = pacerSplit(pFilter, CurrNbl, Nbs, DispatchLevel);
+            }
+            if (Children != NULL)
+            {
+                // Each packet is paced on its own; the parent completes
+                // upward with its last child.
+                GoesDown = FALSE;
+                while (Children != NULL)
+                {
+                    PNET_BUFFER_LIST Child = Children;
+                    Children = NET_BUFFER_LIST_NEXT_NBL(Child);
+                    NET_BUFFER_LIST_NEXT_NBL(Child) = NULL;
+                    if (pacerAdmit(pFilter, Child, NET_BUFFER_DATA_LENGTH(NET_BUFFER_LIST_FIRST_NB(Child)),
+                                   PortNumber, SendFlags, DispatchLevel))
+                    {
+                        *DownTail = Child;
+                        DownTail = &NET_BUFFER_LIST_NEXT_NBL(Child);
+                    }
+                }
+            }
+            else
+            {
+                GoesDown = pacerAdmit(pFilter, CurrNbl, Bytes, PortNumber, SendFlags, DispatchLevel);
+            }
         }
 
         if (GoesDown)
@@ -1957,7 +2161,7 @@ Routine Description:
     pacer_drop_queued(&pFilter->Pacer, Count, Bytes);
     FILTER_RELEASE_LOCK(&pFilter->Lock, bFalse);
 
-    pacerCompleteUnsent(pFilter, Cancelled, NDIS_STATUS_SEND_ABORTED, FALSE);
+    pacerComplete(pFilter, Cancelled, TRUE, NDIS_STATUS_SEND_ABORTED, FALSE, 0);
 
     NdisFCancelSendNetBufferLists(pFilter->FilterHandle, CancelId);
 }

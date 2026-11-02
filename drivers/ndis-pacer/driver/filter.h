@@ -372,8 +372,25 @@ typedef struct _MS_FILTER
     ULONG64                         PaceOtherNbs;
     ULONG64                         PaceMaxNbs;
     ULONG64                         PaceMaxNblBytes;
+    // Multi-packet NBLs split into child NBLs of one packet (dasio#1):
+    // the filter's own pool, and the counts the status reports.
+    NDIS_HANDLE                     PaceNblPool;
+    ULONG64                         PaceSplits;
+    ULONG64                         PaceSplitChildren;
+    ULONG64                         PaceSplitFails;
+    ULONG64                         PaceChildrenOut;
 
 }MS_FILTER, * PMS_FILTER;
+
+// A split parent: the NBL tcpip sent and its children's bookkeeping. Each
+// child's context area holds a pointer to it.
+typedef struct _PACER_SPLIT_REC
+{
+    PNET_BUFFER_LIST    Parent;
+    struct pacer_split  Split;
+} PACER_SPLIT_REC, *PPACER_SPLIT_REC;
+
+#define PACER_CHILD_CONTEXT         ((USHORT)MEMORY_ALLOCATION_ALIGNMENT)
 
 // The pacer settings (filter.c) and applying them to one filter, under its
 // Lock (IOCTL_DASIO_PACER_SET).
