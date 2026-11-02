@@ -74,6 +74,21 @@ mod tests {
     }
 
     #[test]
+    fn a_latency_in_ns_is_its_nearest_whole_samples_as_the_rx_plays_it() {
+        // 333 333 ns at 96 kHz is 32 samples (the RX's playout point, the
+        // stack's latency_samples); a floor would read 31 and report the
+        // DAW one sample short.
+        let mut cfg = DeviceConfig::from_toml(DEVICE).unwrap();
+        cfg.block = 32;
+        cfg.latency_ns = 333_333;
+        cfg.work_margin = 64;
+        cfg.tx_latency_ns = Some(666_666);
+        assert_eq!(timing(&cfg), Timing::of(&cfg));
+        assert_eq!(timing(&cfg).playout, 32);
+        assert_eq!(latencies(&cfg), (32 + 32, 32 + 64 + 64));
+    }
+
+    #[test]
     fn own_cpus_hold_every_pinned_media_thread() {
         let mut cfg = DeviceConfig::from_toml(DEVICE).unwrap();
         assert_eq!(own_cpus(&cfg), 0);
