@@ -17,18 +17,14 @@ pub mod register;
 pub mod run;
 pub mod service;
 
-use iem_dante::clock::to_samples;
+use iem_dante::clock::latency_samples;
 use iem_dante::device::DeviceConfig;
 use iem_dante::stream::Timing;
 
 /// The pump's timing on `cfg`: B = its block, P = its latency, W = its
 /// work margin (the DAW's time to return a block).
 pub fn timing(cfg: &DeviceConfig) -> Timing {
-    Timing {
-        block: cfg.block,
-        playout: to_samples(cfg.latency_ns, cfg.sample_rate),
-        margin: cfg.work_margin,
-    }
+    Timing::of(cfg)
 }
 
 /// The DAW's input and output latency, samples: a block reaches the DAW
@@ -37,7 +33,7 @@ pub fn timing(cfg: &DeviceConfig) -> Timing {
 /// latency (receivers play our flows at that latency).
 pub fn latencies(cfg: &DeviceConfig) -> (u32, u32) {
     let t = timing(cfg);
-    let tx = to_samples(cfg.tx_latency_ns.unwrap_or(cfg.latency_ns), cfg.sample_rate);
+    let tx = latency_samples(cfg.tx_latency_ns.unwrap_or(cfg.latency_ns), cfg.sample_rate);
     (
         (t.block + t.playout) as u32,
         (t.block + t.margin + tx) as u32,
