@@ -426,6 +426,7 @@ typedef struct _MS_FILTER
     PNET_BUFFER_LIST               *RxdTail;
     ULONG                           RxdQueued;
     ULONG64                         RxdDeferred;
+    ULONG64                         RxdPriority;
     ULONG64                         RxdInline;
     ULONG64                         RxdDpcRuns;
     ULONG64                         RxdMaxBatch;

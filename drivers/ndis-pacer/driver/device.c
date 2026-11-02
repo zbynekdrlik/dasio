@@ -444,6 +444,7 @@ FilterDeviceIoControl(
                 Out->MaxBatch = pFilter->RxdMaxBatch;
                 Out->Queued = pFilter->RxdQueued;
                 Out->Dropped = pFilter->RxdDropped;
+                Out->Priority = pFilter->RxdPriority;
                 FILTER_RELEASE_LOCK(&pFilter->Lock, bTrue);
                 InfoLength += (ULONG)sizeof(DASIO_RXD_STATUS);
             }

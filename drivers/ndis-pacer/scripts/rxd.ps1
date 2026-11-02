@@ -1,7 +1,8 @@
 # dasio NDIS filter: deferred receive (dasio#1). The NIC's receive DPC hands
 # its packets to the filter and returns at once; a DPC of the filter's own,
 # on -Cpu, indicates them up, so tcpip's and WFP's work for them runs there
-# and not inside the NIC's DPC. Run as administrator. Off after a restart of
+# and not inside the NIC's DPC; priority packets (Dante audio, PTP) still go
+# up at once. Run as administrator. Off after a restart of
 # the filter.
 #   .\rxd.ps1 on -Cpu 11
 #   .\rxd.ps1 off
@@ -50,8 +51,8 @@ switch ($Action) {
     }
     "status" {
         # The fields of DASIO_RXD_STATUS (filteruser.h), in order.
-        $names = "Version", "IfIndex", "Enabled", "Cpu", "Deferred", "Inline", "DpcRuns", "MaxBatch", "Queued", "Dropped"
-        $raw = [DasioRxd]::Call([DasioRxd]::STATUS, $null, 8 * 10 * 16)
+        $names = "Version", "IfIndex", "Enabled", "Cpu", "Deferred", "Inline", "DpcRuns", "MaxBatch", "Queued", "Dropped", "Priority"
+        $raw = [DasioRxd]::Call([DasioRxd]::STATUS, $null, 8 * 11 * 16)
         $v = New-Object Int64[] ($raw.Length / 8)
         [Buffer]::BlockCopy($raw, 0, $v, 0, $raw.Length)
         if ($v.Length % $names.Count -ne 0) { throw "status of $($raw.Length) bytes is not a whole number of records" }

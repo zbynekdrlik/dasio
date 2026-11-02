@@ -2124,35 +2124,65 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
         }
 
         // dasio deferred receive: the NBLs wait for our DPC and the NIC's
-        // DPC returns at once. Not when they cannot pend (the miniport
-        // needs them back now) or on another port.
-        if (NDIS_TEST_RECEIVE_CAN_PEND(ReceiveFlags) && PortNumber == NDIS_DEFAULT_PORT_NUMBER)
+        // DPC returns at once. Priority packets (Dante audio, PTP: the
+        // pacer's classes) go up at once, so their timing never waits
+        // behind other traffic's work. Not when they cannot pend (the
+        // miniport needs them back now) or on another port.
+        if (NDIS_TEST_RECEIVE_CAN_PEND(ReceiveFlags) && PortNumber == NDIS_DEFAULT_PORT_NUMBER &&
+            pFilter->RxdEnabled)
         {
-            BOOLEAN Queued = FALSE;
-            FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
-            if (pFilter->RxdEnabled && pFilter->State == FilterRunning)
+            PNET_BUFFER_LIST Prio = NULL;
+            PNET_BUFFER_LIST *PrioTail = &Prio;
+            PNET_BUFFER_LIST Other = NULL;
+            PNET_BUFFER_LIST *OtherTail = &Other;
+            ULONG PrioCount = 0;
+            ULONG OtherCount = 0;
+            PNET_BUFFER_LIST Nbl = NetBufferLists;
+            while (Nbl != NULL)
             {
-                PNET_BUFFER_LIST Last = NetBufferLists;
-                while (NET_BUFFER_LIST_NEXT_NBL(Last) != NULL)
+                PNET_BUFFER_LIST Next = NET_BUFFER_LIST_NEXT_NBL(Nbl);
+                NET_BUFFER_LIST_NEXT_NBL(Nbl) = NULL;
+                if (pacerNblClass(Nbl) == PACER_PRIORITY)
                 {
-                    Last = NET_BUFFER_LIST_NEXT_NBL(Last);
+                    *PrioTail = Nbl;
+                    PrioTail = &NET_BUFFER_LIST_NEXT_NBL(Nbl);
+                    PrioCount++;
                 }
-                *pFilter->RxdTail = NetBufferLists;
-                pFilter->RxdTail = &NET_BUFFER_LIST_NEXT_NBL(Last);
-                pFilter->RxdQueued += NumberOfNetBufferLists;
-                pFilter->RxdDeferred += NumberOfNetBufferLists;
-                Queued = TRUE;
+                else
+                {
+                    *OtherTail = Nbl;
+                    OtherTail = &NET_BUFFER_LIST_NEXT_NBL(Nbl);
+                    OtherCount++;
+                }
+                Nbl = Next;
             }
-            else
+            FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
+            if (pFilter->State != FilterRunning)
             {
-                pFilter->RxdInline += NumberOfNetBufferLists;
+                // Not running: everything goes up at once, in one chain.
+                *PrioTail = Other;
+                PrioCount += OtherCount;
+                Other = NULL;
+                OtherCount = 0;
             }
+            if (Other != NULL)
+            {
+                *pFilter->RxdTail = Other;
+                pFilter->RxdTail = OtherTail;
+                pFilter->RxdQueued += OtherCount;
+                pFilter->RxdDeferred += OtherCount;
+            }
+            pFilter->RxdPriority += PrioCount;
             FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
-            if (Queued)
+            if (Other != NULL)
             {
                 KeInsertQueueDpc(&pFilter->RxdDpc, NULL, NULL);
-                break;
             }
+            if (Prio != NULL)
+            {
+                NdisFIndicateReceiveNetBufferLists(pFilter->FilterHandle, Prio, PortNumber, PrioCount, ReceiveFlags);
+            }
+            break;
         }
         else
         {
