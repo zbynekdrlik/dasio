@@ -87,7 +87,8 @@ mod tests {
         // behind them.
         let quiet = 96 + MAX_JUMP + 10 * 32;
         assert_eq!(t.next(Some(s + 32), 1, quiet, 32), quiet);
-        // The same media time twice: one block on.
+        // The same media time twice: on by the blocks published.
         assert_eq!(t.next(Some(s + 32), 1, quiet + 32, 32), quiet + 32);
+        assert_eq!(t.next(Some(s + 32), 3, quiet + 64, 32), quiet + 128);
     }
 }

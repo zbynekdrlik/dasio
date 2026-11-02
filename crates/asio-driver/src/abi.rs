@@ -88,7 +88,7 @@ impl Asio64 {
 
     /// The value, as a host reads it.
     pub fn get(self) -> u64 {
-        (u64::from(self.hi) << 32) | u64::from(self.lo)
+        (u64::from(self.hi) << 32) + u64::from(self.lo)
     }
 }
 
