@@ -81,8 +81,8 @@ dependencies = [
 
 [[package]]
 name = "dstack"
-version = "0.5.15"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.5.15#8bce787bf4a540048a322c6119301d260a64ac2b"
+version = "0.5.16"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.5.16#24922544e76bbc8326877ab29e3cd09c37ba4958"
 dependencies = [
  "dstack-audio-io",
  "dsync-ptp",
@@ -104,8 +104,8 @@ dependencies = [
 
 [[package]]
 name = "dstack-audio-io"
-version = "0.5.15"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.5.15#8bce787bf4a540048a322c6119301d260a64ac2b"
+version = "0.5.16"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.5.16#24922544e76bbc8326877ab29e3cd09c37ba4958"
 
 [[package]]
 name = "dsync-ptp"
@@ -273,7 +273,7 @@ dependencies = [
 [[package]]
 name = "mdns-sd"
 version = "0.21.6"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.5.15#8bce787bf4a540048a322c6119301d260a64ac2b"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.5.16#24922544e76bbc8326877ab29e3cd09c37ba4958"
 dependencies = [
  "fastrand",
  "flume",
