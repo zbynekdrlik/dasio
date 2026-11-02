@@ -259,3 +259,32 @@ int pacer_split_done(struct pacer_split *s, int32_t status)
     }
     return s->pending == 0;
 }
+
+uint16_t pacer_ipv4_checksum(const uint8_t *hdr, uint32_t len)
+{
+    (void)hdr;
+    (void)len;
+    return 0;
+}
+
+uint32_t pacer_ktx_frame(uint8_t *frame, const struct pacer_ktx_addr *a, uint32_t payload, uint16_t ip_id,
+                         uint64_t seq, uint64_t time_100ns)
+{
+    (void)frame;
+    (void)a;
+    (void)payload;
+    (void)ip_id;
+    (void)seq;
+    (void)time_100ns;
+    return 0;
+}
+
+uint32_t pacer_ktx_due(uint64_t start, uint64_t now, uint64_t interval_100ns, uint64_t sent, uint32_t max)
+{
+    (void)start;
+    (void)now;
+    (void)interval_100ns;
+    (void)sent;
+    (void)max;
+    return 0;
+}

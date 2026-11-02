@@ -146,4 +146,48 @@ void pacer_split_init(struct pacer_split *s, uint32_t children);
  * the last: the parent completes now with `s->status`. */
 int pacer_split_done(struct pacer_split *s, int32_t status);
 
+/* The kernel test stream (ktx): the filter sends timed UDP frames of its
+ * own straight to the miniport, below tcpip and WFP, to measure whether a
+ * frame sent from the kernel goes out on time while the socket path
+ * stalls (dasio#1). These build the frames and count the due ones. */
+
+/* Ethernet (14) + IPv4 (20) + UDP (8). */
+#define PACER_KTX_HEADER 42u
+/* The payload carries the sequence number and the send time. */
+#define PACER_KTX_MIN_PAYLOAD 16u
+/* One unfragmented frame on a 1500-byte MTU. */
+#define PACER_KTX_MAX_PAYLOAD 1472u
+
+struct pacer_ktx_addr {
+    uint8_t dst_mac[6];
+    uint8_t src_mac[6];
+    uint8_t dst_ip[4];
+    uint8_t src_ip[4];
+    uint16_t dst_port;
+    uint16_t src_port;
+    uint8_t dscp;
+};
+
+/* The IPv4 header checksum of `len` header bytes whose checksum field is
+ * zero (RFC 791: one's complement of the one's complement sum). */
+uint16_t pacer_ipv4_checksum(const uint8_t *hdr, uint32_t len);
+
+/* Writes one test frame into `frame`, which holds at least
+ * PACER_KTX_HEADER + `payload` bytes: Ethernet II to `a`'s MACs, IPv4
+ * (DSCP `a->dscp`, identification `ip_id`, don't fragment, TTL 64, header
+ * checksum), UDP between `a`'s ports (checksum 0: none, allowed on IPv4),
+ * and a payload that starts with `seq` and `time_100ns` as 8-byte big
+ * endian numbers, the rest zero. Returns the frame's length, or 0 when
+ * `payload` is outside PACER_KTX_MIN_PAYLOAD..PACER_KTX_MAX_PAYLOAD (then
+ * nothing is written). */
+uint32_t pacer_ktx_frame(uint8_t *frame, const struct pacer_ktx_addr *a, uint32_t payload, uint16_t ip_id,
+                         uint64_t seq, uint64_t time_100ns);
+
+/* The frames due at `now`: one frame every `interval_100ns` from `start`
+ * on (the first at `start`), minus the `sent` ones, at most `max`. 0
+ * before `start`, when all are sent or when `interval_100ns` is 0. A late
+ * timer fire so sends the frames it missed at once, and the sequence has
+ * no gap. */
+uint32_t pacer_ktx_due(uint64_t start, uint64_t now, uint64_t interval_100ns, uint64_t sent, uint32_t max);
+
 #endif

@@ -496,6 +496,107 @@ static void split(void)
     CHECK(pacer_split_done(&s, 0) == 1 && s.pending == 0);
 }
 
+static uint64_t be64(const uint8_t *p)
+{
+    uint64_t v = 0;
+    int i;
+    for (i = 0; i < 8; i++) {
+        v = (v << 8) | p[i];
+    }
+    return v;
+}
+
+static void ktx(void)
+{
+    uint8_t f[PACER_KTX_HEADER + PACER_KTX_MAX_PAYLOAD + 8];
+    struct pacer_ktx_addr a = {
+        {0x01, 0x02, 0x03, 0x04, 0x05, 0x06},
+        {0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f},
+        {192, 168, 0, 199},
+        {192, 168, 0, 1},
+        0x1234,
+        0x5678,
+        0,
+    };
+    uint32_t n, i, sum;
+    /* RFC 1071's classic example header: checksum 0xb861. */
+    static const uint8_t hdr[20] = {0x45, 0x00, 0x00, 0x73, 0x00, 0x00, 0x40, 0x00, 0x40, 0x11,
+                                    0x00, 0x00, 0xc0, 0xa8, 0x00, 0x01, 0xc0, 0xa8, 0x00, 0xc7};
+
+    CHECK(pacer_ipv4_checksum(hdr, 20) == 0xb861);
+
+    /* A frame whose IPv4 header is that example (total length 0x73 = 115:
+     * 20 + 8 + 87 payload, identification 0, DF, TTL 64, UDP). */
+    memset(f, 0xEE, sizeof f);
+    n = pacer_ktx_frame(f, &a, 87, 0, 0x0102030405060708ull, 0x1112131415161718ull);
+    CHECK(n == PACER_KTX_HEADER + 87);
+    CHECK(memcmp(f, a.dst_mac, 6) == 0 && memcmp(f + 6, a.src_mac, 6) == 0);
+    CHECK(f[12] == 0x08 && f[13] == 0x00);
+    CHECK(memcmp(f + 14, hdr, 10) == 0);
+    CHECK(f[24] == 0xb8 && f[25] == 0x61);
+    CHECK(memcmp(f + 26, hdr + 12, 8) == 0);
+    /* UDP: ports, length 8 + 87, checksum 0. */
+    CHECK(f[34] == 0x56 && f[35] == 0x78 && f[36] == 0x12 && f[37] == 0x34);
+    CHECK(f[38] == 0 && f[39] == 95);
+    CHECK(f[40] == 0 && f[41] == 0);
+    /* Payload: sequence, time, then zeros; nothing written past the frame. */
+    CHECK(be64(f + 42) == 0x0102030405060708ull);
+    CHECK(be64(f + 50) == 0x1112131415161718ull);
+    sum = 0;
+    for (i = 58; i < n; i++) {
+        sum += f[i];
+    }
+    CHECK(sum == 0);
+    CHECK(f[n] == 0xEE);
+    /* The whole header sums to 0xffff (its checksum checks). */
+    CHECK(pacer_ipv4_checksum(f + 14, 20) == 0);
+
+    /* DSCP and identification land in the header, and the frame is then
+     * priority to the pacer. */
+    a.dscp = PACER_DSCP_EF;
+    n = pacer_ktx_frame(f, &a, 200, 0xBEEF, 7, 9);
+    CHECK(n == PACER_KTX_HEADER + 200);
+    CHECK(f[15] == (uint8_t)(PACER_DSCP_EF << 2));
+    CHECK(f[18] == 0xBE && f[19] == 0xEF);
+    CHECK(f[16] == 0 && f[17] == 228);
+    CHECK(pacer_ipv4_checksum(f + 14, 20) == 0);
+    CHECK(pacer_classify(f, n) == PACER_PRIORITY);
+
+    /* Payload bounds. */
+    memset(f, 0xEE, sizeof f);
+    CHECK(pacer_ktx_frame(f, &a, PACER_KTX_MIN_PAYLOAD - 1, 0, 0, 0) == 0);
+    CHECK(pacer_ktx_frame(f, &a, PACER_KTX_MAX_PAYLOAD + 1, 0, 0, 0) == 0);
+    CHECK(f[0] == 0xEE);
+    CHECK(pacer_ktx_frame(f, &a, PACER_KTX_MIN_PAYLOAD, 0, 0, 0) == PACER_KTX_HEADER + PACER_KTX_MIN_PAYLOAD);
+    CHECK(pacer_ktx_frame(f, &a, PACER_KTX_MAX_PAYLOAD, 0, 0, 0) == 1514);
+
+    /* An odd header length sums its last byte as the high half. */
+    {
+        static const uint8_t odd[3] = {0x01, 0x02, 0x03};
+        CHECK(pacer_ipv4_checksum(odd, 3) == (uint16_t)~(0x0102 + 0x0300));
+    }
+    /* The carry folds back in. */
+    {
+        static const uint8_t ff[4] = {0xff, 0xff, 0x00, 0x02};
+        CHECK(pacer_ipv4_checksum(ff, 4) == (uint16_t)~0x0002);
+    }
+
+    /* Due frames: 250 us apart from start 1000. */
+    CHECK(pacer_ktx_due(1000, 999, 2500, 0, 100) == 0);
+    CHECK(pacer_ktx_due(1000, 1000, 2500, 0, 100) == 1);
+    CHECK(pacer_ktx_due(1000, 1000, 2500, 1, 100) == 0);
+    CHECK(pacer_ktx_due(1000, 3499, 2500, 1, 100) == 0);
+    CHECK(pacer_ktx_due(1000, 3500, 2500, 1, 100) == 1);
+    CHECK(pacer_ktx_due(1000, 11000, 2500, 0, 100) == 5);
+    CHECK(pacer_ktx_due(1000, 11000, 2500, 2, 100) == 3);
+    /* A late fire (30 ms) catches up, capped. */
+    CHECK(pacer_ktx_due(1000, 1000 + 300000, 2500, 1, 1000) == 120);
+    CHECK(pacer_ktx_due(1000, 1000 + 300000, 2500, 1, 16) == 16);
+    /* More sent than due, or no interval: nothing. */
+    CHECK(pacer_ktx_due(1000, 11000, 2500, 9, 100) == 0);
+    CHECK(pacer_ktx_due(1000, 11000, 0, 0, 100) == 0);
+}
+
 int main(void)
 {
     classify();
@@ -503,6 +604,7 @@ int main(void)
     rates();
     split();
     pump();
+    ktx();
     printf("%d checks, %d failed\n", checks, failed);
     return failed == 0 ? 0 : 1;
 }
