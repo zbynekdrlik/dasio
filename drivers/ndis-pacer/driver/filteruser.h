@@ -196,8 +196,9 @@ typedef struct _DASIO_KTX_STATUS
 // filter, which queues them and returns at once; a DPC of the filter's own,
 // on Cpu, indicates them up. tcpip's and WFP's work for a received packet
 // then runs there, not inside the NIC's DPC (with Realtek 10.72/10.79 the
-// NIC sends nothing while its DPC runs, dasio#1). Priority packets (the
-// pacer's classes: Dante audio, PTP) still go up at once. Cpu -1 = the
+// NIC sends nothing while its DPC runs, dasio#1). Only TCP and discovery
+// chatter (mDNS, LLMNR, NetBIOS, SSDP, broadcast) are deferred; Dante
+// audio of any DSCP, PTP and the rest go up at once. Cpu -1 = the
 // receiving CPU. Off after a restart of the filter.
 typedef struct _DASIO_RXD_SET
 {
@@ -218,7 +219,7 @@ typedef struct _DASIO_RXD_STATUS
     ULONG64         MaxBatch;         // most NBLs one DPC run indicated
     ULONG64         Queued;           // waiting now
     ULONG64         Dropped;          // returned unindicated (pause)
-    ULONG64         Priority;         // priority NBLs indicated at once (not deferred)
+    ULONG64         Priority;         // NBLs indicated at once while rxd is on (not deferred)
 } DASIO_RXD_STATUS, *PDASIO_RXD_STATUS;
 
 #endif //__FILTERUSER_H__

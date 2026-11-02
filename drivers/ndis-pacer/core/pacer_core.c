@@ -7,6 +7,7 @@
 #define ETHERTYPE_VLAN 0x8100u
 #define ETHERTYPE_QINQ 0x88A8u
 #define ETHERTYPE_PTP 0x88F7u
+#define IPPROTO_TCP_ 6u
 #define IPPROTO_UDP_ 17u
 #define TICKS_PER_SECOND 10000000u
 #define PTP_EVENT_PORT 319u
@@ -345,9 +346,73 @@ uint32_t pacer_ktx_due(uint64_t start, uint64_t now, uint64_t interval_100ns, ui
     return due > max ? max : (uint32_t)due;
 }
 
+static int is_chatter_port(uint16_t port)
+{
+    return port == 5353u || port == 5355u || port == 137u || port == 138u || port == 1900u;
+}
+
 int pacer_rx_defer(const uint8_t *frame, uint32_t len)
 {
-    (void)frame;
-    (void)len;
+    uint32_t at = 12;
+    uint16_t type;
+    int tags;
+    uint32_t i;
+    int broadcast = 1;
+
+    if (frame == NULL || len < ETH_HEADER) {
+        return 0;
+    }
+    for (i = 0; i < 6; i++) {
+        if (frame[i] != 0xFFu) {
+            broadcast = 0;
+        }
+    }
+    if (broadcast) {
+        return 1;
+    }
+    type = be16(frame + at);
+    for (tags = 0; tags < 2 && (type == ETHERTYPE_VLAN || type == ETHERTYPE_QINQ); tags++) {
+        at += 4;
+        if (len < at + 2) {
+            return 0;
+        }
+        type = be16(frame + at);
+    }
+    at += 2;
+
+    if (type == ETHERTYPE_IPV4) {
+        uint32_t ihl;
+        uint8_t proto;
+        if (len < at + 20 || (frame[at] >> 4) != 4) {
+            return 0;
+        }
+        ihl = (uint32_t)(frame[at] & 0x0F) * 4u;
+        if (ihl < 20) {
+            return 0;
+        }
+        proto = frame[at + 9];
+        if (proto == IPPROTO_TCP_) {
+            return 1;
+        }
+        /* A later fragment carries no UDP header. */
+        if (proto != IPPROTO_UDP_ || (be16(frame + at + 6) & 0x1FFFu) != 0 || len < at + ihl + 4) {
+            return 0;
+        }
+        return is_chatter_port(be16(frame + at + ihl + 2));
+    }
+    if (type == ETHERTYPE_IPV6) {
+        uint8_t next;
+        if (len < at + 40 || (frame[at] >> 4) != 6) {
+            return 0;
+        }
+        next = frame[at + 6];
+        if (next == IPPROTO_TCP_) {
+            return 1;
+        }
+        if (next != IPPROTO_UDP_ || len < at + 40 + 4) {
+            return 0;
+        }
+        return is_chatter_port(be16(frame + at + 40 + 2));
+    }
     return 0;
 }

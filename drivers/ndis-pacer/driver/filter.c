@@ -16,6 +16,7 @@ Abstract:
 
 // dasio send pacer helpers (defined before FilterSendNetBufferListsComplete).
 static ULONG pacerNblBytes(_In_ PNET_BUFFER_LIST Nbl);
+static int pacerNblRxDefer(_In_ PNET_BUFFER_LIST Nbl);
 static enum pacer_class pacerNblClass(_In_ PNET_BUFFER_LIST Nbl);
 static VOID pacerPump(_In_ PMS_FILTER Filter, _In_ BOOLEAN DispatchLevel, _In_ BOOLEAN FromTimer);
 static ULONG64 pacerNow(VOID);
@@ -1383,6 +1384,39 @@ pacerNblClass(
     return pacer_classify(Header, Length);
 }
 
+// Whether a received NBL waits for the deferred-receive DPC (its first
+// packet's headers, pacer_rx_defer). Unreadable: not deferred.
+static int
+pacerNblRxDefer(
+    _In_ PNET_BUFFER_LIST Nbl
+    )
+{
+    UCHAR Storage[PACER_HEADER_BYTES];
+    PNET_BUFFER Nb = NET_BUFFER_LIST_FIRST_NB(Nbl);
+    ULONG Length;
+    PUCHAR Header;
+
+    if (Nb == NULL)
+    {
+        return 0;
+    }
+    Length = NET_BUFFER_DATA_LENGTH(Nb);
+    if (Length > PACER_HEADER_BYTES)
+    {
+        Length = PACER_HEADER_BYTES;
+    }
+    if (Length == 0)
+    {
+        return 0;
+    }
+    Header = (PUCHAR)NdisGetDataBuffer(Nb, Length, Storage, 1, 0);
+    if (Header == NULL)
+    {
+        return 0;
+    }
+    return pacer_rx_defer(Header, Length);
+}
+
 // Now, in 100 ns units (the interrupt time, precise).
 static ULONG64
 pacerNow(
@@ -2126,10 +2160,10 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
             FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
         }
 
-        // dasio deferred receive: the NBLs wait for our DPC and the NIC's
-        // DPC returns at once. Priority packets (Dante audio, PTP: the
-        // pacer's classes) go up at once, so their timing never waits
-        // behind other traffic's work. Not when they cannot pend (the
+        // dasio deferred receive: TCP and discovery chatter (whose upper
+        // work may be long: WFP's flow-hash on mDNS) wait for our DPC and
+        // the NIC's DPC returns at once; every other packet, Dante audio of
+        // any DSCP and PTP included, goes up at once (pacer_rx_defer). Not when they cannot pend (the
         // miniport needs them back now) or on another port.
         if (NDIS_TEST_RECEIVE_CAN_PEND(ReceiveFlags) && PortNumber == NDIS_DEFAULT_PORT_NUMBER &&
             pFilter->RxdEnabled)
@@ -2145,7 +2179,7 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
             {
                 PNET_BUFFER_LIST Next = NET_BUFFER_LIST_NEXT_NBL(Nbl);
                 NET_BUFFER_LIST_NEXT_NBL(Nbl) = NULL;
-                if (pacerNblClass(Nbl) == PACER_PRIORITY)
+                if (!pacerNblRxDefer(Nbl))
                 {
                     *PrioTail = Nbl;
                     PrioTail = &NET_BUFFER_LIST_NEXT_NBL(Nbl);

@@ -1,7 +1,8 @@
 # dasio NDIS filter: deferred receive (dasio#1). The NIC's receive DPC hands
 # its packets to the filter and returns at once; a DPC of the filter's own,
 # on -Cpu, indicates them up, so tcpip's and WFP's work for them runs there
-# and not inside the NIC's DPC; priority packets (Dante audio, PTP) still go
+# and not inside the NIC's DPC. Only TCP and discovery chatter (mDNS, LLMNR,
+# NetBIOS, SSDP, broadcast) are deferred; Dante audio, PTP and the rest go
 # up at once. Run as administrator. Off after a restart of
 # the filter.
 #   .\rxd.ps1 on -Cpu 11
