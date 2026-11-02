@@ -19,8 +19,10 @@ pub trait Link: Send {
     fn input(&mut self, half: u32, ch: usize) -> &mut [i32];
     /// The `ch`th output buffer of `half` into `dst` (f64, ±1 full scale).
     fn read_output(&self, half: u32, ch: usize, dst: &mut [f64]);
-    /// Publishes block `seq` (its inputs are in) and wakes the driver.
-    fn publish(&self, seq: u64);
+    /// Publishes block `seq` (its inputs are in) and wakes the driver;
+    /// `start` is the media time of its first input sample (the pump's
+    /// [`Block::start`], `None` without a clock).
+    fn publish(&self, seq: u64, start: Option<u64>);
     /// The newest block the DAW returned.
     fn ack(&self) -> u64;
     /// One block that came too late.
@@ -75,7 +77,7 @@ impl<L: Link> Process for Bridge<L> {
                 *d = to_i32(x);
             }
         }
-        self.link.publish(self.seq);
+        self.link.publish(self.seq, None);
     }
 }
 
@@ -123,7 +125,7 @@ mod win {
             }
         }
 
-        fn publish(&self, seq: u64) {
+        fn publish(&self, seq: u64, _start: Option<u64>) {
             self.0.header().seq.store(seq, Ordering::Release);
             self.0.signal_block();
         }

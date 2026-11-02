@@ -12,6 +12,8 @@ struct Fake {
     outputs: Mutex<[Vec<i32>; 2]>,
     ack: AtomicU64,
     late: AtomicU64,
+    /// Each block published: its seq and media start.
+    published: Mutex<Vec<(u64, Option<u64>)>>,
 }
 
 impl Fake {
@@ -23,6 +25,7 @@ impl Fake {
             outputs: Mutex::new([vec![0; frames], vec![0; frames]]),
             ack: AtomicU64::new(0),
             late: AtomicU64::new(0),
+            published: Mutex::new(Vec::new()),
         }
     }
 }
@@ -42,7 +45,8 @@ impl Link for Fake {
             *y = to_f64(s);
         }
     }
-    fn publish(&self, seq: u64) {
+    fn publish(&self, seq: u64, start: Option<u64>) {
+        self.published.lock().unwrap().push((seq, start));
         if self.answers {
             let half = (seq % 2) as usize;
             self.outputs.lock().unwrap()[half] = self.inputs[half].iter().map(|s| -s).collect();
@@ -116,5 +120,32 @@ fn the_first_block_reads_no_output_whatever_the_buffers_hold() {
         b.link.late.load(Ordering::Relaxed),
         0,
         "nothing was asked yet"
+    );
+}
+
+/// The block at media time `start`.
+fn run_at(bridge: &mut Bridge<Fake>, input: &[f64], start: u64) {
+    let mut output = vec![0.0; input.len()];
+    let mut block = Block::new(input.len(), input, &mut output).at(start);
+    bridge.process(&mut block);
+}
+
+#[test]
+fn each_block_is_published_with_its_media_time() {
+    let mut b = Bridge::new(Fake::new(true, true, 4));
+    run_at(&mut b, &[0.0; 4], 1_000);
+    run_at(&mut b, &[0.0; 4], 1_004);
+    // The pump skipped 8 blocks (a re-bootstrap): the seq stays one apart,
+    // so the halves alternate, and the media time shows the skip.
+    run_at(&mut b, &[0.0; 4], 1_040);
+    run(&mut b, &[0.0; 4]);
+    assert_eq!(
+        *b.link.published.lock().unwrap(),
+        vec![
+            (1, Some(1_000)),
+            (2, Some(1_004)),
+            (3, Some(1_040)),
+            (4, None)
+        ]
     );
 }

@@ -13,6 +13,7 @@ pub mod guard;
 pub mod ident;
 pub mod liveness;
 pub mod reset;
+pub mod timeline;
 
 #[cfg(windows)]
 mod com;

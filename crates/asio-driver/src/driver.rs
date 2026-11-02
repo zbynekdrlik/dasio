@@ -725,6 +725,7 @@ impl Job {
             .as_ref()
             .map(|s| Watch::new(self.shape, facts(s), Instant::now()));
         let mut last = self.seen;
+        let mut timeline = crate::timeline::Timeline::new();
         while !self.stop.load(Ordering::Acquire) {
             match (shm.as_ref(), watch.as_mut()) {
                 (Some(s), Some(watch)) => {
@@ -740,16 +741,20 @@ impl Job {
                         continue;
                     };
                     if seq > last + 1 {
-                        let missed = seq - last - 1;
-                        s.header().missed.fetch_add(missed, Ordering::Relaxed);
-                        // The DAW's timeline runs on the device's blocks, as
-                        // a sound card's sample position runs on its clock:
-                        // the blocks the host missed are in it, so what it
-                        // measures keeps the latencies it was told.
-                        self.rt
-                            .position
-                            .fetch_add(missed * u64::from(self.shape.block), Ordering::AcqRel);
+                        s.header()
+                            .missed
+                            .fetch_add(seq - last - 1, Ordering::Relaxed);
                     }
+                    // The DAW's timeline runs on the device's media time
+                    // (see Timeline): what it measures keeps the latencies
+                    // it was told.
+                    let pos = timeline.next(
+                        None,
+                        seq.saturating_sub(last),
+                        self.rt.position.load(Ordering::Acquire),
+                        u64::from(self.shape.block),
+                    );
+                    self.rt.position.store(pos, Ordering::Release);
                     last = seq;
                     half = (seq % 2) as i32;
                     self.rt.seq_in_hand.store(seq, Ordering::Release);
