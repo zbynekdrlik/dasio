@@ -81,8 +81,8 @@ dependencies = [
 
 [[package]]
 name = "dstack"
-version = "0.5.14"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.5.14#ecbabcd754947f49bdf817dfc4d2b52e11593bed"
+version = "0.5.15"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.5.15#8bce787bf4a540048a322c6119301d260a64ac2b"
 dependencies = [
  "dstack-audio-io",
  "dsync-ptp",
@@ -104,8 +104,8 @@ dependencies = [
 
 [[package]]
 name = "dstack-audio-io"
-version = "0.5.14"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.5.14#ecbabcd754947f49bdf817dfc4d2b52e11593bed"
+version = "0.5.15"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.5.15#8bce787bf4a540048a322c6119301d260a64ac2b"
 
 [[package]]
 name = "dsync-ptp"
@@ -272,9 +272,8 @@ dependencies = [
 
 [[package]]
 name = "mdns-sd"
-version = "0.21.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "127d3355da0615643c88c885e29a1ccb29ca4b1ca1f2e44b3caed2e728a796aa"
+version = "0.21.6"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.5.15#8bce787bf4a540048a322c6119301d260a64ac2b"
 dependencies = [
  "fastrand",
  "flume",
