@@ -305,6 +305,7 @@ static void pacing(void)
  * completes each send inline, which calls the pump again from inside the
  * send (dasio#1: the HIL 2 / 3c double faults, a kernel stack overflow). */
 struct model {
+    const struct pacer_pump_ops *ops;
     uint32_t pumping;
     uint32_t locked;
     uint32_t next;     /* next entry to take */
@@ -363,8 +364,6 @@ static void m_idle(void *ctx)
     m->idles++;
 }
 
-static const struct pacer_pump_ops model_ops;
-
 static void m_send(void *ctx, const struct pacer_taken *t)
 {
     struct model *m = ctx;
@@ -381,7 +380,7 @@ static void m_send(void *ctx, const struct pacer_taken *t)
     if (m->depth > m->max_depth) {
         m->max_depth = m->depth;
     }
-    pacer_pump(&m->pumping, &model_ops, m);
+    pacer_pump(&m->pumping, m->ops, m);
     m->depth--;
 }
 
@@ -397,6 +396,8 @@ static void pump(void)
      * send would take the next and recurse once per queued entry. */
     for (refill = 0; refill <= 1; refill++) {
         memset(&m, 0, sizeof m);
+    m.ops = &model_ops;
+        m.ops = &model_ops;
         m.count = 200;
         m.due = 1;
         m.refill = refill;
@@ -414,6 +415,7 @@ static void pump(void)
 
     /* Many due at once: whole batches, in order, then the rest. */
     memset(&m, 0, sizeof m);
+    m.ops = &model_ops;
     m.count = 3 * PACER_PUMP_BATCH + 5;
     m.due = m.count;
     pacer_pump(&m.pumping, &model_ops, &m);
@@ -422,11 +424,13 @@ static void pump(void)
 
     /* Nothing waits: no send, the caller still gets its idle (timer). */
     memset(&m, 0, sizeof m);
+    m.ops = &model_ops;
     pacer_pump(&m.pumping, &model_ops, &m);
     CHECK(m.sent == 0 && m.idles == 1 && m.pumping == 0);
 
     /* One runs: a second call sends nothing and changes nothing. */
     memset(&m, 0, sizeof m);
+    m.ops = &model_ops;
     m.count = 5;
     m.due = 5;
     m.pumping = 1;
