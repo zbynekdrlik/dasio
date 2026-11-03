@@ -328,7 +328,10 @@ fn an_answer_that_comes_within_the_work_margin_is_played() {
     let published = b.link.published.lock().unwrap().clone();
     assert_eq!(published.len(), 2);
     assert_eq!(published[1].0, 2);
-    assert!(published[1].1 < 9, "block 2 went out before the wait: {published:?}");
+    assert!(
+        published[1].1 < 9,
+        "block 2 went out before the wait: {published:?}"
+    );
 }
 
 #[test]
@@ -342,7 +345,10 @@ fn the_wait_ends_at_the_deadline() {
     assert_eq!(out, vec![0.0; 4], "no answer: silence");
     assert_eq!(b.link.late.load(Ordering::Relaxed), 1);
     let t_end = t.load(Ordering::Acquire);
-    assert!((14..=16).contains(&t_end), "waited until the deadline, no longer: clock {t_end}");
+    assert!(
+        (14..=16).contains(&t_end),
+        "waited until the deadline, no longer: clock {t_end}"
+    );
     assert!(reads.load(Ordering::Relaxed) <= 12, "a bounded wait");
 }
 
@@ -359,5 +365,8 @@ fn with_a_spare_block_the_outputs_are_read_before_the_next_block_goes_out() {
     assert_eq!(b.link.late.load(Ordering::Relaxed), 0);
     let published = b.link.published.lock().unwrap().clone();
     assert_eq!(published[2].0, 3);
-    assert!(published[2].1 >= 9, "block 3 went out after the read: {published:?}");
+    assert!(
+        published[2].1 >= 9,
+        "block 3 went out after the read: {published:?}"
+    );
 }
