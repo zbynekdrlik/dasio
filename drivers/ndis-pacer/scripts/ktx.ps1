@@ -75,10 +75,11 @@ switch ($Action) {
         Write-Output "ktx stopped"
     }
     "status" {
-        # The fields of DASIO_KTX_STATUS (filteruser.h), in order.
+        # The fields of DASIO_KTX_STATUS (filteruser.h, version 2), in order;
+        # the last four count media TX (IOCTL_DASIO_TX_SEND).
         $names = "Version", "IfIndex", "Active", "Ready", "Start", "End", "Now", "IntervalUs", "Sent", "Completed",
-            "Failed", "Out", "NoSlot", "Fires", "MaxBatch", "MaxLate"
-        $raw = [DasioKtx]::Call([DasioKtx]::STATUS, $null, 8 * 16 * 16)
+            "Failed", "Out", "NoSlot", "Fires", "MaxBatch", "MaxLate", "TxBatches", "TxFrames", "TxNoSlot", "TxMaxBatch"
+        $raw = [DasioKtx]::Call([DasioKtx]::STATUS, $null, 8 * $names.Count * 16)
         $v = New-Object UInt64[] ($raw.Length / 8)
         [Buffer]::BlockCopy($raw, 0, $v, 0, $raw.Length)
         if ($v.Length % $names.Count -ne 0) { throw "status of $($raw.Length) bytes is not a whole number of records" }
