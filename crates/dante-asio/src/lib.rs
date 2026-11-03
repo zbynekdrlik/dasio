@@ -51,6 +51,18 @@ pub fn own_cpus(cfg: &DeviceConfig) -> usize {
         .fold(0, |m, c| m | 1 << c)
 }
 
+/// The CPUs the process runs on: every L3 group (an AMD CCD) that holds one
+/// of `own`'s CPUs, whole, so the device's other threads (runtime, mDNS,
+/// log) run on the media threads' chiplet and never beside other
+/// processes' audio on the other one. `l3` is each L3 cache's CPU mask.
+/// With no L3 information, `own` plus `fallback` (the CPUs it started
+/// with). A process set this way is also one Process Lasso treats as
+/// customised and leaves alone. 0 when `own` is 0 (nothing pinned).
+pub fn process_cpus(own: usize, l3: &[usize], fallback: usize) -> usize {
+    let _ = (own, l3, fallback);
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,6 +94,24 @@ mod tests {
         assert_eq!(timing(&cfg), Timing::of(&cfg));
         assert_eq!(timing(&cfg).playout, 32);
         assert_eq!(latencies(&cfg), (32 + 32, 32 + 64 + 64));
+    }
+
+    #[test]
+    fn the_process_runs_on_the_ccds_of_its_media_threads() {
+        // FOH's 7950X: CCD0 = CPUs 0-15, CCD1 = 16-31.
+        let l3 = [0x0000_FFFF, 0xFFFF_0000];
+        // Media threads on CCD1: the whole CCD1, nothing of CCD0.
+        assert_eq!(process_cpus(1 << 31 | 1 << 29 | 1 << 30, &l3, usize::MAX), 0xFFFF_0000);
+        // On CCD0: the whole CCD0.
+        assert_eq!(process_cpus(1 << 13 | 1 << 15, &l3, usize::MAX), 0x0000_FFFF);
+        // Threads on both: both.
+        assert_eq!(process_cpus(1 << 1 | 1 << 17, &l3, usize::MAX), 0xFFFF_FFFF);
+        // No L3 information: own plus the CPUs it started with.
+        assert_eq!(process_cpus(1 << 3, &[], 0xF0), 0xF8);
+        // Nothing pinned: no change asked.
+        assert_eq!(process_cpus(0, &l3, usize::MAX), 0);
+        // An own CPU outside every listed L3 group still counts.
+        assert_eq!(process_cpus(1 << 40, &l3, 0), 1 << 40);
     }
 
     #[test]
