@@ -241,3 +241,123 @@ fn with_a_spare_block_the_slot_is_two_blocks_on() {
     assert_eq!(out, vec![0.0; 2]);
     assert_eq!(stale.load(Ordering::Relaxed), 1);
 }
+
+/// A DAW that answers on its own time: the bridge's media clock is the test
+/// clock `t` (one sample per read), and the DAW returns block `answers.0`
+/// once `t` reaches `answers.1`. Its outputs are always 0.5.
+struct Slow {
+    t: Arc<AtomicU64>,
+    ack: Arc<AtomicU64>,
+    /// Each block published: its seq and the clock then.
+    published: Mutex<Vec<(u64, u64)>>,
+    late: AtomicU64,
+}
+
+impl Link for Slow {
+    fn attached(&self) -> bool {
+        true
+    }
+    fn input(&mut self, _half: u32, _ch: usize) -> &mut [i32] {
+        &mut []
+    }
+    fn read_output(&self, _half: u32, _ch: usize, dst: &mut [f64]) {
+        dst.fill(0.5);
+    }
+    fn publish(&self, seq: u64, _start: Option<u64>) {
+        let t = self.t.load(Ordering::Acquire);
+        self.published.lock().unwrap().push((seq, t));
+    }
+    fn ack(&self) -> u64 {
+        self.ack.load(Ordering::Acquire)
+    }
+    fn count_late(&self) {
+        self.late.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// A bridge on a `Slow` DAW whose answer to block `seq` comes at clock
+/// `at`; the bridge may wait until `offset` samples after a block's start.
+/// Returns the bridge, the clock and the count of clock reads.
+fn slow(
+    spare: u64,
+    offset: u64,
+    seq: u64,
+    at: u64,
+) -> (Bridge<Slow>, Arc<AtomicU64>, Arc<AtomicU64>) {
+    let t = Arc::new(AtomicU64::new(0));
+    let ack = Arc::new(AtomicU64::new(0));
+    let reads = Arc::new(AtomicU64::new(0));
+    let link = Slow {
+        t: Arc::clone(&t),
+        ack: Arc::clone(&ack),
+        published: Mutex::new(Vec::new()),
+        late: AtomicU64::new(0),
+    };
+    let (clock, count) = (Arc::clone(&t), Arc::clone(&reads));
+    let now = move || {
+        count.fetch_add(1, Ordering::Relaxed);
+        let now = clock.fetch_add(1, Ordering::AcqRel);
+        if now >= at {
+            ack.fetch_max(seq, Ordering::AcqRel);
+        }
+        Some(now)
+    };
+    let b = Bridge::with_spare(link, spare).with_deadline(offset, now);
+    (b, t, reads)
+}
+
+fn slow_block(bridge: &mut Bridge<Slow>, start: u64) -> Vec<f64> {
+    let input = [0.0; 4];
+    let mut output = vec![0.0; 4];
+    let mut block = Block::new(4, &input, &mut output).at(start);
+    bridge.process(&mut block);
+    output
+}
+
+#[test]
+fn an_answer_that_comes_within_the_work_margin_is_played() {
+    // Block 1 starts at 0; block 2 at 4 is due at once but the DAW answers
+    // block 1 only at clock 9: inside the margin (block 2's start + 10).
+    let (mut b, t, _) = slow(0, 10, 1, 9);
+    slow_block(&mut b, 0);
+    t.store(5, Ordering::Release);
+    let out = slow_block(&mut b, 4);
+    assert_eq!(out, vec![0.5; 4], "the answer that came in time is played");
+    assert_eq!(b.link.late.load(Ordering::Relaxed), 0);
+    // Without a spare block the DAW has block 2 while the bridge waits.
+    let published = b.link.published.lock().unwrap().clone();
+    assert_eq!(published.len(), 2);
+    assert_eq!(published[1].0, 2);
+    assert!(published[1].1 < 9, "block 2 went out before the wait: {published:?}");
+}
+
+#[test]
+fn the_wait_ends_at_the_deadline() {
+    // The DAW never answers in time: the bridge stops at block 2's start +
+    // 10 (clock 14) and the block is late.
+    let (mut b, t, reads) = slow(0, 10, 1, 1_000);
+    slow_block(&mut b, 0);
+    t.store(5, Ordering::Release);
+    let out = slow_block(&mut b, 4);
+    assert_eq!(out, vec![0.0; 4], "no answer: silence");
+    assert_eq!(b.link.late.load(Ordering::Relaxed), 1);
+    let t_end = t.load(Ordering::Acquire);
+    assert!((14..=16).contains(&t_end), "waited until the deadline, no longer: clock {t_end}");
+    assert!(reads.load(Ordering::Relaxed) <= 12, "a bounded wait");
+}
+
+#[test]
+fn with_a_spare_block_the_outputs_are_read_before_the_next_block_goes_out() {
+    // Spare 1: block 3's outputs half is block 1's; the bridge reads block
+    // 1's answer (at clock 9) before it hands block 3 to the DAW.
+    let (mut b, t, _) = slow(1, 10, 1, 9);
+    slow_block(&mut b, 0);
+    slow_block(&mut b, 4);
+    t.store(5, Ordering::Release);
+    let out = slow_block(&mut b, 8);
+    assert_eq!(out, vec![0.5; 4], "block 1's answer, two blocks on");
+    assert_eq!(b.link.late.load(Ordering::Relaxed), 0);
+    let published = b.link.published.lock().unwrap().clone();
+    assert_eq!(published[2].0, 3);
+    assert!(published[2].1 >= 9, "block 3 went out after the read: {published:?}");
+}
