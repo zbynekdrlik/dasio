@@ -90,6 +90,7 @@ pub fn run(
         },
         u64::from(spare),
     );
+    let stale = bridge.stale_counter();
     let map = Map {
         rx: (0..cfg.rx.len()).collect(),
         tx: engine_tx,
@@ -147,6 +148,7 @@ pub fn run(
                 ack = h.ack.load(Ordering::Relaxed),
                 late = h.late.load(Ordering::Relaxed),
                 driver_missed = h.missed.load(Ordering::Relaxed),
+                stale = stale.load(Ordering::Relaxed),
                 attached = h.host_attached.load(Ordering::Relaxed),
                 blocks = v.blocks,
                 pump_late = v.late,

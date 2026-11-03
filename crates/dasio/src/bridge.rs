@@ -9,7 +9,7 @@
 //! (`latencies` counts it).
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use dstack_audio_io::{Block, Process};
 
@@ -53,6 +53,10 @@ pub struct Bridge<L: Link> {
     spare: u64,
     /// Answers dropped because their slot had passed (see `process`).
     stale: Arc<AtomicU64>,
+    /// The media start of the newest published blocks, by seq (`spare` + 2
+    /// of them): an answer plays only in the block `spare` + 1 blocks
+    /// after its own.
+    starts: Vec<Option<u64>>,
 }
 
 impl<L: Link> Bridge<L> {
@@ -71,6 +75,7 @@ impl<L: Link> Bridge<L> {
             seq: 0,
             spare,
             stale: Arc::new(AtomicU64::new(0)),
+            starts: vec![None; spare as usize + 2],
         }
     }
 
@@ -89,11 +94,23 @@ impl<L: Link> Process for Bridge<L> {
         // The block whose outputs are due now.
         let due = self.seq.saturating_sub(self.spare);
         if due > 0 {
-            if self.link.ack() >= due {
+            // Its answer's own slot is `spare` + 1 blocks after it. A pump
+            // that skipped blocks (a re-bootstrap) runs this block later:
+            // the answer would play that many blocks late, outside the
+            // latency the driver reports, so it is dropped. Without media
+            // times (free pacing) every block is its slot.
+            let len = self.starts.len();
+            let in_slot = match (block.start(), self.starts[due as usize % len]) {
+                (Some(now), Some(then)) => now == then + (self.spare + 1) * block.frames() as u64,
+                _ => true,
+            };
+            if self.link.ack() >= due && in_slot {
                 let half = (due % 2) as u32;
                 for ch in 0..block.outputs() {
                     self.link.read_output(half, ch, block.output(ch));
                 }
+            } else if self.link.ack() >= due {
+                self.stale.fetch_add(1, Ordering::Relaxed);
             } else {
                 self.link.count_late();
             }
@@ -106,6 +123,8 @@ impl<L: Link> Process for Bridge<L> {
                 *d = to_i32(x);
             }
         }
+        let len = self.starts.len();
+        self.starts[self.seq as usize % len] = block.start();
         self.link.publish(self.seq, block.start());
     }
 }
