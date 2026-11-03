@@ -56,7 +56,6 @@ mod win {
 
     /// Where the instances keep their configs and logs.
     const DATA: &str = r"C:\ProgramData\dasio";
-    const ICON: u32 = 32;
 
     fn wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(Some(0)).collect()
@@ -184,24 +183,10 @@ mod win {
         Ok((menu, items))
     }
 
-    /// A filled circle in the colour, on transparent.
+    /// dasio's glyph in the state's colour ([`dasio_tray::icon`]).
     fn icon(c: Colour) -> Result<Icon, String> {
-        let (r, g, b) = match c {
-            Colour::Green => (0x2e, 0xb8, 0x4b),
-            Colour::Yellow => (0xf2, 0xb1, 0x0f),
-            Colour::Red => (0xe0, 0x2f, 0x2f),
-            Colour::Grey => (0x8a, 0x8a, 0x8a),
-        };
-        let mut px = Vec::with_capacity((ICON * ICON * 4) as usize);
-        let mid = (ICON as f32 - 1.0) / 2.0;
-        for y in 0..ICON {
-            for x in 0..ICON {
-                let d = ((x as f32 - mid).powi(2) + (y as f32 - mid).powi(2)).sqrt();
-                let a = (mid + 0.5 - d).clamp(0.0, 1.0);
-                px.extend_from_slice(&[r, g, b, (a * 255.0) as u8]);
-            }
-        }
-        Icon::from_rgba(px, ICON, ICON).map_err(|e| format!("the icon: {e}"))
+        let size = dasio_tray::icon::SIZE;
+        Icon::from_rgba(dasio_tray::icon::rgba(c), size, size).map_err(|e| format!("the icon: {e}"))
     }
 
     /// Every installed instance now.

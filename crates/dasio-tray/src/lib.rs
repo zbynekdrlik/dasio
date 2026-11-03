@@ -6,4 +6,5 @@
 //! header read-only ([`shm::peek`]) and the service manager; it changes
 //! nothing. Its Exit ends the tray only.
 
+pub mod icon;
 pub mod view;
