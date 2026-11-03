@@ -8,6 +8,9 @@
 //! silence and a late count. The cost is one block on the way out
 //! (`latencies` counts it).
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+
 use dstack_audio_io::{Block, Process};
 
 /// The DAW side of the shared memory, as the bridge uses it (the mapping on
@@ -48,6 +51,8 @@ pub struct Bridge<L: Link> {
     /// Block periods the DAW gets beyond the first (0 or more): its
     /// outputs play that many blocks later.
     spare: u64,
+    /// Answers dropped because their slot had passed (see `process`).
+    stale: Arc<AtomicU64>,
 }
 
 impl<L: Link> Bridge<L> {
@@ -65,7 +70,14 @@ impl<L: Link> Bridge<L> {
             link,
             seq: 0,
             spare,
+            stale: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// The count of answers dropped because their slot had passed, shared
+    /// (the pump owns the bridge; the counts line reads it).
+    pub fn stale_counter(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.stale)
     }
 }
 

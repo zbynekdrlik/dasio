@@ -193,3 +193,51 @@ fn without_a_spare_block_an_answer_one_period_late_is_lost() {
     assert_eq!(out, vec![0.0; 2]);
     assert_eq!(b.link.late.load(Ordering::Relaxed), 1);
 }
+
+fn played_at(bridge: &mut Bridge<Fake>, input: &[f64], start: u64) -> Vec<f64> {
+    let mut output = vec![0.0; input.len()];
+    let mut block = Block::new(input.len(), input, &mut output).at(start);
+    bridge.process(&mut block);
+    output
+}
+
+#[test]
+fn an_answer_whose_slot_has_passed_is_dropped() {
+    // The pump re-bootstrapped and skipped 8 blocks between block 1 and the
+    // next one it ran: block 1's answer belongs at media time 2, not 18
+    // (CI 41567658657: one impulse came back 7 blocks late, outside the
+    // latency the driver reports). Dropped, as a sound card drops it.
+    let mut b = Bridge::new(Fake::new(true, true, 2));
+    let stale = b.stale_counter();
+    played_at(&mut b, &[0.25; 2], 0);
+    let out = played_at(&mut b, &[0.5; 2], 2 + 8 * 2);
+    assert_eq!(
+        out,
+        vec![0.0; 2],
+        "block 1's answer is not played 8 blocks late"
+    );
+    assert_eq!(
+        b.link.late.load(Ordering::Relaxed),
+        0,
+        "not the DAW's lateness"
+    );
+    assert_eq!(stale.load(Ordering::Relaxed), 1);
+    let out = played_at(&mut b, &[0.0; 2], 2 + 9 * 2);
+    assert_eq!(out, vec![-0.5; 2], "the next answer plays in its own slot");
+    assert_eq!(stale.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn with_a_spare_block_the_slot_is_two_blocks_on() {
+    let mut b = Bridge::with_spare(Fake::new(true, true, 2), 1);
+    let stale = b.stale_counter();
+    played_at(&mut b, &[0.25; 2], 0);
+    played_at(&mut b, &[0.5; 2], 2);
+    // Block 1 (start 0) plays at 4.
+    let out = played_at(&mut b, &[0.0; 2], 4);
+    assert_eq!(out, vec![-0.25; 2]);
+    // Block 2 (start 2) belongs at 6; the pump jumped to 10.
+    let out = played_at(&mut b, &[0.0; 2], 10);
+    assert_eq!(out, vec![0.0; 2]);
+    assert_eq!(stale.load(Ordering::Relaxed), 1);
+}
