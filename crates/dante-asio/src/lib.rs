@@ -59,8 +59,15 @@ pub fn own_cpus(cfg: &DeviceConfig) -> usize {
 /// with). A process set this way is also one Process Lasso treats as
 /// customised and leaves alone. 0 when `own` is 0 (nothing pinned).
 pub fn process_cpus(own: usize, l3: &[usize], fallback: usize) -> usize {
-    let _ = (own, l3, fallback);
-    0
+    if own == 0 {
+        return 0;
+    }
+    if l3.is_empty() {
+        return own | fallback;
+    }
+    l3.iter()
+        .filter(|&&group| group & own != 0)
+        .fold(own, |m, &group| m | group)
 }
 
 #[cfg(test)]
@@ -101,9 +108,15 @@ mod tests {
         // FOH's 7950X: CCD0 = CPUs 0-15, CCD1 = 16-31.
         let l3 = [0x0000_FFFF, 0xFFFF_0000];
         // Media threads on CCD1: the whole CCD1, nothing of CCD0.
-        assert_eq!(process_cpus(1 << 31 | 1 << 29 | 1 << 30, &l3, usize::MAX), 0xFFFF_0000);
+        assert_eq!(
+            process_cpus(1 << 31 | 1 << 29 | 1 << 30, &l3, usize::MAX),
+            0xFFFF_0000
+        );
         // On CCD0: the whole CCD0.
-        assert_eq!(process_cpus(1 << 13 | 1 << 15, &l3, usize::MAX), 0x0000_FFFF);
+        assert_eq!(
+            process_cpus(1 << 13 | 1 << 15, &l3, usize::MAX),
+            0x0000_FFFF
+        );
         // Threads on both: both.
         assert_eq!(process_cpus(1 << 1 | 1 << 17, &l3, usize::MAX), 0xFFFF_FFFF);
         // No L3 information: own plus the CPUs it started with.

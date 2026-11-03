@@ -34,12 +34,16 @@ pub fn run(
     // pinned outside its process's set (error 87 there).
     let own = crate::own_cpus(&cfg);
     if own != 0 {
-        // The media threads pin to `own`; the process keeps the CPUs it
-        // started with too, for its other threads (the device's runtime,
-        // mDNS, the log): confined to `own` they could not run beside two
-        // spinning priority-31 threads, and a lock one of them held kept
-        // the TX thread waiting 2.5 to 15 ms (FOH PC, 2026-10-29).
-        let mask = started_cpus() | own;
+        // The media threads pin to `own`; the process holds the whole L3
+        // groups (CCDs) of those CPUs, for its other threads (the device's
+        // runtime, mDNS, the log): confined to `own` they could not run
+        // beside two spinning priority-31 threads, and a lock one of them
+        // held kept the TX thread waiting 2.5 to 15 ms (FOH PC,
+        // 2026-10-29); on every CPU, Process Lasso took the process for
+        // its own rule and moved the media threads off their CPUs
+        // (2026-11-03). Within the CCD they stay on the media threads'
+        // chiplet.
+        let mask = crate::process_cpus(own, &l3_groups(), started_cpus());
         crate::probe::set_affinity(mask)?;
         info!(mask = format!("{mask:#x}"), "the process's CPUs");
         // Its threads alone on those CPUs: the process at REALTIME, so its
@@ -234,6 +238,54 @@ fn realtime_class() -> Result<(), String> {
         info!("the process at REALTIME");
     }
     Ok(())
+}
+
+/// Each L3 cache's CPUs (processor group 0), e.g. one mask per AMD CCD;
+/// empty when Windows does not say.
+fn l3_groups() -> Vec<usize> {
+    use windows_sys::Win32::System::SystemInformation::{
+        GetLogicalProcessorInformationEx, RelationCache, SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
+    };
+    let mut len = 0u32;
+    // SAFETY: a size query with no buffer.
+    unsafe { GetLogicalProcessorInformationEx(RelationCache, std::ptr::null_mut(), &mut len) };
+    if len == 0 {
+        return Vec::new();
+    }
+    let mut buf = vec![0u8; len as usize];
+    // SAFETY: `buf` holds `len` writable bytes.
+    let ok = unsafe {
+        GetLogicalProcessorInformationEx(
+            RelationCache,
+            buf.as_mut_ptr()
+                .cast::<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(),
+            &mut len,
+        )
+    };
+    if ok == 0 {
+        return Vec::new();
+    }
+    // Records: Relationship (u32), Size (u32), then CACHE_RELATIONSHIP:
+    // Level (u8) at 8, GroupCount (u16) at 38, GROUP_AFFINITY at 40
+    // (Mask usize, Group u16).
+    let mut groups = Vec::new();
+    let mut at = 0usize;
+    let bytes = &buf[..len as usize];
+    while at + 8 <= bytes.len() {
+        let size = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().unwrap_or([0; 4])) as usize;
+        if size == 0 || at + size > bytes.len() {
+            break;
+        }
+        if size >= 50 && bytes[at + 8] == 3 {
+            let mask = usize::from_le_bytes(bytes[at + 40..at + 48].try_into().unwrap_or([0; 8]));
+            let group = u16::from_le_bytes([bytes[at + 48], bytes[at + 49]]);
+            if group == 0 && mask != 0 {
+                groups.push(mask);
+            }
+        }
+        at += size;
+    }
+    groups
 }
 
 /// The CPUs this process started with (its parent's set).
