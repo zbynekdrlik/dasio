@@ -72,6 +72,10 @@ New-Item -ItemType Directory -Force $formerData | Out-Null
 Set-Content -Path (Join-Path $formerData "state-former.toml") -Value "name = `"former-device`""
 New-Service -Name "dante-asio-$instance" -BinaryPathName "`"$env:SystemRoot\System32\svchost.exe`"" -StartupType Manual | Out-Null
 
+# A failed native command just before (FOH 3.11.2026: the install stopped
+# the band's service and threw, as dtray.exe, a GUI program, leaves the
+# exit code of whatever ran before it).
+cmd /c exit 7
 & (Join-Path $Bundle "install.ps1") -Instance $instance -Ip $ip -Config $cfg -Name "ci-asio-dante" -TestClock
 if (Get-Service -Name "dante-asio-$instance" -ErrorAction SilentlyContinue) { throw "the former service is still there" }
 if (-not (Test-Path (Join-Path $env:ProgramData "dasio\instance-$instance\state-former.toml"))) { throw "the former state file did not come over" }
@@ -234,6 +238,7 @@ Write-Output "a held driver: refused, or kept with -KeepHeldDriver"
 Wait-Until { -not (Get-Service -Name "dasio-$second" -ErrorAction SilentlyContinue) } 15 "the second service's removal"
 if (Test-Path $own2) { throw "uninstall left the second instance's binary" }
 
+cmd /c exit 7
 & (Join-Path $Bundle "uninstall.ps1") -Instance $instance -Ip $ip -Name "ci-asio-dante"
 Wait-Until { -not (Get-Service -Name $service -ErrorAction SilentlyContinue) } 15 "the service's removal"
 if (-not (Get-NetIPAddress -IPAddress $ip -ErrorAction SilentlyContinue)) { throw "uninstall removed the runner's own address" }
