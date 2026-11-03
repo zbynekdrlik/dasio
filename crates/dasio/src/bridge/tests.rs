@@ -318,12 +318,16 @@ fn slow_block(bridge: &mut Bridge<Slow>, start: u64) -> Vec<f64> {
 fn an_answer_that_comes_within_the_work_margin_is_played() {
     // Block 1 starts at 0; block 2 at 4 is due at once but the DAW answers
     // block 1 only at clock 9: inside the margin (block 2's start + 10).
-    let (mut b, t, _) = slow(0, 10, 1, 9);
+    let (mut b, t, reads) = slow(0, 10, 1, 9);
+    let waited = b.waited_counter();
     slow_block(&mut b, 0);
     t.store(5, Ordering::Release);
     let out = slow_block(&mut b, 4);
     assert_eq!(out, vec![0.5; 4], "the answer that came in time is played");
     assert_eq!(b.link.late.load(Ordering::Relaxed), 0);
+    assert_eq!(waited.load(Ordering::Relaxed), 1, "saved by the wait");
+    // The wait ends with the answer (clock reads 5..=9), not at the deadline.
+    assert_eq!(reads.load(Ordering::Relaxed), 5);
     // Without a spare block the DAW has block 2 while the bridge waits.
     let published = b.link.published.lock().unwrap().clone();
     assert_eq!(published.len(), 2);
@@ -339,17 +343,20 @@ fn the_wait_ends_at_the_deadline() {
     // The DAW never answers in time: the bridge stops at block 2's start +
     // 10 (clock 14) and the block is late.
     let (mut b, t, reads) = slow(0, 10, 1, 1_000);
+    let waited = b.waited_counter();
     slow_block(&mut b, 0);
     t.store(5, Ordering::Release);
     let out = slow_block(&mut b, 4);
     assert_eq!(out, vec![0.0; 4], "no answer: silence");
     assert_eq!(b.link.late.load(Ordering::Relaxed), 1);
-    let t_end = t.load(Ordering::Acquire);
-    assert!(
-        (14..=16).contains(&t_end),
-        "waited until the deadline, no longer: clock {t_end}"
+    assert_eq!(waited.load(Ordering::Relaxed), 0, "late, not saved");
+    // Clock reads 5..=14: the read at the deadline (14) ends the wait.
+    assert_eq!(
+        t.load(Ordering::Acquire),
+        15,
+        "waited until the deadline, no longer"
     );
-    assert!(reads.load(Ordering::Relaxed) <= 12, "a bounded wait");
+    assert_eq!(reads.load(Ordering::Relaxed), 10, "a bounded wait");
 }
 
 #[test]
@@ -369,4 +376,18 @@ fn with_a_spare_block_the_outputs_are_read_before_the_next_block_goes_out() {
         published[2].1 >= 9,
         "block 3 went out after the read: {published:?}"
     );
+}
+
+#[test]
+fn an_answer_already_in_needs_no_wait() {
+    // The DAW answered block 1 at once: no clock read, nothing counted.
+    let (mut b, t, reads) = slow(0, 10, 1, 0);
+    let waited = b.waited_counter();
+    slow_block(&mut b, 0);
+    b.link.ack.store(1, Ordering::Release);
+    t.store(5, Ordering::Release);
+    let out = slow_block(&mut b, 4);
+    assert_eq!(out, vec![0.5; 4]);
+    assert_eq!(reads.load(Ordering::Relaxed), 0);
+    assert_eq!(waited.load(Ordering::Relaxed), 0);
 }
