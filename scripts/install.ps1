@@ -210,8 +210,9 @@ if (-not (Test-Path $dtray) -or (Get-FileHash $dtray).Hash -ne (Get-FileHash (Jo
     Copy-Item (Join-Path $here "dtray.exe") $dtray -Force
     Write-Output "installed dtray (it starts at the next logon)"
 }
-& $dtray --autostart on
-if ($LASTEXITCODE -ne 0) { throw "dtray --autostart on failed ($LASTEXITCODE)" }
+# dtray is a GUI program: `&` would not wait for it nor set its exit code.
+$set = Start-Process $dtray -ArgumentList "--autostart", "on" -Wait -PassThru -WindowStyle Hidden
+if ($set.ExitCode -ne 0) { throw "dtray --autostart on failed ($($set.ExitCode))" }
 # The former dasio-tray: dtray shows its lines now.
 $run = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
 if (Get-ItemProperty $run -Name "dasio-tray" -ErrorAction SilentlyContinue) { Remove-ItemProperty $run -Name "dasio-tray" }

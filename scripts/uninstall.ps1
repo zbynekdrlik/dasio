@@ -69,7 +69,8 @@ if (Test-Path $named) {
 # The last instance gone: dtray no longer starts at logon.
 $dtray = Join-Path $env:ProgramFiles "dasio\dtray.exe"
 if (-not (Get-Service -Name "dasio-*" -ErrorAction SilentlyContinue) -and (Test-Path $dtray)) {
-    & $dtray --autostart off
-    if ($LASTEXITCODE -ne 0) { throw "dtray --autostart off failed ($LASTEXITCODE)" }
+    # dtray is a GUI program: `&` would not wait for it nor set its exit code.
+    $set = Start-Process $dtray -ArgumentList "--autostart", "off" -Wait -PassThru -WindowStyle Hidden
+    if ($set.ExitCode -ne 0) { throw "dtray --autostart off failed ($($set.ExitCode))" }
 }
 Write-Output "dasio instance $Instance removed"
