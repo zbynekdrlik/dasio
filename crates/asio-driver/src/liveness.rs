@@ -90,7 +90,50 @@ mod tests {
             beat,
             pid,
             shape: Some(shape()),
+            latency: (224, 352),
         }
+    }
+
+    #[test]
+    fn new_latencies_are_reported_once() {
+        // FOH 3.11.2026: the device restarted with another work margin; the
+        // shape stayed, so the DAW kept the latencies of its open and
+        // compensated wrong until it was restarted by hand.
+        let t = Instant::now();
+        let mut w = Watch::new(shape(), facts(0, 7), t);
+        let moved = Facts {
+            latency: (160, 288),
+            ..facts(1, 7)
+        };
+        assert_eq!(w.observe(moved, t), Verdict::Relatency);
+        assert_eq!(w.observe(Facts { beat: 2, ..moved }, t), Verdict::Live);
+        // Back to the first ones: reported again.
+        assert_eq!(w.observe(facts(3, 7), t), Verdict::Relatency);
+    }
+
+    #[test]
+    fn a_reshape_comes_before_new_latencies() {
+        let t = Instant::now();
+        let mut w = Watch::new(shape(), facts(0, 7), t);
+        let both = Facts {
+            shape: Shape::new(2, 2, 64),
+            latency: (160, 288),
+            ..facts(1, 7)
+        };
+        assert_eq!(w.observe(both, t), Verdict::Reshaped);
+    }
+
+    #[test]
+    fn a_restart_with_new_latencies_reports_both_in_turn() {
+        let t = Instant::now();
+        let mut w = Watch::new(shape(), facts(0, 7), t);
+        let next = Facts {
+            latency: (160, 288),
+            ..facts(1, 8)
+        };
+        assert_eq!(w.observe(next, t), Verdict::Restarted);
+        assert_eq!(w.observe(Facts { beat: 2, ..next }, t), Verdict::Relatency);
+        assert_eq!(w.observe(Facts { beat: 3, ..next }, t), Verdict::Live);
     }
 
     #[test]
