@@ -51,6 +51,12 @@ impl<L: Link> Bridge<L> {
     pub fn new(link: L) -> Self {
         Bridge { link, seq: 0 }
     }
+
+    /// A bridge whose DAW gets `spare` more block periods (stub).
+    pub fn with_spare(link: L, spare: u64) -> Self {
+        let _ = spare;
+        Bridge { link, seq: 0 }
+    }
 }
 
 impl<L: Link> Process for Bridge<L> {

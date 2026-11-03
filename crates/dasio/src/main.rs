@@ -94,12 +94,10 @@ fn main() -> ExitCode {
                 .and_then(|m| usize::from_str_radix(m.trim_start_matches("0x"), 16).ok());
             probe(instance, seconds, affinity)
         }
-        "unregister" => {
-            match dasio::register::keys(instance, flag(&args, "--name").as_deref()) {
-                Some(keys) => remove(&keys),
-                None => return usage(),
-            }
-        }
+        "unregister" => match dasio::register::keys(instance, flag(&args, "--name").as_deref()) {
+            Some(keys) => remove(&keys),
+            None => return usage(),
+        },
         "run" | "service" => {
             let (Some(config), Some(ip)) = (
                 flag(&args, "--config"),

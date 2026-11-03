@@ -149,3 +149,47 @@ fn each_block_is_published_with_its_media_time() {
         ]
     );
 }
+
+/// The stand-in DAW answers block `seq` now: its inputs negated.
+fn answer(b: &Bridge<Fake>, seq: u64) {
+    let half = (seq % 2) as usize;
+    b.link.outputs.lock().unwrap()[half] = b.link.inputs[half].iter().map(|s| -s).collect();
+    b.link.ack.store(seq, Ordering::Release);
+}
+
+#[test]
+fn a_spare_block_gives_the_daw_a_second_period() {
+    // FOH PC, band Ableton at block 256: most blocks back within 1 ms, some
+    // after 2.7 to 4.7 ms (dasio#1). With one spare block an answer one
+    // period late still plays, one block later.
+    let mut b = Bridge::with_spare(Fake::new(true, false, 2), 1);
+    run(&mut b, &[0.25; 2]);
+    let out = run(&mut b, &[0.5; 2]);
+    assert_eq!(out, vec![0.0; 2], "nothing due yet");
+    assert_eq!(
+        b.link.late.load(Ordering::Relaxed),
+        0,
+        "block 1 still has time"
+    );
+    answer(&b, 1);
+    let out = run(&mut b, &[0.0; 2]);
+    assert_eq!(out, vec![-0.25; 2], "block 1's answer, one block later");
+    assert_eq!(b.link.late.load(Ordering::Relaxed), 0);
+    // Block 2 not back two periods on: late, silence.
+    let out = run(&mut b, &[0.0; 2]);
+    assert_eq!(out, vec![0.0; 2]);
+    assert_eq!(
+        b.link.late.load(Ordering::Relaxed),
+        1,
+        "block 2 missed both periods"
+    );
+}
+
+#[test]
+fn without_a_spare_block_an_answer_one_period_late_is_lost() {
+    let mut b = Bridge::with_spare(Fake::new(true, false, 2), 0);
+    run(&mut b, &[0.25; 2]);
+    let out = run(&mut b, &[0.5; 2]);
+    assert_eq!(out, vec![0.0; 2]);
+    assert_eq!(b.link.late.load(Ordering::Relaxed), 1);
+}

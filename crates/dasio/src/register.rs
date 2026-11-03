@@ -144,11 +144,7 @@ mod tests {
                 e(&server, "", "C:\\dasio\\dasio.dll"),
                 e(&server, "ThreadingModel", "Apartment"),
                 e("SOFTWARE\\ASIO\\dasio 2", "CLSID", g),
-                e(
-                    "SOFTWARE\\ASIO\\dasio 2",
-                    "Description",
-                    "dasio 2"
-                ),
+                e("SOFTWARE\\ASIO\\dasio 2", "Description", "dasio 2"),
             ]
         );
         assert_eq!(entries(0, "x", None), None);
