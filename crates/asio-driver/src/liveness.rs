@@ -1,8 +1,8 @@
 //! What the driver knows about its device, from the shared header alone: a
-//! heartbeat that moves, the device's pid, the shape it published. A pid
-//! check of the process itself is not usable (a DAW may run as another,
-//! non-elevated user than the device). Portable, so it is tested on every
-//! OS.
+//! heartbeat that moves, the device's pid, the shape and the latencies it
+//! published. A pid check of the process itself is not usable (a DAW may
+//! run as another, non-elevated user than the device). Portable, so it is
+//! tested on every OS.
 
 use std::time::{Duration, Instant};
 
@@ -22,6 +22,9 @@ pub enum Verdict {
     Restarted,
     /// The header's shape is not the one the DAW opened: the DAW must reset.
     Reshaped,
+    /// The device's latencies changed (another work margin or TX latency
+    /// with the same shape): the DAW must read them again. Reported once.
+    Relatency,
 }
 
 /// What one look at the header saw.
@@ -31,12 +34,16 @@ pub struct Facts {
     pub pid: u32,
     /// `None` when the header holds no valid shape.
     pub shape: Option<Shape>,
+    /// The input and output latencies the device reports, samples.
+    pub latency: (u32, u32),
 }
 
 /// The device as last seen.
 #[derive(Debug)]
 pub struct Watch {
     opened: Shape,
+    /// The latencies the DAW last heard of.
+    latency: (u32, u32),
     pid: u32,
     beat: u64,
     beat_seen: Instant,
@@ -47,6 +54,7 @@ impl Watch {
     pub fn new(opened: Shape, first: Facts, now: Instant) -> Watch {
         Watch {
             opened,
+            latency: first.latency,
             pid: first.pid,
             beat: first.beat,
             beat_seen: now,
@@ -63,6 +71,12 @@ impl Watch {
             self.beat = facts.beat;
             self.beat_seen = now;
             return Verdict::Restarted;
+        }
+        if facts.latency != self.latency {
+            self.latency = facts.latency;
+            self.beat = facts.beat;
+            self.beat_seen = now;
+            return Verdict::Relatency;
         }
         if facts.beat != self.beat {
             self.beat = facts.beat;

@@ -803,7 +803,33 @@ impl Job {
         if v == Verdict::Restarted {
             self.rt.restarts.fetch_add(1, Ordering::Relaxed);
         }
-        v == Verdict::Reshaped && self.ask_reset(now)
+        match v {
+            Verdict::Reshaped => self.ask_reset(now),
+            // getLatencies reads the header: a DAW that takes
+            // kAsioLatenciesChanged asks it again; one that does not gets a
+            // reset (within the budget).
+            Verdict::Relatency if self.host_supports(K_ASIO_LATENCIES_CHANGED) => {
+                self.message(K_ASIO_LATENCIES_CHANGED);
+                false
+            }
+            Verdict::Relatency => self.ask_reset(now),
+            _ => false,
+        }
+    }
+
+    /// Whether the DAW answers `selector` (kAsioSelectorSupported).
+    fn host_supports(&self, selector: i32) -> bool {
+        self.callbacks.asioMessage.is_some_and(|m| {
+            // SAFETY: the host's callback; the value is the selector asked.
+            unsafe {
+                m(
+                    K_ASIO_SELECTOR_SUPPORTED,
+                    selector,
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                ) != 0
+            }
+        })
     }
 
     /// Asks the DAW for a reset if the instance's budget allows; whether it
@@ -903,6 +929,10 @@ fn facts(s: &Shared) -> Facts {
             h.rx.load(Ordering::Acquire),
             h.tx.load(Ordering::Acquire),
             h.block.load(Ordering::Acquire),
+        ),
+        latency: (
+            h.latency_in.load(Ordering::Acquire),
+            h.latency_out.load(Ordering::Acquire),
         ),
     }
 }
