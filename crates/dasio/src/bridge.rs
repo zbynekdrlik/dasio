@@ -45,17 +45,27 @@ pub fn to_f64(s: i32) -> f64 {
 pub struct Bridge<L: Link> {
     link: L,
     seq: u64,
+    /// Block periods the DAW gets beyond the first (0 or more): its
+    /// outputs play that many blocks later.
+    spare: u64,
 }
 
 impl<L: Link> Bridge<L> {
     pub fn new(link: L) -> Self {
-        Bridge { link, seq: 0 }
+        Self::with_spare(link, 0)
     }
 
-    /// A bridge whose DAW gets `spare` more block periods (stub).
+    /// A bridge whose DAW gets `spare` more block periods to return a
+    /// block: its outputs are taken `spare` blocks later. Both halves stay
+    /// safe with one spare block: a block's outputs are read before the
+    /// next block of the same half is published, and its inputs are only
+    /// overwritten after the DAW returned it (or it is late anyway).
     pub fn with_spare(link: L, spare: u64) -> Self {
-        let _ = spare;
-        Bridge { link, seq: 0 }
+        Bridge {
+            link,
+            seq: 0,
+            spare,
+        }
     }
 }
 
@@ -64,10 +74,11 @@ impl<L: Link> Process for Bridge<L> {
         if !self.link.attached() {
             return;
         }
-        let prev = self.seq;
-        if prev > 0 {
-            if self.link.ack() >= prev {
-                let half = (prev % 2) as u32;
+        // The block whose outputs are due now.
+        let due = self.seq.saturating_sub(self.spare);
+        if due > 0 {
+            if self.link.ack() >= due {
+                let half = (due % 2) as u32;
                 for ch in 0..block.outputs() {
                     self.link.read_output(half, ch, block.output(ch));
                 }

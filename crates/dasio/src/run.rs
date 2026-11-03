@@ -27,6 +27,7 @@ pub fn run(
     config: PathBuf,
     ip: std::net::Ipv4Addr,
     clock: host::ClockSource,
+    spare: u32,
     stop_asked: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let cfg = host::read_config(&config).map_err(|e| e.to_string())?;
@@ -72,7 +73,7 @@ pub fn run(
         media.tx.set_source(tx, Source::Engine);
     }
     let timing = crate::timing(&cfg);
-    let latency = crate::latencies(&cfg);
+    let latency = crate::latencies(&cfg, spare);
     let shared = Arc::new(
         Shared::create(instance, shape, cfg.sample_rate, latency)
             .map_err(|e| format!("the shared memory: {e}"))?,
@@ -81,11 +82,14 @@ pub fn run(
     media.attach_engine(Arc::clone(&stats));
     let stamps = Arc::new(Stamps::default());
     let base = Instant::now();
-    let bridge = Bridge::new(SharedLink {
-        shared: Arc::clone(&shared),
-        stamps: Arc::clone(&stamps),
-        base,
-    });
+    let bridge = Bridge::with_spare(
+        SharedLink {
+            shared: Arc::clone(&shared),
+            stamps: Arc::clone(&stamps),
+            base,
+        },
+        u64::from(spare),
+    );
     let map = Map {
         rx: (0..cfg.rx.len()).collect(),
         tx: engine_tx,
@@ -124,6 +128,7 @@ pub fn run(
         block = shape.block,
         latency_in = latency.0,
         latency_out = latency.1,
+        spare_blocks = spare,
         "dasio instance serving"
     );
     let stop_event = StopEvent::create(instance).map_err(|e| format!("the stop event: {e}"))?;

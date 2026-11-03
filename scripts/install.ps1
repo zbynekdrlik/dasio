@@ -36,7 +36,10 @@ param(
     # Leave an installed driver a DAW holds as it is (the new one comes with
     # the next install after the DAWs quit); without it such an install is
     # refused.
-    [switch]$KeepHeldDriver
+    [switch]$KeepHeldDriver,
+    # Block periods the DAW gets beyond the first (0 or 1): a heavy set's
+    # late blocks still play, its outputs that many blocks later.
+    [ValidateRange(0, 1)][int]$SpareBlocks = 0
 )
 $ErrorActionPreference = "Stop"
 
@@ -221,6 +224,7 @@ if ($LASTEXITCODE -ne 0) { throw "register failed ($LASTEXITCODE)" }
 $log = Join-Path $data "dasio.log"
 $bin_path = "`"$instExe`" service --instance $Instance --config `"$cfg`" --ip $Ip --log `"$log`""
 if ($TestClock) { $bin_path += " --clock system" }
+if ($SpareBlocks -gt 0) { $bin_path += " --spare-blocks $SpareBlocks" }
 $existing = Get-CimInstance Win32_Service -Filter "Name='$service'"
 if ($existing) {
     # Through CIM: the path's quotes reach the SCM unchanged (sc.exe's

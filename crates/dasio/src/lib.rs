@@ -31,13 +31,14 @@ pub fn timing(cfg: &DeviceConfig) -> Timing {
 /// The DAW's input and output latency, samples: a block reaches the DAW
 /// B + P after its first input sample was stamped; its outputs leave with
 /// the next block (one B, the double buffer), then W and the advertised TX
-/// latency (receivers play our flows at that latency).
-pub fn latencies(cfg: &DeviceConfig) -> (u32, u32) {
+/// latency (receivers play our flows at that latency), plus `spare`
+/// blocks the DAW gets beyond the first (see [`bridge::Bridge::with_spare`]).
+pub fn latencies(cfg: &DeviceConfig, spare: u32) -> (u32, u32) {
     let t = timing(cfg);
     let tx = latency_samples(cfg.tx_latency_ns.unwrap_or(cfg.latency_ns), cfg.sample_rate);
     (
         (t.block + t.playout) as u32,
-        (t.block + t.margin + tx) as u32,
+        (t.block + t.margin + tx) as u32 + spare * t.block as u32,
     )
 }
 
@@ -86,7 +87,9 @@ mod tests {
         cfg.tx_latency_ns = Some(250_000);
         let t = timing(&cfg);
         assert_eq!((t.block, t.playout, t.margin), (32, 96, 64));
-        assert_eq!(latencies(&cfg), (32 + 96, 32 + 64 + 24));
+        assert_eq!(latencies(&cfg, 0), (32 + 96, 32 + 64 + 24));
+        // A spare block: the outputs play one block later.
+        assert_eq!(latencies(&cfg, 1), (32 + 96, 32 + 64 + 24 + 32));
     }
 
     #[test]
@@ -101,7 +104,7 @@ mod tests {
         cfg.tx_latency_ns = Some(666_666);
         assert_eq!(timing(&cfg), Timing::of(&cfg));
         assert_eq!(timing(&cfg).playout, 32);
-        assert_eq!(latencies(&cfg), (32 + 32, 32 + 64 + 64));
+        assert_eq!(latencies(&cfg, 0), (32 + 32, 32 + 64 + 64));
     }
 
     #[test]

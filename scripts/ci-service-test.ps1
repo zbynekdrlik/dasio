@@ -134,8 +134,10 @@ $text2 += "arc_port = 4441", "cmc_port = 8801", "flows_port = 4456", "process_id
 $cfg2 = Join-Path $work2 "device.toml"
 Set-Content -Path $cfg2 -Value $text2
 $first = Get-ServicePid
-& (Join-Path $Bundle "install.ps1") -Instance $second -Ip $ip -Config $cfg2 -Name "ci-asio-dante-2" -TestClock
+& (Join-Path $Bundle "install.ps1") -Instance $second -Ip $ip -Config $cfg2 -Name "ci-asio-dante-2" -TestClock -SpareBlocks 1
 if ((Get-Service "dasio-$second").Status -ne "Running") { throw "the second instance is not running" }
+if ((Get-CimInstance Win32_Service -Filter "Name='dasio-$second'").PathName -notmatch '--spare-blocks 1') { throw "the second instance runs without its spare block" }
+Wait-Until { (Get-Content (Join-Path $env:ProgramData "dasio\instance-$second\dasio.log") -ErrorAction SilentlyContinue) -match 'spare_blocks=1' } 20 "the second instance serving with a spare block"
 if ((Get-ServicePid) -ne $first) { throw "the same binary restarted the first instance: pid $first -> $(Get-ServicePid)" }
 Write-Output "second instance installed beside the first (pid $first kept)"
 

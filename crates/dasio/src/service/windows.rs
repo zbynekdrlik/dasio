@@ -24,6 +24,7 @@ struct Args {
     config: PathBuf,
     ip: Ipv4Addr,
     clock: ClockSource,
+    spare: u32,
 }
 
 static ARGS: OnceLock<Args> = OnceLock::new();
@@ -36,12 +37,14 @@ pub fn dispatch(
     config: PathBuf,
     ip: Ipv4Addr,
     clock: ClockSource,
+    spare: u32,
 ) -> Result<(), String> {
     ARGS.set(Args {
         instance,
         config,
         ip,
         clock,
+        spare,
     })
     .map_err(|_| "the service was dispatched twice")?;
     info!(instance, service = %name(instance), "handing the process to the SCM");
@@ -129,6 +132,7 @@ fn service_main(_args: Vec<OsString>) {
         args.config.clone(),
         args.ip,
         args.clock,
+        args.spare,
         stop,
     );
     let code = exit_code(&result);
