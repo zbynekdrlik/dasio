@@ -1,7 +1,8 @@
 # dasio: remove one instance (plan Task 9). Run as administrator:
 #   .\uninstall.ps1 -Instance 1 -Ip <its address>
 # Stops and removes its service and its own binary (and a logon task an
-# older install made),
+# older install made); with the last instance gone, the tray's logon entry
+# goes too,
 # unregisters its driver entry, removes the extra address an older install.ps1
 # added (installs now add none). The
 # files in C:\Program Files\dasio stay (other instances use them); its
@@ -56,5 +57,12 @@ if ((Test-Path $added) -and ((Get-Content $added) -eq $Ip)) {
         Remove-NetIPAddress -IPAddress $Ip -Confirm:$false
     }
     Remove-Item $added
+}
+# The last instance gone: the tray no longer starts at logon.
+if (-not (Get-Service -Name "dasio-*" -ErrorAction SilentlyContinue)) {
+    $run = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+    if (Get-ItemProperty $run -Name "dasio-tray" -ErrorAction SilentlyContinue) {
+        Remove-ItemProperty $run -Name "dasio-tray"
+    }
 }
 Write-Output "dasio instance $Instance removed"

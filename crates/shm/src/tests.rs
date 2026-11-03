@@ -59,3 +59,47 @@ fn the_size_is_the_header_then_two_halves() {
     // 16 samples: 64 bytes, already aligned; 3 + 2 channels.
     assert_eq!(Shape::new(3, 2, 16).unwrap().size(), header + 2 * 5 * 64);
 }
+
+#[test]
+fn a_snapshot_copies_a_dasio_header_and_nothing_else() {
+    use std::sync::atomic::Ordering;
+    let h = Header::default();
+    assert_eq!(Snapshot::of(&h), None, "no magic: not ours");
+    h.magic.store(MAGIC, Ordering::Release);
+    h.version.store(VERSION + 1, Ordering::Relaxed);
+    assert_eq!(Snapshot::of(&h), None, "another layout");
+    h.version.store(VERSION, Ordering::Relaxed);
+    h.rx.store(32, Ordering::Relaxed);
+    h.tx.store(30, Ordering::Relaxed);
+    h.block.store(128, Ordering::Relaxed);
+    h.rate.store(96_000, Ordering::Relaxed);
+    h.latency_in.store(224, Ordering::Relaxed);
+    h.latency_out.store(352, Ordering::Relaxed);
+    h.device_pid.store(4308, Ordering::Relaxed);
+    h.seq.store(9, Ordering::Relaxed);
+    h.ack.store(8, Ordering::Relaxed);
+    h.heartbeat_ms.store(1234, Ordering::Relaxed);
+    h.host_attached.store(1, Ordering::Relaxed);
+    h.late.store(5, Ordering::Relaxed);
+    h.missed.store(2, Ordering::Relaxed);
+    assert_eq!(
+        Snapshot::of(&h),
+        Some(Snapshot {
+            rx: 32,
+            tx: 30,
+            block: 128,
+            rate: 96_000,
+            latency_in: 224,
+            latency_out: 352,
+            device_pid: 4308,
+            seq: 9,
+            ack: 8,
+            heartbeat_ms: 1234,
+            attached: true,
+            late: 5,
+            missed: 2,
+        })
+    );
+    h.host_attached.store(0, Ordering::Relaxed);
+    assert!(!Snapshot::of(&h).unwrap().attached);
+}

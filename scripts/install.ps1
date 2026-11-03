@@ -21,6 +21,9 @@
 # - registers the driver for the instance (HKLM: its COM class and its ASIO entry),
 # - puts the device config at C:\ProgramData\dasio\instance-<n>\device.toml,
 #   and moves aside a state file another config left at its state path,
+# - copies dasio-tray.exe (the tray icon: each instance's state, read-only)
+#   and starts it at every user's logon (HKLM Run "dasio-tray"); a running
+#   tray keeps its binary until the next logon (the old file is moved aside),
 # - makes the service "dasio-<n>" (LocalSystem, started at boot before any
 #   logon; the SCM restarts it after 2 s, 5 s, then 30 s, also after an error
 #   exit, the count reset after a day) and starts it.
@@ -193,6 +196,18 @@ try {
         Write-Output "$($s.Name) runs the new binary"
     }
 }
+# The tray: a running one holds its binary, which Windows lets move but not
+# overwrite; the moved-aside copies go once nothing runs them.
+$tray = Join-Path $bin "dasio-tray.exe"
+Get-ChildItem $bin -Filter "dasio-tray.exe.old-*" -ErrorAction SilentlyContinue | ForEach-Object {
+    Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
+}
+if (-not (Test-Path $tray) -or (Get-FileHash $tray).Hash -ne (Get-FileHash (Join-Path $here "dasio-tray.exe")).Hash) {
+    if (Test-Path $tray) { Move-Item $tray "$tray.old-$(Get-Date -Format yyyyMMddHHmmss)" -Force }
+    Copy-Item (Join-Path $here "dasio-tray.exe") $tray -Force
+    Write-Output "installed the tray (it starts at the next logon)"
+}
+Set-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name "dasio-tray" -Value "`"$tray`""
 # The instance's own binary (its service is stopped).
 $instExe = Join-Path $bin $instExeName
 if (-not (Test-Path $instExe) -or (Get-FileHash $instExe).Hash -ne (Get-FileHash (Join-Path $bin "dasio.exe")).Hash) {

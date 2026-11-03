@@ -18,14 +18,14 @@ use windows_sys::Win32::Security::Authorization::{
 };
 use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 use windows_sys::Win32::System::Memory::{
-    CreateFileMappingW, FILE_MAP_ALL_ACCESS, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile,
-    OpenFileMappingW, PAGE_READWRITE, UnmapViewOfFile,
+    CreateFileMappingW, FILE_MAP_ALL_ACCESS, FILE_MAP_READ, MEMORY_MAPPED_VIEW_ADDRESS,
+    MapViewOfFile, OpenFileMappingW, PAGE_READWRITE, UnmapViewOfFile,
 };
 use windows_sys::Win32::System::Threading::{
     CreateEventW, EVENT_ALL_ACCESS, OpenEventW, SetEvent, WaitForSingleObject,
 };
 
-use crate::{Header, MAGIC, Shape, VERSION};
+use crate::{Header, MAGIC, Shape, Snapshot, VERSION};
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -96,6 +96,35 @@ fn handle(h: HANDLE) -> io::Result<Handle> {
     } else {
         Ok(Handle(h))
     }
+}
+
+/// A watcher's look at instance `instance`'s header: the mapping opened
+/// read-only, the header copied, the view closed again. It never opens the
+/// events, so it cannot take a signal from the device or the driver.
+/// `NotFound` while no device made the mapping; `InvalidData` for a mapping
+/// of another layout.
+pub fn peek(instance: u32) -> io::Result<Snapshot> {
+    // SAFETY: a valid NUL-terminated name.
+    let mapping =
+        handle(unsafe { OpenFileMappingW(FILE_MAP_READ, 0, name(instance, "shm").as_ptr()) })?;
+    // SAFETY: a valid mapping handle; the header's bytes, read-only.
+    let view = unsafe {
+        MapViewOfFile(
+            mapping.0,
+            FILE_MAP_READ,
+            0,
+            0,
+            std::mem::size_of::<Header>(),
+        )
+    };
+    if view.Value.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the view holds a Header; only loads are made through it.
+    let snap = Snapshot::of(unsafe { &*(view.Value as *const Header) });
+    // SAFETY: the view mapped just above.
+    unsafe { UnmapViewOfFile(view) };
+    snap.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "not a dasio mapping"))
 }
 
 /// One instance's mapping and events, from either side.

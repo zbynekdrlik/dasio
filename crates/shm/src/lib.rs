@@ -68,6 +68,50 @@ pub struct Header {
     pub start: [AtomicU64; 2],
 }
 
+/// A copy of a header's numbers, for a reader that only watches (the tray):
+/// what [`Header`] says at one moment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Snapshot {
+    pub rx: u32,
+    pub tx: u32,
+    pub block: u32,
+    pub rate: u32,
+    pub latency_in: u32,
+    pub latency_out: u32,
+    pub device_pid: u32,
+    pub seq: u64,
+    pub ack: u64,
+    pub heartbeat_ms: u64,
+    pub attached: bool,
+    pub late: u64,
+    pub missed: u64,
+}
+
+impl Snapshot {
+    /// `h`'s numbers; `None` when it is not a dasio header of this layout.
+    pub fn of(h: &Header) -> Option<Snapshot> {
+        use std::sync::atomic::Ordering::{Acquire, Relaxed};
+        if h.magic.load(Acquire) != MAGIC || h.version.load(Relaxed) != VERSION {
+            return None;
+        }
+        Some(Snapshot {
+            rx: h.rx.load(Relaxed),
+            tx: h.tx.load(Relaxed),
+            block: h.block.load(Relaxed),
+            rate: h.rate.load(Relaxed),
+            latency_in: h.latency_in.load(Relaxed),
+            latency_out: h.latency_out.load(Relaxed),
+            device_pid: h.device_pid.load(Relaxed),
+            seq: h.seq.load(Relaxed),
+            ack: h.ack.load(Relaxed),
+            heartbeat_ms: h.heartbeat_ms.load(Relaxed),
+            attached: h.host_attached.load(Relaxed) != 0,
+            late: h.late.load(Relaxed),
+            missed: h.missed.load(Relaxed),
+        })
+    }
+}
+
 /// The layout's shape: channels each way and the block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Shape {
@@ -120,7 +164,7 @@ impl Shape {
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::Shared;
+pub use windows::{Shared, peek};
 
 #[cfg(test)]
 mod tests;

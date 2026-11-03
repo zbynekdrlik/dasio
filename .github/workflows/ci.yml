@@ -185,13 +185,13 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo build --release --locked -p dasio -p asio-driver
+      - run: cargo build --release --locked -p dasio -p asio-driver -p dasio-tray
       - name: Stage the bundle
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force bundle | Out-Null
-          Copy-Item target/release/dasio.exe, target/release/dasio_driver.dll, scripts/install.ps1, scripts/uninstall.ps1 bundle/
+          Copy-Item target/release/dasio.exe, target/release/dasio_driver.dll, target/release/dasio-tray.exe, scripts/install.ps1, scripts/uninstall.ps1 bundle/
           Get-FileHash bundle/* -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content bundle/SHA256SUMS
       # The bundle as the PC runs it: installed as a service, killed and brought
       # back by the SCM, removed (Windows PowerShell 5.1, as on the PC).
