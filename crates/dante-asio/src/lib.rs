@@ -121,6 +121,8 @@ mod tests {
         assert_eq!(process_cpus(1 << 1 | 1 << 17, &l3, usize::MAX), 0xFFFF_FFFF);
         // No L3 information: own plus the CPUs it started with.
         assert_eq!(process_cpus(1 << 3, &[], 0xF0), 0xF8);
+        // An own CPU among the started ones stays in.
+        assert_eq!(process_cpus(1 << 4, &[], 0xF0), 0xF0);
         // Nothing pinned: no change asked.
         assert_eq!(process_cpus(0, &l3, usize::MAX), 0);
         // An own CPU outside every listed L3 group still counts.
