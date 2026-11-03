@@ -201,7 +201,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "dtray $tag download failed" }
           $want = ((Get-Content "dtray-dl/dtray-$tag-windows-x86_64.exe.sha256" -Raw).Trim() -split '\s+')[0].ToLower()
           $have = (Get-FileHash "dtray-dl/dtray-$tag-windows-x86_64.exe" -Algorithm SHA256).Hash.ToLower()
-          if ($want -ne $have) { throw "dtray $tag: sha256 $have, release says $want" }
+          if ($want -ne $have) { throw "dtray ${tag}: sha256 $have, release says $want" }
           Copy-Item "dtray-dl/dtray-$tag-windows-x86_64.exe" bundle/dtray.exe
           Get-FileHash bundle/* -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content bundle/SHA256SUMS
       # The bundle as the PC runs it: installed as a service, killed and brought
