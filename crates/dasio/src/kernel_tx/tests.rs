@@ -15,6 +15,9 @@ fn the_ioctl_code_is_filteruser_h_s() {
     assert_eq!(IOCTL_DASIO_TX_SEND, 0x0017_8054);
     // The sample's own codes use FILE_ANY_ACCESS: function 14 is 0x170038.
     assert_eq!(ctl_code(0x17, 14, 0, 0), 0x0017_0038);
+    // Every field in its place: FILE_DEVICE_UNKNOWN, 0x801, METHOD_NEITHER,
+    // FILE_READ_ACCESS (winioctl.h's arithmetic).
+    assert_eq!(ctl_code(0x22, 0x801, 3, 1), 0x0022_6007);
 }
 
 #[test]

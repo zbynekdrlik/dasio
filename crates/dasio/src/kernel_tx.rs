@@ -24,9 +24,10 @@ pub const MAX_FRAME: usize = 1514;
 /// The input's header: the adapter's IfIndex and a reserved word.
 pub const HEADER: usize = 8;
 
-/// Windows' `CTL_CODE(device, function, method, access)`.
+/// Windows' `CTL_CODE(device, function, method, access)`: its fields
+/// never overlap, so the sum is the macro's bitwise or.
 pub const fn ctl_code(device: u32, function: u32, method: u32, access: u32) -> u32 {
-    (device << 16) | (access << 14) | (function << 2) | method
+    device * 0x1_0000 + access * 0x4000 + function * 4 + method
 }
 
 /// `IOCTL_DASIO_TX_SEND` (filteruser.h): FILE_DEVICE_PHYSICAL_NETCARD,
