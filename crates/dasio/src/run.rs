@@ -89,8 +89,15 @@ pub fn run(
             base,
         },
         u64::from(spare),
-    );
+    )
+    .with_deadline(crate::wait_offset(&timing, cfg.sample_rate), {
+        // The pump's media clock, in samples (as the pump reads it).
+        let clock = Arc::clone(&media.clock);
+        let rate = cfg.sample_rate;
+        move || clock.now_ns().map(|ns| dstack::clock::to_samples(ns, rate))
+    });
     let stale = bridge.stale_counter();
+    let waited = bridge.waited_counter();
     let map = Map {
         rx: (0..cfg.rx.len()).collect(),
         tx: engine_tx,
@@ -130,6 +137,7 @@ pub fn run(
         latency_in = latency.0,
         latency_out = latency.1,
         spare_blocks = spare,
+        wait_offset = crate::wait_offset(&timing, cfg.sample_rate),
         "dasio instance serving"
     );
     let stop_event = StopEvent::create(instance).map_err(|e| format!("the stop event: {e}"))?;
@@ -149,6 +157,7 @@ pub fn run(
                 late = h.late.load(Ordering::Relaxed),
                 driver_missed = h.missed.load(Ordering::Relaxed),
                 stale = stale.load(Ordering::Relaxed),
+                waited = waited.load(Ordering::Relaxed),
                 attached = h.host_attached.load(Ordering::Relaxed),
                 blocks = v.blocks,
                 pump_late = v.late,

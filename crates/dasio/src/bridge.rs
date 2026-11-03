@@ -3,10 +3,12 @@
 //! Per block `seq`: the RX samples into half `seq % 2`'s input buffers (24
 //! bits left-justified in `i32`, as ASIO's `Int32LSB`), `seq` published and
 //! the block event signalled; the outputs are the DAW's answer to the block
-//! before (half `(seq - 1) % 2`), taken when its `ack` is in. The pump never
-//! waits: the DAW has one block's time to answer, and a missing answer is
-//! silence and a late count. The cost is one block on the way out
-//! (`latencies` counts it).
+//! before (half `(seq - 1) % 2`), taken when its `ack` is in. The block's
+//! outputs leave the work margin W after the pump calls it, and the output
+//! latency already counts W (`latencies`): with a deadline set
+//! ([`Bridge::with_deadline`]) the bridge waits for a missing answer until
+//! then, so the DAW has a block period plus most of W. A missing answer is
+//! silence and a late count. The cost is one block on the way out.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -44,6 +46,9 @@ pub fn to_f64(s: i32) -> f64 {
     f64::from(s) / 2_147_483_648.0
 }
 
+/// The media clock now, samples (`None` while it is not ready).
+type MediaNow = Box<dyn Fn() -> Option<u64> + Send>;
+
 /// The pump's processor for one instance.
 pub struct Bridge<L: Link> {
     link: L,
@@ -57,6 +62,12 @@ pub struct Bridge<L: Link> {
     /// of them): an answer plays only in the block `spare` + 1 blocks
     /// after its own.
     starts: Vec<Option<u64>>,
+    /// The latest media time (samples after a block's start) the bridge
+    /// waits for a missing answer until, and the media clock (`None`: not
+    /// ready); `None`: it never waits.
+    deadline: Option<(u64, MediaNow)>,
+    /// Answers that came in during that wait (late without it).
+    waited: Arc<AtomicU64>,
 }
 
 impl<L: Link> Bridge<L> {
@@ -76,7 +87,90 @@ impl<L: Link> Bridge<L> {
             spare,
             stale: Arc::new(AtomicU64::new(0)),
             starts: vec![None; spare as usize + 2],
+            deadline: None,
+            waited: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// A bridge that waits for a missing answer until `offset` samples
+    /// after the start of the block being processed, by the media clock
+    /// `now` (samples; `None` while it is not ready). The pump's block is
+    /// due B + P after its start and its outputs leave W later, so the
+    /// offset is B + P + W less a safety margin for the pump's own work.
+    pub fn with_deadline(
+        mut self,
+        offset: u64,
+        now: impl Fn() -> Option<u64> + Send + 'static,
+    ) -> Self {
+        self.deadline = Some((offset, Box::new(now)));
+        self
+    }
+
+    /// The count of answers that came in during the wait, shared.
+    pub fn waited_counter(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.waited)
+    }
+
+    /// Waits until the DAW returned block `due` or the deadline after
+    /// `start` passed; whether it had to wait and the answer came.
+    fn wait_for(&self, due: u64, start: Option<u64>) -> bool {
+        let (Some((offset, now)), Some(start)) = (&self.deadline, start) else {
+            return false;
+        };
+        if self.link.ack() >= due {
+            return false;
+        }
+        let until = start + offset;
+        while self.link.ack() < due {
+            match now() {
+                Some(t) if t < until => std::hint::spin_loop(),
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    /// Takes block `due`'s answer into `block`'s outputs, or counts it late
+    /// or stale.
+    fn take(&mut self, due: u64, block: &mut Block<'_>) {
+        if self.wait_for(due, block.start()) {
+            self.waited.fetch_add(1, Ordering::Relaxed);
+        }
+        // Its answer's own slot is `spare` + 1 blocks after it. A pump
+        // that skipped blocks (a re-bootstrap) runs this block later: the
+        // answer would play that many blocks late, outside the latency the
+        // driver reports, so it is dropped. Without media times (free
+        // pacing) every block is its slot.
+        let len = self.starts.len();
+        let in_slot = match (block.start(), self.starts[due as usize % len]) {
+            (Some(now), Some(then)) => now == then + (self.spare + 1) * block.frames() as u64,
+            _ => true,
+        };
+        if self.link.ack() >= due && in_slot {
+            let half = (due % 2) as u32;
+            for ch in 0..block.outputs() {
+                self.link.read_output(half, ch, block.output(ch));
+            }
+        } else if self.link.ack() >= due {
+            self.stale.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.link.count_late();
+        }
+    }
+
+    /// Hands `block`'s inputs to the DAW as the next seq.
+    fn hand_over(&mut self, block: &Block<'_>) {
+        self.seq += 1;
+        let half = (self.seq % 2) as u32;
+        for ch in 0..block.inputs() {
+            let src = block.input(ch);
+            for (d, &x) in self.link.input(half, ch).iter_mut().zip(src) {
+                *d = to_i32(x);
+            }
+        }
+        let len = self.starts.len();
+        self.starts[self.seq as usize % len] = block.start();
+        self.link.publish(self.seq, block.start());
     }
 
     /// The count of answers dropped because their slot had passed, shared
@@ -93,39 +187,20 @@ impl<L: Link> Process for Bridge<L> {
         }
         // The block whose outputs are due now.
         let due = self.seq.saturating_sub(self.spare);
+        // Without a spare block the DAW gets this block before the bridge
+        // waits for the last one's answer: they use different halves. With
+        // one, the due block's outputs half is the one this block's answer
+        // goes to, so it is read first.
+        let early = self.spare == 0;
+        if early {
+            self.hand_over(block);
+        }
         if due > 0 {
-            // Its answer's own slot is `spare` + 1 blocks after it. A pump
-            // that skipped blocks (a re-bootstrap) runs this block later:
-            // the answer would play that many blocks late, outside the
-            // latency the driver reports, so it is dropped. Without media
-            // times (free pacing) every block is its slot.
-            let len = self.starts.len();
-            let in_slot = match (block.start(), self.starts[due as usize % len]) {
-                (Some(now), Some(then)) => now == then + (self.spare + 1) * block.frames() as u64,
-                _ => true,
-            };
-            if self.link.ack() >= due && in_slot {
-                let half = (due % 2) as u32;
-                for ch in 0..block.outputs() {
-                    self.link.read_output(half, ch, block.output(ch));
-                }
-            } else if self.link.ack() >= due {
-                self.stale.fetch_add(1, Ordering::Relaxed);
-            } else {
-                self.link.count_late();
-            }
+            self.take(due, block);
         }
-        self.seq += 1;
-        let half = (self.seq % 2) as u32;
-        for ch in 0..block.inputs() {
-            let src = block.input(ch);
-            for (d, &x) in self.link.input(half, ch).iter_mut().zip(src) {
-                *d = to_i32(x);
-            }
+        if !early {
+            self.hand_over(block);
         }
-        let len = self.starts.len();
-        self.starts[self.seq as usize % len] = block.start();
-        self.link.publish(self.seq, block.start());
     }
 }
 

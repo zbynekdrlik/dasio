@@ -42,6 +42,21 @@ pub fn latencies(cfg: &DeviceConfig, spare: u32) -> (u32, u32) {
     )
 }
 
+/// What the pump keeps for its own work after a block's answer is in: the
+/// bridge waits for a missing answer until this long before the block's
+/// outputs are due at the TX (its process call's due time plus W).
+pub const WAIT_SAFETY_NS: u64 = 200_000;
+
+/// How long after a block's start the bridge may wait for the DAW's
+/// answer, samples: its due time (B + P after its start) plus the work
+/// margin W, less [`WAIT_SAFETY_NS`]; never before the due time.
+pub fn wait_offset(t: &Timing, sample_rate: u32) -> u64 {
+    let safety = latency_samples(WAIT_SAFETY_NS, sample_rate);
+    (t.block + t.playout + t.margin)
+        .saturating_sub(safety)
+        .max(t.block + t.playout)
+}
+
 /// The CPUs the device's media threads are pinned to, as an affinity mask
 /// (CPUs 0 to 63): the process must hold them, or pinning a thread there
 /// fails (Windows error 87).
@@ -90,6 +105,25 @@ mod tests {
         assert_eq!(latencies(&cfg, 0), (32 + 96, 32 + 64 + 24));
         // A spare block: the outputs play one block later.
         assert_eq!(latencies(&cfg, 1), (32 + 96, 32 + 64 + 24 + 32));
+    }
+
+    #[test]
+    fn the_bridge_waits_into_the_work_margin_less_the_safety() {
+        // FOH master: B 128, P 96 (1 ms), W 128 at 96 kHz; 200 us is 19
+        // samples.
+        let t = Timing {
+            block: 128,
+            playout: 96,
+            margin: 128,
+        };
+        assert_eq!(wait_offset(&t, 96_000), 128 + 96 + 128 - 19);
+        // A margin smaller than the safety: never before the due time.
+        let t = Timing {
+            block: 128,
+            playout: 96,
+            margin: 8,
+        };
+        assert_eq!(wait_offset(&t, 96_000), 128 + 96);
     }
 
     #[test]
