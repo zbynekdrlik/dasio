@@ -96,7 +96,10 @@ function Get-TomlString([string]$Path, [string]$Key) {
     $null
 }
 $deviceName = Get-TomlString $Config "name"
-if ($deviceName -and $deviceName -match '^[A-Za-z0-9-]+$') {
+if ($deviceName -and $deviceName -match '^dasio-[A-Za-z0-9-]+$') {
+    # Already named after the product (iem-snv's dasio-test-1).
+    $instExeName = "$deviceName.exe"
+} elseif ($deviceName -and $deviceName -match '^[A-Za-z0-9-]+$') {
     $instExeName = "dasio-$deviceName.exe"
 } else {
     $instExeName = "dasio-$Instance.exe"
