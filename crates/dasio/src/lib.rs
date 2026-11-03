@@ -10,6 +10,7 @@ pub mod app_status;
 pub mod bridge;
 #[cfg(windows)]
 pub mod jitter;
+pub mod kernel_tx;
 pub mod logfile;
 #[cfg(windows)]
 pub mod probe;

@@ -671,6 +671,74 @@ static void rx_defer(void)
     CHECK(pacer_rx_defer(f, n) == 0);
 }
 
+/* Appends one packed frame of `n` bytes (IPv4 over Ethernet II, the
+ * first payload byte `tag`) at `at`; returns the new end. */
+static uint32_t tx_put(uint8_t *buf, uint32_t at, uint32_t n, uint8_t tag)
+{
+    buf[at] = (uint8_t)n;
+    buf[at + 1] = (uint8_t)(n >> 8);
+    memset(buf + at + 2, 0, n);
+    buf[at + 2 + 12] = 0x08;
+    buf[at + 2 + 13] = 0x00;
+    buf[at + 2 + 14] = 0x45;
+    buf[at + 2 + 41] = tag;
+    return at + 2 + n;
+}
+
+static void tx_next(void)
+{
+    static uint8_t buf[4096];
+    uint32_t len, at, off, n;
+    /* Two frames, the smallest and the largest, then the end. */
+    len = tx_put(buf, 0, PACER_TX_MIN_FRAME, 1);
+    len = tx_put(buf, len, PACER_TX_MAX_FRAME, 2);
+    at = 0;
+    CHECK(pacer_tx_next(buf, len, &at, &off, &n) == 1);
+    CHECK(off == 2 && n == PACER_TX_MIN_FRAME && buf[off + 41] == 1);
+    CHECK(pacer_tx_next(buf, len, &at, &off, &n) == 1);
+    CHECK(off == 2 + PACER_TX_MIN_FRAME + 2 && n == PACER_TX_MAX_FRAME && buf[off + 41] == 2);
+    CHECK(at == len);
+    CHECK(pacer_tx_next(buf, len, &at, &off, &n) == 0);
+    /* An empty input: the end at once. */
+    at = 0;
+    CHECK(pacer_tx_next(buf, 0, &at, &off, &n) == 0);
+    /* Half a length, a frame cut short: malformed, `at` stays. */
+    at = 0;
+    CHECK(pacer_tx_next(buf, 1, &at, &off, &n) == -1 && at == 0);
+    CHECK(pacer_tx_next(buf, 2 + PACER_TX_MIN_FRAME - 1, &at, &off, &n) == -1 && at == 0);
+    /* Lengths just outside the range. */
+    len = tx_put(buf, 0, PACER_TX_MIN_FRAME, 0);
+    buf[0] = PACER_TX_MIN_FRAME - 1;
+    at = 0;
+    CHECK(pacer_tx_next(buf, len, &at, &off, &n) == -1);
+    len = tx_put(buf, 0, PACER_TX_MAX_FRAME + 1, 0);
+    at = 0;
+    CHECK(pacer_tx_next(buf, len, &at, &off, &n) == -1);
+    /* Not IPv4 over Ethernet II: ARP, a VLAN tag, IPv6, a short header. */
+    len = tx_put(buf, 0, 60, 0);
+    buf[2 + 13] = 0x06;
+    at = 0;
+    CHECK(pacer_tx_next(buf, len, &at, &off, &n) == -1);
+    buf[2 + 12] = 0x81;
+    buf[2 + 13] = 0x00;
+    CHECK(pacer_tx_next(buf, len, &at, &off, &n) == -1);
+    buf[2 + 12] = 0x08;
+    buf[2 + 13] = 0x00;
+    buf[2 + 14] = 0x65;
+    CHECK(pacer_tx_next(buf, len, &at, &off, &n) == -1);
+    buf[2 + 14] = 0x44;
+    CHECK(pacer_tx_next(buf, len, &at, &off, &n) == -1);
+    buf[2 + 14] = 0x45;
+    CHECK(pacer_tx_next(buf, len, &at, &off, &n) == 1);
+    /* A good frame, then a broken one: the first is read, then -1. */
+    len = tx_put(buf, 0, 60, 7);
+    len = tx_put(buf, len, 60, 8);
+    buf[len - 60 + 12] = 0x86;
+    at = 0;
+    CHECK(pacer_tx_next(buf, len, &at, &off, &n) == 1 && buf[off + 41] == 7);
+    CHECK(pacer_tx_next(buf, len, &at, &off, &n) == -1 && at == 62);
+}
+
 int main(void)
 {
     classify();
@@ -680,6 +748,7 @@ int main(void)
     pump();
     ktx();
     rx_defer();
+    tx_next();
     printf("%d checks, %d failed\n", checks, failed);
     return failed == 0 ? 0 : 1;
 }

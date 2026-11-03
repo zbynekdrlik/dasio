@@ -416,3 +416,29 @@ int pacer_rx_defer(const uint8_t *frame, uint32_t len)
     }
     return 0;
 }
+
+int pacer_tx_next(const uint8_t *buf, uint32_t len, uint32_t *at, uint32_t *frame_off, uint32_t *frame_len)
+{
+    uint32_t pos = *at;
+    uint32_t n;
+    const uint8_t *f;
+    if (pos >= len) {
+        return 0;
+    }
+    if (len - pos < 2u) {
+        return -1;
+    }
+    n = (uint32_t)buf[pos] | ((uint32_t)buf[pos + 1] << 8);
+    pos += 2u;
+    if (n < PACER_TX_MIN_FRAME || n > PACER_TX_MAX_FRAME || len - pos < n) {
+        return -1;
+    }
+    f = buf + pos;
+    if (f[12] != 0x08 || f[13] != 0x00 || (f[14] >> 4) != 4u || (f[14] & 0x0Fu) < 5u) {
+        return -1;
+    }
+    *frame_off = pos;
+    *frame_len = n;
+    *at = pos + n;
+    return 1;
+}

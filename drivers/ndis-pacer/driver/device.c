@@ -6,6 +6,11 @@
 
 #include "precomp.h"
 
+// The control device's class (IoCreateDeviceSecure, through NDIS, keys an
+// administrator's ACL override by it).
+static const GUID DasioPacerDeviceClass =
+    { 0x61b677a7, 0xf3f5, 0x438c, { 0x9a, 0x46, 0x5d, 0x2f, 0x74, 0xc5, 0x6b, 0xad } };
+
 
 #pragma NDIS_INIT_FUNCTION(FilterRegisterDevice)
 
@@ -19,6 +24,7 @@ FilterRegisterDevice(
     NDIS_STATUS            Status = NDIS_STATUS_SUCCESS;
     UNICODE_STRING         DeviceName;
     UNICODE_STRING         DeviceLinkUnicodeString;
+    UNICODE_STRING         DeviceSddl;
     PDRIVER_DISPATCH       DispatchTable[IRP_MJ_MAXIMUM_FUNCTION+1];
     NDIS_DEVICE_OBJECT_ATTRIBUTES   DeviceAttribute;
     PFILTER_DEVICE_EXTENSION        FilterDeviceExtension;
@@ -35,6 +41,9 @@ FilterRegisterDevice(
 
     NdisInitUnicodeString(&DeviceName, NTDEVICE_STRING);
     NdisInitUnicodeString(&DeviceLinkUnicodeString, LINKNAME_STRING);
+    // SYSTEM and Administrators only (dasio#1): IOCTL_DASIO_TX_SEND puts
+    // frames on the wire, so no other user may open the device.
+    NdisInitUnicodeString(&DeviceSddl, L"D:P(A;;GA;;;SY)(A;;GA;;;BA)");
 
     //
     // Create a device object and register our dispatch handlers
@@ -49,6 +58,8 @@ FilterRegisterDevice(
     DeviceAttribute.SymbolicName = &DeviceLinkUnicodeString;
     DeviceAttribute.MajorFunctions = &DispatchTable[0];
     DeviceAttribute.ExtensionSize = sizeof(FILTER_DEVICE_EXTENSION);
+    DeviceAttribute.DefaultSDDLString = &DeviceSddl;
+    DeviceAttribute.DeviceClassGuid = &DasioPacerDeviceClass;
 
     Status = NdisRegisterDeviceEx(
                 FilterDriverHandle,
@@ -388,6 +399,10 @@ FilterDeviceIoControl(
                 Out->Fires = pFilter->KtxFires;
                 Out->MaxBatch = pFilter->KtxMaxBatch;
                 Out->MaxLate = pFilter->KtxMaxLate;
+                Out->TxBatches = pFilter->TxBatches;
+                Out->TxFrames = pFilter->TxFrames;
+                Out->TxNoSlot = pFilter->TxNoSlot;
+                Out->TxMaxBatch = pFilter->TxMaxBatch;
                 FILTER_RELEASE_LOCK(&pFilter->Lock, bTrue);
                 InfoLength += (ULONG)sizeof(DASIO_KTX_STATUS);
             }
@@ -395,6 +410,44 @@ FilterDeviceIoControl(
             if (Status == STATUS_BUFFER_TOO_SMALL)
             {
                 InfoLength = 0;
+            }
+            break;
+
+        case IOCTL_DASIO_TX_SEND:
+            // The dasio service's frames on the adapter with the given
+            // IfIndex. Sent with the list lock held: the filter stays
+            // attached until its send call returns.
+            InputBuffer = OutputBuffer = (PUCHAR)Irp->AssociatedIrp.SystemBuffer;
+            InputBufferLength = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
+            OutputBufferLength = IrpSp->Parameters.DeviceIoControl.OutputBufferLength;
+            if (InputBufferLength < sizeof(DASIO_TX_SEND) || OutputBufferLength < sizeof(ULONG))
+            {
+                Status = STATUS_INVALID_PARAMETER;
+                break;
+            }
+            {
+                ULONG IfIndex = ((PDASIO_TX_SEND)InputBuffer)->IfIndex;
+                ULONG Accepted = 0;
+                Status = STATUS_NOT_FOUND;
+                FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
+                for (Link = FilterModuleList.Flink; Link != &FilterModuleList; Link = Link->Flink)
+                {
+                    pFilter = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
+                    if (pFilter->MiniportIfIndex != IfIndex)
+                    {
+                        continue;
+                    }
+                    Status = txSendAtDispatch(pFilter, InputBuffer + sizeof(DASIO_TX_SEND),
+                                              InputBufferLength - (ULONG)sizeof(DASIO_TX_SEND), &Accepted);
+                    break;
+                }
+                FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
+                if (Status == STATUS_SUCCESS)
+                {
+                    // The input is consumed: the output overwrites its start.
+                    *(PULONG)OutputBuffer = Accepted;
+                    InfoLength = sizeof(ULONG);
+                }
             }
             break;
 

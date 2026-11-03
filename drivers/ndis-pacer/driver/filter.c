@@ -2849,6 +2849,94 @@ ktxTimer(
     }
 }
 
+// Media TX (dasio#1): the dasio service's own audio frames, copied into
+// free test stream slots and sent down in one chain. Their completions go
+// through ktxDone like the test stream's (same pool), and pause waits for
+// them (KtxOut).
+_Use_decl_annotations_
+NTSTATUS
+txSendAtDispatch(
+    PMS_FILTER Filter,
+    const UCHAR *Input,
+    ULONG Length,
+    PULONG Accepted
+    )
+{
+    PNET_BUFFER_LIST Head = NULL;
+    PNET_BUFFER_LIST *Tail = &Head;
+    BOOLEAN bTrue = TRUE;
+    uint32_t At = 0;
+    uint32_t Off;
+    uint32_t Len;
+    ULONG Total = 0;
+    ULONG Batch = 0;
+    int r;
+
+    *Accepted = 0;
+    // The whole input first: a malformed one sends nothing.
+    while ((r = pacer_tx_next(Input, Length, &At, &Off, &Len)) == 1)
+    {
+        Total++;
+    }
+    if (r < 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    FILTER_ACQUIRE_LOCK(&Filter->Lock, bTrue);
+    if (!Filter->KtxReady || Filter->State != FilterRunning)
+    {
+        FILTER_RELEASE_LOCK(&Filter->Lock, bTrue);
+        return STATUS_DEVICE_NOT_READY;
+    }
+    At = 0;
+    while (pacer_tx_next(Input, Length, &At, &Off, &Len) == 1)
+    {
+        ULONG Slot;
+        PUCHAR Frame;
+        PNET_BUFFER_LIST Nbl;
+        if (Filter->KtxFreeCount == 0)
+        {
+            break;
+        }
+        Slot = Filter->KtxFree[--Filter->KtxFreeCount];
+        Frame = Filter->KtxBuf + Slot * KTX_SLOT_BYTES;
+        NdisMoveMemory(Frame, Input + Off, Len);
+        NdisMoveMemory(Frame + 6, Filter->KtxSrcMac, 6);
+        Nbl = NdisAllocateNetBufferAndNetBufferList(Filter->KtxPool, PACER_CHILD_CONTEXT, 0,
+                                                    Filter->KtxMdl[Slot], 0, Len);
+        if (Nbl == NULL)
+        {
+            Filter->KtxFree[Filter->KtxFreeCount++] = Slot;
+            break;
+        }
+        Nbl->SourceHandle = Filter->FilterHandle;
+        *(PULONG)NET_BUFFER_LIST_CONTEXT_DATA_START(Nbl) = Slot;
+        *Tail = Nbl;
+        Tail = &NET_BUFFER_LIST_NEXT_NBL(Nbl);
+        Filter->KtxSent++;
+        Filter->KtxOut++;
+        Batch++;
+    }
+    Filter->TxFrames += Batch;
+    Filter->TxNoSlot += Total - Batch;
+    if (Batch > 0)
+    {
+        Filter->TxBatches++;
+    }
+    if (Batch > Filter->TxMaxBatch)
+    {
+        Filter->TxMaxBatch = Batch;
+    }
+    FILTER_RELEASE_LOCK(&Filter->Lock, bTrue);
+
+    if (Head != NULL)
+    {
+        NdisFSendNetBufferLists(Filter->FilterHandle, Head, NDIS_DEFAULT_PORT_NUMBER, NDIS_SEND_FLAGS_DISPATCH_LEVEL);
+    }
+    *Accepted = Batch;
+    return STATUS_SUCCESS;
+}
+
 // A test stream frame completed: its NBL is freed and its slot is free.
 static VOID
 ktxDone(

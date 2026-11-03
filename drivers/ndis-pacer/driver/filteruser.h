@@ -42,6 +42,12 @@
 // DASIO_RXD_STATUS.
 #define IOCTL_DASIO_RXD_SET                 _NDIS_CONTROL_CODE(19, METHOD_BUFFERED)
 #define IOCTL_DASIO_RXD_STATUS              _NDIS_CONTROL_CODE(20, METHOD_BUFFERED)
+// dasio: media TX (dasio#1): the dasio service hands its own audio frames
+// down (input: DASIO_TX_SEND, then the packed frames; output: one ULONG,
+// the frames accepted); the filter sends them straight to the miniport,
+// below tcpip and WFP. Write access only (the device is SYSTEM and
+// Administrators only).
+#define IOCTL_DASIO_TX_SEND                 CTL_CODE(FILE_DEVICE_PHYSICAL_NETCARD, 21, METHOD_BUFFERED, FILE_WRITE_ACCESS)
 
 
 #define MAX_FILTER_INSTANCE_NAME_LENGTH     256
@@ -171,7 +177,7 @@ typedef struct _DASIO_KTX_START
 
 // dasio: one bound adapter's test stream, read under its lock. All fields
 // 64 bit, read in this order.
-#define DASIO_KTX_STATUS_VERSION            1
+#define DASIO_KTX_STATUS_VERSION            2
 typedef struct _DASIO_KTX_STATUS
 {
     ULONG64         Version;
@@ -190,7 +196,26 @@ typedef struct _DASIO_KTX_STATUS
     ULONG64         Fires;
     ULONG64         MaxBatch;         // most frames sent in one fire
     ULONG64         MaxLate;          // 100 ns: a fire after its first due frame
+    // Version 2: media TX (IOCTL_DASIO_TX_SEND), sharing the slots; Sent,
+    // Completed, Failed and Out above count its frames too.
+    ULONG64         TxBatches;        // TX_SEND calls that sent a frame
+    ULONG64         TxFrames;         // frames accepted and sent
+    ULONG64         TxNoSlot;         // frames not accepted: every slot out
+    ULONG64         TxMaxBatch;       // most frames in one call
 } DASIO_KTX_STATUS, *PDASIO_KTX_STATUS;
+
+// dasio: media TX. IfIndex names the adapter; the frames follow this
+// header, each as a 2-byte little-endian length and an Ethernet II frame
+// carrying IPv4 (pacer_tx_next). The filter writes the adapter's own MAC
+// as each frame's source. Frames are accepted in order while the
+// filter has free slots: the output's count says how many, and the rest
+// were not sent (the caller sends them another way). A malformed input
+// sends nothing (STATUS_INVALID_PARAMETER).
+typedef struct _DASIO_TX_SEND
+{
+    ULONG           IfIndex;
+    ULONG           Reserved;
+} DASIO_TX_SEND, *PDASIO_TX_SEND;
 
 // dasio: deferred receive. The miniport's receive DPC hands its NBLs to the
 // filter, which queues them and returns at once; a DPC of the filter's own,

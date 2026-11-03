@@ -416,6 +416,12 @@ typedef struct _MS_FILTER
     ULONG64                         KtxFires;
     ULONG64                         KtxMaxBatch;
     ULONG64                         KtxMaxLate;
+    // Media TX (IOCTL_DASIO_TX_SEND): the dasio service's frames, in the
+    // test stream's slots and pool (they complete through ktxDone).
+    ULONG64                         TxBatches;
+    ULONG64                         TxFrames;
+    ULONG64                         TxNoSlot;
+    ULONG64                         TxMaxBatch;
 
     // dasio deferred receive (rxd, dasio#1): received NBLs queued in
     // order (under Lock) and indicated up by RxdDpc.
@@ -455,6 +461,14 @@ VOID pacerApplyRateLocked(_In_ PMS_FILTER Filter);
 // (outside any lock: cancels the timer).
 NTSTATUS ktxStartLocked(_In_ PMS_FILTER Filter, _In_ const DASIO_KTX_START *Start);
 VOID ktxStop(_In_ PMS_FILTER Filter);
+
+// Media TX (filter.c): sends the packed frames of `Input` (pacer_tx_next)
+// on this filter, at DISPATCH_LEVEL with the filter list lock held (so
+// the filter stays attached), and sets *Accepted to the frames sent.
+// STATUS_INVALID_PARAMETER for a malformed input (nothing sent),
+// STATUS_DEVICE_NOT_READY when the filter has no slots or is not running.
+NTSTATUS txSendAtDispatch(_In_ PMS_FILTER Filter, _In_reads_bytes_(Length) const UCHAR *Input,
+                          _In_ ULONG Length, _Out_ PULONG Accepted);
 
 // Deferred receive (filter.c): settings for all filters, applied under
 // each filter's Lock; the DPC's target CPU is set outside any lock.

@@ -198,4 +198,20 @@ uint32_t pacer_ktx_frame(uint8_t *frame, const struct pacer_ktx_addr *a, uint32_
  * no gap. */
 uint32_t pacer_ktx_due(uint64_t start, uint64_t now, uint64_t interval_100ns, uint64_t sent, uint32_t max);
 
+/* Media TX (dasio#1): the dasio service's own audio frames, handed down
+ * through IOCTL_DASIO_TX_SEND and sent straight to the miniport, below
+ * tcpip and WFP (where Windows refuses or holds socket sends with Realtek
+ * 10.79). The input packs each frame as a 2-byte little-endian length and
+ * the frame: Ethernet II carrying IPv4 (no VLAN tag). */
+#define PACER_TX_MIN_FRAME 42u
+#define PACER_TX_MAX_FRAME 1514u
+
+/* The next frame of the packed input `buf` (`len` bytes) at `*at`: sets
+ * `*frame_off` and `*frame_len` and moves `*at` past it. Returns 1 for a
+ * frame, 0 at the end of the input, -1 when the input is malformed (a
+ * truncated length or frame, a length outside PACER_TX_MIN_FRAME..
+ * PACER_TX_MAX_FRAME, an EtherType other than IPv4, an IP version other
+ * than 4 or a header shorter than 20 bytes); `*at` then stays. */
+int pacer_tx_next(const uint8_t *buf, uint32_t len, uint32_t *at, uint32_t *frame_off, uint32_t *frame_len);
+
 #endif
