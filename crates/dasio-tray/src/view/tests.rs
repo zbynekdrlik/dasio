@@ -178,3 +178,13 @@ fn only_dasio_n_services_are_instances() {
     assert_eq!(instance_of_service("dasio-tray"), None);
     assert_eq!(instance_of_service("dante-asio-1"), None);
 }
+
+#[test]
+fn a_reading_exactly_a_window_old_still_counts() {
+    let mut t = Tracker::default();
+    t.update(0, &[running(1, "band", snap(10, 1, true))]);
+    let v = t.update(LATE_WINDOW_S, &[running(1, "band", snap(13, 2, true))]);
+    assert!(v.lines[0].contains("late 3/min"), "{}", v.lines[0]);
+    let v = t.update(LATE_WINDOW_S + 1, &[running(1, "band", snap(13, 3, true))]);
+    assert!(v.lines[0].contains("late 0/min"), "{}", v.lines[0]);
+}

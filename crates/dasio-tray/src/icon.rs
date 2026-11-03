@@ -82,6 +82,19 @@ mod tests {
             "near a corner: a square, not a circle"
         );
         assert_eq!(at(&px, 0, 0)[3], 0, "the very corner is rounded off");
+        // All four corners alike.
+        assert_eq!(at(&px, 31, 31)[3], 0);
+        assert_eq!(at(&px, 31, 0)[3], 0);
+        assert_eq!(at(&px, 0, 31)[3], 0);
+        assert_eq!(at(&px, 28, 28)[3], 255);
+        // The rounding is the same size at both ends.
+        assert_eq!(at(&px, 1, 1)[3], 0);
+        assert_eq!(at(&px, 30, 30)[3], 0);
+        assert_eq!(at(&px, 31, 16)[3], 255);
+        assert_eq!(at(&px, 16, 31)[3], 255);
+        // The bars stand on the floor: its row is background.
+        assert_eq!(at(&px, 24, 26)[..3], bar_colour(Colour::Green));
+        assert_eq!(at(&px, 24, 27)[..3], BACKGROUND);
         // Bars in the state's colour, background between them.
         assert_eq!(at(&px, 24, 20), [0x34, 0xd0, 0x58, 255]);
         let [r, g, b, _] = at(&px, 9, 20);

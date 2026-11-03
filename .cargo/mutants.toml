@@ -13,6 +13,7 @@ exclude_globs = [
   "crates/dasio/src/probe.rs",
   "crates/dasio/src/run.rs",
   "crates/dasio/src/service/windows.rs",
+  "crates/dasio-tray/src/main.rs",
 ]
 # The `win` modules of register.rs and bridge.rs: Windows-only too.
 # RotatingLog's flush: std's File writes unbuffered, so its flush is a
