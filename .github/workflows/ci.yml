@@ -185,13 +185,24 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo build --release --locked -p dasio -p asio-driver -p dasio-tray
+      - run: cargo build --release --locked -p dasio -p asio-driver
       - name: Stage the bundle
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force bundle | Out-Null
-          Copy-Item target/release/dasio.exe, target/release/dasio_driver.dll, target/release/dasio-tray.exe, scripts/install.ps1, scripts/uninstall.ps1 bundle/
+          Copy-Item target/release/dasio.exe, target/release/dasio_driver.dll, scripts/install.ps1, scripts/uninstall.ps1 bundle/
+          # dtray (dstack's tray) from the dstack release the crates are pinned to.
+          $tag = [regex]::Match((Get-Content crates/dasio/Cargo.toml -Raw), 'dstack = \{[^}]*tag = "(v[0-9.]+)"').Groups[1].Value
+          if (-not $tag) { throw "no dstack tag in crates/dasio/Cargo.toml" }
+          gh release download $tag -R zbynekdrlik/dstack -p "dtray-$tag-windows-x86_64.exe*" -D dtray-dl
+          if ($LASTEXITCODE -ne 0) { throw "dtray $tag download failed" }
+          $want = ((Get-Content "dtray-dl/dtray-$tag-windows-x86_64.exe.sha256" -Raw).Trim() -split '\s+')[0].ToLower()
+          $have = (Get-FileHash "dtray-dl/dtray-$tag-windows-x86_64.exe" -Algorithm SHA256).Hash.ToLower()
+          if ($want -ne $have) { throw "dtray $tag: sha256 $have, release says $want" }
+          Copy-Item "dtray-dl/dtray-$tag-windows-x86_64.exe" bundle/dtray.exe
           Get-FileHash bundle/* -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content bundle/SHA256SUMS
       # The bundle as the PC runs it: installed as a service, killed and brought
       # back by the SCM, removed (Windows PowerShell 5.1, as on the PC).

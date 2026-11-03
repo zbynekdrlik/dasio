@@ -21,9 +21,10 @@
 # - registers the driver for the instance (HKLM: its COM class and its ASIO entry),
 # - puts the device config at C:\ProgramData\dasio\instance-<n>\device.toml,
 #   and moves aside a state file another config left at its state path,
-# - copies dasio-tray.exe (the tray icon: each instance's state, read-only)
-#   and starts it at every user's logon (HKLM Run "dasio-tray"); a running
-#   tray keeps its binary until the next logon (the old file is moved aside),
+# - copies dtray.exe (dstack's tray: every local dstack device, with dasio's
+#   line per instance) and starts it at the installing user's logon
+#   (`dtray --autostart on`); removes the former dasio-tray; writes the
+#   instance's expected-device file %ProgramData%\dstack\devices\<device>.device,
 # - makes the service "dasio-<n>" (LocalSystem, started at boot before any
 #   logon; the SCM restarts it after 2 s, 5 s, then 30 s, also after an error
 #   exit, the count reset after a day) and starts it.
@@ -196,18 +197,35 @@ try {
         Write-Output "$($s.Name) runs the new binary"
     }
 }
-# The tray: a running one holds its binary, which Windows lets move but not
-# overwrite; the moved-aside copies go once nothing runs them.
-$tray = Join-Path $bin "dasio-tray.exe"
-Get-ChildItem $bin -Filter "dasio-tray.exe.old-*" -ErrorAction SilentlyContinue | ForEach-Object {
+# dtray, dstack's tray for every local dstack device (dasio's line per
+# instance comes from its device's status). A running one holds its binary,
+# which Windows lets move but not overwrite; moved-aside copies go once
+# nothing runs them. It starts at the installing user's logon.
+$dtray = Join-Path $bin "dtray.exe"
+Get-ChildItem $bin -Filter "*.exe.old-*" -ErrorAction SilentlyContinue | ForEach-Object {
     Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
 }
-if (-not (Test-Path $tray) -or (Get-FileHash $tray).Hash -ne (Get-FileHash (Join-Path $here "dasio-tray.exe")).Hash) {
-    if (Test-Path $tray) { Move-Item $tray "$tray.old-$(Get-Date -Format yyyyMMddHHmmss)" -Force }
-    Copy-Item (Join-Path $here "dasio-tray.exe") $tray -Force
-    Write-Output "installed the tray (it starts at the next logon)"
+if (-not (Test-Path $dtray) -or (Get-FileHash $dtray).Hash -ne (Get-FileHash (Join-Path $here "dtray.exe")).Hash) {
+    if (Test-Path $dtray) { Move-Item $dtray "$dtray.old-$(Get-Date -Format yyyyMMddHHmmss)" -Force }
+    Copy-Item (Join-Path $here "dtray.exe") $dtray -Force
+    Write-Output "installed dtray (it starts at the next logon)"
 }
-Set-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name "dasio-tray" -Value "`"$tray`""
+& $dtray --autostart on
+if ($LASTEXITCODE -ne 0) { throw "dtray --autostart on failed ($LASTEXITCODE)" }
+# The former dasio-tray: dtray shows its lines now.
+$run = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+if (Get-ItemProperty $run -Name "dasio-tray" -ErrorAction SilentlyContinue) { Remove-ItemProperty $run -Name "dasio-tray" }
+Get-Process dasio-tray -ErrorAction SilentlyContinue | Stop-Process -Force
+$oldTray = Join-Path $bin "dasio-tray.exe"
+if (Test-Path $oldTray) { Move-Item $oldTray "$oldTray.old-$(Get-Date -Format yyyyMMddHHmmss)" -Force }
+# dtray's list of devices this PC should run: one empty file per instance,
+# named after its Dante device, so a stopped instance shows as expected.
+$devices = Join-Path $env:ProgramData "dstack\devices"
+New-Item -ItemType Directory -Force $devices | Out-Null
+if ($deviceName) {
+    New-Item -ItemType File -Force (Join-Path $devices "$deviceName.device") | Out-Null
+    Set-Content (Join-Path $data "dtray-device") $deviceName
+}
 # The instance's own binary (its service is stopped).
 $instExe = Join-Path $bin $instExeName
 if (-not (Test-Path $instExe) -or (Get-FileHash $instExe).Hash -ne (Get-FileHash (Join-Path $bin "dasio.exe")).Hash) {

@@ -109,24 +109,3 @@ fn any_signed_in_user_reaches_the_objects() {
         assert!(sddl.contains(";;;AU)"), "{what}: {sddl}");
     }
 }
-
-#[test]
-fn a_watcher_peeks_at_the_header_read_only() {
-    let shape = Shape::new(3, 2, 128).unwrap();
-    assert_eq!(
-        shm::peek(93).unwrap_err().kind(),
-        std::io::ErrorKind::NotFound,
-        "no device yet"
-    );
-    let device = Shared::create(93, shape, 96_000, (224, 352)).unwrap();
-    device.header().late.store(4, Ordering::Relaxed);
-    device.header().host_attached.store(1, Ordering::Release);
-    let s = shm::peek(93).unwrap();
-    assert_eq!((s.rx, s.tx, s.block, s.rate), (3, 2, 128, 96_000));
-    assert_eq!((s.latency_in, s.latency_out), (224, 352));
-    assert_eq!(s.device_pid, std::process::id());
-    assert_eq!(s.late, 4);
-    assert!(s.attached);
-    drop(device);
-    assert!(shm::peek(93).is_err(), "gone with the device");
-}

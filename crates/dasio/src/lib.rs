@@ -6,6 +6,7 @@
 //! driver's registration ([`register`]) and the latencies the driver
 //! reports ([`latencies`]), run as a Windows service ([`service`]).
 
+pub mod app_status;
 pub mod bridge;
 #[cfg(windows)]
 pub mod jitter;

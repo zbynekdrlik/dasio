@@ -87,15 +87,19 @@ if ((Get-Content $aside[0].FullName -Raw) -notmatch 'foreign-device') { throw "t
 # may be there yet; one that is there is its own.
 if ((Test-Path $stateWin) -and ((Get-Content $stateWin -Raw) -match 'foreign-device')) { throw "the device runs under the foreign state" }
 Write-Output "a foreign state file was moved aside: $($aside[0].Name)"
-# The tray: installed, started at logon, and it reads the running instance.
-$trayExe = Join-Path $env:ProgramFiles "dasio\dasio-tray.exe"
-if (-not (Test-Path $trayExe)) { throw "no tray installed" }
-$runTray = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name "dasio-tray" -ErrorAction SilentlyContinue)."dasio-tray"
-if ($runTray -ne "`"$trayExe`"") { throw "the tray's logon entry is '$runTray'" }
-Wait-Until { (& $trayExe --print | Out-String) -match "ci-asio-dante \(instance $instance\): " } 15 "the tray's line for the instance"
-$trayOut = & $trayExe --print | Out-String
-Write-Output "tray:`n$trayOut"
-if ($trayOut -notmatch "ci-asio-dante \(instance $instance\): (OK|no DAW|\d+ late) .+ @ \d+ kHz .+ ch .+ in [\d.]+ / out [\d.]+ ms") { throw "the tray's line lacks the device's numbers" }
+# dtray (dstack's tray): installed, started at the user's logon, the instance
+# expected, and its line read from the running device's status.
+$dtray = Join-Path $env:ProgramFiles "dasio\dtray.exe"
+if (-not (Test-Path $dtray)) { throw "no dtray installed" }
+$runKey = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+if (-not (Get-ItemProperty $runKey -Name "dtray" -ErrorAction SilentlyContinue)) { throw "dtray does not start at logon" }
+if (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name "dasio-tray" -ErrorAction SilentlyContinue) { throw "the former dasio-tray still starts at logon" }
+$expected = Join-Path $env:ProgramData "dstack\devices\test-device.device"
+if (-not (Test-Path $expected)) { throw "no expected-device file $expected" }
+Wait-Until { (& $dtray --print 2>$null | Out-String) -match "(no DAW|DAW attached) .+ @ \d+ kHz .+ in [\d.]+ / out [\d.]+ ms .+ late \d+/min" } 30 "dtray's dasio line for the instance"
+$trayOut = & $dtray --print 2>$null | Out-String
+Write-Output "dtray:`n$trayOut"
+if ($trayOut -notmatch "test-device") { throw "dtray does not name the device" }
 $svc = Get-CimInstance Win32_Service -Filter "Name='$service'"
 if ($svc.StartMode -ne "Auto") { throw "start mode $($svc.StartMode), not Auto" }
 if ($svc.StartName -ne "LocalSystem") { throw "account $($svc.StartName), not LocalSystem" }
@@ -235,6 +239,7 @@ Wait-Until { -not (Get-Service -Name $service -ErrorAction SilentlyContinue) } 1
 if (-not (Get-NetIPAddress -IPAddress $ip -ErrorAction SilentlyContinue)) { throw "uninstall removed the runner's own address" }
 if (Test-Path "HKLM:\SOFTWARE\ASIO\ci-asio-dante") { throw "the driver's ASIO entry is still there" }
 if (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name "dasio-tray" -ErrorAction SilentlyContinue) { throw "the tray still starts at logon with no instance left" }
-if ((& $trayExe --print | Out-String) -notmatch "no instance installed") { throw "the tray still sees an instance" }
+if (Test-Path $expected) { throw "uninstall left the expected-device file" }
+if (Get-ItemProperty $runKey -Name "dtray" -ErrorAction SilentlyContinue) { throw "dtray still starts at logon with no instance left" }
 Get-Content (Join-Path $env:ProgramData "dasio\instance-$instance\dasio.log") | Select-Object -Last 15
 Write-Output "service test passed"

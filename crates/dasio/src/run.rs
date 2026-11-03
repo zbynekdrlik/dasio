@@ -98,6 +98,36 @@ pub fn run(
     });
     let stale = bridge.stale_counter();
     let waited = bridge.waited_counter();
+    // dtray's line for this instance (dstack's app status): the header's
+    // numbers, the bridge's counters, the late blocks of the last minute
+    // (kept by the loop below).
+    let late_per_min = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    {
+        let (shared, stale, waited, late_per_min) = (
+            Arc::clone(&shared),
+            Arc::clone(&stale),
+            Arc::clone(&waited),
+            Arc::clone(&late_per_min),
+        );
+        let (block, rate) = (shape.block, cfg.sample_rate);
+        media.set_app_status(move || {
+            let h = shared.header();
+            crate::app_status::json(&crate::app_status::Facts {
+                attached: h.host_attached.load(Ordering::Relaxed) != 0,
+                block,
+                sample_rate: rate,
+                latency_in: latency.0,
+                latency_out: latency.1,
+                spare_blocks: spare,
+                late_blocks: h.late.load(Ordering::Relaxed),
+                driver_missed: h.missed.load(Ordering::Relaxed),
+                stale: stale.load(Ordering::Relaxed),
+                waited: waited.load(Ordering::Relaxed),
+                heartbeat_ms: h.heartbeat_ms.load(Ordering::Relaxed),
+                late_per_min: late_per_min.load(Ordering::Relaxed),
+            })
+        });
+    }
     let map = Map {
         rx: (0..cfg.rx.len()).collect(),
         tx: engine_tx,
@@ -144,11 +174,21 @@ pub fn run(
     let start = Instant::now();
     let mut counts = Every::new(COUNTS_EVERY, start, false);
     let mut status = Every::new(STATUS_EVERY, start, true);
+    let mut window = crate::app_status::LateWindow::default();
+    let mut window_s = u64::MAX;
     let why = loop {
         let h = shared.header();
         h.heartbeat_ms
             .store(start.elapsed().as_millis() as u64, Ordering::Release);
         let now = Instant::now();
+        let secs = start.elapsed().as_secs();
+        if secs != window_s {
+            window_s = secs;
+            late_per_min.store(
+                window.take(secs, h.late.load(Ordering::Relaxed)),
+                Ordering::Relaxed,
+            );
+        }
         if counts.due(now) {
             let v = stats.view();
             info!(

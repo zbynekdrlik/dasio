@@ -1,8 +1,8 @@
 # dasio: remove one instance (plan Task 9). Run as administrator:
 #   .\uninstall.ps1 -Instance 1 -Ip <its address>
 # Stops and removes its service and its own binary (and a logon task an
-# older install made); with the last instance gone, the tray's logon entry
-# goes too,
+# older install made) and its expected-device file for dtray; with the last
+# instance gone, dtray no longer starts at logon,
 # unregisters its driver entry, removes the extra address an older install.ps1
 # added (installs now add none). The
 # files in C:\Program Files\dasio stay (other instances use them); its
@@ -58,11 +58,18 @@ if ((Test-Path $added) -and ((Get-Content $added) -eq $Ip)) {
     }
     Remove-Item $added
 }
-# The last instance gone: the tray no longer starts at logon.
-if (-not (Get-Service -Name "dasio-*" -ErrorAction SilentlyContinue)) {
-    $run = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
-    if (Get-ItemProperty $run -Name "dasio-tray" -ErrorAction SilentlyContinue) {
-        Remove-ItemProperty $run -Name "dasio-tray"
-    }
+# The instance's expected-device file (dtray would show it as not running).
+$named = Join-Path $env:ProgramData "dasio\instance-$Instance\dtray-device"
+if (Test-Path $named) {
+    $dev = (Get-Content $named -Raw).Trim()
+    $file = Join-Path $env:ProgramData "dstack\devices\$dev.device"
+    if ($dev -and (Test-Path $file)) { Remove-Item $file }
+    Remove-Item $named
+}
+# The last instance gone: dtray no longer starts at logon.
+$dtray = Join-Path $env:ProgramFiles "dasio\dtray.exe"
+if (-not (Get-Service -Name "dasio-*" -ErrorAction SilentlyContinue) -and (Test-Path $dtray)) {
+    & $dtray --autostart off
+    if ($LASTEXITCODE -ne 0) { throw "dtray --autostart off failed ($LASTEXITCODE)" }
 }
 Write-Output "dasio instance $Instance removed"
