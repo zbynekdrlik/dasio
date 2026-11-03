@@ -1,4 +1,4 @@
-//! `dante-asio probe` (plan Task 10): an ASIO host on the instance's driver
+//! `dasio probe` (plan Task 10): an ASIO host on the instance's driver
 //! that measures the round trip through Dante. TX 1 sends one impulse a
 //! second (one sample at half scale, silence else); RX 1 (subscribed to our
 //! own TX 1 for the test) is scanned for it; each arrival's distance from
@@ -11,8 +11,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use dante_asio_driver::abi::*;
-use dante_asio_driver::ident::clsid;
+use dasio_driver::abi::*;
+use dasio_driver::ident::clsid;
 
 /// What a run measured.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -232,7 +232,7 @@ pub fn probe_stalled(instance: u32, seconds: u64, stall_ms: u64) -> Result<Repor
     let id = clsid(instance).ok_or("no such instance")?;
     let mut factory: *mut c_void = core::ptr::null_mut();
     // SAFETY: valid pointers, as COM passes them.
-    let hr = unsafe { dante_asio_driver::DllGetClassObject(&id, &IID_ICLASSFACTORY, &mut factory) };
+    let hr = unsafe { dasio_driver::DllGetClassObject(&id, &IID_ICLASSFACTORY, &mut factory) };
     if hr != S_OK {
         return Err(format!("DllGetClassObject {hr:#x}"));
     }

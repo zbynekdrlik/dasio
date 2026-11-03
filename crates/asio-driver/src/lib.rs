@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! dante-asio's ASIO driver (plan Task 6): one DLL, registered under one
+//! dasio's ASIO driver (plan Task 6): one DLL, registered under one
 //! CLSID per instance ([`ident`]); each instance's audio goes through its
 //! device process's shared memory (`shm`). The device is the clock: the
 //! driver's worker thread waits for each published block and calls the

@@ -1,4 +1,4 @@
-//! `dante-asio service`: the device as a Windows service (one per instance,
+//! `dasio service`: the device as a Windows service (one per instance,
 //! started at boot, restarted by the SCM's recovery actions). The decisions
 //! are here, portable and tested on every OS; [`windows`] holds the SCM glue.
 
@@ -12,7 +12,7 @@ pub const STOP_HINT: Duration = Duration::from_secs(10);
 
 /// Instance `instance`'s service name (`install.ps1` registers it).
 pub fn name(instance: u32) -> String {
-    format!("dante-asio-{instance}")
+    format!("dasio-{instance}")
 }
 
 /// A control the SCM sent.
@@ -27,7 +27,7 @@ pub enum Control {
 /// What the service does with a control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Answer {
-    /// Ask the device to stop (as `dante-asio stop` does) and report
+    /// Ask the device to stop (as `dasio stop` does) and report
     /// StopPending with [`STOP_HINT`].
     Stop,
     /// Report the current status.
@@ -106,8 +106,8 @@ mod tests {
 
     #[test]
     fn the_name_carries_the_instance() {
-        assert_eq!(name(1), "dante-asio-1");
-        assert_eq!(name(16), "dante-asio-16");
+        assert_eq!(name(1), "dasio-1");
+        assert_eq!(name(16), "dasio-16");
     }
 
     #[test]

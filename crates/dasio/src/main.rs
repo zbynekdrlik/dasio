@@ -1,23 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `dante-asio run --instance <n> --config <device.toml> --ip <address>`:
+//! `dasio run --instance <n> --config <device.toml> --ip <address>`:
 //! one instance's Dante device and its shared memory for the driver;
-//! `dante-asio service ...` (same flags): the same, as the SCM starts it.
-//! `dante-asio register --instance <n> --dll <path> [--name <shown to DAWs>]` and
-//! `dante-asio unregister --instance <n>`: the driver's registry entries
+//! `dasio service ...` (same flags): the same, as the SCM starts it.
+//! `dasio register --instance <n> --dll <path> [--name <shown to DAWs>]` and
+//! `dasio unregister --instance <n>`: the driver's registry entries
 //! (administrator).
 
 use std::process::ExitCode;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: dante-asio run --instance <n> --config <device.toml> --ip <address> [--log <file>] [--clock system]\n       \
-         dante-asio service --instance <n> --config <device.toml> --ip <address> --log <file> [--clock system]\n       \
-         dante-asio register --instance <n> --dll <path> [--name <shown to DAWs>]\n       \
-         dante-asio stop --instance <n>\n       \
-         dante-asio probe --instance <n> [--seconds <s>] [--affinity <hex mask>]\n       \
-         dante-asio jitter --cpus <n,n,..> --seconds <s>\n       \
-         dante-asio unregister --instance <n> [--name <shown to DAWs>]"
+        "usage: dasio run --instance <n> --config <device.toml> --ip <address> [--log <file>] [--clock system]\n       \
+         dasio service --instance <n> --config <device.toml> --ip <address> --log <file> [--clock system]\n       \
+         dasio register --instance <n> --dll <path> [--name <shown to DAWs>]\n       \
+         dasio stop --instance <n>\n       \
+         dasio probe --instance <n> [--seconds <s>] [--affinity <hex mask>]\n       \
+         dasio jitter --cpus <n,n,..> --seconds <s>\n       \
+         dasio unregister --instance <n> [--name <shown to DAWs>]"
     );
     ExitCode::from(2)
 }
@@ -33,10 +33,10 @@ fn main() -> ExitCode {
     // `--log <path>`: appended to that file (the service has no console),
     // bounded in size (old files beside it).
     match flag(&args, "--log").map(|p| {
-        dante_asio::logfile::RotatingLog::open(
+        dasio::logfile::RotatingLog::open(
             std::path::Path::new(&p),
-            dante_asio::logfile::MAX_BYTES,
-            dante_asio::logfile::KEEP,
+            dasio::logfile::MAX_BYTES,
+            dasio::logfile::KEEP,
         )
     }) {
         Some(Ok(file)) => {
@@ -50,7 +50,7 @@ fn main() -> ExitCode {
             hide_console();
         }
         Some(Err(e)) => {
-            eprintln!("dante-asio: the log file: {e}");
+            eprintln!("dasio: the log file: {e}");
             return ExitCode::FAILURE;
         }
         None => tracing_subscriber::fmt().with_env_filter(filter()).init(),
@@ -68,7 +68,7 @@ fn main() -> ExitCode {
         return match jitter(&cpus, seconds) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
-                eprintln!("dante-asio: {e}");
+                eprintln!("dasio: {e}");
                 ExitCode::FAILURE
             }
         };
@@ -78,7 +78,7 @@ fn main() -> ExitCode {
     };
     let result: Result<(), String> = match cmd.as_str() {
         "register" => match flag(&args, "--dll").and_then(|dll| {
-            dante_asio::register::entries(instance, &dll, flag(&args, "--name").as_deref())
+            dasio::register::entries(instance, &dll, flag(&args, "--name").as_deref())
         }) {
             Some(entries) => apply(&entries),
             None => return usage(),
@@ -95,7 +95,7 @@ fn main() -> ExitCode {
             probe(instance, seconds, affinity)
         }
         "unregister" => {
-            match dante_asio::register::keys(instance, flag(&args, "--name").as_deref()) {
+            match dasio::register::keys(instance, flag(&args, "--name").as_deref()) {
                 Some(keys) => remove(&keys),
                 None => return usage(),
             }
@@ -125,25 +125,25 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("dante-asio: {e}");
+            eprintln!("dasio: {e}");
             ExitCode::FAILURE
         }
     }
 }
 
 #[cfg(windows)]
-fn apply(entries: &[dante_asio::register::Entry]) -> Result<(), String> {
-    dante_asio::register::apply(entries).map_err(|e| e.to_string())
+fn apply(entries: &[dasio::register::Entry]) -> Result<(), String> {
+    dasio::register::apply(entries).map_err(|e| e.to_string())
 }
 
 #[cfg(windows)]
 fn remove(keys: &[String]) -> Result<(), String> {
-    dante_asio::register::remove(keys).map_err(|e| e.to_string())
+    dasio::register::remove(keys).map_err(|e| e.to_string())
 }
 
 #[cfg(windows)]
 fn stop(instance: u32) -> Result<(), String> {
-    match dante_asio::run::ask_stop(instance) {
+    match dasio::run::ask_stop(instance) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.to_string()),
@@ -153,10 +153,10 @@ fn stop(instance: u32) -> Result<(), String> {
 #[cfg(windows)]
 fn probe(instance: u32, seconds: u64, affinity: Option<usize>) -> Result<(), String> {
     if let Some(mask) = affinity {
-        dante_asio::probe::set_affinity(mask)?;
+        dasio::probe::set_affinity(mask)?;
     }
-    dante_asio::probe::high_priority()?;
-    let r = dante_asio::probe::probe(instance, seconds)?;
+    dasio::probe::high_priority()?;
+    let r = dasio::probe::probe(instance, seconds)?;
     let min = r.round_trips.iter().min();
     let max = r.round_trips.iter().max();
     println!(
@@ -201,7 +201,7 @@ fn run(
     system_clock: bool,
 ) -> Result<(), String> {
     let never = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    dante_asio::run::run(instance, config, ip, clock(system_clock), never)
+    dasio::run::run(instance, config, ip, clock(system_clock), never)
 }
 
 #[cfg(windows)]
@@ -220,7 +220,7 @@ fn service(
     ip: std::net::Ipv4Addr,
     system_clock: bool,
 ) -> Result<(), String> {
-    dante_asio::service::windows::dispatch(instance, config, ip, clock(system_clock))
+    dasio::service::windows::dispatch(instance, config, ip, clock(system_clock))
 }
 
 #[cfg(not(windows))]
@@ -234,7 +234,7 @@ fn service(
 }
 
 #[cfg(not(windows))]
-fn apply(_entries: &[dante_asio::register::Entry]) -> Result<(), String> {
+fn apply(_entries: &[dasio::register::Entry]) -> Result<(), String> {
     Err("Windows only".into())
 }
 
@@ -268,7 +268,7 @@ fn hide_console() {}
 fn jitter(cpus: &str, seconds: u64) -> Result<(), String> {
     for c in cpus.split(',') {
         let cpu: usize = c.trim().parse().map_err(|_| format!("not a CPU: {c}"))?;
-        let j = dante_asio::jitter::jitter(cpu, seconds)?;
+        let j = dasio::jitter::jitter(cpu, seconds)?;
         println!(
             "jitter cpu {}: over_50us {} over_500us {} over_2ms {} longest_us {}",
             j.cpu, j.over_50us, j.over_500us, j.over_2ms, j.longest_us

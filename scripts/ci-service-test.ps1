@@ -11,8 +11,8 @@ param(
 $ErrorActionPreference = "Stop"
 
 $instance = 14
-$service = "dante-asio-$instance"
-$exe = Join-Path $env:ProgramFiles "dante-asio\dante-asio.exe"
+$service = "dasio-$instance"
+$exe = Join-Path $env:ProgramFiles "dasio\dasio.exe"
 
 function Wait-Until([scriptblock]$Condition, [int]$Seconds, [string]$What) {
     $deadline = (Get-Date).AddSeconds($Seconds)
@@ -32,7 +32,7 @@ Write-Output "runner address $ip"
 
 # The test device at 10 ms (a shared runner's scheduling), its state file in
 # a writable folder.
-$work = Join-Path $env:RUNNER_TEMP "dante-asio-service"
+$work = Join-Path $env:RUNNER_TEMP "dasio-service"
 New-Item -ItemType Directory -Force $work | Out-Null
 $state = (Join-Path $work "state.toml") -replace '\\', '/'
 $text = (Get-Content $DeviceConfig) | Where-Object { $_ -notmatch '^state_file' } | ForEach-Object {
@@ -52,7 +52,7 @@ function Assert-Refused([scriptblock]$Install, [string]$Why) {
     if (Get-Service -Name $service -ErrorAction SilentlyContinue) { throw "a refused install made $service" }
 }
 Assert-Refused { & (Join-Path $Bundle "install.ps1") -Instance $instance -Ip 192.0.2.77 -Config $cfg -Name "ci-asio-dante" -TestClock } "not one of this PC's addresses"
-$other = Join-Path $env:ProgramData "dante-asio\instance-15"
+$other = Join-Path $env:ProgramData "dasio\instance-15"
 New-Item -ItemType Directory -Force $other | Out-Null
 Set-Content -Path (Join-Path $other "device.toml") -Value "arc_port = 4441`ncmc_port = 8800`nflows_port = 4456`nprocess_id = 1"
 Assert-Refused { & (Join-Path $Bundle "install.ps1") -Instance $instance -Ip $ip -Config $cfg -Name "ci-asio-dante" -TestClock } "cmc_port 8800 is taken by instance-15"
@@ -65,7 +65,21 @@ Remove-Item -Recurse -Force $other
 $stateWin = $state -replace '/', '\'
 Set-Content -Path $stateWin -Value "name = `"foreign-device`"`nconfig_name = `"foreign-device`""
 
+# The product's former name (dasio#1, 3.11.2026): its service of this
+# instance goes and its state files come over.
+$formerData = Join-Path $env:ProgramData "dante-asio\instance-$instance"
+New-Item -ItemType Directory -Force $formerData | Out-Null
+Set-Content -Path (Join-Path $formerData "state-former.toml") -Value "name = `"former-device`""
+New-Service -Name "dante-asio-$instance" -BinaryPathName "`"$env:SystemRoot\System32\svchost.exe`"" -StartupType Manual | Out-Null
+
 & (Join-Path $Bundle "install.ps1") -Instance $instance -Ip $ip -Config $cfg -Name "ci-asio-dante" -TestClock
+if (Get-Service -Name "dante-asio-$instance" -ErrorAction SilentlyContinue) { throw "the former service is still there" }
+if (-not (Test-Path (Join-Path $env:ProgramData "dasio\instance-$instance\state-former.toml"))) { throw "the former state file did not come over" }
+Remove-Item -Recurse -Force (Join-Path $env:ProgramData "dante-asio")
+Write-Output "the former service went and its state came over"
+# The instance runs its own binary, named after its device.
+$own = Join-Path $env:ProgramFiles "dasio\dasio-test-device.exe"
+if ((Get-CimInstance Win32_Service -Filter "Name='$service'").PathName -notmatch [regex]::Escape("`"$own`"")) { throw "$service does not run $own" }
 $aside = @(Get-ChildItem $work -Filter "state.toml.replaced-*")
 if ($aside.Count -ne 1) { throw "the foreign state was not moved aside ($($aside.Count) copies)" }
 if ((Get-Content $aside[0].FullName -Raw) -notmatch 'foreign-device') { throw "the moved-aside file is not the foreign state" }
@@ -84,7 +98,7 @@ $flag = (& sc.exe qfailureflag $service) -join "`n"
 if ($flag -notmatch "TRUE") { throw "no restart after an error exit:`n$flag" }
 
 # The device drives a host on the driver: the probe through the service.
-Wait-Until { Test-Path (Join-Path $env:ProgramData "dante-asio\instance-$instance\dante-asio.log") } 20 "the device's log"
+Wait-Until { Test-Path (Join-Path $env:ProgramData "dasio\instance-$instance\dasio.log") } 20 "the device's log"
 Start-Sleep -Seconds 2
 $probe = (& $exe probe --instance $instance --seconds 3) -join "`n"
 if ($LASTEXITCODE -ne 0) { throw "probe failed ($LASTEXITCODE):`n$probe" }
@@ -106,10 +120,10 @@ Stop-Process -Id $before -Force
 Wait-Until { (Get-Service $service).Status -eq "Running" -and (Get-ServicePid) -ne $before -and (Get-ServicePid) -ne 0 } 15 "a restart after the kill"
 Write-Output "restarted: pid $before -> $(Get-ServicePid)"
 
-# A second instance installed while the first runs: both share the one
-# installed dante-asio.exe, which the running service holds open.
+# A second instance installed while the first runs: each runs its own
+# binary, so the first keeps running.
 $second = 15
-$work2 = Join-Path $env:RUNNER_TEMP "dante-asio-service-2"
+$work2 = Join-Path $env:RUNNER_TEMP "dasio-service-2"
 New-Item -ItemType Directory -Force $work2 | Out-Null
 $state2 = (Join-Path $work2 "state.toml") -replace '\\', '/'
 $text2 = $text | Where-Object { $_ -notmatch '^state_file' } | ForEach-Object {
@@ -121,29 +135,35 @@ $cfg2 = Join-Path $work2 "device.toml"
 Set-Content -Path $cfg2 -Value $text2
 $first = Get-ServicePid
 & (Join-Path $Bundle "install.ps1") -Instance $second -Ip $ip -Config $cfg2 -Name "ci-asio-dante-2" -TestClock
-if ((Get-Service "dante-asio-$second").Status -ne "Running") { throw "the second instance is not running" }
+if ((Get-Service "dasio-$second").Status -ne "Running") { throw "the second instance is not running" }
 if ((Get-ServicePid) -ne $first) { throw "the same binary restarted the first instance: pid $first -> $(Get-ServicePid)" }
 Write-Output "second instance installed beside the first (pid $first kept)"
 
-# A new binary while both run: every running instance stops for the copy and
-# runs the new binary after it.
+# A new binary for the second instance while both run: only it restarts;
+# the first runs its own binary until its own install.
 $newer = Join-Path $env:RUNNER_TEMP "bundle-newer"
 Copy-Item -Recurse -Force $Bundle $newer
 # One byte past the image: a different file Windows still runs.
-[System.IO.File]::AppendAllText((Join-Path $newer "dante-asio.exe"), " ")
+[System.IO.File]::AppendAllText((Join-Path $newer "dasio.exe"), " ")
 $sums = Get-Content (Join-Path $newer "SHA256SUMS") | ForEach-Object {
     $hash, $file = $_ -split "  ", 2
     "$((Get-FileHash (Join-Path $newer $file) -Algorithm SHA256).Hash.ToLower())  $file"
 }
 Set-Content -Path (Join-Path $newer "SHA256SUMS") -Value $sums
 & (Join-Path $newer "install.ps1") -Instance $second -Ip $ip -Config $cfg2 -Name "ci-asio-dante-2" -TestClock
-$want = (Get-FileHash (Join-Path $newer "dante-asio.exe")).Hash
+$want = (Get-FileHash (Join-Path $newer "dasio.exe")).Hash
+$own2 = Join-Path $env:ProgramFiles "dasio\dasio-ci-device-2.exe"
 if ((Get-FileHash $exe).Hash -ne $want) { throw "the installed binary is not the new one" }
+if ((Get-FileHash $own2).Hash -ne $want) { throw "the second instance's binary is not the new one" }
+if ((Get-FileHash $own).Hash -eq $want) { throw "the first instance's binary changed without its install" }
+if ((Get-ServicePid) -ne $first) { throw "the second instance's update restarted the first (pid $first -> $(Get-ServicePid))" }
+& (Join-Path $newer "install.ps1") -Instance $instance -Ip $ip -Config $cfg -Name "ci-asio-dante" -TestClock
+if ((Get-FileHash $own).Hash -ne $want) { throw "the first instance's binary is not the new one after its install" }
 foreach ($n in $instance, $second) {
-    if ((Get-Service "dante-asio-$n").Status -ne "Running") { throw "dante-asio-$n is not running after the update" }
+    if ((Get-Service "dasio-$n").Status -ne "Running") { throw "dasio-$n is not running after the update" }
 }
 if ((Get-ServicePid) -eq $first) { throw "the first instance still runs the old binary (pid $first)" }
-Write-Output "both instances run the new binary"
+Write-Output "each instance runs the new binary after its own install"
 
 # Updates back and forth, each instance in turn, as an update of the PC
 # runs them: each new binary pauses the other instance, and the device
@@ -159,21 +179,48 @@ foreach ($round in 1..3) {
 }
 Start-Sleep -Seconds 5
 $exits = @(Get-WinEvent -FilterHashtable @{ LogName = "System"; ProviderName = "Service Control Manager"; StartTime = $mark } -ErrorAction SilentlyContinue |
-    Where-Object { $_.Id -in 7024, 7031, 7034 -and $_.Message -match "dante-asio instance" })
+    Where-Object { $_.Id -in 7024, 7031, 7034 -and $_.Message -match "dasio instance" })
 if ($exits.Count -gt 0) {
     $exits | ForEach-Object { Write-Output "$($_.TimeCreated) $($_.Id) $($_.Message)" }
     throw "$($exits.Count) service error exits during the updates"
 }
 foreach ($n in $instance, $second) {
-    if ((Get-Service "dante-asio-$n").Status -ne "Running") { throw "dante-asio-$n is not running after the updates" }
+    if ((Get-Service "dasio-$n").Status -ne "Running") { throw "dasio-$n is not running after the updates" }
 }
 Write-Output "six updates in turn: no instance ended on its own"
+# A DAW holds the installed driver (it keeps it loaded until it quits): a
+# new driver is refused before anything stops, or kept out with
+# -KeepHeldDriver.
+$newest = Join-Path $env:RUNNER_TEMP "bundle-newest"
+Copy-Item -Recurse -Force $newer $newest
+[System.IO.File]::AppendAllText((Join-Path $newest "dasio_driver.dll"), " ")
+$sums = Get-Content (Join-Path $newest "SHA256SUMS") | ForEach-Object {
+    $hash, $file = $_ -split "  ", 2
+    "$((Get-FileHash (Join-Path $newest $file) -Algorithm SHA256).Hash.ToLower())  $file"
+}
+Set-Content -Path (Join-Path $newest "SHA256SUMS") -Value $sums
+$dll = Join-Path $env:ProgramFiles "dasio\dasio_driver.dll"
+$held = [System.IO.File]::Open($dll, "Open", "Read", "Read")
+try {
+    $pid2 = (Get-CimInstance Win32_Service -Filter "Name='dasio-$second'").ProcessId
+    $refused = $false
+    try { & (Join-Path $newest "install.ps1") -Instance $second -Ip $ip -Config $cfg2 -Name "ci-asio-dante-2" -TestClock } catch { $refused = $_.Exception.Message -match "holds" }
+    if (-not $refused) { throw "a new driver over a held one was not refused" }
+    if ((Get-CimInstance Win32_Service -Filter "Name='dasio-$second'").ProcessId -ne $pid2) { throw "the refused install stopped dasio-$second" }
+    & (Join-Path $newest "install.ps1") -Instance $second -Ip $ip -Config $cfg2 -Name "ci-asio-dante-2" -TestClock -KeepHeldDriver
+    if ((Get-FileHash $dll).Hash -ne (Get-FileHash (Join-Path $newer "dasio_driver.dll")).Hash) { throw "the held driver was replaced" }
+} finally {
+    $held.Close()
+}
+Write-Output "a held driver: refused, or kept with -KeepHeldDriver"
+
 & (Join-Path $newer "uninstall.ps1") -Instance $second -Ip $ip -Name "ci-asio-dante-2"
-Wait-Until { -not (Get-Service -Name "dante-asio-$second" -ErrorAction SilentlyContinue) } 15 "the second service's removal"
+Wait-Until { -not (Get-Service -Name "dasio-$second" -ErrorAction SilentlyContinue) } 15 "the second service's removal"
+if (Test-Path $own2) { throw "uninstall left the second instance's binary" }
 
 & (Join-Path $Bundle "uninstall.ps1") -Instance $instance -Ip $ip -Name "ci-asio-dante"
 Wait-Until { -not (Get-Service -Name $service -ErrorAction SilentlyContinue) } 15 "the service's removal"
 if (-not (Get-NetIPAddress -IPAddress $ip -ErrorAction SilentlyContinue)) { throw "uninstall removed the runner's own address" }
 if (Test-Path "HKLM:\SOFTWARE\ASIO\ci-asio-dante") { throw "the driver's ASIO entry is still there" }
-Get-Content (Join-Path $env:ProgramData "dante-asio\instance-$instance\dante-asio.log") | Select-Object -Last 15
+Get-Content (Join-Path $env:ProgramData "dasio\instance-$instance\dasio.log") | Select-Object -Last 15
 Write-Output "service test passed"

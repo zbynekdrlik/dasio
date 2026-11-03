@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! dante-asio's device process (plan Task 7): one instance's Dante device
+//! dasio's device process (plan Task 7): one instance's Dante device
 //! (the stack copied from iemmixer) whose pump hands each block to the
 //! instance's ASIO driver through the shared memory ([`bridge`]), the
 //! driver's registration ([`register`]) and the latencies the driver

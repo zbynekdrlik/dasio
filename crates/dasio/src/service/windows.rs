@@ -18,7 +18,7 @@ use windows_service::{define_windows_service, service_dispatcher};
 
 use super::{Answer, Control, STOP_HINT, address_held, answer, exit_code, name, wait_for_address};
 
-/// What `dante-asio service` was started with.
+/// What `dasio service` was started with.
 struct Args {
     instance: u32,
     config: PathBuf,

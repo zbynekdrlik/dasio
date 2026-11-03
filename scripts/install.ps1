@@ -1,19 +1,27 @@
-# dante-asio: install or update one instance (plan Task 9). Run as administrator
+# dasio: install or update one instance (plan Task 9). Run as administrator
 # from the unpacked bundle:
 #   .\install.ps1 -Instance 1 -Ip <the PC's address> -Config <device.toml>
-# - copies dante-asio.exe and dante_asio_driver.dll to C:\Program Files\dante-asio
-#   (a running instance is stopped first: its service, or the logon task an
-#   older install made, which is removed); unchanged files stay, and a new
-#   dante-asio.exe stops the other running instances for the copy and starts
-#   them again,
+# - copies dasio.exe and dasio_driver.dll to C:\Program Files\dasio, and
+#   dasio.exe again as dasio-<device name>.exe, the instance's own binary
+#   (its service runs it, so Process Lasso can pin each instance by name);
+#   a running instance is stopped first (its service, or the logon task an
+#   older install made, which is removed); unchanged files stay, and other
+#   instances keep running their own binaries,
+# - refuses, before anything changes, a new dasio_driver.dll while a DAW
+#   holds the installed one (a DAW keeps the driver loaded until it quits),
+#   unless -KeepHeldDriver leaves that one in place,
+# - moves an instance of the product's former name over: its service
+#   "dante-asio-<n>" is stopped and removed, its state files are copied from
+#   C:\ProgramData\dante-asio\instance-<n>, and the former files go when
+#   nothing holds them,
 # - adds no address: -Ip is one the PC already has. Several instances share it
 #   (dstack's per-PC manager), each on its own ports and process id from its
 #   config (arc_port, cmc_port, flows_port, process_id); a config that clashes
 #   with another installed instance's is refused before anything changes,
 # - registers the driver for the instance (HKLM: its COM class and its ASIO entry),
-# - puts the device config at C:\ProgramData\dante-asio\instance-<n>\device.toml,
+# - puts the device config at C:\ProgramData\dasio\instance-<n>\device.toml,
 #   and moves aside a state file another config left at its state path,
-# - makes the service "dante-asio-<n>" (LocalSystem, started at boot before any
+# - makes the service "dasio-<n>" (LocalSystem, started at boot before any
 #   logon; the SCM restarts it after 2 s, 5 s, then 30 s, also after an error
 #   exit, the count reset after a day) and starts it.
 param(
@@ -24,14 +32,18 @@ param(
     [string]$Name = "",
     # CI only: the stack's test clock (this machine's clock, no dantesync).
     # Never on a real Dante network.
-    [switch]$TestClock
+    [switch]$TestClock,
+    # Leave an installed driver a DAW holds as it is (the new one comes with
+    # the next install after the DAWs quit); without it such an install is
+    # refused.
+    [switch]$KeepHeldDriver
 )
 $ErrorActionPreference = "Stop"
 
-$bin = Join-Path $env:ProgramFiles "dante-asio"
-$data = Join-Path $env:ProgramData "dante-asio\instance-$Instance"
-$service = "dante-asio-$Instance"
-$task = "dante-asio-$Instance"
+$bin = Join-Path $env:ProgramFiles "dasio"
+$data = Join-Path $env:ProgramData "dasio\instance-$Instance"
+$service = "dasio-$Instance"
+$task = "dasio-$Instance"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # The bundle's checksums first.
@@ -59,7 +71,7 @@ function Get-DeviceSlots([string]$Path) {
     $slots
 }
 $mine = Get-DeviceSlots $Config
-$root = Join-Path $env:ProgramData "dante-asio"
+$root = Join-Path $env:ProgramData "dasio"
 Get-ChildItem $root -Directory -Filter "instance-*" -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne "instance-$Instance" } | ForEach-Object {
     $other = Join-Path $_.FullName "device.toml"
     if (Test-Path $other) {
@@ -72,7 +84,56 @@ Get-ChildItem $root -Directory -Filter "instance-*" -ErrorAction SilentlyContinu
     }
 }
 
-$installed = Join-Path $env:ProgramFiles "dante-asio\dante-asio.exe"
+# The config's device name (Dante's rule: letters, digits and '-') names
+# the instance's own binary.
+function Get-TomlString([string]$Path, [string]$Key) {
+    foreach ($line in Get-Content $Path) {
+        if ($line -match "^\s*$Key\s*=\s*([`"'])(.*)\1\s*$") { return $Matches[2] }
+    }
+    $null
+}
+$deviceName = Get-TomlString $Config "name"
+if ($deviceName -and $deviceName -match '^[A-Za-z0-9-]+$') {
+    $instExeName = "dasio-$deviceName.exe"
+} else {
+    $instExeName = "dasio-$Instance.exe"
+}
+
+# A DAW holds the installed driver while it runs: a new one cannot replace
+# it. Found before anything stops.
+$dll = Join-Path $bin "dasio_driver.dll"
+$newDll = -not (Test-Path $dll) -or (Get-FileHash $dll).Hash -ne (Get-FileHash (Join-Path $here "dasio_driver.dll")).Hash
+$dllHeld = $false
+if ($newDll -and (Test-Path $dll)) {
+    try { [System.IO.File]::Open($dll, "Open", "ReadWrite", "None").Close() } catch { $dllHeld = $true }
+}
+if ($dllHeld -and -not $KeepHeldDriver) {
+    throw "a DAW holds $dll (quit it, or pass -KeepHeldDriver to keep that driver for now); nothing changed"
+}
+
+# The product's former name: that instance's service goes, its state
+# comes over.
+$formerService = "dante-asio-$Instance"
+$formerData = Join-Path $env:ProgramData "dante-asio\instance-$Instance"
+if (Get-Service -Name $formerService -ErrorAction SilentlyContinue) {
+    Stop-Service -Name $formerService
+    (Get-Service -Name $formerService).WaitForStatus("Stopped", [TimeSpan]::FromSeconds(15))
+    & sc.exe delete $formerService | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "sc delete $formerService failed ($LASTEXITCODE)" }
+    Write-Output "removed the former service $formerService"
+}
+if (Test-Path $formerData) {
+    New-Item -ItemType Directory -Force $data | Out-Null
+    Get-ChildItem $formerData -File -Filter "*.toml*" | ForEach-Object {
+        $to = Join-Path $data $_.Name
+        if (-not (Test-Path $to)) {
+            Copy-Item $_.FullName $to
+            Write-Output "copied $($_.Name) from $formerData"
+        }
+    }
+}
+
+$installed = Join-Path $env:ProgramFiles "dasio\dasio.exe"
 if (Get-Service -Name $service -ErrorAction SilentlyContinue) {
     # The SCM's Stop: the device ends within its stop's 7 s.
     Stop-Service -Name $service
@@ -93,16 +154,24 @@ if (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue) {
 }
 
 New-Item -ItemType Directory -Force $bin, $data | Out-Null
-# The files all instances share. An unchanged file stays (a running
-# instance holds dante-asio.exe open). A new dante-asio.exe stops every
-# other running instance for the copy and starts it again after.
-$changed = @("dante-asio.exe", "dante_asio_driver.dll") | Where-Object {
+# The files all instances share. An unchanged file stays. Every instance
+# runs its own copy of dasio.exe; one an older install made still runs the
+# shared one, so a new dasio.exe stops that instance for the copy and
+# starts it again after.
+$changed = @("dasio.exe", "dasio_driver.dll") | Where-Object {
     $there = Join-Path $bin $_
     -not (Test-Path $there) -or (Get-FileHash $there).Hash -ne (Get-FileHash (Join-Path $here $_)).Hash
 }
+if ($dllHeld) {
+    $changed = @($changed | Where-Object { $_ -ne "dasio_driver.dll" })
+    Write-Warning "kept the installed driver: a DAW holds it"
+}
 $paused = @()
-if ($changed -contains "dante-asio.exe") {
-    $paused = @(Get-Service -Name "dante-asio-*" | Where-Object { $_.Name -ne $service -and $_.Status -eq "Running" })
+if ($changed -contains "dasio.exe") {
+    $shared = [regex]::Escape((Join-Path $bin "dasio.exe"))
+    $paused = @(Get-CimInstance Win32_Service -Filter "Name LIKE 'dasio-%'" | Where-Object {
+            $_.Name -ne $service -and $_.State -eq "Running" -and $_.PathName -match "$shared`""
+        } | ForEach-Object { Get-Service -Name $_.Name })
     foreach ($s in $paused) {
         Write-Output "stopping $($s.Name) for the new binary"
         Stop-Service -Name $s.Name
@@ -118,6 +187,11 @@ try {
         Write-Output "$($s.Name) runs the new binary"
     }
 }
+# The instance's own binary (its service is stopped).
+$instExe = Join-Path $bin $instExeName
+if (-not (Test-Path $instExe) -or (Get-FileHash $instExe).Hash -ne (Get-FileHash (Join-Path $bin "dasio.exe")).Hash) {
+    Copy-Item (Join-Path $bin "dasio.exe") $instExe -Force
+}
 $cfg = Join-Path $data "device.toml"
 Copy-Item $Config $cfg -Force
 
@@ -126,12 +200,6 @@ Copy-Item $Config $cfg -Force
 # moved aside, dated, so this device does not start under that name with
 # those subscriptions. Kept: a state its own config made (a name set in
 # Dante Controller stays).
-function Get-TomlString([string]$Path, [string]$Key) {
-    foreach ($line in Get-Content $Path) {
-        if ($line -match "^\s*$Key\s*=\s*([`"'])(.*)\1\s*$") { return $Matches[2] }
-    }
-    $null
-}
 $configName = Get-TomlString $cfg "name"
 $stateFile = Get-TomlString $cfg "state_file"
 if ($stateFile -and (Test-Path $stateFile)) {
@@ -144,14 +212,14 @@ if ($stateFile -and (Test-Path $stateFile)) {
     }
 }
 
-$exe = Join-Path $bin "dante-asio.exe"
+$exe = Join-Path $bin "dasio.exe"
 $named = @()
 if ($Name) { $named = @("--name", $Name) }
-& $exe register --instance $Instance --dll (Join-Path $bin "dante_asio_driver.dll") @named
+& $exe register --instance $Instance --dll (Join-Path $bin "dasio_driver.dll") @named
 if ($LASTEXITCODE -ne 0) { throw "register failed ($LASTEXITCODE)" }
 
-$log = Join-Path $data "dante-asio.log"
-$bin_path = "`"$exe`" service --instance $Instance --config `"$cfg`" --ip $Ip --log `"$log`""
+$log = Join-Path $data "dasio.log"
+$bin_path = "`"$instExe`" service --instance $Instance --config `"$cfg`" --ip $Ip --log `"$log`""
 if ($TestClock) { $bin_path += " --clock system" }
 $existing = Get-CimInstance Win32_Service -Filter "Name='$service'"
 if ($existing) {
@@ -160,7 +228,7 @@ if ($existing) {
     $r = $existing | Invoke-CimMethod -MethodName Change -Arguments @{ PathName = $bin_path; StartMode = "Automatic" }
     if ($r.ReturnValue -ne 0) { throw "changing $service failed ($($r.ReturnValue))" }
 } else {
-    New-Service -Name $service -BinaryPathName $bin_path -DisplayName "dante-asio instance $Instance" -StartupType Automatic | Out-Null
+    New-Service -Name $service -BinaryPathName $bin_path -DisplayName "dasio instance $Instance" -StartupType Automatic | Out-Null
 }
 & sc.exe failure $service reset= 86400 actions= restart/2000/restart/5000/restart/30000 | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "sc failure $service failed ($LASTEXITCODE)" }
@@ -169,4 +237,16 @@ if ($LASTEXITCODE -ne 0) { throw "sc failure $service failed ($LASTEXITCODE)" }
 if ($LASTEXITCODE -ne 0) { throw "sc failureflag $service failed ($LASTEXITCODE)" }
 Start-Service -Name $service
 (Get-Service -Name $service).WaitForStatus("Running", [TimeSpan]::FromSeconds(10))
-Write-Output "dante-asio instance $Instance installed and started"
+
+# The former product's files, once no service runs them and no DAW holds
+# its driver.
+$formerBin = Join-Path $env:ProgramFiles "dante-asio"
+if ((Test-Path $formerBin) -and -not (Get-Service -Name "dante-asio-*" -ErrorAction SilentlyContinue)) {
+    try {
+        Remove-Item -Recurse -Force $formerBin
+        Write-Output "removed $formerBin"
+    } catch {
+        Write-Warning "kept $formerBin for now: $($_.Exception.Message)"
+    }
+}
+Write-Output "dasio instance $Instance installed and started ($instExeName)"

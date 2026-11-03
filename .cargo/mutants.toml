@@ -8,11 +8,11 @@ exclude_globs = [
   "crates/asio-driver/src/com.rs",
   "crates/asio-driver/src/driver.rs",
   "crates/shm/src/windows.rs",
-  "crates/dante-asio/src/jitter.rs",
-  "crates/dante-asio/src/main.rs",
-  "crates/dante-asio/src/probe.rs",
-  "crates/dante-asio/src/run.rs",
-  "crates/dante-asio/src/service/windows.rs",
+  "crates/dasio/src/jitter.rs",
+  "crates/dasio/src/main.rs",
+  "crates/dasio/src/probe.rs",
+  "crates/dasio/src/run.rs",
+  "crates/dasio/src/service/windows.rs",
 ]
 # The `win` modules of register.rs and bridge.rs: Windows-only too.
 # RotatingLog's flush: std's File writes unbuffered, so its flush is a

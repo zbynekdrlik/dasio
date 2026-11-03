@@ -1,5 +1,5 @@
 //! The whole path as on the PC, on a GitHub-hosted Windows runner: the real
-//! `dante-asio` device processes (on the runner's routed IPv4, the stack's
+//! `dasio` device processes (on the runner's routed IPv4, the stack's
 //! test-only system clock: the runner has no dantesync) and an ASIO host on
 //! each instance's driver in this process (the probe, as a DAW drives it).
 //! Two devices share the runner's one address, as several instances share
@@ -88,7 +88,7 @@ struct Device {
 }
 
 impl Device {
-    /// `dante-asio run` for `instance` with `config` on `ip`, once its
+    /// `dasio run` for `instance` with `config` on `ip`, once its
     /// shared memory is up.
     fn start(instance: u32, config: &Path, ip: Ipv4Addr, log: PathBuf) -> Device {
         let child = Command::new(exe())
@@ -145,7 +145,7 @@ impl Device {
             .args(["stop", "--instance", &instance.to_string()])
             .status()
             .unwrap();
-        assert!(status.success(), "dante-asio stop {instance}: {status}");
+        assert!(status.success(), "dasio stop {instance}: {status}");
         let mut child = self.child.take().unwrap();
         let t = Instant::now();
         let ended = loop {
@@ -180,20 +180,20 @@ impl Drop for Device {
 }
 
 fn exe() -> &'static str {
-    env!("CARGO_BIN_EXE_dante-asio")
+    env!("CARGO_BIN_EXE_dasio")
 }
 
 /// The host on `instance` for `seconds`: the device drives it, and each
 /// impulse comes back once over Dante, at one fixed round trip within the
 /// latencies the driver reports. Returns the report for the timing checks.
-fn round_trip(instance: u32, seconds: u64) -> dante_asio::probe::Report {
+fn round_trip(instance: u32, seconds: u64) -> dasio::probe::Report {
     round_trip_stalled(instance, seconds, 0)
 }
 
 /// [`round_trip`] with the host stalling once for `stall_ms` while an
 /// impulse is on its way.
-fn round_trip_stalled(instance: u32, seconds: u64, stall_ms: u64) -> dante_asio::probe::Report {
-    let r = dante_asio::probe::probe_stalled(instance, seconds, stall_ms).expect("the probe");
+fn round_trip_stalled(instance: u32, seconds: u64, stall_ms: u64) -> dasio::probe::Report {
+    let r = dasio::probe::probe_stalled(instance, seconds, stall_ms).expect("the probe");
     eprintln!("instance {instance}: {r:?}");
     let block = u64::from(r.block);
     // This probe's own switches only, not an earlier probe's in this
@@ -259,7 +259,7 @@ fn round_trip_stalled(instance: u32, seconds: u64, stall_ms: u64) -> dante_asio:
 
 #[test]
 fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_address() {
-    let dir = std::env::temp_dir().join(format!("dante-asio-e2e-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("dasio-e2e-{}", std::process::id()));
     let ip = routed_ipv4();
     let first = Device::start(
         FIRST,
@@ -270,12 +270,12 @@ fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_a
     // A moment for the flows to be granted.
     std::thread::sleep(Duration::from_secs(2));
 
-    // The host at High priority, as Ableton runs (and `dante-asio probe`).
+    // The host at High priority, as Ableton runs (and `dasio probe`).
     // Timed with the first device alone: two unpinned devices spinning on
     // a 4-CPU runner share its CPUs (31.10.2026: 2 late blocks with no
     // host gap); on the PC each instance has its own CPUs, and that is the
     // PC's gate (HIL, soak).
-    dante_asio::probe::high_priority().expect("High priority");
+    dasio::probe::high_priority().expect("High priority");
     let r = round_trip(FIRST, 6);
     // A late block is the device's fault unless the host itself lost its
     // CPU: a shared runner's VM deschedules a thread now and then (a 48.9

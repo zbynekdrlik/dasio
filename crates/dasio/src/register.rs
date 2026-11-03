@@ -2,7 +2,7 @@
 //! (`HKLM\SOFTWARE\Classes\CLSID\{guid}`, the DLL as its in-process server)
 //! and its ASIO entry (`HKLM\SOFTWARE\ASIO\<name>`), which DAWs list.
 
-use dante_asio_driver::ident::{braced, clsid, driver_name};
+use dasio_driver::ident::{braced, clsid, driver_name};
 
 /// One registry value under `HKLM`: key, value name (empty: the default),
 /// string data.
@@ -138,21 +138,21 @@ mod tests {
         let class = format!("SOFTWARE\\Classes\\CLSID\\{g}");
         let server = format!("{class}\\InprocServer32");
         assert_eq!(
-            entries(2, "C:\\dante-asio\\dante_asio.dll", None).unwrap(),
+            entries(2, "C:\\dasio\\dasio.dll", None).unwrap(),
             vec![
-                e(&class, "", "dante-asio 2"),
-                e(&server, "", "C:\\dante-asio\\dante_asio.dll"),
+                e(&class, "", "dasio 2"),
+                e(&server, "", "C:\\dasio\\dasio.dll"),
                 e(&server, "ThreadingModel", "Apartment"),
-                e("SOFTWARE\\ASIO\\dante-asio 2", "CLSID", g),
+                e("SOFTWARE\\ASIO\\dasio 2", "CLSID", g),
                 e(
-                    "SOFTWARE\\ASIO\\dante-asio 2",
+                    "SOFTWARE\\ASIO\\dasio 2",
                     "Description",
-                    "dante-asio 2"
+                    "dasio 2"
                 ),
             ]
         );
         assert_eq!(entries(0, "x", None), None);
-        assert_eq!(keys(2, None).unwrap()[1], "SOFTWARE\\ASIO\\dante-asio 2");
+        assert_eq!(keys(2, None).unwrap()[1], "SOFTWARE\\ASIO\\dasio 2");
         let named = entries(1, "x", Some("master-asio-dante")).unwrap();
         assert_eq!(named[0].data, "master-asio-dante");
         assert_eq!(named[3].key, "SOFTWARE\\ASIO\\master-asio-dante");

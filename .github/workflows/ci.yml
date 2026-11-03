@@ -185,13 +185,13 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo build --release --locked -p dante-asio -p asio-driver
+      - run: cargo build --release --locked -p dasio -p asio-driver
       - name: Stage the bundle
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force bundle | Out-Null
-          Copy-Item target/release/dante-asio.exe, target/release/dante_asio_driver.dll, scripts/install.ps1, scripts/uninstall.ps1 bundle/
+          Copy-Item target/release/dasio.exe, target/release/dasio_driver.dll, scripts/install.ps1, scripts/uninstall.ps1 bundle/
           Get-FileHash bundle/* -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content bundle/SHA256SUMS
       # The bundle as the PC runs it: installed as a service, killed and brought
       # back by the SCM, removed (Windows PowerShell 5.1, as on the PC).
@@ -200,7 +200,7 @@ jobs:
         run: .\scripts\ci-service-test.ps1 -Bundle bundle -DeviceConfig config\test-dante-device.toml
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: dante-asio-${{ github.sha }}
+          name: dasio-${{ github.sha }}
           path: bundle/
           if-no-files-found: error
 

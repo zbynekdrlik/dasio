@@ -1,4 +1,4 @@
-//! `dante-asio run` on Windows: the instance's Dante device on its own
+//! `dasio run` on Windows: the instance's Dante device on its own
 //! address, its pump on the bridge, the shared memory for the driver, and a
 //! heartbeat in the shared header until Ctrl+C or the device ends.
 
@@ -124,7 +124,7 @@ pub fn run(
         block = shape.block,
         latency_in = latency.0,
         latency_out = latency.1,
-        "dante-asio instance serving"
+        "dasio instance serving"
     );
     let stop_event = StopEvent::create(instance).map_err(|e| format!("the stop event: {e}"))?;
     let start = Instant::now();
@@ -233,14 +233,14 @@ fn watch_turnaround(
         })
 }
 
-/// `Global\dante-asio-<n>-stop`: `dante-asio stop` sets it from any
+/// `Global\dasio-<n>-stop`: `dasio stop` sets it from any
 /// session (an install over ssh too), the running instance ends as on
 /// Ctrl+C (never killed). The instance runs elevated (its logon task), so
 /// it may create a global object.
 pub struct StopEvent(windows_sys::Win32::Foundation::HANDLE);
 
 fn stop_name(instance: u32) -> Vec<u16> {
-    format!("Global\\dante-asio-{instance}-stop")
+    format!("Global\\dasio-{instance}-stop")
         .encode_utf16()
         .chain(Some(0))
         .collect()

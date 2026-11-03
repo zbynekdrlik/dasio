@@ -4,10 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
-description = "dante-asio's ASIO driver: an in-process COM server a DAW loads, one CLSID per instance, its audio through the instance's shared memory"
+description = "dasio's ASIO driver: an in-process COM server a DAW loads, one CLSID per instance, its audio through the instance's shared memory"
 
 [lib]
-name = "dante_asio_driver"
+name = "dasio_driver"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]

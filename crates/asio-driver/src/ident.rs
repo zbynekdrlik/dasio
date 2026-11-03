@@ -6,7 +6,7 @@ use crate::abi::Guid;
 /// The most instances one PC registers.
 pub const MAX_INSTANCES: u32 = 16;
 
-/// dante-asio's CLSID base (`{5D4A7C21-9B3E-4F6A-8C11-2E475A90D100}`); the
+/// dasio's CLSID base (`{5D4A7C21-9B3E-4F6A-8C11-2E475A90D100}`); the
 /// last byte is the instance.
 pub const CLSID_BASE: Guid = Guid {
     data1: 0x5d4a_7c21,
@@ -41,7 +41,7 @@ pub fn braced(g: &Guid) -> String {
 
 /// The driver's name for instance `n` (at most 31 bytes: ASIO's 32 with its NUL).
 pub fn driver_name(n: u32) -> String {
-    format!("dante-asio {n}")
+    format!("dasio {n}")
 }
 
 #[cfg(test)]
@@ -50,7 +50,7 @@ mod tests {
 
     #[test]
     fn the_driver_name_carries_the_instance_and_fits_asio_s_32_bytes() {
-        assert_eq!(driver_name(3), "dante-asio 3");
+        assert_eq!(driver_name(3), "dasio 3");
         assert!(driver_name(MAX_INSTANCES).len() <= 31);
     }
 

@@ -296,7 +296,7 @@ unsafe extern "system" fn init(this: *mut c_void, _sys: *mut c_void) -> ASIOBool
             }
             Err(e) => {
                 st.shape = None;
-                st.error = format!("no dante-asio device {} running ({e})", d.instance);
+                st.error = format!("no dasio device {} running ({e})", d.instance);
             }
         }
         // A DAW must be able to open the driver without its device: it free-runs.
@@ -360,7 +360,7 @@ unsafe extern "system" fn start(this: *mut c_void) -> ASIOError {
         };
         d.rt.position.store(0, Ordering::Relaxed);
         match std::thread::Builder::new()
-            .name("dante-asio".into())
+            .name("dasio".into())
             .spawn(move || job.run())
         {
             Ok(handle) => {

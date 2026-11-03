@@ -1,4 +1,4 @@
-//! `dante-asio jitter --cpu <n> --seconds <s>`: how long Windows takes a CPU
+//! `dasio jitter --cpu <n> --seconds <s>`: how long Windows takes a CPU
 //! away from a thread at priority 31 (a REALTIME process, TIME_CRITICAL),
 //! pinned to `cpu`: the thread reads QPC in a loop and counts every gap
 //! between two reads above 50 µs, 500 µs and 2 ms, and the longest. What it

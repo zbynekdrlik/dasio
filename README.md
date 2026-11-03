@@ -1,4 +1,4 @@
-# dante-asio
+# dasio
 
 Our own Dante device per instance on Windows, opened by a DAW as an ASIO driver: the DAW
 talks to Dante directly, at the lowest latency the PC holds. Several instances run at once,

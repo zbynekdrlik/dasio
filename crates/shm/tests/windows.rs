@@ -60,7 +60,7 @@ fn any_signed_in_user_reaches_the_objects() {
     let instance = 77;
     let _device = Shared::create(instance, Shape::new(2, 2, 64).unwrap(), 96000, (0, 0)).unwrap();
     for what in ["shm", "block", "ready"] {
-        let n: Vec<u16> = format!("Global\\dante-asio-{instance}-{what}\0")
+        let n: Vec<u16> = format!("Global\\dasio-{instance}-{what}\0")
             .encode_utf16()
             .collect();
         // SAFETY: a valid NUL-terminated name.

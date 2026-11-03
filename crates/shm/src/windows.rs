@@ -1,6 +1,6 @@
-//! The mapping and the two events on Windows: `Local\dante-asio-<n>-shm`,
-//! `Local\dante-asio-<n>-block` (the device signals a published block) and
-//! `Local\dante-asio-<n>-ready` (the driver signals returned outputs), both
+//! The mapping and the two events on Windows: `Local\dasio-<n>-shm`,
+//! `Local\dasio-<n>-block` (the device signals a published block) and
+//! `Local\dasio-<n>-ready` (the driver signals returned outputs), both
 //! auto-reset. `Local\`: the device process and the DAW run in the same
 //! desktop session, though not always as the same user (the FOH PC's master
 //! Ableton has its own user, the device runs elevated), so the device gives
@@ -37,7 +37,7 @@ fn wide(s: &str) -> Vec<u16> {
 /// SeCreateGlobalPrivilege (the service's LocalSystem, an elevated
 /// process); opening it, only the DACL below.
 fn name(instance: u32, what: &str) -> Vec<u16> {
-    wide(&format!("Global\\dante-asio-{instance}-{what}"))
+    wide(&format!("Global\\dasio-{instance}-{what}"))
 }
 
 /// Full access for Authenticated Users, SYSTEM and Administrators.
@@ -189,7 +189,7 @@ impl Shared {
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "not a dante-asio mapping",
+                    "not a dasio mapping",
                 ));
             }
         };
