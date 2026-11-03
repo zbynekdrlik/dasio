@@ -93,18 +93,23 @@ mod win {
 
     use super::Link;
 
-    /// The instance's mapping as the bridge's link.
-    pub struct SharedLink(pub Arc<Shared>);
+    /// The instance's mapping as the bridge's link; each hand-over's time
+    /// (ns since `base`) goes to `stamps` for the turnaround watcher.
+    pub struct SharedLink {
+        pub shared: Arc<Shared>,
+        pub stamps: Arc<crate::turnaround::Stamps>,
+        pub base: std::time::Instant,
+    }
 
     impl Link for SharedLink {
         fn attached(&self) -> bool {
-            self.0.header().host_attached.load(Ordering::Acquire) != 0
+            self.shared.header().host_attached.load(Ordering::Acquire) != 0
         }
 
         fn input(&mut self, half: u32, ch: usize) -> &mut [i32] {
-            let n = self.0.shape().block as usize;
+            let n = self.shared.shape().block as usize;
             let p = self
-                .0
+                .shared
                 .buffer(half, true, ch as u32)
                 .expect("a channel of the shape");
             // SAFETY: `n` samples inside the mapping; this half is the
@@ -113,9 +118,9 @@ mod win {
         }
 
         fn read_output(&self, half: u32, ch: usize, dst: &mut [f64]) {
-            let n = self.0.shape().block as usize;
+            let n = self.shared.shape().block as usize;
             let p = self
-                .0
+                .shared
                 .buffer(half, false, ch as u32)
                 .expect("a channel of the shape");
             // SAFETY: `n` samples inside the mapping; the DAW returned them.
@@ -126,20 +131,22 @@ mod win {
         }
 
         fn publish(&self, seq: u64, start: Option<u64>) {
-            let h = self.0.header();
+            let h = self.shared.header();
             // The half's media time before its seq: a driver that sees the
             // seq sees the start.
             h.start[(seq % 2) as usize].store(start.unwrap_or(shm::NO_START), Ordering::Relaxed);
+            self.stamps
+                .publish(seq, self.base.elapsed().as_nanos() as u64);
             h.seq.store(seq, Ordering::Release);
-            self.0.signal_block();
+            self.shared.signal_block();
         }
 
         fn ack(&self) -> u64 {
-            self.0.header().ack.load(Ordering::Acquire)
+            self.shared.header().ack.load(Ordering::Acquire)
         }
 
         fn count_late(&self) {
-            self.0.header().late.fetch_add(1, Ordering::Relaxed);
+            self.shared.header().late.fetch_add(1, Ordering::Relaxed);
         }
     }
 }

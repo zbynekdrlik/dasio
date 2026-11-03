@@ -16,6 +16,7 @@ pub mod register;
 #[cfg(windows)]
 pub mod run;
 pub mod service;
+pub mod turnaround;
 
 use dstack::clock::latency_samples;
 use dstack::device::DeviceConfig;

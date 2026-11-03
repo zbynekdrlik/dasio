@@ -3,8 +3,8 @@
 //! heartbeat in the shared header until Ctrl+C or the device ends.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use dstack::daemon::{Options, Place};
@@ -16,6 +16,7 @@ use tracing::{info, warn};
 
 use crate::bridge::{Bridge, SharedLink};
 use crate::logfile::{COUNTS_EVERY, Every, STATUS_EVERY};
+use crate::turnaround::{Stamps, Turnaround};
 
 /// Runs instance `instance` from the device config at `config` on `ip`
 /// with the media clock from `clock` (dantesync in production; the system
@@ -78,7 +79,13 @@ pub fn run(
     );
     let stats = Arc::new(PumpStats::new(timing, cfg.sample_rate));
     media.attach_engine(Arc::clone(&stats));
-    let bridge = Bridge::new(SharedLink(Arc::clone(&shared)));
+    let stamps = Arc::new(Stamps::default());
+    let base = Instant::now();
+    let bridge = Bridge::new(SharedLink {
+        shared: Arc::clone(&shared),
+        stamps: Arc::clone(&stamps),
+        base,
+    });
     let map = Map {
         rx: (0..cfg.rx.len()).collect(),
         tx: engine_tx,
@@ -93,6 +100,17 @@ pub fn run(
         Arc::clone(&stats),
     );
     let stop = Arc::new(AtomicBool::new(false));
+    let turnaround = Arc::new(Mutex::new(Turnaround::default()));
+    let period_ns = u64::from(shape.block) * 1_000_000_000 / u64::from(cfg.sample_rate);
+    let watcher = watch_turnaround(
+        Arc::clone(&shared),
+        stamps,
+        base,
+        period_ns,
+        Arc::clone(&turnaround),
+        Arc::clone(&stop),
+    )
+    .map_err(|e| format!("the turnaround watcher: {e}"))?;
     let pump = stream::spawn(Arc::clone(&media.clock), pump, Arc::clone(&stop))
         .map_err(|e| format!("the pump: {e}"))?;
     let asked = Arc::new(AtomicBool::new(false));
@@ -133,6 +151,19 @@ pub fn run(
                 max_process_us = v.max_process_us,
                 "counts"
             );
+            // The DAW's turnaround since the last counts (see turnaround).
+            if let Ok(t) = turnaround.lock().map(|mut t| t.take())
+                && t.count > 0
+            {
+                info!(
+                    blocks = t.count,
+                    p50_us = t.p50_us,
+                    p99_us = t.p99_us,
+                    max_us = t.max_us,
+                    over_period = t.over,
+                    "DAW turnaround"
+                );
+            }
             if status.due(now) {
                 info!(status = %dstack::ctl::answer("status", &media), "device status");
             }
@@ -151,6 +182,7 @@ pub fn run(
     };
     stop.store(true, Ordering::Release);
     let _ = pump.join();
+    let _ = watcher.join();
     match device.stop(Duration::from_secs(7)) {
         Stopped::Done => {}
         other => warn!(?other, "the device's stop"),
@@ -159,6 +191,46 @@ pub fn run(
         None => Ok(()),
         Some(e) => Err(e),
     }
+}
+
+/// The turnaround watcher: sleeps on the driver's ready event, and each
+/// newly returned block's time since its hand-over goes to `out`. A
+/// sleeping thread at the top priority wakes within µs of the driver's
+/// signal, so it measures the DAW, not itself, and spins no core.
+fn watch_turnaround(
+    shared: Arc<Shared>,
+    stamps: Arc<Stamps>,
+    base: Instant,
+    period_ns: u64,
+    out: Arc<Mutex<Turnaround>>,
+    stop: Arc<AtomicBool>,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("turnaround".into())
+        .spawn(move || {
+            use windows_sys::Win32::System::Threading::{
+                GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
+            };
+            // SAFETY: the calling thread's pseudo handle.
+            unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) };
+            let mut last = 0u64;
+            while !stop.load(Ordering::Acquire) {
+                if !shared.wait_ready(100) {
+                    continue;
+                }
+                let now = base.elapsed().as_nanos() as u64;
+                let ack = shared.header().ack.load(Ordering::Acquire);
+                if ack == last {
+                    continue;
+                }
+                last = ack;
+                if let Some(at) = stamps.published(ack)
+                    && let Ok(mut t) = out.lock()
+                {
+                    t.record(now.saturating_sub(at), period_ns);
+                }
+            }
+        })
 }
 
 /// `Global\dante-asio-<n>-stop`: `dante-asio stop` sets it from any
