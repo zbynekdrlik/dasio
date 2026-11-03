@@ -127,7 +127,7 @@ $work2 = Join-Path $env:RUNNER_TEMP "dasio-service-2"
 New-Item -ItemType Directory -Force $work2 | Out-Null
 $state2 = (Join-Path $work2 "state.toml") -replace '\\', '/'
 $text2 = $text | Where-Object { $_ -notmatch '^state_file' } | ForEach-Object {
-    if ($_ -match '^name ') { 'name = "ci-device-2"' } else { $_ }
+    if ($_ -match '^name ') { 'name = "dasio-ci-2"' } else { $_ }
 }
 $text2 += "state_file = `"$state2`""
 $text2 += "arc_port = 4441", "cmc_port = 8801", "flows_port = 4456", "process_id = 1"
@@ -154,7 +154,8 @@ $sums = Get-Content (Join-Path $newer "SHA256SUMS") | ForEach-Object {
 Set-Content -Path (Join-Path $newer "SHA256SUMS") -Value $sums
 & (Join-Path $newer "install.ps1") -Instance $second -Ip $ip -Config $cfg2 -Name "ci-asio-dante-2" -TestClock
 $want = (Get-FileHash (Join-Path $newer "dasio.exe")).Hash
-$own2 = Join-Path $env:ProgramFiles "dasio\dasio-ci-device-2.exe"
+# A device already named dasio-*: its binary keeps the name (no doubled prefix).
+$own2 = Join-Path $env:ProgramFiles "dasio\dasio-ci-2.exe"
 if ((Get-FileHash $exe).Hash -ne $want) { throw "the installed binary is not the new one" }
 if ((Get-FileHash $own2).Hash -ne $want) { throw "the second instance's binary is not the new one" }
 if ((Get-FileHash $own).Hash -eq $want) { throw "the first instance's binary changed without its install" }
