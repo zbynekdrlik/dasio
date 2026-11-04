@@ -11,8 +11,8 @@ use std::process::ExitCode;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: dasio run --instance <n> --config <device.toml> --ip <address> [--log <file>] [--clock system] [--spare-blocks <n>] [--kernel-tx]\n       \
-         dasio service --instance <n> --config <device.toml> --ip <address> --log <file> [--clock system] [--spare-blocks <n>] [--kernel-tx]\n       \
+        "usage: dasio run --instance <n> --config <device.toml> --ip <address> [--log <file>] [--clock linked|dsync|system] [--spare-blocks <n>] [--kernel-tx]\n       \
+         dasio service --instance <n> --config <device.toml> --ip <address> --log <file> [--clock linked|dsync|system] [--spare-blocks <n>] [--kernel-tx]\n       \
          dasio register --instance <n> --dll <path> [--name <shown to DAWs>]\n       \
          dasio stop --instance <n>\n       \
          dasio probe --instance <n> [--seconds <s>] [--affinity <hex mask>]\n       \
@@ -105,12 +105,11 @@ fn main() -> ExitCode {
             ) else {
                 return usage();
             };
-            // `--clock system`: a test machine's own clock (CI has no
-            // dsync); never on a real Dante network.
-            let system_clock = match flag(&args, "--clock").as_deref() {
-                None | Some("dsync") => false,
-                Some("system") => true,
-                Some(_) => return usage(),
+            // `--clock`: linked (default: dsync's in-process PTP follower,
+            // the service as fallback), dsync (the service only), system
+            // (a test machine's own clock: CI; never on a Dante network).
+            let Some(clock) = dasio::Clock::parse(flag(&args, "--clock").as_deref()) else {
+                return usage();
             };
             // `--spare-blocks <n>`: block periods the DAW gets beyond the
             // first (a heavy set's late blocks), its outputs that much later.
@@ -125,9 +124,9 @@ fn main() -> ExitCode {
                 kernel_tx: args.iter().any(|a| a == "--kernel-tx"),
             };
             if cmd == "service" {
-                service(instance, config.into(), ip, system_clock, tuning)
+                service(instance, config.into(), ip, clock, tuning)
             } else {
-                run(instance, config.into(), ip, system_clock, tuning)
+                run(instance, config.into(), ip, clock, tuning)
             }
         }
         _ => return usage(),
@@ -208,19 +207,19 @@ fn run(
     instance: u32,
     config: std::path::PathBuf,
     ip: std::net::Ipv4Addr,
-    system_clock: bool,
+    clock: dasio::Clock,
     tuning: dasio::Tuning,
 ) -> Result<(), String> {
     let never = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    dasio::run::run(instance, config, ip, clock(system_clock), tuning, never)
+    dasio::run::run(instance, config, ip, source(clock), tuning, never)
 }
 
 #[cfg(windows)]
-fn clock(system: bool) -> dstack::host::ClockSource {
-    if system {
-        dstack::host::ClockSource::System
-    } else {
-        dstack::host::ClockSource::Dsync
+fn source(clock: dasio::Clock) -> dstack::host::ClockSource {
+    match clock {
+        dasio::Clock::Linked => dstack::host::ClockSource::Linked,
+        dasio::Clock::Dsync => dstack::host::ClockSource::Dsync,
+        dasio::Clock::System => dstack::host::ClockSource::System,
     }
 }
 
@@ -229,10 +228,10 @@ fn service(
     instance: u32,
     config: std::path::PathBuf,
     ip: std::net::Ipv4Addr,
-    system_clock: bool,
+    clock: dasio::Clock,
     tuning: dasio::Tuning,
 ) -> Result<(), String> {
-    dasio::service::windows::dispatch(instance, config, ip, clock(system_clock), tuning)
+    dasio::service::windows::dispatch(instance, config, ip, source(clock), tuning)
 }
 
 #[cfg(not(windows))]
@@ -240,7 +239,7 @@ fn service(
     _instance: u32,
     _config: std::path::PathBuf,
     _ip: std::net::Ipv4Addr,
-    _system_clock: bool,
+    _clock: dasio::Clock,
     _tuning: dasio::Tuning,
 ) -> Result<(), String> {
     Err("Windows only".into())
@@ -261,7 +260,7 @@ fn run(
     _instance: u32,
     _config: std::path::PathBuf,
     _ip: std::net::Ipv4Addr,
-    _system_clock: bool,
+    _clock: dasio::Clock,
     _tuning: dasio::Tuning,
 ) -> Result<(), String> {
     Err("Windows only".into())

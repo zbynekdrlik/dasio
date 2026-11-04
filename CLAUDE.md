@@ -11,7 +11,7 @@ Design: `docs/design/2026-10-29-dante-asio-design.md`; MVP plan: `docs/plans/202
 - No site data in the repo: addresses, real device and channel names live only in the PC's config.
 - Dante: never change another device's subscriptions; tests subscribe our own device to itself.
 - Dante code comes from dstack (zbynekdrlik/dstack#1): `dstack` and `dstack-audio-io` are git deps pinned to a tag in `crates/dasio/Cargo.toml`. A Dante protocol bug goes there as a ticket; this repo only moves the tag.
-- dantesync is the PC's only clock owner; the device never opens UDP 319/320.
+- dantesync is the PC's only clock owner: it alone sets the system clock. The device follows Dante PTP in process by default (dstack's `ClockSource::Linked`, read only, needs Npcap; owner 4.11.2026), with the dsync service as its fallback; `--clock dsync` uses the service only.
 - Every message to the owner in Slovak; code, commits and docs in English.
 
 ## Playbook router

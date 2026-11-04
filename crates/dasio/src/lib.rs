@@ -30,6 +30,33 @@ pub struct Tuning {
     pub kernel_tx: bool,
 }
 
+/// Where the device's PTP time comes from (`--clock`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Clock {
+    /// The default (owner, 4.11.2026): dsync's in-process PTP follower on
+    /// the device's interface when it is locked, the dsync service
+    /// otherwise. It only reads PTP; dantesync stays the PC's clock owner.
+    #[default]
+    Linked,
+    /// The dsync service only (`--clock dsync`): the fallback if the
+    /// in-process follower misbehaves on a PC.
+    Dsync,
+    /// TEST ONLY (`--clock system`): this machine's own clock (CI).
+    System,
+}
+
+impl Clock {
+    /// The `--clock` flag's value; `None` for an unknown one.
+    pub fn parse(flag: Option<&str>) -> Option<Clock> {
+        match flag {
+            None | Some("linked") => Some(Clock::Linked),
+            Some("dsync") => Some(Clock::Dsync),
+            Some("system") => Some(Clock::System),
+            Some(_) => None,
+        }
+    }
+}
+
 use dstack::clock::latency_samples;
 use dstack::device::DeviceConfig;
 use dstack::stream::Timing;
@@ -101,6 +128,18 @@ pub fn process_cpus(own: usize, l3: &[usize], fallback: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use super::Clock;
+
+    #[test]
+    fn the_clock_flag_defaults_to_the_in_process_follower() {
+        assert_eq!(Clock::parse(None), Some(Clock::Linked));
+        assert_eq!(Clock::parse(Some("linked")), Some(Clock::Linked));
+        assert_eq!(Clock::parse(Some("dsync")), Some(Clock::Dsync));
+        assert_eq!(Clock::parse(Some("system")), Some(Clock::System));
+        assert_eq!(Clock::parse(Some("ptp")), None);
+        assert_eq!(Clock::default(), Clock::Linked);
+    }
+
     use super::*;
 
     const DEVICE: &str = include_str!("../../../config/test-dante-device.toml");

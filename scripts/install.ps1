@@ -47,9 +47,14 @@ param(
     # Audio TX through dasio's NDIS filter (dasio_pacer, drivers/ndis-pacer):
     # past Winsock, tcpip and WFP. Without the filter the UDP sockets carry
     # it, as without this switch.
-    [switch]$KernelTx
+    [switch]$KernelTx,
+    # The dsync service as the only PTP time (`--clock dsync`). Without it
+    # the device follows Dante PTP in process (needs Npcap) and falls back
+    # to the service.
+    [switch]$DsyncClock
 )
 $ErrorActionPreference = "Stop"
+if ($TestClock -and $DsyncClock) { throw "-TestClock and -DsyncClock exclude each other; nothing changed" }
 
 $bin = Join-Path $env:ProgramFiles "dasio"
 $data = Join-Path $env:ProgramData "dasio\instance-$Instance"
@@ -265,6 +270,7 @@ if ($LASTEXITCODE -ne 0) { throw "register failed ($LASTEXITCODE)" }
 $log = Join-Path $data "dasio.log"
 $bin_path = "`"$instExe`" service --instance $Instance --config `"$cfg`" --ip $Ip --log `"$log`""
 if ($TestClock) { $bin_path += " --clock system" }
+if ($DsyncClock) { $bin_path += " --clock dsync" }
 if ($SpareBlocks -gt 0) { $bin_path += " --spare-blocks $SpareBlocks" }
 if ($KernelTx) { $bin_path += " --kernel-tx" }
 $existing = Get-CimInstance Win32_Service -Filter "Name='$service'"

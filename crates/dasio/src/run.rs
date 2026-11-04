@@ -61,7 +61,7 @@ pub fn run(
         control: PathBuf::new(),
     };
     let engine_tx: Vec<usize> = (0..cfg.tx.len()).collect();
-    if clock != host::ClockSource::Dsync {
+    if clock == host::ClockSource::System {
         warn!(
             ?clock,
             "test clock: PTP time is this machine's clock, not the network's"
