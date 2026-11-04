@@ -145,8 +145,10 @@ fn read_text(path: &Path) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     if bytes.starts_with(&[0xFF, 0xFE]) {
         let w: Vec<u16> = bytes[2..]
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
             .collect();
         return Ok(String::from_utf16_lossy(&w));
     }
@@ -203,8 +205,10 @@ fn read(key: &str, name: &str) -> Result<Option<Value>, String> {
         }
         REG_SZ | REG_EXPAND_SZ => {
             let w: Vec<u16> = buf
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_le_bytes(*c))
                 .collect();
             Value::String(from_wide(&w))
         }

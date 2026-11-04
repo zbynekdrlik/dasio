@@ -146,7 +146,7 @@ impl std::fmt::Display for Problem {
 pub fn parse(text: &str) -> Result<Profile, String> {
     let p: Profile = toml::from_str(text).map_err(|e| e.to_string())?;
     for r in &p.registry {
-        if want_reg(r).is_err() {
+        if want_reg(r).is_none() {
             return Err(format!(
                 "registry {}\\{}: give exactly one of dword, string, binary (binary as hex)",
                 r.key, r.name
@@ -185,19 +185,20 @@ pub const PRIORITIES: [&str; 6] = [
     "realtime",
 ];
 
-/// The value a registry entry wants.
-pub fn want_reg(r: &RegEntry) -> Result<Value, ()> {
+/// The value a registry entry wants; `None` unless exactly one of
+/// `dword`, `string`, `binary` (valid hex) is given.
+pub fn want_reg(r: &RegEntry) -> Option<Value> {
     match (&r.dword, &r.string, &r.binary) {
-        (Some(d), None, None) => Ok(Value::Dword(*d)),
-        (None, Some(s), None) => Ok(Value::String(s.clone())),
-        (None, None, Some(b)) => hex(b).map(Value::Binary).ok_or(()),
-        _ => Err(()),
+        (Some(d), None, None) => Some(Value::Dword(*d)),
+        (None, Some(s), None) => Some(Value::String(s.clone())),
+        (None, None, Some(b)) => hex(b).map(Value::Binary),
+        _ => None,
     }
 }
 
 fn hex(s: &str) -> Option<Vec<u8>> {
     let s = s.trim();
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len())
@@ -228,7 +229,7 @@ fn show(v: &Value) -> String {
 pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
     let mut out = Vec::new();
     for e in &p.registry {
-        let Ok(want) = want_reg(e) else { continue };
+        let Some(want) = want_reg(e) else { continue };
         let found = r.reg(&e.key, &e.name);
         let found_text = match &found {
             Ok(Some(v)) if *v == want => continue,
@@ -304,7 +305,7 @@ pub enum Action {
 pub fn plan(p: &Profile, r: &dyn Reader) -> Vec<Action> {
     let mut out = Vec::new();
     for e in &p.registry {
-        let Ok(want) = want_reg(e) else { continue };
+        let Some(want) = want_reg(e) else { continue };
         if !matches!(r.reg(&e.key, &e.name), Ok(Some(ref v)) if *v == want) {
             out.push(Action::Reg {
                 key: e.key.clone(),
