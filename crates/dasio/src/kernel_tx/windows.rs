@@ -4,6 +4,10 @@
 use std::io;
 use std::net::Ipv4Addr;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Instant;
+
+use tracing::{info, warn};
 
 use windows_sys::Win32::Foundation::{
     CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
@@ -20,7 +24,11 @@ use windows_sys::Win32::System::IO::DeviceIoControl;
 
 use dstack::media::bypass::FrameSender;
 
-use super::{DEVICE_PATH, HEADER, IOCTL_DASIO_TX_SEND, MAX_FRAME, mark, pack};
+use super::{DEVICE_PATH, HEADER, IOCTL_DASIO_TX_SEND, MAX_FRAME, Relookup, mark, pack};
+
+/// Win32 `ERROR_NOT_FOUND`: the filter's STATUS_NOT_FOUND, no bound
+/// adapter with the input's IfIndex.
+const ERROR_NOT_FOUND: i32 = 1168;
 
 /// Frames one batch carries at most: a TX tick sends one packet per slot.
 pub const MAX_BATCH: usize = 64;
@@ -28,7 +36,10 @@ pub const MAX_BATCH: usize = 64;
 /// The open device and the adapter it sends on.
 pub struct KernelTx {
     handle: HANDLE,
-    if_index: u32,
+    ip: Ipv4Addr,
+    if_index: AtomicU32,
+    since: Instant,
+    relookup: Mutex<Relookup>,
     /// The batch's input, sized once ([`MAX_BATCH`] full frames); only
     /// the TX thread sends, so the lock is never contended.
     buf: Mutex<Vec<u8>>,
@@ -61,14 +72,46 @@ impl KernelTx {
         }
         Ok(KernelTx {
             handle,
-            if_index,
+            ip,
+            if_index: AtomicU32::new(if_index),
+            since: Instant::now(),
+            relookup: Mutex::new(Relookup::default()),
             buf: Mutex::new(Vec::with_capacity(HEADER + MAX_BATCH * (2 + MAX_FRAME))),
         })
     }
 
     /// The adapter's IfIndex.
     pub fn if_index(&self) -> u32 {
-        self.if_index
+        self.if_index.load(Ordering::Relaxed)
+    }
+
+    /// The filter knows no adapter with our IfIndex: looks the adapter up
+    /// again (rate-limited) and logs what it finds.
+    fn adapter_lost(&self) {
+        let now = self.since.elapsed().as_millis() as u64;
+        let Ok(mut gate) = self.relookup.try_lock() else {
+            return;
+        };
+        if !gate.due(now) {
+            return;
+        }
+        let old = self.if_index();
+        match if_index_of(self.ip) {
+            Ok(new) if new != old => {
+                self.if_index.store(new, Ordering::Relaxed);
+                info!(old, new, ip = %self.ip, "kernel TX: the adapter came back with a new IfIndex");
+            }
+            Ok(_) => warn!(
+                if_index = old,
+                ip = %self.ip,
+                "kernel TX: the filter is not bound to the adapter: audio TX stays on the UDP sockets"
+            ),
+            Err(e) => warn!(
+                ip = %self.ip,
+                error = %e,
+                "kernel TX: no adapter holds the device's address: audio TX stays on the UDP sockets"
+            ),
+        }
     }
 
     /// Sends `frames` and returns how many the filter took, in order.
@@ -76,7 +119,7 @@ impl KernelTx {
         let Ok(mut buf) = self.buf.try_lock() else {
             return Err(io::Error::from(io::ErrorKind::WouldBlock));
         };
-        pack(frames, self.if_index, &mut buf)
+        pack(frames, self.if_index(), &mut buf)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, format!("{e:?}")))?;
         let mut accepted: u32 = 0;
         let mut returned: u32 = 0;
@@ -95,7 +138,12 @@ impl KernelTx {
             )
         };
         if ok == 0 {
-            return Err(io::Error::last_os_error());
+            let e = io::Error::last_os_error();
+            drop(buf);
+            if e.raw_os_error() == Some(ERROR_NOT_FOUND) {
+                self.adapter_lost();
+            }
+            return Err(e);
         }
         Ok(accepted)
     }

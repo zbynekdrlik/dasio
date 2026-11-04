@@ -81,5 +81,29 @@ pub fn mark(accepted: u32, sent: &mut [bool]) {
     sent[n..].fill(false);
 }
 
+/// When a sender whose adapter vanished (the filter answers "not found",
+/// e.g. after the NIC was re-enumerated with a new IfIndex) looks it up
+/// again: at the first miss, then at most once a second, so the TX thread
+/// never runs `GetAdaptersAddresses` on every tick.
+#[derive(Debug, Default)]
+pub struct Relookup {
+    last_ms: Option<u64>,
+}
+
+impl Relookup {
+    /// Whether to look the adapter up at `now_ms` (any monotonic ms clock);
+    /// counts as done when it says yes.
+    pub fn due(&mut self, now_ms: u64) -> bool {
+        if self
+            .last_ms
+            .is_some_and(|l| now_ms.saturating_sub(l) < 1000)
+        {
+            return false;
+        }
+        self.last_ms = Some(now_ms);
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests;
