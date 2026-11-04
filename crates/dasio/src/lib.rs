@@ -118,6 +118,22 @@ pub fn helper_cpus(process: usize, own: usize) -> usize {
     if own == 0 { 0 } else { process & !own }
 }
 
+/// The creation flags of the PC profile check's child: normal priority, no
+/// window, and suspended when it must first leave the media CPUs (`own`):
+/// started running, it disturbed the media threads before it was moved
+/// (band's receivers, 22:59:06Z, dasio#1, 5.11.2026).
+pub fn child_creation_flags(own: usize) -> u32 {
+    const NORMAL_PRIORITY_CLASS: u32 = 0x20;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const CREATE_SUSPENDED: u32 = 0x4;
+    let base = NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW;
+    if own == 0 {
+        base
+    } else {
+        base | CREATE_SUSPENDED
+    }
+}
+
 /// Whether a thread (by its name) is one of dstack's media threads, which
 /// pin themselves to their own CPU.
 pub fn is_media_thread(name: &str) -> bool {

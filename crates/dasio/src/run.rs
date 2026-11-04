@@ -675,9 +675,13 @@ fn child_check(own: usize) -> Result<crate::pc_profile::ChildCheck, String> {
     use std::os::windows::io::AsRawHandle;
     use std::os::windows::process::CommandExt;
     use windows_sys::Win32::System::Threading::{
-        CREATE_NO_WINDOW, GetCurrentProcess, GetProcessAffinityMask, NORMAL_PRIORITY_CLASS,
-        SetProcessAffinityMask,
+        GetCurrentProcess, GetProcessAffinityMask, SetProcessAffinityMask,
     };
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        /// Resumes every thread of a process (ntdll; no Win32 wrapper).
+        fn NtResumeProcess(process: windows_sys::Win32::Foundation::HANDLE) -> i32;
+    }
     // The plain `dasio.exe` beside this instance's copy: Process Lasso's rule
     // for the instance's exe name would put the child back on the media
     // CPUs; `dasio.exe` falls under its catch-all.
@@ -689,10 +693,11 @@ fn child_check(own: usize) -> Result<crate::pc_profile::ChildCheck, String> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW | NORMAL_PRIORITY_CLASS)
+        .creation_flags(crate::child_creation_flags(own))
         .spawn()
         .map_err(|e| e.to_string())?;
     if own != 0 {
+        // Started suspended: moved off the media CPUs first, then resumed.
         let (mut mine, mut system) = (0usize, 0usize);
         // SAFETY: this process's pseudo handle and two writable masks.
         unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut mine, &mut system) };
@@ -702,6 +707,15 @@ fn child_check(own: usize) -> Result<crate::pc_profile::ChildCheck, String> {
             if unsafe { SetProcessAffinityMask(child.as_raw_handle(), off) } == 0 {
                 warn!(err = %std::io::Error::last_os_error(), "the PC profile check stays on the media CPUs");
             }
+        }
+        // SAFETY: the child's process handle, suspended at its creation.
+        let r = unsafe { NtResumeProcess(child.as_raw_handle()) };
+        if r < 0 {
+            let mut child = child;
+            let _ = child.kill();
+            return Err(format!(
+                "the PC profile check did not resume (status {r:#x})"
+            ));
         }
     }
     let out = child.wait_with_output().map_err(|e| e.to_string())?;
