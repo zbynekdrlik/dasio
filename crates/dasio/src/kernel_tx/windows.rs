@@ -3,9 +3,9 @@
 
 use std::io;
 use std::net::Ipv4Addr;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use tracing::{info, warn};
 
@@ -30,16 +30,69 @@ use super::{DEVICE_PATH, HEADER, IOCTL_DASIO_TX_SEND, MAX_FRAME, Relookup, mark,
 /// adapter with the input's IfIndex.
 const ERROR_NOT_FOUND: i32 = 1168;
 
+const STATE_BOUND: u8 = 0;
+const STATE_UNBOUND: u8 = 1;
+const STATE_NO_ADAPTER: u8 = 2;
+
+/// The adapter kernel TX sends on. The TX thread only reads the IfIndex
+/// and flags a miss; the `kernel-tx-adapter` thread looks the adapter up
+/// again and logs each change of state once.
+struct Adapter {
+    ip: Ipv4Addr,
+    if_index: AtomicU32,
+    lost: AtomicBool,
+    stop: AtomicBool,
+    state: AtomicU8,
+}
+
+impl Adapter {
+    fn watch(&self) {
+        let since = Instant::now();
+        let mut gate = Relookup::default();
+        while !self.stop.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(100));
+            if !self.lost.load(Ordering::Relaxed) {
+                continue;
+            }
+            if !gate.due(since.elapsed().as_millis() as u64) {
+                continue;
+            }
+            self.lost.store(false, Ordering::Relaxed);
+            let old = self.if_index.load(Ordering::Relaxed);
+            let state = match if_index_of(self.ip) {
+                Ok(new) if new != old => {
+                    self.if_index.store(new, Ordering::Relaxed);
+                    info!(old, new, ip = %self.ip, "kernel TX: the adapter came back with a new IfIndex");
+                    STATE_BOUND
+                }
+                Ok(_) => STATE_UNBOUND,
+                Err(_) => STATE_NO_ADAPTER,
+            };
+            if self.state.swap(state, Ordering::Relaxed) != state {
+                match state {
+                    STATE_UNBOUND => warn!(
+                        if_index = old,
+                        ip = %self.ip,
+                        "kernel TX: the filter is not bound to the adapter: audio TX is on the UDP sockets"
+                    ),
+                    STATE_NO_ADAPTER => warn!(
+                        ip = %self.ip,
+                        "kernel TX: no adapter holds the device's address: audio TX is on the UDP sockets"
+                    ),
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
 /// Frames one batch carries at most: a TX tick sends one packet per slot.
 pub const MAX_BATCH: usize = 64;
 
 /// The open device and the adapter it sends on.
 pub struct KernelTx {
     handle: HANDLE,
-    ip: Ipv4Addr,
-    if_index: AtomicU32,
-    since: Instant,
-    relookup: Mutex<Relookup>,
+    adapter: Arc<Adapter>,
     /// The batch's input, sized once ([`MAX_BATCH`] full frames); only
     /// the TX thread sends, so the lock is never contended.
     buf: Mutex<Vec<u8>>,
@@ -70,48 +123,32 @@ impl KernelTx {
         if handle == INVALID_HANDLE_VALUE {
             return Err(io::Error::last_os_error());
         }
-        Ok(KernelTx {
-            handle,
+        let adapter = Arc::new(Adapter {
             ip,
             if_index: AtomicU32::new(if_index),
-            since: Instant::now(),
-            relookup: Mutex::new(Relookup::default()),
+            lost: AtomicBool::new(false),
+            stop: AtomicBool::new(false),
+            state: AtomicU8::new(STATE_BOUND),
+        });
+        let watcher = Arc::clone(&adapter);
+        if let Err(e) = std::thread::Builder::new()
+            .name("kernel-tx-adapter".into())
+            .spawn(move || watcher.watch())
+        {
+            // SAFETY: opened just above, closed once.
+            unsafe { CloseHandle(handle) };
+            return Err(e);
+        }
+        Ok(KernelTx {
+            handle,
+            adapter,
             buf: Mutex::new(Vec::with_capacity(HEADER + MAX_BATCH * (2 + MAX_FRAME))),
         })
     }
 
     /// The adapter's IfIndex.
     pub fn if_index(&self) -> u32 {
-        self.if_index.load(Ordering::Relaxed)
-    }
-
-    /// The filter knows no adapter with our IfIndex: looks the adapter up
-    /// again (rate-limited) and logs what it finds.
-    fn adapter_lost(&self) {
-        let now = self.since.elapsed().as_millis() as u64;
-        let Ok(mut gate) = self.relookup.try_lock() else {
-            return;
-        };
-        if !gate.due(now) {
-            return;
-        }
-        let old = self.if_index();
-        match if_index_of(self.ip) {
-            Ok(new) if new != old => {
-                self.if_index.store(new, Ordering::Relaxed);
-                info!(old, new, ip = %self.ip, "kernel TX: the adapter came back with a new IfIndex");
-            }
-            Ok(_) => warn!(
-                if_index = old,
-                ip = %self.ip,
-                "kernel TX: the filter is not bound to the adapter: audio TX stays on the UDP sockets"
-            ),
-            Err(e) => warn!(
-                ip = %self.ip,
-                error = %e,
-                "kernel TX: no adapter holds the device's address: audio TX stays on the UDP sockets"
-            ),
-        }
+        self.adapter.if_index.load(Ordering::Relaxed)
     }
 
     /// Sends `frames` and returns how many the filter took, in order.
@@ -141,9 +178,14 @@ impl KernelTx {
             let e = io::Error::last_os_error();
             drop(buf);
             if e.raw_os_error() == Some(ERROR_NOT_FOUND) {
-                self.adapter_lost();
+                // Looked up off the TX thread (it must not block).
+                self.adapter.lost.store(true, Ordering::Relaxed);
             }
             return Err(e);
+        }
+        // Bound again: a later loss warns again.
+        if self.adapter.state.load(Ordering::Relaxed) != STATE_BOUND {
+            self.adapter.state.store(STATE_BOUND, Ordering::Relaxed);
         }
         Ok(accepted)
     }
@@ -159,6 +201,7 @@ impl FrameSender for KernelTx {
 
 impl Drop for KernelTx {
     fn drop(&mut self) {
+        self.adapter.stop.store(true, Ordering::Relaxed);
         // SAFETY: the handle was opened by `open` and is closed once.
         unsafe { CloseHandle(self.handle) };
     }
