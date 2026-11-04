@@ -37,3 +37,9 @@ paths:
   count is sized for ~27 ms (`KTX_SLOTS`).
 - When the slots run out, frames go back to the caller's UDP socket. The
   status counts them in `TxNoSlot`.
+- Do not let media TX use every slot. With up to ~448 frames out, Realtek
+  10.79 failed frames with NDIS_STATUS_RESOURCES (0xC000009A), and each
+  failure was a hole at the receivers. `TxMaxOut` (Parameters, or `ktx.ps1
+  txset`) bounds the frames out; `install.ps1` writes 200, the value
+  measured on FOH (0 failures, 0 holes overnight). Frames over the bound
+  go to the socket and count in `TxNoSlot`.
