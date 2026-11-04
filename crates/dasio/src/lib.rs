@@ -135,6 +135,22 @@ const CHILD_FLAGS: u32 = 0x0800_0020;
 /// The same and CREATE_SUSPENDED (0x4).
 const CHILD_FLAGS_SUSPENDED: u32 = 0x0800_0024;
 
+/// The CPU set ids (Windows' `SYSTEM_CPU_SET_INFORMATION`, as
+/// `(group, logical processor index, id)`) of the group-0 CPUs in `mask`:
+/// the process's default CPU sets, so every thread it starts begins on the
+/// helper CPUs; a media thread's own affinity takes precedence over them.
+pub fn cpu_set_ids(mask: usize, sets: &[(u16, u8, u32)]) -> Vec<u32> {
+    sets.iter()
+        .filter(|&&(group, cpu, _)| {
+            group == 0
+                && 1usize
+                    .checked_shl(u32::from(cpu))
+                    .is_some_and(|b| mask & b != 0)
+        })
+        .map(|&(_, _, id)| id)
+        .collect()
+}
+
 /// Whether a thread (by its name) is one of dstack's media threads, which
 /// pin themselves to their own CPU.
 pub fn is_media_thread(name: &str) -> bool {

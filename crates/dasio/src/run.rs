@@ -502,6 +502,9 @@ fn place_helpers(own: usize) {
         if helpers != 0 {
             // SAFETY: this thread's pseudo handle.
             unsafe { SetThreadAffinityMask(GetCurrentThread(), helpers) };
+            if last.is_none_or(|(m, _)| m != helpers) {
+                default_cpu_sets(helpers);
+            }
             let mut moved = 0u32;
             // SAFETY: a thread snapshot, closed below.
             let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
@@ -574,6 +577,59 @@ fn place_helpers(own: usize) {
             last = Some((0, 0));
         }
         std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+/// The process's default CPU sets: the helper CPUs, so a thread the
+/// runtime starts later begins there, not on a media CPU, before the
+/// placer's next pass (band, 5.11.2026). The media threads' affinity masks
+/// take precedence over CPU sets.
+fn default_cpu_sets(helpers: usize) {
+    use windows_sys::Win32::System::SystemInformation::{
+        GetSystemCpuSetInformation, SYSTEM_CPU_SET_INFORMATION,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessDefaultCpuSets};
+    let mut len = 0u32;
+    // SAFETY: a size query (no buffer).
+    unsafe {
+        GetSystemCpuSetInformation(std::ptr::null_mut(), 0, &mut len, std::ptr::null_mut(), 0)
+    };
+    let mut buf = vec![0u8; len as usize];
+    // SAFETY: a buffer of `len` bytes.
+    if unsafe {
+        GetSystemCpuSetInformation(
+            buf.as_mut_ptr().cast(),
+            len,
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    } == 0
+    {
+        warn!(err = %std::io::Error::last_os_error(), "the CPU sets could not be read");
+        return;
+    }
+    let mut sets = Vec::new();
+    let mut at = 0usize;
+    while at + std::mem::size_of::<SYSTEM_CPU_SET_INFORMATION>() <= len as usize {
+        // SAFETY: an entry Windows wrote at `at`; read unaligned.
+        let e: SYSTEM_CPU_SET_INFORMATION =
+            unsafe { std::ptr::read_unaligned(buf.as_ptr().add(at).cast()) };
+        if e.Size == 0 {
+            break;
+        }
+        // SAFETY: entries of type CpuSetInformation (0), the only type.
+        let c = unsafe { e.Anonymous.CpuSet };
+        sets.push((c.Group, c.LogicalProcessorIndex, c.Id));
+        at += e.Size as usize;
+    }
+    let ids = crate::cpu_set_ids(helpers, &sets);
+    // SAFETY: this process's pseudo handle and `ids.len()` ids.
+    if unsafe { SetProcessDefaultCpuSets(GetCurrentProcess(), ids.as_ptr(), ids.len() as u32) } == 0
+    {
+        warn!(err = %std::io::Error::last_os_error(), "the process's default CPU sets were not set");
+    } else {
+        info!(cpus = format!("{helpers:#x}"), ids = ?ids, "new threads start on the helper CPUs (default CPU sets)");
     }
 }
 
