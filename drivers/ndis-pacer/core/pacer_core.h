@@ -1,0 +1,217 @@
+/* dasio NDIS send pacer: the decisions, free of any kernel type.
+ *
+ * Windows sends every frame of a single-queue NIC in one FIFO, so a
+ * Dante packet waits behind whatever bulk data (a 1.5 MB TCP answer) is
+ * already queued for the NIC: up to ~5 ms at 2.5 Gbit/s (dasio#1). Linux
+ * avoids this with BQL and fq_codel. The Realtek miniport takes a whole
+ * burst and completes it before it is on the wire (measured), so a cap on
+ * bytes "in flight" bounds nothing; this filter paces in time instead:
+ * priority frames go down at once, other frames at a rate below the
+ * link's with a small burst, and wait here otherwise.
+ *
+ * The NDIS glue (filter.c) calls these functions under its own lock. */
+#ifndef PACER_CORE_H
+#define PACER_CORE_H
+
+#if defined(_KERNEL_MODE)
+/* The driver: kernel types, no user-mode C library headers. */
+#include <ntdef.h>
+typedef UCHAR uint8_t;
+typedef USHORT uint16_t;
+typedef ULONG uint32_t;
+typedef ULONG64 uint64_t;
+typedef LONG64 int64_t;
+typedef LONG int32_t;
+#else
+#include <stddef.h>
+#include <stdint.h>
+#endif
+
+/* DSCP values that mark priority traffic: Dante audio (EF) and Dante
+ * PTP / control (CS7). */
+#define PACER_DSCP_EF 46u
+#define PACER_DSCP_CS7 56u
+
+enum pacer_class {
+    PACER_OTHER = 0,
+    PACER_PRIORITY = 1,
+};
+
+/* The class of one Ethernet frame from its first `len` bytes: priority
+ * for an IPv4/IPv6 packet marked DSCP 46 or 56, a PTP frame (EtherType
+ * 0x88F7) or PTP over UDP (destination port 319 or 320); everything else,
+ * and anything too short to read, is other. One or two VLAN tags are
+ * skipped. */
+enum pacer_class pacer_classify(const uint8_t *frame, uint32_t len);
+
+struct pacer {
+    /* Other traffic may go down at `rate` bytes per second, with at most
+     * `burst` bytes at once: the miniport is never handed more than that
+     * ahead of a priority frame. 0 = no pacing (everything goes down). */
+    uint64_t rate;
+    uint32_t burst;
+    /* Bytes that may go down now; below zero after a send larger than
+     * what was there (the debt is paid before the next send). */
+    int64_t tokens;
+    /* Time of the last refill, 100 ns units (the caller's clock). */
+    uint64_t last;
+    /* Other sends waiting here, in order, and their bytes. */
+    uint32_t queued;
+    uint64_t queued_bytes;
+    /* Counters for the status line. */
+    uint64_t priority_sent;
+    uint64_t admitted;
+    uint64_t deferred;
+    uint32_t max_queued;
+};
+
+/* The rate (bytes/s) and burst (bytes) for a link of `link_bps` bits/s:
+ * `percent` of the link (0 = no pacing; above 100 counts as 100), and
+ * `burst_bytes`, or when that is 0 the bytes of one `tick_100ns` at the
+ * rate; never below `min_burst`. A zero or unknown (all ones) link speed
+ * means no pacing: rate and burst 0. */
+void pacer_rate_for(uint64_t link_bps, uint32_t percent, uint32_t burst_bytes, uint32_t tick_100ns,
+                    uint32_t min_burst, uint64_t *rate, uint32_t *burst);
+
+/* `rate` bytes per second (0 = no pacing), `burst` bytes, starting full at
+ * time `now` (100 ns units). */
+void pacer_init(struct pacer *p, uint64_t rate, uint32_t burst, uint64_t now);
+
+/* A priority send: it goes down at once and never uses tokens. */
+void pacer_note_priority(struct pacer *p);
+
+/* A new other send of `bytes` at time `now`. Returns 1 when it may go down
+ * now (it then uses tokens), 0 when it must wait at the end of the queue.
+ * Order is kept: while anything waits, a new send waits too. A send goes
+ * down whenever some tokens are left, even a larger one (the debt is paid
+ * by waiting before the next). */
+int pacer_offer(struct pacer *p, uint32_t bytes, uint64_t now);
+
+/* The head of the queue holds `bytes`. Returns 1 when it may go down at
+ * time `now` (it then leaves the queue and uses tokens), 0 otherwise. */
+int pacer_take(struct pacer *p, uint32_t bytes, uint64_t now);
+
+/* Time (100 ns units) from `now` until the queue's head may go down: 0 when
+ * it may now or nothing waits. The caller arms its timer with it. */
+uint64_t pacer_wait(struct pacer *p, uint64_t now);
+
+/* `count` queued sends of `bytes` in all left the queue without going
+ * down (pause, cancel). */
+void pacer_drop_queued(struct pacer *p, uint32_t count, uint64_t bytes);
+
+/* The pump: sends the waiting entries that are due, outside the caller's
+ * lock, and lets the caller arm its timer for the rest. One pump runs at a
+ * time: a call while one runs (the timer on another CPU, or a send the
+ * miniport completes inline, which calls the pump again from inside that
+ * send) returns at once and the running pump goes on, so the stack never
+ * grows with the queue. */
+#define PACER_PUMP_BATCH 16u
+
+/* One entry taken off the caller's queue: its send and its flags. */
+struct pacer_taken {
+    void *item;
+    uint32_t flags;
+};
+
+struct pacer_pump_ops {
+    void (*lock)(void *ctx);
+    void (*unlock)(void *ctx);
+    /* Under the lock: moves up to `max` due entries, in order, into `out`
+     * and returns their number (0 when nothing is due). */
+    uint32_t (*take)(void *ctx, struct pacer_taken *out, uint32_t max);
+    /* Under the lock: nothing is due now; arm the timer for what waits. */
+    void (*idle)(void *ctx);
+    /* Outside the lock: one entry goes down. */
+    void (*send)(void *ctx, const struct pacer_taken *t);
+};
+
+/* Runs the pump unless one runs. `pumping` is the caller's flag, read and
+ * written only under its lock. */
+void pacer_pump(uint32_t *pumping, const struct pacer_pump_ops *ops, void *ctx);
+
+/* A send of many packets in one NBL (tcpip hands a TCP burst down as one
+ * NBL of up to hundreds of packets, dasio#1) is split into child sends of
+ * one packet each, paced one by one. The parent completes upward when its
+ * last child has completed, with the first failure among them. Called
+ * under the caller's lock. */
+struct pacer_split {
+    uint32_t pending;
+    int32_t status;
+};
+
+/* A parent split into `children` (at least 1). */
+void pacer_split_init(struct pacer_split *s, uint32_t children);
+
+/* One child completed with `status` (0 = success). Returns 1 when it was
+ * the last: the parent completes now with `s->status`. */
+int pacer_split_done(struct pacer_split *s, int32_t status);
+
+/* Deferred receive (rxd, dasio#1): which received frames wait for the
+ * filter's own DPC. Only bulk and chatter whose upper-layer work may be
+ * long: TCP, discovery (mDNS 5353, LLMNR 5355, NetBIOS 137/138, SSDP 1900)
+ * and Ethernet broadcast. Everything else, Dante audio of any DSCP, PTP
+ * and control included, goes up at once from the NIC's DPC. Returns 1 to
+ * defer, 0 to indicate at once; anything unreadable goes up at once. */
+int pacer_rx_defer(const uint8_t *frame, uint32_t len);
+
+/* The kernel test stream (ktx): the filter sends timed UDP frames of its
+ * own straight to the miniport, below tcpip and WFP, to measure whether a
+ * frame sent from the kernel goes out on time while the socket path
+ * stalls (dasio#1). These build the frames and count the due ones. */
+
+/* Ethernet (14) + IPv4 (20) + UDP (8). */
+#define PACER_KTX_HEADER 42u
+/* The payload carries the sequence number and the send time. */
+#define PACER_KTX_MIN_PAYLOAD 16u
+/* One unfragmented frame on a 1500-byte MTU. */
+#define PACER_KTX_MAX_PAYLOAD 1472u
+
+struct pacer_ktx_addr {
+    uint8_t dst_mac[6];
+    uint8_t src_mac[6];
+    uint8_t dst_ip[4];
+    uint8_t src_ip[4];
+    uint16_t dst_port;
+    uint16_t src_port;
+    uint8_t dscp;
+};
+
+/* The IPv4 header checksum of `len` header bytes whose checksum field is
+ * zero (RFC 791: one's complement of the one's complement sum). */
+uint16_t pacer_ipv4_checksum(const uint8_t *hdr, uint32_t len);
+
+/* Writes one test frame into `frame`, which holds at least
+ * PACER_KTX_HEADER + `payload` bytes: Ethernet II to `a`'s MACs, IPv4
+ * (DSCP `a->dscp`, identification `ip_id`, don't fragment, TTL 64, header
+ * checksum), UDP between `a`'s ports (checksum 0: none, allowed on IPv4),
+ * and a payload that starts with `seq` and `time_100ns` as 8-byte big
+ * endian numbers, the rest zero. Returns the frame's length, or 0 when
+ * `payload` is outside PACER_KTX_MIN_PAYLOAD..PACER_KTX_MAX_PAYLOAD (then
+ * nothing is written). */
+uint32_t pacer_ktx_frame(uint8_t *frame, const struct pacer_ktx_addr *a, uint32_t payload, uint16_t ip_id,
+                         uint64_t seq, uint64_t time_100ns);
+
+/* The frames due at `now`: one frame every `interval_100ns` from `start`
+ * on (the first at `start`), minus the `sent` ones, at most `max`. 0
+ * before `start`, when all are sent or when `interval_100ns` is 0. A late
+ * timer fire so sends the frames it missed at once, and the sequence has
+ * no gap. */
+uint32_t pacer_ktx_due(uint64_t start, uint64_t now, uint64_t interval_100ns, uint64_t sent, uint32_t max);
+
+/* Media TX (dasio#1): the dasio service's own audio frames, handed down
+ * through IOCTL_DASIO_TX_SEND and sent straight to the miniport, below
+ * tcpip and WFP (where Windows refuses or holds socket sends with Realtek
+ * 10.79). The input packs each frame as a 2-byte little-endian length and
+ * the frame: Ethernet II carrying IPv4 (no VLAN tag). */
+#define PACER_TX_MIN_FRAME 42u
+#define PACER_TX_MAX_FRAME 1514u
+
+/* The next frame of the packed input `buf` (`len` bytes) at `*at`: sets
+ * `*frame_off` and `*frame_len` and moves `*at` past it. Returns 1 for a
+ * frame, 0 at the end of the input, -1 when the input is malformed (a
+ * truncated length or frame, a length outside PACER_TX_MIN_FRAME..
+ * PACER_TX_MAX_FRAME, an EtherType other than IPv4, an IP version other
+ * than 4 or a header shorter than 20 bytes); `*at` then stays. */
+int pacer_tx_next(const uint8_t *buf, uint32_t len, uint32_t *at, uint32_t *frame_off, uint32_t *frame_len);
+
+#endif

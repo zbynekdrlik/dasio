@@ -1,0 +1,21 @@
+[package]
+name = "asio-driver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "dasio's ASIO driver: an in-process COM server a DAW loads, one CLSID per instance, its audio through the instance's shared memory"
+
+[lib]
+name = "dasio_driver"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+shm = { path = "../shm" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Media",
+  "Win32_System_Threading",
+] }

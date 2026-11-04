@@ -19,7 +19,7 @@
 - Per instance: its own IPv4 address on the Dante NIC, its own Dante name, its own CLSID and `HKLM\SOFTWARE\ASIO\<name>` key; up to 64 RX and 64 TX.
 - dantesync is the only clock owner; the device never opens UDP 319/320.
 - Never change another Dante device's subscriptions; tests subscribe our own device to itself.
-- Private repo `zbynekdrlik/dante-asio`; site data (addresses, names) only in the PC's config, never committed.
+- Private repo `zbynekdrlik/dasio`; site data (addresses, names) only in the PC's config, never committed.
 - Two-branch flow (`dev`, `main`), version in `[workspace.package].version` starting `0.1.0`, dev > main on PRs.
 
 ## Review Focus
@@ -37,7 +37,7 @@
 **Files:**
 - Create: `Cargo.toml` (workspace, `[workspace.package] version = "0.1.0"`, `edition = "2024"`, `license = "GPL-3.0-or-later"`), `LICENSE`, `README.md`, `CLAUDE.md` (two-branch flow, no local cargo, P6-style rule: no addresses or names in the repo), `.github/workflows/ci.yml`, `scripts/check_version.py` (dev > main), `docs/design/*` (the design and recon files), `docs/plans/2026-10-29-dante-asio-mvp-plan.md` (this plan).
 
-- [ ] **Step 1:** `gh repo create zbynekdrlik/dante-asio --private`, branches `main` and `dev`.
+- [ ] **Step 1:** `gh repo create zbynekdrlik/dasio --private`, branches `main` and `dev`.
 - [ ] **Step 2:** CI jobs: `fmt` (`cargo fmt --all --check`), `clippy` (`-D warnings`, both OSes), `test-linux` (`cargo test --workspace` minus Windows-only crates), `test-windows` (`cargo test --workspace` on `windows-latest`), `version` (PRs only).
 - [ ] **Step 3:** Push `dev`, CI green on an empty workspace member `crates/placeholder` removed in Task 1.
 - [ ] **Step 4:** Commit `chore: the dante-asio workspace and CI`.

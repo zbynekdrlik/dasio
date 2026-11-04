@@ -3,8 +3,14 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/zbynekdrlik/dante-asio"
+repository = "https://github.com/zbynekdrlik/dasio"
 authors = ["zbynekdrlik"]
+
+# cargo-mutants' builds (`.cargo/mutants.toml`): the test profile without
+# debug info, so each mutant links faster.
+[profile.mutants]
+inherits = "test"
+debug = "none"

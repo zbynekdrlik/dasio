@@ -88,7 +88,7 @@ runs 8/8, then the counts the two sets actually use.
   measurement shows the socket path is the limit.
 - **Config:** a TOML file per instance (the device config's shape from Gen 3) that the tray
   icon edits; a change that needs it restarts the instance's process.
-- **Repository (my call):** a new private GitHub repository `zbynekdrlik/dante-asio` with its
+- **Repository (my call):** a new private GitHub repository `zbynekdrlik/dasio` with its
   own CI (Windows runner builds the DLL and the process), later its own Claude session (owner).
   `iem-dante` is taken from iemmixer as a pinned git dependency at first, or copied, the plan
   decides.

@@ -1,0 +1,21 @@
+# cargo-mutants, the CI's diff-scoped gate (`mutation` job): the portable
+# decision code only. Windows-only code is compiled out on the Linux runner,
+# so its mutants would pass unseen: excluded here, and kept thin glue over
+# the portable modules (guard, liveness, reset, service, shm's layout).
+profile = "mutants"
+test_tool = "nextest"
+exclude_globs = [
+  "crates/asio-driver/src/com.rs",
+  "crates/asio-driver/src/driver.rs",
+  "crates/shm/src/windows.rs",
+  "crates/dasio/src/jitter.rs",
+  "crates/dasio/src/kernel_tx/windows.rs",
+  "crates/dasio/src/main.rs",
+  "crates/dasio/src/probe.rs",
+  "crates/dasio/src/run.rs",
+  "crates/dasio/src/service/windows.rs",
+]
+# The `win` modules of register.rs and bridge.rs: Windows-only too.
+# RotatingLog's flush: std's File writes unbuffered, so its flush is a
+# no-op and `Ok(())` in its place is the same program.
+exclude_re = ["\\bwin::", "RotatingLog>::flush"]

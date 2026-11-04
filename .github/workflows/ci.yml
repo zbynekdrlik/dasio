@@ -41,6 +41,130 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
 
+  # The NDIS send pacer's decisions (drivers/ndis-pacer/core): plain C, no
+  # kernel types. Linux: gcc with ASan/UBSan and a line-coverage floor;
+  # Windows: MSVC at /W4 /WX, the compiler the driver is built with.
+  pacer-core:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test with gcc, sanitizers and coverage
+        if: runner.os == 'Linux'
+        working-directory: drivers/ndis-pacer
+        run: |
+          set -euo pipefail
+          gcc -std=c99 -Wall -Wextra -Werror -pedantic -fsanitize=address,undefined -fno-sanitize-recover=all -g \
+            -o test-san core/pacer_core.c tests/test_pacer_core.c
+          ./test-san
+          gcc -std=c99 --coverage -O0 -o test-cov core/pacer_core.c tests/test_pacer_core.c
+          ./test-cov
+          # Measured 100 % of lines (239).
+          line=$(gcov -n test-cov-pacer_core.gcda | grep -A1 "core/pacer_core.c'" | grep -o '[0-9.]*%' | head -1)
+          echo "pacer_core.c lines: $line"
+          awk -v l="${line%\%}" 'BEGIN { exit !(l >= 100) }'
+      - name: Test with MSVC
+        if: runner.os == 'Windows'
+        working-directory: drivers/ndis-pacer
+        shell: cmd
+        run: |
+          for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set VS=%%i
+          call "%VS%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          cl /nologo /W4 /WX /Fe:test-msvc.exe core\pacer_core.c tests\test_pacer_core.c || exit /b 1
+          test-msvc.exe
+
+  # The NDIS send pacer driver, built with the image's WDK and test-signed
+  # by the WDK build (test signing on the target PC). The package (.sys,
+  # .inf, .cat) is an artifact.
+  pacer-driver:
+    needs: pacer-core
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the driver
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
+          # The 64-bit MSBuild: under the 32-bit one the WDK picks its x86
+          # tools, which the NuGet WDK does not carry (CI 41361790975:
+          # x86\InfVerif.dll, x86\ApiValidator.exe; earlier stampinf).
+          $msbuild = Join-Path $vs "MSBuild\Current\Bin\amd64\MSBuild.exe"
+          Write-Output "MSBuild: $msbuild"
+          Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Include" -ErrorAction SilentlyContinue | ForEach-Object { "Windows Kits include: $($_.Name)" }
+          # The WDK and SDK from NuGet: this image's Visual Studio has no WDK
+          # integration (_NT_TARGET_VERSION empty, CI 41360597269).
+          nuget restore drivers\ndis-pacer\driver\packages.config -PackagesDirectory drivers\ndis-pacer\driver\packages -NonInteractive
+          if ($LASTEXITCODE -ne 0) { throw "nuget restore failed ($LASTEXITCODE)" }
+          & $msbuild drivers\ndis-pacer\driver\dasiopacer.vcxproj /p:Configuration=Release /p:Platform=x64 /p:SpectreMitigation=false /m /nologo /v:minimal
+          if ($LASTEXITCODE -ne 0) { throw "driver build failed ($LASTEXITCODE)" }
+          $pkg = Get-ChildItem drivers\ndis-pacer\driver -Recurse -Filter dasiopacer.sys | Where-Object { $_.FullName -match 'Release' } | Select-Object -First 1
+          if (-not $pkg) { throw "no dasiopacer.sys built" }
+          $out = "pacer-package"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          Get-ChildItem $pkg.DirectoryName -Recurse -Include dasiopacer.sys, dasiopacer.inf, dasiopacer.cat, *.cer | Copy-Item -Destination $out
+          Get-ChildItem $out | ForEach-Object { "$($_.Name) $($_.Length)" }
+          foreach ($f in "dasiopacer.sys", "dasiopacer.inf", "dasiopacer.cat") { if (-not (Test-Path "$out\$f")) { throw "package lacks $f" } }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dasiopacer-${{ github.sha }}
+          path: pacer-package/
+          if-no-files-found: error
+
+  # Line coverage of the whole workspace may not drop: each OS has its own
+  # floor (the Windows run also covers the driver, the mapping and the
+  # device's Windows code). Raise a floor whenever coverage rises.
+  coverage:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Measured 75.37 % (86a20d9).
+          - os: ubuntu-24.04
+            floor: 73
+          # Measured 70.72 % (b0233cd, with the E2E).
+          - os: windows-2025
+            floor: 68
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-llvm-cov@0.9.1
+      - run: cargo llvm-cov --workspace --locked --summary-only --fail-under-lines ${{ matrix.floor }}
+
+  # Mutants in the code changed since main, the portable decision code
+  # (`.cargo/mutants.toml`): a surviving mutant fails the build. Bounded:
+  # past 20 min the gate's setup is wrong, never its budget.
+  mutation:
+    needs: [test]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-mutants@27.1.0,cargo-nextest@0.9.148
+      - run: git diff origin/main...HEAD > pr.diff
+      - run: cargo mutants --in-diff pr.diff --baseline=skip --jobs 2 -- --all-targets
+
   version:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
@@ -51,3 +175,43 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - run: python3 scripts/check_version.py origin/${{ github.base_ref }}
+
+  bundle:
+    needs: [fmt, test]
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo build --release --locked -p dasio -p asio-driver
+      - name: Stage the bundle
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force bundle | Out-Null
+          Copy-Item target/release/dasio.exe, target/release/dasio_driver.dll, scripts/install.ps1, scripts/uninstall.ps1 bundle/
+          # dtray (dstack's tray) from the dstack release the crates are pinned to.
+          $tag = [regex]::Match((Get-Content crates/dasio/Cargo.toml -Raw), 'dstack = \{[^}]*tag = "(v[0-9.]+)"').Groups[1].Value
+          if (-not $tag) { throw "no dstack tag in crates/dasio/Cargo.toml" }
+          gh release download $tag -R zbynekdrlik/dstack -p "dtray-$tag-windows-x86_64.exe*" -D dtray-dl
+          if ($LASTEXITCODE -ne 0) { throw "dtray $tag download failed" }
+          $want = ((Get-Content "dtray-dl/dtray-$tag-windows-x86_64.exe.sha256" -Raw).Trim() -split '\s+')[0].ToLower()
+          $have = (Get-FileHash "dtray-dl/dtray-$tag-windows-x86_64.exe" -Algorithm SHA256).Hash.ToLower()
+          if ($want -ne $have) { throw "dtray ${tag}: sha256 $have, release says $want" }
+          Copy-Item "dtray-dl/dtray-$tag-windows-x86_64.exe" bundle/dtray.exe
+          Get-FileHash bundle/* -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content bundle/SHA256SUMS
+      # The bundle as the PC runs it: installed as a service, killed and brought
+      # back by the SCM, removed (Windows PowerShell 5.1, as on the PC).
+      - name: Install, run, crash and remove the service
+        shell: powershell
+        run: .\scripts\ci-service-test.ps1 -Bundle bundle -DeviceConfig config\test-dante-device.toml
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dasio-${{ github.sha }}
+          path: bundle/
+          if-no-files-found: error
+
