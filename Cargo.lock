@@ -19,7 +19,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "asio-driver"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "shm",
  "windows-sys 0.61.2",
@@ -51,7 +51,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "dasio"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "asio-driver",
  "dstack",
@@ -396,7 +396,7 @@ dependencies = [
 
 [[package]]
 name = "shm"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "windows-sys 0.61.2",
 ]
