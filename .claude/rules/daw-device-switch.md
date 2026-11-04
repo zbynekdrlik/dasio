@@ -33,3 +33,14 @@ A switch is done only when all four steps below are checked.
 
 - A subscription in status "Subscribed" proves the transport only.
 - Check the receiving DAW's meter while the sending DAW plays.
+
+## Changing an instance's block or channel count
+
+- The shared memory between the driver and the service cannot be resized
+  while the DAW holds it.
+- Close the DAW's audio device (or the DAW) before a service restart that
+  changes `block`, `rx` or `tx`. Otherwise the service refuses to start and
+  logs "the DAW still holds the shared memory of the old layout"; SCM keeps
+  restarting it until the DAW lets go.
+- A restart with the same shape (W, TX latency, margins) is fine with the
+  DAW open.

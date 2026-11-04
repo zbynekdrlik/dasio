@@ -11,7 +11,8 @@ use std::ptr::NonNull;
 use std::sync::atomic::Ordering;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, HANDLE, INVALID_HANDLE_VALUE, LocalFree, WAIT_OBJECT_0,
+    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
+    WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -38,6 +39,36 @@ fn wide(s: &str) -> Vec<u16> {
 /// process); opening it, only the DACL below.
 fn name(instance: u32, what: &str) -> Vec<u16> {
     wide(&format!("Global\\dasio-{instance}-{what}"))
+}
+
+/// The header's shape in `mapping`, read through a header-sized view:
+/// whether it carries our magic and version, and its shape.
+fn peek_shape(mapping: &Handle) -> io::Result<(bool, Option<Shape>)> {
+    // SAFETY: a valid mapping handle; the header's bytes.
+    let peek = unsafe {
+        MapViewOfFile(
+            mapping.0,
+            FILE_MAP_ALL_ACCESS,
+            0,
+            0,
+            std::mem::size_of::<Header>(),
+        )
+    };
+    if peek.Value.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the view holds a Header the device wrote (or zeros).
+    let h = unsafe { &*(peek.Value as *const Header) };
+    let ok =
+        h.magic.load(Ordering::Acquire) == MAGIC && h.version.load(Ordering::Relaxed) == VERSION;
+    let shape = Shape::new(
+        h.rx.load(Ordering::Relaxed),
+        h.tx.load(Ordering::Relaxed),
+        h.block.load(Ordering::Relaxed),
+    );
+    // SAFETY: the view mapped just above.
+    unsafe { UnmapViewOfFile(peek) };
+    Ok((ok, shape))
 }
 
 /// Full access for Authenticated Users, SYSTEM and Administrators.
@@ -115,7 +146,8 @@ unsafe impl Sync for Shared {}
 
 impl Shared {
     /// The device side: makes instance `instance`'s mapping for `shape`
-    /// (zeroed by the system) with its header (`latency`: the DAW's input
+    /// (zeroed by the system, or the existing one a driver still holds, whose
+    /// session counters are then reset) with its header (`latency`: the DAW's input
     /// and output latency in samples), and its events.
     pub fn create(
         instance: u32,
@@ -128,18 +160,45 @@ impl Shared {
         let attributes = security.attributes();
         // SAFETY: a pagefile-backed mapping with a valid NUL-terminated name;
         // `attributes` outlives the call.
-        let mapping = handle(unsafe {
-            CreateFileMappingW(
+        // SAFETY: as above; GetLastError right after the call says whether
+        // the section existed (a driver still holds it).
+        let (mapping, existed) = unsafe {
+            let m = CreateFileMappingW(
                 INVALID_HANDLE_VALUE,
                 &attributes,
                 PAGE_READWRITE,
                 (size >> 32) as u32,
                 size as u32,
                 name(instance, "shm").as_ptr(),
-            )
-        })?;
+            );
+            (m, GetLastError() == ERROR_ALREADY_EXISTS)
+        };
+        let mapping = handle(mapping)?;
+        // A section cannot be resized: a DAW that holds the old shape keeps
+        // it until it closes its audio device.
+        if existed
+            && let (true, Some(held)) = peek_shape(&mapping)?
+            && held != shape
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "instance {instance}: the DAW still holds the shared memory of the \
+                             old layout (rx {} tx {} block {}, now rx {} tx {} block {}): \
+                             close the DAW's audio device (or the DAW), then this device starts",
+                    held.rx, held.tx, held.block, shape.rx, shape.tx, shape.block
+                ),
+            ));
+        }
         let shared = Self::map(mapping, shape, instance, Some(&attributes))?;
         let h = shared.header();
+        // A driver that still holds the section (the DAW kept it open across
+        // a device restart) gives the old section back, not a zeroed one: the
+        // new session's counters start from zero.
+        h.seq.store(0, Ordering::Relaxed);
+        h.ack.store(0, Ordering::Relaxed);
+        h.late.store(0, Ordering::Relaxed);
+        h.missed.store(0, Ordering::Relaxed);
         h.version.store(VERSION, Ordering::Relaxed);
         h.rx.store(shape.rx, Ordering::Relaxed);
         h.tx.store(shape.tx, Ordering::Relaxed);
@@ -159,31 +218,7 @@ impl Shared {
         let mapping = handle(unsafe {
             OpenFileMappingW(FILE_MAP_ALL_ACCESS, 0, name(instance, "shm").as_ptr())
         })?;
-        // The header alone first, for the shape.
-        // SAFETY: a valid mapping handle; the header's bytes.
-        let peek = unsafe {
-            MapViewOfFile(
-                mapping.0,
-                FILE_MAP_ALL_ACCESS,
-                0,
-                0,
-                std::mem::size_of::<Header>(),
-            )
-        };
-        if peek.Value.is_null() {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: the view holds a Header the device wrote.
-        let h = unsafe { &*(peek.Value as *const Header) };
-        let ok = h.magic.load(Ordering::Acquire) == MAGIC
-            && h.version.load(Ordering::Relaxed) == VERSION;
-        let shape = Shape::new(
-            h.rx.load(Ordering::Relaxed),
-            h.tx.load(Ordering::Relaxed),
-            h.block.load(Ordering::Relaxed),
-        );
-        // SAFETY: the view mapped just above.
-        unsafe { UnmapViewOfFile(peek) };
+        let (ok, shape) = peek_shape(&mapping)?;
         let shape = match (ok, shape) {
             (true, Some(s)) => s,
             _ => {
