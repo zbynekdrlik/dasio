@@ -13,3 +13,7 @@ Design: `docs/design/2026-10-29-dante-asio-design.md`; MVP plan: `docs/plans/202
 - Dante code comes from dstack (zbynekdrlik/dstack#1): `dstack` and `dstack-audio-io` are git deps pinned to a tag in `crates/dasio/Cargo.toml`. A Dante protocol bug goes there as a ticket; this repo only moves the tag.
 - dantesync is the PC's only clock owner; the device never opens UDP 319/320.
 - Every message to the owner in Slovak; code, commits and docs in English.
+
+## Playbook router
+- switching a DAW onto an instance → `.claude/rules/daw-device-switch.md` (auto-loads on its `paths:`)
+- the NDIS filter, kernel TX, reinstalling it → `.claude/rules/ndis-pacer.md` (auto-loads on its `paths:`)
