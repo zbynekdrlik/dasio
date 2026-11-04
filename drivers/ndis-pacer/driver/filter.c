@@ -2849,6 +2849,8 @@ ktxTimer(
     }
 }
 
+ULONG TxMaxOutSetting = 0;
+
 // Media TX (dasio#1): the dasio service's own audio frames, copied into
 // free test stream slots and sent down in one chain. Their completions go
 // through ktxDone like the test stream's (same pool), and pause waits for
@@ -2894,7 +2896,7 @@ txSendAtDispatch(
         ULONG Slot;
         PUCHAR Frame;
         PNET_BUFFER_LIST Nbl;
-        if (Filter->KtxFreeCount == 0)
+        if (Filter->KtxFreeCount == 0 || (TxMaxOutSetting != 0 && Filter->KtxOut >= TxMaxOutSetting))
         {
             break;
         }
@@ -2916,6 +2918,10 @@ txSendAtDispatch(
         Filter->KtxSent++;
         Filter->KtxOut++;
         Batch++;
+    }
+    if (Filter->KtxOut > Filter->KtxMaxOut)
+    {
+        Filter->KtxMaxOut = Filter->KtxOut;
     }
     Filter->TxFrames += Batch;
     Filter->TxNoSlot += Total - Batch;
@@ -2957,7 +2963,14 @@ ktxDone(
     Filter->KtxCompleted++;
     if (Status != NDIS_STATUS_SUCCESS)
     {
+        ULONG64 Now = KeQueryInterruptTime();
         Filter->KtxFailed++;
+        if (Filter->KtxLastFailTime == 0 || Now - Filter->KtxLastFailTime > 10000000)
+        {
+            Filter->KtxFailEvents++;
+        }
+        Filter->KtxLastFailStatus = (ULONG)Status;
+        Filter->KtxLastFailTime = Now;
     }
     if (Filter->KtxOut > 0)
     {
@@ -3079,8 +3092,10 @@ rxdReadRegistry(
     _In_ PUNICODE_STRING RegistryPath
     )
 {
-    RTL_QUERY_REGISTRY_TABLE Table[4];
+    RTL_QUERY_REGISTRY_TABLE Table[5];
     ULONG Enable = 0;
+    ULONG MaxOut = 0;
+    ULONG DefaultMaxOut = 0;
     ULONG Cpu = (ULONG)-1;
     ULONG DefaultEnable = 0;
     ULONG DefaultCpu = (ULONG)-1;
@@ -3111,10 +3126,18 @@ rxdReadRegistry(
     Table[2].DefaultType = (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD;
     Table[2].DefaultData = &DefaultCpu;
     Table[2].DefaultLength = sizeof(ULONG);
+    // Media TX's bound on frames out (0: every slot), kept across reboots.
+    Table[3].Flags = RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK;
+    Table[3].Name = L"TxMaxOut";
+    Table[3].EntryContext = &MaxOut;
+    Table[3].DefaultType = (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD;
+    Table[3].DefaultData = &DefaultMaxOut;
+    Table[3].DefaultLength = sizeof(ULONG);
     if (NT_SUCCESS(RtlQueryRegistryValues(RTL_REGISTRY_ABSOLUTE, Path, Table, NULL, NULL)))
     {
         RxdEnable = Enable != 0;
         RxdCpuSetting = (LONG)Cpu;
+        TxMaxOutSetting = MaxOut <= KTX_SLOTS ? MaxOut : 0;
     }
     ExFreePoolWithTag(Path, FILTER_ALLOC_TAG);
 }

@@ -48,6 +48,9 @@
 // below tcpip and WFP. Write access only (the device is SYSTEM and
 // Administrators only).
 #define IOCTL_DASIO_TX_SEND                 CTL_CODE(FILE_DEVICE_PHYSICAL_NETCARD, 21, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+// dasio: media TX's bound on frames out at the miniport, for all bound
+// adapters, live (input: one ULONG; 0 = every slot). Write access only.
+#define IOCTL_DASIO_TX_SET                  CTL_CODE(FILE_DEVICE_PHYSICAL_NETCARD, 22, METHOD_BUFFERED, FILE_WRITE_ACCESS)
 
 
 #define MAX_FILTER_INSTANCE_NAME_LENGTH     256
@@ -177,7 +180,7 @@ typedef struct _DASIO_KTX_START
 
 // dasio: one bound adapter's test stream, read under its lock. All fields
 // 64 bit, read in this order.
-#define DASIO_KTX_STATUS_VERSION            2
+#define DASIO_KTX_STATUS_VERSION            3
 typedef struct _DASIO_KTX_STATUS
 {
     ULONG64         Version;
@@ -202,6 +205,13 @@ typedef struct _DASIO_KTX_STATUS
     ULONG64         TxFrames;         // frames accepted and sent
     ULONG64         TxNoSlot;         // frames not accepted: every slot out
     ULONG64         TxMaxBatch;       // most frames in one call
+    // Version 3: the bound on media frames out, and the failed completions
+    // (the miniport refused the frame: lost).
+    ULONG64         TxMaxOut;         // 0: every slot
+    ULONG64         MaxOut;           // most frames out at once, stream and media
+    ULONG64         FailEvents;       // failures more than 1 s after the previous one
+    ULONG64         LastFailStatus;   // NDIS_STATUS of the last failure
+    ULONG64         LastFailTime;     // 100 ns interrupt time of the last failure
 } DASIO_KTX_STATUS, *PDASIO_KTX_STATUS;
 
 // dasio: media TX. IfIndex names the adapter; the frames follow this

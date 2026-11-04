@@ -6,8 +6,10 @@
 #   .\ktx.ps1 start -Adapter Ethernet -DstMac 00-11-22-33-44-55 -DstIp 10.0.0.2 -DstPort 47000
 #   .\ktx.ps1 status
 #   .\ktx.ps1 stop
+#   .\ktx.ps1 txset -MaxOut 512    (media TX's bound on frames out; 0 = every slot)
 param(
-    [Parameter(Mandatory, Position = 0)][ValidateSet("start", "stop", "status")][string]$Action,
+    [Parameter(Mandatory, Position = 0)][ValidateSet("start", "stop", "status", "txset")][string]$Action,
+    [ValidateRange(0, 4096)][int]$MaxOut = 0,
     [string]$Adapter = "Ethernet",
     [string]$DstMac,
     [string]$DstIp,
@@ -33,6 +35,8 @@ public static class DasioKtx {
     public const uint START = (0x17u << 16) | (16u << 2);
     public const uint STOP = (0x17u << 16) | (17u << 2);
     public const uint STATUS = (0x17u << 16) | (18u << 2);
+    // CTL_CODE(0x17, 22, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+    public const uint TXSET = (0x17u << 16) | (2u << 14) | (22u << 2);
     public static byte[] Call(uint code, byte[] input, int outLen) {
         using (var h = CreateFile(@"\\.\dasiopacer", 0xC0000000u, 3u, IntPtr.Zero, 3u, 0u, IntPtr.Zero)) {
             if (h.IsInvalid) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "open \\\\.\\dasiopacer");
@@ -74,11 +78,16 @@ switch ($Action) {
         [void][DasioKtx]::Call([DasioKtx]::STOP, $null, 0)
         Write-Output "ktx stopped"
     }
+    "txset" {
+        [void][DasioKtx]::Call([DasioKtx]::TXSET, [BitConverter]::GetBytes([uint32]$MaxOut), 0)
+        Write-Output "media TX bound: $MaxOut frames out (0 = every slot)"
+    }
     "status" {
-        # The fields of DASIO_KTX_STATUS (filteruser.h, version 2), in order;
-        # the last four count media TX (IOCTL_DASIO_TX_SEND).
+        # The fields of DASIO_KTX_STATUS (filteruser.h, version 3), in order;
+        # from TxBatches on they are media TX's (IOCTL_DASIO_TX_SEND).
         $names = "Version", "IfIndex", "Active", "Ready", "Start", "End", "Now", "IntervalUs", "Sent", "Completed",
-            "Failed", "Out", "NoSlot", "Fires", "MaxBatch", "MaxLate", "TxBatches", "TxFrames", "TxNoSlot", "TxMaxBatch"
+            "Failed", "Out", "NoSlot", "Fires", "MaxBatch", "MaxLate", "TxBatches", "TxFrames", "TxNoSlot", "TxMaxBatch",
+            "TxMaxOut", "MaxOut", "FailEvents", "LastFailStatus", "LastFailTime"
         $raw = [DasioKtx]::Call([DasioKtx]::STATUS, $null, 8 * $names.Count * 16)
         $v = New-Object UInt64[] ($raw.Length / 8)
         [Buffer]::BlockCopy($raw, 0, $v, 0, $raw.Length)

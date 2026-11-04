@@ -426,6 +426,10 @@ typedef struct _MS_FILTER
     ULONG64                         TxFrames;
     ULONG64                         TxNoSlot;
     ULONG64                         TxMaxBatch;
+    ULONG64                         KtxMaxOut;
+    ULONG64                         KtxFailEvents;
+    ULONG64                         KtxLastFailStatus;
+    ULONG64                         KtxLastFailTime;
 
     // dasio deferred receive (rxd, dasio#1): received NBLs queued in
     // order (under Lock) and indicated up by RxdDpc.
@@ -471,6 +475,10 @@ VOID ktxStop(_In_ PMS_FILTER Filter);
 // the filter stays attached), and sets *Accepted to the frames sent.
 // STATUS_INVALID_PARAMETER for a malformed input (nothing sent),
 // STATUS_DEVICE_NOT_READY when the filter has no slots or is not running.
+// The bound on media frames out at the miniport (IOCTL_DASIO_TX_SET; from
+// the service's Parameters TxMaxOut at load): 0 = every slot.
+extern ULONG TxMaxOutSetting;
+
 NTSTATUS txSendAtDispatch(_In_ PMS_FILTER Filter, _In_reads_bytes_(Length) const UCHAR *Input,
                           _In_ ULONG Length, _Out_ PULONG Accepted);
 

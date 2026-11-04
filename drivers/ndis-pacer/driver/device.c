@@ -403,6 +403,11 @@ FilterDeviceIoControl(
                 Out->TxFrames = pFilter->TxFrames;
                 Out->TxNoSlot = pFilter->TxNoSlot;
                 Out->TxMaxBatch = pFilter->TxMaxBatch;
+                Out->TxMaxOut = TxMaxOutSetting;
+                Out->MaxOut = pFilter->KtxMaxOut;
+                Out->FailEvents = pFilter->KtxFailEvents;
+                Out->LastFailStatus = pFilter->KtxLastFailStatus;
+                Out->LastFailTime = pFilter->KtxLastFailTime;
                 FILTER_RELEASE_LOCK(&pFilter->Lock, bTrue);
                 InfoLength += (ULONG)sizeof(DASIO_KTX_STATUS);
             }
@@ -449,6 +454,17 @@ FilterDeviceIoControl(
                     InfoLength = sizeof(ULONG);
                 }
             }
+            break;
+
+        case IOCTL_DASIO_TX_SET:
+            InputBuffer = (PUCHAR)Irp->AssociatedIrp.SystemBuffer;
+            InputBufferLength = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
+            if (InputBufferLength < sizeof(ULONG) || *(PULONG)InputBuffer > KTX_SLOTS)
+            {
+                Status = STATUS_INVALID_PARAMETER;
+                break;
+            }
+            TxMaxOutSetting = *(PULONG)InputBuffer;
             break;
 
         case IOCTL_DASIO_RXD_SET:
