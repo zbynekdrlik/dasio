@@ -124,14 +124,15 @@ fn any_signed_in_user_reaches_the_objects() {
 
     const READ_CONTROL: u32 = 0x0002_0000;
     let instance = 77;
-    let _device = Shared::create(instance, Shape::new(2, 2, 64).unwrap(), 96000, (0, 0)).unwrap();
-    for what in ["shm", "block", "ready"] {
+    let device = Shared::create(instance, Shape::new(2, 2, 64).unwrap(), 96000, (0, 0)).unwrap();
+    let section = format!("shm-{:016x}", device.session());
+    for what in ["dir", section.as_str(), "block", "ready"] {
         let n: Vec<u16> = format!("Global\\dasio-{instance}-{what}\0")
             .encode_utf16()
             .collect();
         // SAFETY: a valid NUL-terminated name.
         let h = unsafe {
-            if what == "shm" {
+            if what == "dir" || what.starts_with("shm-") {
                 OpenFileMappingW(READ_CONTROL, 0, n.as_ptr())
             } else {
                 OpenEventW(READ_CONTROL, 0, n.as_ptr())
