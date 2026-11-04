@@ -202,6 +202,10 @@ impl Driver {
             if let Some(local) = state.created.as_mut().and_then(|c| c.local.take()) {
                 std::mem::forget(local);
             }
+            // The thread returns into this DLL's code later: it counts as a
+            // live object for good, so DllCanUnloadNow never lets the host
+            // unmap the DLL under it.
+            crate::com::OBJECTS.fetch_add(1, Ordering::AcqRel);
             state.error = format!(
                 "the host's callback did not return within {} ms: its thread was left",
                 STOP_WAIT.as_millis()
