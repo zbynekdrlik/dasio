@@ -123,16 +123,17 @@ pub fn helper_cpus(process: usize, own: usize) -> usize {
 /// started running, it disturbed the media threads before it was moved
 /// (band's receivers, 22:59:06Z, dasio#1, 5.11.2026).
 pub fn child_creation_flags(own: usize) -> u32 {
-    const NORMAL_PRIORITY_CLASS: u32 = 0x20;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    const CREATE_SUSPENDED: u32 = 0x4;
-    let base = NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW;
     if own == 0 {
-        base
+        CHILD_FLAGS
     } else {
-        base | CREATE_SUSPENDED
+        CHILD_FLAGS_SUSPENDED
     }
 }
+
+/// NORMAL_PRIORITY_CLASS (0x20) and CREATE_NO_WINDOW (0x0800_0000).
+const CHILD_FLAGS: u32 = 0x0800_0020;
+/// The same and CREATE_SUSPENDED (0x4).
+const CHILD_FLAGS_SUSPENDED: u32 = 0x0800_0024;
 
 /// Whether a thread (by its name) is one of dstack's media threads, which
 /// pin themselves to their own CPU.
