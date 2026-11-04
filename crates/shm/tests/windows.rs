@@ -61,25 +61,45 @@ fn a_device_restart_starts_the_header_counters_from_zero() {
 }
 
 // A device that restarts with another shape (block or channels) while the
-// DAW still holds the old section cannot resize it. It must refuse with a
-// message that says what to do, not run on a section of the old layout or
-// fail with a bare OS error in a restart loop (PR #4 review).
+// DAW still holds the old section cannot resize that section. It makes a
+// fresh one and publishes it, so the driver can tell (a new session) and the
+// DAW, after a reset, opens the new layout (PR #4 review, owner 4.11.2026:
+// solved at the root, not refused).
 #[test]
-fn a_device_restart_with_another_shape_while_the_daw_holds_the_old_one_is_refused() {
+fn a_device_restart_with_another_shape_gets_a_fresh_section_the_driver_finds() {
     let old = Shape::new(2, 2, 64).unwrap();
     let first = Shared::create(95, old, 96_000, (88, 40)).unwrap();
-    let _driver = Shared::open(95).unwrap();
+    let held = Shared::open(95).unwrap();
+    assert_eq!(held.published_session(), held.session());
+    first.header().seq.store(77, Ordering::Release);
     drop(first);
-    for new in [Shape::new(2, 2, 32).unwrap(), Shape::new(4, 2, 64).unwrap()] {
-        let e = Shared::create(95, new, 96_000, (88, 40))
-            .err()
-            .expect("refused");
-        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData, "{e}");
-        assert!(
-            e.to_string().contains("close the DAW's audio device"),
-            "{e}"
-        );
+    for (i, new) in [Shape::new(2, 2, 32).unwrap(), Shape::new(4, 2, 64).unwrap()]
+        .into_iter()
+        .enumerate()
+    {
+        let device = Shared::create(95, new, 96_000, (88, 40)).unwrap();
+        assert_ne!(held.published_session(), held.session(), "round {i}");
+        assert_eq!(held.shape(), old, "the held section keeps its layout");
+        assert_eq!(held.header().seq.load(Ordering::Acquire), 77);
+        let fresh = Shared::open(95).unwrap();
+        assert_eq!(fresh.shape(), new);
+        assert_eq!(fresh.session(), device.session());
+        assert_eq!(fresh.header().seq.load(Ordering::Acquire), 0);
     }
+}
+
+// The same shape keeps the section the DAW holds: no reset is needed, the
+// session stays.
+#[test]
+fn a_device_restart_with_the_same_shape_keeps_the_session() {
+    let shape = Shape::new(2, 2, 64).unwrap();
+    let first = Shared::create(96, shape, 96_000, (88, 40)).unwrap();
+    let held = Shared::open(96).unwrap();
+    let session = held.session();
+    drop(first);
+    let again = Shared::create(96, shape, 96_000, (88, 40)).unwrap();
+    assert_eq!(again.session(), session);
+    assert_eq!(held.published_session(), session);
 }
 
 #[test]

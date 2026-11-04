@@ -469,3 +469,84 @@ fn blocks_the_driver_skipped_are_counted_in_the_header() {
         (vt(d).Release)(d);
     }
 }
+
+// A host that counts reset requests for the restart test (its own counter:
+// the reshape test counts RESETS).
+static RESTART_RESETS: AtomicU32 = AtomicU32::new(0);
+
+unsafe extern "C" fn count_restart_resets(
+    sel: i32,
+    _val: i32,
+    _m: *mut c_void,
+    _o: *mut f64,
+) -> i32 {
+    if sel == K_ASIO_RESET_REQUEST {
+        RESTART_RESETS.fetch_add(1, Ordering::AcqRel);
+    }
+    0
+}
+
+// The device restarts with another block while the DAW runs on the old
+// one: the driver asks the DAW for one reset, and the driver the DAW then
+// makes opens the new layout (PR #4 review).
+#[test]
+fn a_device_restart_with_another_block_asks_one_reset_and_the_new_driver_sees_it() {
+    let device = Shared::create(11, Shape::new(1, 1, 32).unwrap(), 96_000, (56, 40)).unwrap();
+    let d = driver(11);
+    let mut infos: Vec<ASIOBufferInfo> = (0..2)
+        .map(|k| ASIOBufferInfo {
+            isInput: k,
+            channelNum: 0,
+            buffers: [core::ptr::null_mut(); 2],
+        })
+        .collect();
+    let cb = ASIOCallbacks {
+        bufferSwitch: Some(ignore),
+        sampleRateDidChange: None,
+        asioMessage: Some(count_restart_resets),
+        bufferSwitchTimeInfo: None,
+    };
+    // SAFETY: as a host.
+    unsafe {
+        assert_eq!((vt(d).init)(d, core::ptr::null_mut()), ASIO_TRUE);
+        assert_eq!(
+            (vt(d).createBuffers)(d, infos.as_mut_ptr(), 2, 32, &cb),
+            ASE_OK
+        );
+        assert_eq!((vt(d).start)(d), ASE_OK);
+    }
+    drop(device);
+    let device = Shared::create(11, Shape::new(1, 1, 64).unwrap(), 96_000, (88, 40)).unwrap();
+    let t = Instant::now();
+    while RESTART_RESETS.load(Ordering::Acquire) < 1 && t.elapsed() < Duration::from_secs(3) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        RESTART_RESETS.load(Ordering::Acquire),
+        1,
+        "one reset request"
+    );
+    // The host resets: the old driver goes, a new one opens the device.
+    // SAFETY: as a host.
+    unsafe {
+        (vt(d).stop)(d);
+        (vt(d).disposeBuffers)(d);
+        (vt(d).Release)(d);
+    }
+    let d = driver(11);
+    let (mut min, mut max, mut pref, mut gran) = (0, 0, 0, 0);
+    // SAFETY: as a host.
+    unsafe {
+        assert_eq!((vt(d).init)(d, core::ptr::null_mut()), ASIO_TRUE);
+        assert_eq!(
+            (vt(d).getBufferSize)(d, &mut min, &mut max, &mut pref, &mut gran),
+            ASE_OK
+        );
+        (vt(d).Release)(d);
+    }
+    assert_eq!(
+        pref, 64,
+        "the new driver opens the restarted device's block"
+    );
+    drop(device);
+}
