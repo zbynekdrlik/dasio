@@ -147,6 +147,15 @@ pub fn process_cpus(own: usize, l3: &[usize], fallback: usize) -> usize {
 mod tests {
 
     #[test]
+    fn the_profile_child_starts_suspended_when_it_must_be_moved_first() {
+        use super::child_creation_flags;
+        // NORMAL_PRIORITY_CLASS 0x20, CREATE_NO_WINDOW 0x0800_0000,
+        // CREATE_SUSPENDED 0x4.
+        assert_eq!(child_creation_flags(0x700), 0x0800_0024);
+        assert_eq!(child_creation_flags(0), 0x0800_0020);
+    }
+
+    #[test]
     fn helpers_go_to_the_process_s_cpus_the_media_threads_leave_free() {
         // Master on FOH: Lasso gives 8-11, the media threads hold 8-10.
         assert_eq!(super::helper_cpus(0xF00, 0x700), 0x800);
