@@ -550,3 +550,81 @@ fn a_device_restart_with_another_block_asks_one_reset_and_the_new_driver_sees_it
     );
     drop(device);
 }
+
+static REINIT_RESETS: AtomicU32 = AtomicU32::new(0);
+
+unsafe extern "C" fn count_reinit_resets(
+    sel: i32,
+    _val: i32,
+    _m: *mut c_void,
+    _o: *mut f64,
+) -> i32 {
+    if sel == K_ASIO_RESET_REQUEST {
+        REINIT_RESETS.fetch_add(1, Ordering::AcqRel);
+    }
+    0
+}
+
+// A host that answers the reset by re-initing the same driver object (not
+// by making a new one) must reach the restarted device's new layout too
+// (PR #4 review).
+#[test]
+fn a_host_that_re_inits_the_same_driver_after_a_reset_sees_the_new_block() {
+    let device = Shared::create(12, Shape::new(1, 1, 32).unwrap(), 96_000, (56, 40)).unwrap();
+    let d = driver(12);
+    let mut infos: Vec<ASIOBufferInfo> = (0..2)
+        .map(|k| ASIOBufferInfo {
+            isInput: k,
+            channelNum: 0,
+            buffers: [core::ptr::null_mut(); 2],
+        })
+        .collect();
+    let cb = ASIOCallbacks {
+        bufferSwitch: Some(ignore),
+        sampleRateDidChange: None,
+        asioMessage: Some(count_reinit_resets),
+        bufferSwitchTimeInfo: None,
+    };
+    // SAFETY: as a host.
+    unsafe {
+        assert_eq!((vt(d).init)(d, core::ptr::null_mut()), ASIO_TRUE);
+        assert_eq!(
+            (vt(d).createBuffers)(d, infos.as_mut_ptr(), 2, 32, &cb),
+            ASE_OK
+        );
+        assert_eq!((vt(d).start)(d), ASE_OK);
+    }
+    drop(device);
+    let device = Shared::create(12, Shape::new(1, 1, 64).unwrap(), 96_000, (88, 40)).unwrap();
+    let t = Instant::now();
+    while REINIT_RESETS.load(Ordering::Acquire) < 1 && t.elapsed() < Duration::from_secs(3) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        REINIT_RESETS.load(Ordering::Acquire),
+        1,
+        "one reset request"
+    );
+    let (mut min, mut max, mut pref, mut gran) = (0, 0, 0, 0);
+    // SAFETY: as a host: stop, dispose, init the same object again.
+    unsafe {
+        (vt(d).stop)(d);
+        (vt(d).disposeBuffers)(d);
+        assert_eq!((vt(d).init)(d, core::ptr::null_mut()), ASIO_TRUE);
+        assert_eq!(
+            (vt(d).getBufferSize)(d, &mut min, &mut max, &mut pref, &mut gran),
+            ASE_OK
+        );
+        assert_eq!(
+            (vt(d).createBuffers)(d, infos.as_mut_ptr(), 2, 64, &cb),
+            ASE_OK
+        );
+        (vt(d).disposeBuffers)(d);
+        (vt(d).Release)(d);
+    }
+    assert_eq!(
+        pref, 64,
+        "the re-inited driver opens the restarted device's block"
+    );
+    drop(device);
+}
