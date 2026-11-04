@@ -80,3 +80,16 @@ fn the_accepted_count_marks_the_first_frames_only() {
     mark(9, &mut sent);
     assert_eq!(sent, [true; 4]);
 }
+
+// A re-enumerated NIC gets a new IfIndex: the filter answers every batch
+// with "not found" and all audio falls back to the sockets (PR #4 review).
+// The sender then looks the adapter up again, at most once a second.
+#[test]
+fn a_lost_adapter_is_looked_up_again_at_most_once_a_second() {
+    let mut gate = Relookup::default();
+    assert!(gate.due(10_000), "the first miss looks it up");
+    assert!(!gate.due(10_500), "not again within a second");
+    assert!(!gate.due(10_999));
+    assert!(gate.due(11_000), "a second later again");
+    assert!(!gate.due(11_001));
+}
