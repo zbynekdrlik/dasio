@@ -427,6 +427,10 @@ typedef struct _MS_FILTER
     ULONG64                         TxNoSlot;
     ULONG64                         TxMaxBatch;
     ULONG64                         KtxMaxOut;
+    // TX_SEND calls inside txSendAtDispatch now: taken under FilterListLock,
+    // dropped after the send, so a send does not hold the global lock and
+    // detach waits for the count to reach 0 after unlinking.
+    volatile LONG                   TxRefs;
     ULONG64                         KtxFailEvents;
     ULONG64                         KtxLastFailStatus;
     ULONG64                         KtxLastFailTime;
@@ -471,8 +475,9 @@ NTSTATUS ktxStartLocked(_In_ PMS_FILTER Filter, _In_ const DASIO_KTX_START *Star
 VOID ktxStop(_In_ PMS_FILTER Filter);
 
 // Media TX (filter.c): sends the packed frames of `Input` (pacer_tx_next)
-// on this filter, at DISPATCH_LEVEL with the filter list lock held (so
-// the filter stays attached), and sets *Accepted to the frames sent.
+// on this filter, at DISPATCH_LEVEL with a TxRefs reference held (detach
+// waits for it, so the filter stays attached), and sets *Accepted to the
+// frames sent.
 // STATUS_INVALID_PARAMETER for a malformed input (nothing sent),
 // STATUS_DEVICE_NOT_READY when the filter has no slots or is not running.
 // The bound on media frames out at the miniport (IOCTL_DASIO_TX_SET; from

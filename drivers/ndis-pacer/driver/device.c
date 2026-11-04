@@ -404,8 +404,10 @@ FilterDeviceIoControl(
 
         case IOCTL_DASIO_TX_SEND:
             // The dasio service's frames on the adapter with the given
-            // IfIndex. Sent with the list lock held: the filter stays
-            // attached until its send call returns.
+            // IfIndex. The filter is found under the list lock and held by
+            // a reference (TxRefs) while it sends, without the global lock:
+            // two instances' sends do not wait for each other, and detach
+            // waits for the reference.
             InputBuffer = OutputBuffer = (PUCHAR)Irp->AssociatedIrp.SystemBuffer;
             InputBufferLength = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
             OutputBufferLength = IrpSp->Parameters.DeviceIoControl.OutputBufferLength;
@@ -418,19 +420,28 @@ FilterDeviceIoControl(
                 ULONG IfIndex = ((PDASIO_TX_SEND)InputBuffer)->IfIndex;
                 ULONG Accepted = 0;
                 Status = STATUS_NOT_FOUND;
+                PMS_FILTER Found = NULL;
                 FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
                 for (Link = FilterModuleList.Flink; Link != &FilterModuleList; Link = Link->Flink)
                 {
                     pFilter = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
-                    if (pFilter->MiniportIfIndex != IfIndex)
+                    if (pFilter->MiniportIfIndex == IfIndex)
                     {
-                        continue;
+                        InterlockedIncrement(&pFilter->TxRefs);
+                        Found = pFilter;
+                        break;
                     }
-                    Status = txSendAtDispatch(pFilter, InputBuffer + sizeof(DASIO_TX_SEND),
-                                              InputBufferLength - (ULONG)sizeof(DASIO_TX_SEND), &Accepted);
-                    break;
                 }
                 FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
+                if (Found != NULL)
+                {
+                    KIRQL OldIrql;
+                    KeRaiseIrql(DISPATCH_LEVEL, &OldIrql);
+                    Status = txSendAtDispatch(Found, InputBuffer + sizeof(DASIO_TX_SEND),
+                                              InputBufferLength - (ULONG)sizeof(DASIO_TX_SEND), &Accepted);
+                    KeLowerIrql(OldIrql);
+                    InterlockedDecrement(&Found->TxRefs);
+                }
                 if (Status == STATUS_SUCCESS)
                 {
                     // The input is consumed: the output overwrites its start.

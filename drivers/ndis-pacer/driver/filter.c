@@ -797,6 +797,12 @@ NOTE: Called at PASSIVE_LEVEL and the filter is in paused state
     FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
     RemoveEntryList(&pFilter->FilterModuleLink);
     FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
+    // A TX_SEND that found the filter before the unlink is still sending:
+    // its slots and pool stay until it returns.
+    while (InterlockedCompareExchange(&pFilter->TxRefs, 0, 0) != 0)
+    {
+        NdisMSleep(100);
+    }
 
     // The timer goes first, at PASSIVE: deleting it waits for a running
     // callback, which is not allowed under a spin lock.
