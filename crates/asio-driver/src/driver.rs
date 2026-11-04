@@ -802,6 +802,16 @@ impl Job {
             return false;
         }
         *checked = now;
+        // A device that restarted with another shape made a fresh section:
+        // this one is dead, and only a reset (a new driver object) reaches
+        // the new one.
+        if s.published_session() != s.session() {
+            self.rt.restarts.fetch_add(1, Ordering::Relaxed);
+            self.rt
+                .verdict
+                .store(Verdict::Reshaped as u8 + 1, Ordering::Release);
+            return self.ask_reset(now);
+        }
         let v = watch.observe(facts(s), now);
         self.rt.verdict.store(v as u8 + 1, Ordering::Release);
         if v == Verdict::Restarted {

@@ -1,4 +1,5 @@
-//! The mapping and the two events on Windows: `Local\dasio-<n>-shm`,
+//! The mapping and the two events on Windows: `Local\dasio-<n>-shm-<session>`
+//! (found through `Local\dasio-<n>-dir`),
 //! `Local\dasio-<n>-block` (the device signals a published block) and
 //! `Local\dasio-<n>-ready` (the driver signals returned outputs), both
 //! auto-reset. `Local\`: the device process and the DAW run in the same
@@ -8,11 +9,10 @@
 
 use std::io;
 use std::ptr::NonNull;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
-    WAIT_OBJECT_0,
+    CloseHandle, HANDLE, INVALID_HANDLE_VALUE, LocalFree, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -129,10 +129,121 @@ fn handle(h: HANDLE) -> io::Result<Handle> {
     }
 }
 
+/// The instance's directory, `Global\dasio-<n>-dir`: which session's
+/// section is the device's now. A section cannot be resized, so a device
+/// that restarts with another shape while a DAW still holds the old section
+/// makes a fresh one (`Global\dasio-<n>-shm-<session>`) and publishes it
+/// here; the driver sees a new session and asks the DAW for a reset.
+#[repr(C)]
+struct Dir {
+    magic: AtomicU32,
+    _pad: u32,
+    session: AtomicU64,
+}
+
+const DIR_MAGIC: u32 = u32::from_le_bytes(*b"DSDR");
+
+/// A mapped directory.
+struct Directory {
+    view: NonNull<Dir>,
+    _mapping: Handle,
+}
+
+impl Directory {
+    fn create(instance: u32, attributes: &SECURITY_ATTRIBUTES) -> io::Result<Directory> {
+        // SAFETY: a pagefile-backed mapping with a valid name; `attributes`
+        // outlives the call. An existing directory (a driver holds it) is
+        // returned as it is.
+        let mapping = handle(unsafe {
+            CreateFileMappingW(
+                INVALID_HANDLE_VALUE,
+                attributes,
+                PAGE_READWRITE,
+                0,
+                std::mem::size_of::<Dir>() as u32,
+                name(instance, "dir").as_ptr(),
+            )
+        })?;
+        Self::map(mapping)
+    }
+
+    fn open(instance: u32) -> io::Result<Directory> {
+        // SAFETY: a valid NUL-terminated name.
+        let mapping = handle(unsafe {
+            OpenFileMappingW(FILE_MAP_ALL_ACCESS, 0, name(instance, "dir").as_ptr())
+        })?;
+        Self::map(mapping)
+    }
+
+    fn map(mapping: Handle) -> io::Result<Directory> {
+        // SAFETY: a valid mapping handle of at least a Dir.
+        let view = unsafe {
+            MapViewOfFile(
+                mapping.0,
+                FILE_MAP_ALL_ACCESS,
+                0,
+                0,
+                std::mem::size_of::<Dir>(),
+            )
+        };
+        let view = NonNull::new(view.Value.cast::<Dir>()).ok_or_else(io::Error::last_os_error)?;
+        Ok(Directory {
+            view,
+            _mapping: mapping,
+        })
+    }
+
+    fn dir(&self) -> &Dir {
+        // SAFETY: the view holds a Dir (zeroed until a device writes it).
+        unsafe { self.view.as_ref() }
+    }
+
+    /// The published session; 0 while none is.
+    fn session(&self) -> u64 {
+        let d = self.dir();
+        if d.magic.load(Ordering::Acquire) == DIR_MAGIC {
+            d.session.load(Ordering::Acquire)
+        } else {
+            0
+        }
+    }
+
+    fn publish(&self, session: u64) {
+        let d = self.dir();
+        d.session.store(session, Ordering::Release);
+        d.magic.store(DIR_MAGIC, Ordering::Release);
+    }
+}
+
+impl Drop for Directory {
+    fn drop(&mut self) {
+        // SAFETY: the view this struct mapped, unmapped once.
+        unsafe {
+            UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS {
+                Value: self.view.as_ptr().cast(),
+            })
+        };
+    }
+}
+
+/// Sessions this process made (a test makes several devices in one process).
+static SESSIONS: AtomicU32 = AtomicU32::new(0);
+
+/// A session id no other device run has: this process and a counter.
+fn new_session() -> u64 {
+    (u64::from(std::process::id()) << 32) | u64::from(SESSIONS.fetch_add(1, Ordering::Relaxed) + 1)
+}
+
+fn section_name(instance: u32, session: u64) -> Vec<u16> {
+    name(instance, &format!("shm-{session:016x}"))
+}
+
 /// One instance's mapping and events, from either side.
 pub struct Shared {
     view: NonNull<u8>,
     shape: Shape,
+    session: u64,
+    dir: Directory,
     _mapping: Handle,
     block: Handle,
     ready: Handle,
@@ -145,56 +256,65 @@ unsafe impl Send for Shared {}
 unsafe impl Sync for Shared {}
 
 impl Shared {
-    /// The device side: makes instance `instance`'s mapping for `shape`
-    /// (zeroed by the system, or the existing one a driver still holds, whose
-    /// session counters are then reset) with its header (`latency`: the DAW's input
-    /// and output latency in samples), and its events.
+    /// The device side: instance `instance`'s mapping for `shape` with its
+    /// header (`latency`: the DAW's input and output latency in samples),
+    /// and its events. A section of the same shape a driver still holds
+    /// (the DAW kept it across a device restart) is taken over, its session
+    /// counters reset; otherwise a fresh section (zeroed by the system) is
+    /// made and published as a new session.
     pub fn create(
         instance: u32,
         shape: Shape,
         rate: u32,
         latency: (u32, u32),
     ) -> io::Result<Shared> {
-        let size = shape.size() as u64;
         let security = ObjectSecurity::new()?;
         let attributes = security.attributes();
-        // SAFETY: a pagefile-backed mapping with a valid NUL-terminated name;
-        // `attributes` outlives the call.
-        // SAFETY: as above; GetLastError right after the call says whether
-        // the section existed (a driver still holds it).
-        let (mapping, existed) = unsafe {
-            let m = CreateFileMappingW(
-                INVALID_HANDLE_VALUE,
-                &attributes,
-                PAGE_READWRITE,
-                (size >> 32) as u32,
-                size as u32,
-                name(instance, "shm").as_ptr(),
-            );
-            (m, GetLastError() == ERROR_ALREADY_EXISTS)
+        let dir = Directory::create(instance, &attributes)?;
+        let held = dir.session();
+        let reuse = if held != 0 {
+            // SAFETY: a valid NUL-terminated name.
+            let m = unsafe {
+                OpenFileMappingW(
+                    FILE_MAP_ALL_ACCESS,
+                    0,
+                    section_name(instance, held).as_ptr(),
+                )
+            };
+            match handle(m) {
+                Ok(m) => match peek_shape(&m)? {
+                    (true, Some(s)) if s == shape => Some(m),
+                    _ => None,
+                },
+                Err(_) => None,
+            }
+        } else {
+            None
         };
-        let mapping = handle(mapping)?;
-        // A section cannot be resized: a DAW that holds the old shape keeps
-        // it until it closes its audio device.
-        if existed
-            && let (true, Some(held)) = peek_shape(&mapping)?
-            && held != shape
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "instance {instance}: the DAW still holds the shared memory of the \
-                             old layout (rx {} tx {} block {}, now rx {} tx {} block {}): \
-                             close the DAW's audio device (or the DAW), then this device starts",
-                    held.rx, held.tx, held.block, shape.rx, shape.tx, shape.block
-                ),
-            ));
-        }
-        let shared = Self::map(mapping, shape, instance, Some(&attributes))?;
+        let (mapping, session, fresh) = match reuse {
+            Some(m) => (m, held, false),
+            None => {
+                let session = new_session();
+                let size = shape.size() as u64;
+                // SAFETY: a pagefile-backed mapping with a valid name;
+                // `attributes` outlives the call.
+                let m = handle(unsafe {
+                    CreateFileMappingW(
+                        INVALID_HANDLE_VALUE,
+                        &attributes,
+                        PAGE_READWRITE,
+                        (size >> 32) as u32,
+                        size as u32,
+                        section_name(instance, session).as_ptr(),
+                    )
+                })?;
+                (m, session, true)
+            }
+        };
+        let shared = Self::map(mapping, shape, instance, Some(&attributes), dir, session)?;
         let h = shared.header();
-        // A driver that still holds the section (the DAW kept it open across
-        // a device restart) gives the old section back, not a zeroed one: the
-        // new session's counters start from zero.
+        // A taken-over section still holds the last run's counters: the new
+        // run's start from zero.
         h.seq.store(0, Ordering::Relaxed);
         h.ack.store(0, Ordering::Relaxed);
         h.late.store(0, Ordering::Relaxed);
@@ -208,15 +328,32 @@ impl Shared {
         h.latency_out.store(latency.1, Ordering::Relaxed);
         h.device_pid.store(std::process::id(), Ordering::Relaxed);
         h.magic.store(MAGIC, Ordering::Release);
+        if fresh {
+            // Only now that the header is whole.
+            shared.dir.publish(session);
+        }
         Ok(shared)
     }
 
-    /// The driver side: opens instance `instance`'s mapping and events; its
-    /// shape from the header. `NotFound` while no device made them.
+    /// The driver side: opens the instance's published section and its
+    /// events; its shape from the header. `NotFound` while no device made
+    /// them.
     pub fn open(instance: u32) -> io::Result<Shared> {
+        let dir = Directory::open(instance)?;
+        let session = dir.session();
+        if session == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "no dasio device published its section",
+            ));
+        }
         // SAFETY: a valid NUL-terminated name.
         let mapping = handle(unsafe {
-            OpenFileMappingW(FILE_MAP_ALL_ACCESS, 0, name(instance, "shm").as_ptr())
+            OpenFileMappingW(
+                FILE_MAP_ALL_ACCESS,
+                0,
+                section_name(instance, session).as_ptr(),
+            )
         })?;
         let (ok, shape) = peek_shape(&mapping)?;
         let shape = match (ok, shape) {
@@ -228,7 +365,19 @@ impl Shared {
                 ));
             }
         };
-        Self::map(mapping, shape, instance, None)
+        Self::map(mapping, shape, instance, None, dir, session)
+    }
+
+    /// The session of this section.
+    pub fn session(&self) -> u64 {
+        self.session
+    }
+
+    /// The session the device publishes now: another one than
+    /// [`session`](Self::session) means a device restarted on a fresh section
+    /// (another shape), and the DAW must reset to reach it.
+    pub fn published_session(&self) -> u64 {
+        self.dir.session()
     }
 
     /// `create`: the device makes the events with these attributes; `None`:
@@ -238,6 +387,8 @@ impl Shared {
         shape: Shape,
         instance: u32,
         create: Option<&SECURITY_ATTRIBUTES>,
+        dir: Directory,
+        session: u64,
     ) -> io::Result<Shared> {
         // SAFETY: a valid mapping handle of at least `shape.size()` bytes.
         let view: MEMORY_MAPPED_VIEW_ADDRESS =
@@ -252,11 +403,25 @@ impl Shared {
                 None => unsafe { OpenEventW(EVENT_ALL_ACCESS, 0, n.as_ptr()) },
             })
         };
-        let block = event("block")?;
-        let ready = event("ready")?;
+        let block = event("block");
+        let ready = event("ready");
+        let (block, ready) = match (block, ready) {
+            (Ok(b), Ok(r)) => (b, r),
+            (Err(e), _) | (_, Err(e)) => {
+                // SAFETY: the view mapped just above.
+                unsafe {
+                    UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS {
+                        Value: view.as_ptr().cast(),
+                    })
+                };
+                return Err(e);
+            }
+        };
         Ok(Shared {
             view,
             shape,
+            session,
+            dir,
             _mapping: mapping,
             block,
             ready,
