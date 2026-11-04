@@ -36,6 +36,30 @@ fn the_events_cross_between_the_sides() {
     assert!(device.wait_ready(1000));
 }
 
+// A device restart while the DAW still holds the driver gets the DAW's
+// existing section back, not a zeroed one (dasio#1, PR #4 review). A new
+// session starts its seq at 0, so a stale ack would hand the first blocks
+// the previous session's outputs, and the old late/missed counts would carry
+// over.
+#[test]
+fn a_device_restart_starts_the_header_counters_from_zero() {
+    let shape = Shape::new(2, 2, 64).unwrap();
+    let first = Shared::create(94, shape, 96_000, (88, 40)).unwrap();
+    let driver = Shared::open(94).unwrap();
+    let h = first.header();
+    h.seq.store(5000, Ordering::Release);
+    h.ack.store(5000, Ordering::Release);
+    h.late.store(12, Ordering::Release);
+    h.missed.store(9, Ordering::Release);
+    drop(first);
+    let _again = Shared::create(94, shape, 96_000, (88, 40)).unwrap();
+    let seen = driver.header();
+    assert_eq!(seen.seq.load(Ordering::Acquire), 0);
+    assert_eq!(seen.ack.load(Ordering::Acquire), 0);
+    assert_eq!(seen.late.load(Ordering::Acquire), 0);
+    assert_eq!(seen.missed.load(Ordering::Acquire), 0);
+}
+
 #[test]
 fn opening_an_instance_no_device_made_is_not_found() {
     let e = Shared::open(93).err().unwrap();
