@@ -60,6 +60,28 @@ fn a_device_restart_starts_the_header_counters_from_zero() {
     assert_eq!(seen.missed.load(Ordering::Acquire), 0);
 }
 
+// A device that restarts with another shape (block or channels) while the
+// DAW still holds the old section cannot resize it. It must refuse with a
+// message that says what to do, not run on a section of the old layout or
+// fail with a bare OS error in a restart loop (PR #4 review).
+#[test]
+fn a_device_restart_with_another_shape_while_the_daw_holds_the_old_one_is_refused() {
+    let old = Shape::new(2, 2, 64).unwrap();
+    let first = Shared::create(95, old, 96_000, (88, 40)).unwrap();
+    let _driver = Shared::open(95).unwrap();
+    drop(first);
+    for new in [Shape::new(2, 2, 32).unwrap(), Shape::new(4, 2, 64).unwrap()] {
+        let e = Shared::create(95, new, 96_000, (88, 40))
+            .err()
+            .expect("refused");
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData, "{e}");
+        assert!(
+            e.to_string().contains("close the DAW's audio device"),
+            "{e}"
+        );
+    }
+}
+
 #[test]
 fn opening_an_instance_no_device_made_is_not_found() {
     let e = Shared::open(93).err().unwrap();
