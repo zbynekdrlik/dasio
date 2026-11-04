@@ -507,7 +507,16 @@ impl ProfileWatch {
         let spawned = std::thread::Builder::new()
             .name("pc-profile".into())
             .spawn(move || {
-                let n = match child_check(own) {
+                // No profile on this PC: no child to start.
+                let path = std::path::Path::new(crate::pc_profile::DEFAULT_PATH);
+                let found = if path.exists() {
+                    child_check(own)
+                } else {
+                    Ok(crate::pc_profile::ChildCheck::NoProfile(
+                        "the file does not exist".into(),
+                    ))
+                };
+                let n = match found {
                     Ok(found) => record(&last, found),
                     Err(e) => {
                         warn!(%e, "the PC profile check did not run");
