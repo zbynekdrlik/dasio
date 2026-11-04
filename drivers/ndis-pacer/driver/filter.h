@@ -299,10 +299,14 @@ typedef struct _FILTER_REQUEST
 //
 #include "../core/pacer_core.h"
 
-// Kernel test stream: frames that may be out at once (a 30 ms stall at
-// 250 us is 120 frames) and the bytes of one slot.
-#define KTX_SLOTS_DECL              256
-#define KTX_SLOTS                   256u
+// Kernel test stream and media TX: frames that may be out at once and the
+// bytes of one slot. Media TX of two dasio devices on the FOH PC is about
+// 150 000 frames a second; with Realtek 10.79 the miniport held all 256
+// slots uncompleted at moments (4.11.2026: 874 frames went to the socket
+// instead), and it holds frames for up to 20 ms (test stream). 4096 slots
+// cover ~27 ms (6 MB of nonpaged memory).
+#define KTX_SLOTS_DECL              4096
+#define KTX_SLOTS                   4096u
 #define KTX_SLOT_BYTES              1536u
 // Frames sent in one timer fire at most (a late fire catches up).
 #define KTX_MAX_BATCH               128u
