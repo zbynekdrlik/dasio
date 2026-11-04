@@ -106,12 +106,15 @@ pub fn run(
     // numbers, the bridge's counters, the late blocks of the last minute
     // (kept by the loop below).
     let late_per_min = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    // The PC profile's problems (dasio#5); u32::MAX while there is none.
+    let pc_problems = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
     {
-        let (shared, stale, waited, late_per_min) = (
+        let (shared, stale, waited, late_per_min, pc_problems) = (
             Arc::clone(&shared),
             Arc::clone(&stale),
             Arc::clone(&waited),
             Arc::clone(&late_per_min),
+            Arc::clone(&pc_problems),
         );
         let (block, rate) = (shape.block, cfg.sample_rate);
         media.set_app_status(move || {
@@ -129,6 +132,10 @@ pub fn run(
                 waited: waited.load(Ordering::Relaxed),
                 heartbeat_ms: h.heartbeat_ms.load(Ordering::Relaxed),
                 late_per_min: late_per_min.load(Ordering::Relaxed),
+                pc_problems: match pc_problems.load(Ordering::Relaxed) {
+                    u32::MAX => None,
+                    n => Some(n),
+                },
             })
         });
     }
@@ -180,6 +187,8 @@ pub fn run(
     let mut status = Every::new(STATUS_EVERY, start, true);
     let mut window = crate::app_status::LateWindow::default();
     let mut window_s = u64::MAX;
+    let mut profile = ProfileWatch::default();
+    let mut profile_at: Option<Instant> = None;
     let why = loop {
         let h = shared.header();
         h.heartbeat_ms
@@ -192,6 +201,12 @@ pub fn run(
                 window.take(secs, h.late.load(Ordering::Relaxed)),
                 Ordering::Relaxed,
             );
+        }
+        if profile_at.is_none_or(|t| {
+            now.duration_since(t) >= Duration::from_secs(crate::pc_profile::CHECK_EVERY_S)
+        }) {
+            profile_at = Some(now);
+            pc_problems.store(profile.check(), Ordering::Relaxed);
         }
         if counts.due(now) {
             let v = stats.view();
@@ -452,5 +467,54 @@ fn kernel_tx(media: &dstack::daemon::media::Media, ip: std::net::Ipv4Addr) {
         Err(e) => {
             warn!(%e, "audio TX stays on the UDP sockets: dasio's NDIS filter could not be opened (is dasio_pacer installed?)")
         }
+    }
+}
+
+/// The PC profile's checks (dasio#5): each problem is logged when it
+/// appears and when it goes; the count is the tray's.
+#[derive(Default)]
+struct ProfileWatch {
+    last: Option<Vec<String>>,
+}
+
+impl ProfileWatch {
+    /// Checks the profile now; its problem count, or u32::MAX with none.
+    fn check(&mut self) -> u32 {
+        let path = std::path::Path::new(crate::pc_profile::DEFAULT_PATH);
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) => {
+                if self.last.is_none() {
+                    info!(path = %path.display(), %e, "no PC profile: its checks are off");
+                    self.last = Some(Vec::new());
+                }
+                return u32::MAX;
+            }
+        };
+        let p = match crate::pc_profile::parse(&text) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(path = %path.display(), %e, "the PC profile cannot be read: its checks are off");
+                return u32::MAX;
+            }
+        };
+        let pc = crate::pc_profile::windows::Pc::new(&p);
+        let now: Vec<String> = crate::pc_profile::check(&p, &pc)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let before = self.last.take().unwrap_or_default();
+        for t in now.iter().filter(|t| !before.contains(t)) {
+            warn!(profile = %p.name, "PC profile: {t}");
+        }
+        for t in before.iter().filter(|t| !now.contains(t)) {
+            info!(profile = %p.name, "PC profile: fixed: {t}");
+        }
+        if now.is_empty() {
+            info!(profile = %p.name, entries = p.registry.len() + p.ini.len() + p.process.len(), "PC profile checked: as it should be");
+        }
+        let n = now.len() as u32;
+        self.last = Some(now);
+        n
     }
 }

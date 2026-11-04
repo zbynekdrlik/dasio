@@ -14,6 +14,7 @@ fn master() -> Facts {
         waited: 70,
         heartbeat_ms: 1234,
         late_per_min: 0,
+        pc_problems: None,
     }
 }
 
@@ -76,6 +77,7 @@ fn the_json_is_one_object_with_every_field() {
         "\"stale\":2",
         "\"waited\":70",
         "\"heartbeat_ms\":1234",
+        "\"pc_profile_problems\":-1",
     ] {
         assert!(j.contains(key), "{key} missing in {j}");
     }
@@ -95,4 +97,34 @@ fn the_window_counts_the_last_minute_and_starts_again_after_a_restart() {
     assert_eq!(w.take(LATE_WINDOW_S + 1, 13), 0, "then it falls out");
     assert_eq!(w.take(LATE_WINDOW_S + 2, 2), 0, "a restarted counter");
     assert_eq!(w.take(LATE_WINDOW_S + 3, 4), 2);
+}
+
+#[test]
+fn a_pc_profile_problem_shows_in_the_line_and_warns() {
+    let ok = Facts {
+        pc_problems: Some(0),
+        ..master()
+    };
+    assert_eq!(
+        line(&ok),
+        line(&master()),
+        "an as-it-should-be PC adds nothing"
+    );
+    assert_eq!(state(&ok), "ok");
+    let one = Facts {
+        pc_problems: Some(1),
+        ..master()
+    };
+    assert!(
+        line(&one).ends_with(" · PC profile: 1 problem"),
+        "{}",
+        line(&one)
+    );
+    assert_eq!(state(&one), "warn");
+    let three = Facts {
+        pc_problems: Some(3),
+        ..master()
+    };
+    assert!(line(&three).ends_with(" · PC profile: 3 problems"));
+    assert!(json(&three).contains("\"pc_profile_problems\":3"));
 }

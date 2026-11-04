@@ -24,6 +24,8 @@ pub struct Facts {
     pub heartbeat_ms: u64,
     /// Late blocks in the last [`LATE_WINDOW_S`] seconds ([`LateWindow`]).
     pub late_per_min: u64,
+    /// The PC profile's problems (dasio#5); `None` without a profile.
+    pub pc_problems: Option<u32>,
 }
 
 /// The late counter over the last minute.
@@ -58,8 +60,13 @@ fn ms(samples: u32, rate: u32) -> f64 {
 
 /// The menu line dtray shows after the device's own.
 pub fn line(f: &Facts) -> String {
+    let pc = match f.pc_problems {
+        Some(0) | None => String::new(),
+        Some(1) => " · PC profile: 1 problem".to_string(),
+        Some(n) => format!(" · PC profile: {n} problems"),
+    };
     format!(
-        "{} · {} @ {} kHz{} · in {:.2} / out {:.2} ms · late {}/min ({} total)",
+        "{} · {} @ {} kHz{} · in {:.2} / out {:.2} ms · late {}/min ({} total){pc}",
         if f.attached { "DAW attached" } else { "no DAW" },
         f.block,
         f.sample_rate / 1000,
@@ -71,11 +78,11 @@ pub fn line(f: &Facts) -> String {
     )
 }
 
-/// The icon's state: `warn` without a DAW or with a late block in the
-/// last minute, else `ok`. (A device that stopped answers no status at
+/// The icon's state: `warn` without a DAW, with a late block in the
+/// last minute or with a PC profile problem, else `ok`. (A device that stopped answers no status at
 /// all: dtray shows that as an expected device not running.)
 pub fn state(f: &Facts) -> &'static str {
-    if !f.attached || f.late_per_min > 0 {
+    if !f.attached || f.late_per_min > 0 || f.pc_problems.is_some_and(|n| n > 0) {
         "warn"
     } else {
         "ok"
@@ -90,7 +97,7 @@ pub fn json(f: &Facts) -> String {
             "{{\"line\":\"{}\",\"state\":\"{}\",\"daw_attached\":{},\"block\":{},",
             "\"sample_rate\":{},\"latency_in\":{},\"latency_out\":{},\"spare_blocks\":{},",
             "\"late_blocks\":{},\"late_per_min\":{},\"driver_missed\":{},\"stale\":{},",
-            "\"waited\":{},\"heartbeat_ms\":{}}}"
+            "\"waited\":{},\"heartbeat_ms\":{},\"pc_profile_problems\":{}}}"
         ),
         line,
         state(f),
@@ -106,6 +113,7 @@ pub fn json(f: &Facts) -> String {
         f.stale,
         f.waited,
         f.heartbeat_ms,
+        f.pc_problems.map_or(-1, i64::from),
     )
 }
 

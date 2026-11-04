@@ -7,10 +7,12 @@ publish = false
 description = "dasio's device process: one Dante device per instance, its audio through the shared memory to the ASIO driver"
 
 [dependencies]
-dstack-audio-io = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.23" }
-dstack = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.23" }
+dstack-audio-io = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.28" }
+dstack = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.28" }
 shm = { path = "../shm" }
 asio-driver = { path = "../asio-driver" }
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
@@ -23,6 +25,7 @@ windows-sys = { version = "0.61", features = [
   "Win32_Storage_FileSystem",
   "Win32_System_IO",
   "Win32_System_Console",
+  "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_Registry",
   "Win32_System_SystemInformation",
   "Win32_System_Threading",
