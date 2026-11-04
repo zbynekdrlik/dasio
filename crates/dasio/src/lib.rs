@@ -164,6 +164,20 @@ pub fn process_cpus(own: usize, l3: &[usize], fallback: usize) -> usize {
 mod tests {
 
     #[test]
+    fn new_threads_get_the_cpu_set_ids_of_the_helper_cpus_only() {
+        use super::cpu_set_ids;
+        // (group, logical processor index, CPU set id) as Windows lists
+        // them: ids start at 0x100 on FOH's Ryzen.
+        let sets: Vec<(u16, u8, u32)> = (0..16).map(|c| (0, c, 0x100 + c as u32)).collect();
+        assert_eq!(cpu_set_ids(0x800, &sets), vec![0x10B]);
+        assert_eq!(cpu_set_ids(0x8800, &sets), vec![0x10B, 0x10F]);
+        assert_eq!(cpu_set_ids(0, &sets), Vec::<u32>::new());
+        // Only group 0: the masks name group 0's CPUs.
+        let two = vec![(0, 3, 7), (1, 3, 9)];
+        assert_eq!(cpu_set_ids(0x8, &two), vec![7]);
+    }
+
+    #[test]
     fn the_profile_child_starts_suspended_when_it_must_be_moved_first() {
         use super::child_creation_flags;
         // NORMAL_PRIORITY_CLASS 0x20, CREATE_NO_WINDOW 0x0800_0000,
