@@ -108,6 +108,22 @@ pub fn own_cpus(cfg: &DeviceConfig) -> usize {
         .fold(0, |m, c| m | 1 << c)
 }
 
+/// The CPUs the process's helper threads (everything but the media
+/// threads: the main loop, the log, mDNS, the runtime, the profile check)
+/// are kept on: the process's CPUs the media threads leave free; 0 when
+/// none is free or nothing is pinned. A media thread's spin tail yields
+/// its CPU to any ready thread there, and a helper took it for a quantum:
+/// TX lanes restarted about once a minute (FOH, dasio#1, 4.11.2026).
+pub fn helper_cpus(process: usize, own: usize) -> usize {
+    if own == 0 { 0 } else { process & !own }
+}
+
+/// Whether a thread (by its name) is one of dstack's media threads, which
+/// pin themselves to their own CPU.
+pub fn is_media_thread(name: &str) -> bool {
+    matches!(name, "dstack-engine" | "dstack-tx" | "dstack-rx")
+}
+
 /// The CPUs the process runs on: every L3 group (an AMD CCD) that holds one
 /// of `own`'s CPUs, whole, so the device's other threads (runtime, mDNS,
 /// log) run on the media threads' chiplet and never beside other
