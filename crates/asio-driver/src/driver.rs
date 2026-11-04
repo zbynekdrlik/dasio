@@ -20,7 +20,7 @@
 
 use core::ffi::{c_char, c_void};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -80,13 +80,21 @@ struct Rt {
     position: AtomicU64,
     /// The `timeGetTime` ms of the last hand-over.
     systime_ms: AtomicU64,
-    /// The instance's mapping, opened once per driver object (a host makes
-    /// a new object after a reset), read without a lock.
-    shm: OnceLock<Arc<Shared>>,
+    /// The instance's mapping: opened by `init`, and opened again by an
+    /// `init` after the device published a new session (a host that
+    /// re-inits the same object after a reset, instead of making a new one).
+    shm: Mutex<Option<Arc<Shared>>>,
     /// The device's last verdict (`Verdict as u8 + 1`; 0 before any).
     verdict: AtomicU8,
     /// Device restarts the worker saw.
     restarts: AtomicU32,
+}
+
+impl Rt {
+    /// The mapping now (a clone of its Arc: never held across a call).
+    fn shm(&self) -> Option<Arc<Shared>> {
+        lock(&self.shm).clone()
+    }
 }
 
 #[derive(Default)]
@@ -156,7 +164,7 @@ impl Driver {
                 seq_in_hand: AtomicU64::new(0),
                 position: AtomicU64::new(0),
                 systime_ms: AtomicU64::new(0),
-                shm: OnceLock::new(),
+                shm: Mutex::new(None),
                 verdict: AtomicU8::new(0),
                 restarts: AtomicU32::new(0),
             }),
@@ -169,7 +177,7 @@ impl Driver {
     }
 
     fn latencies(&self) -> (i32, i32) {
-        match self.rt.shm.get() {
+        match self.rt.shm() {
             Some(s) => {
                 let h = s.header();
                 (
@@ -193,7 +201,7 @@ impl Driver {
             return;
         };
         // No more answers: the device stops waiting for them first.
-        if let Some(s) = self.rt.shm.get() {
+        if let Some(s) = self.rt.shm() {
             s.header().host_attached.store(0, Ordering::Release);
         }
         w.stop.store(true, Ordering::Release);
@@ -272,7 +280,7 @@ unsafe extern "system" fn release(this: *mut c_void) -> u32 {
             {
                 let mut st = lock(&d.state);
                 d.stop_worker(&mut st);
-                if let Some(s) = d.rt.shm.get() {
+                if let Some(s) = d.rt.shm() {
                     s.header().host_attached.store(0, Ordering::Release);
                 }
             }
@@ -289,17 +297,23 @@ unsafe extern "system" fn init(this: *mut c_void, _sys: *mut c_void) -> ASIOBool
         // SAFETY: a live Driver.
         let d = unsafe { me(this) };
         let mut st = lock(&d.state);
-        if let Some(s) = d.rt.shm.get() {
-            st.shape = Some(s.shape());
-            return ASIO_TRUE;
+        if let Some(s) = d.rt.shm() {
+            // The same object re-inited: keep the mapping unless the device
+            // moved to a new session (and no buffers of the old one are out).
+            if s.published_session() == s.session() || st.created.is_some() {
+                st.shape = Some(s.shape());
+                return ASIO_TRUE;
+            }
         }
         match Shared::open(d.instance) {
             Ok(s) => {
                 st.shape = Some(s.shape());
-                let _ = d.rt.shm.set(Arc::new(s));
+                *lock(&d.rt.shm) = Some(Arc::new(s));
             }
             Err(e) => {
                 st.shape = None;
+                // No stale mapping under a free-running driver.
+                *lock(&d.rt.shm) = None;
                 st.error = format!("no dasio device {} running ({e})", d.instance);
             }
         }
@@ -358,8 +372,7 @@ unsafe extern "system" fn start(this: *mut c_void) -> ASIOError {
             stop: Arc::clone(&stop),
             seen: d
                 .rt
-                .shm
-                .get()
+                .shm()
                 .map_or(0, |s| s.header().seq.load(Ordering::Acquire)),
         };
         d.rt.position.store(0, Ordering::Relaxed);
@@ -371,7 +384,7 @@ unsafe extern "system" fn start(this: *mut c_void) -> ASIOError {
                 st.worker = Some(Worker { handle, stop });
                 // From now on the host answers blocks: the device waits for
                 // each answer (and counts a missing one as late).
-                if let Some(s) = d.rt.shm.get() {
+                if let Some(s) = d.rt.shm() {
                     s.header().host_attached.store(1, Ordering::Release);
                 }
                 ASE_OK
@@ -580,7 +593,7 @@ unsafe extern "system" fn create_buffers(
         if size != shape.block as i32 {
             return ASE_INVALID_MODE;
         }
-        let shm = d.rt.shm.get();
+        let shm = d.rt.shm();
         let mut local: Vec<Vec<Box<[i32]>>> = vec![Vec::new(), Vec::new()];
         for info in infos.iter_mut() {
             let input = info.isInput != 0;
@@ -592,7 +605,7 @@ unsafe extern "system" fn create_buffers(
             let ch = ch as u32;
             let mut bufs = [core::ptr::null_mut(); 2];
             for (half, b) in bufs.iter_mut().enumerate() {
-                *b = match shm {
+                *b = match shm.as_ref() {
                     Some(s) => {
                         let Some(p) = s.buffer(half as u32, input, ch) else {
                             return ASE_INVALID_PARAMETER;
@@ -647,7 +660,7 @@ unsafe extern "system" fn dispose_buffers(this: *mut c_void) -> ASIOError {
         let mut st = lock(&d.state);
         d.stop_worker(&mut st);
         st.created = None;
-        if let Some(s) = d.rt.shm.get() {
+        if let Some(s) = d.rt.shm() {
             s.header().host_attached.store(0, Ordering::Release);
         }
         ASE_OK
@@ -674,7 +687,7 @@ unsafe extern "system" fn output_ready(this: *mut c_void) -> ASIOError {
     guard(ASE_HW_MALFUNCTION, || {
         // SAFETY: a live Driver.
         let rt = &unsafe { me(this) }.rt;
-        if let Some(s) = rt.shm.get() {
+        if let Some(s) = rt.shm() {
             s.header()
                 .ack
                 .store(rt.seq_in_hand.load(Ordering::Acquire), Ordering::Release);
@@ -703,7 +716,7 @@ struct Job {
 impl Job {
     fn run(self) {
         pro_audio();
-        let shm = self.rt.shm.get().cloned();
+        let shm = self.rt.shm();
         let mut time = ASIOTime {
             reserved: [0; 4],
             timeInfo: AsioTimeInfo {
