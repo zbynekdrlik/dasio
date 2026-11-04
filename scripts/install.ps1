@@ -136,7 +136,7 @@ $ShmProtocol = 4
 $protocolKey = "HKLM:\SOFTWARE\dasio"
 $heldProtocol = (Get-ItemProperty -Path $protocolKey -Name ShmProtocol -ErrorAction SilentlyContinue).ShmProtocol
 if ($dllHeld -and $heldProtocol -ne $ShmProtocol) {
-    throw "a DAW holds $dll, which speaks shared-memory protocol $(if ($heldProtocol) { $heldProtocol } else { 'before 4' }); this service speaks $ShmProtocol: quit the DAW first; nothing changed"
+    throw "a DAW holds $dll, which speaks shared-memory protocol $(if ($heldProtocol) { $heldProtocol } else { 'before 4' }); this service speaks ${ShmProtocol}: quit the DAW first; nothing changed"
 }
 
 # The product's former name: that instance's service goes, its state
