@@ -27,9 +27,10 @@ pub fn run(
     config: PathBuf,
     ip: std::net::Ipv4Addr,
     clock: host::ClockSource,
-    spare: u32,
+    tuning: crate::Tuning,
     stop_asked: Arc<AtomicBool>,
 ) -> Result<(), String> {
+    let spare = tuning.spare;
     let cfg = host::read_config(&config).map_err(|e| e.to_string())?;
     // The process on its own cores first: it starts with its parent's set
     // (on the FOH PC Process Lasso moves it later), and a thread cannot be
@@ -69,6 +70,9 @@ pub fn run(
     let prepared = host::prepare_with(&opts, &engine_tx, clock).map_err(|e| e.to_string())?;
     let cfg = prepared.config().clone();
     let media = prepared.media();
+    if tuning.kernel_tx {
+        kernel_tx(&media, ip);
+    }
     for &tx in &engine_tx {
         media.tx.set_source(tx, Source::Engine);
     }
@@ -425,4 +429,28 @@ fn started_cpus() -> usize {
         return 0;
     }
     process
+}
+
+/// Hands dstack dasio's NDIS filter as the audio TX path (dasio#1); the
+/// UDP sockets stay when the filter cannot be opened or dstack refuses.
+fn kernel_tx(media: &dstack::daemon::media::Media, ip: std::net::Ipv4Addr) {
+    match crate::kernel_tx::windows::KernelTx::open(ip) {
+        Ok(k) => {
+            let if_index = k.if_index();
+            if media.set_frame_sender(Arc::new(k)) {
+                info!(
+                    if_index,
+                    "audio TX goes through dasio's NDIS filter (kernel TX)"
+                );
+            } else {
+                warn!(
+                    if_index,
+                    "audio TX stays on the UDP sockets: dstack refused the filter's frame sender"
+                );
+            }
+        }
+        Err(e) => {
+            warn!(%e, "audio TX stays on the UDP sockets: dasio's NDIS filter could not be opened (is dasio_pacer installed?)")
+        }
+    }
 }

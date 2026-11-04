@@ -18,7 +18,9 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::IO::DeviceIoControl;
 
-use super::{DEVICE_PATH, HEADER, IOCTL_DASIO_TX_SEND, MAX_FRAME, pack};
+use dstack::media::bypass::FrameSender;
+
+use super::{DEVICE_PATH, HEADER, IOCTL_DASIO_TX_SEND, MAX_FRAME, mark, pack};
 
 /// Frames one batch carries at most: a TX tick sends one packet per slot.
 pub const MAX_BATCH: usize = 64;
@@ -70,7 +72,7 @@ impl KernelTx {
     }
 
     /// Sends `frames` and returns how many the filter took, in order.
-    pub fn send(&self, frames: &[&[u8]]) -> io::Result<u32> {
+    pub fn send_batch(&self, frames: &[&[u8]]) -> io::Result<u32> {
         let Ok(mut buf) = self.buf.try_lock() else {
             return Err(io::Error::from(io::ErrorKind::WouldBlock));
         };
@@ -96,6 +98,14 @@ impl KernelTx {
             return Err(io::Error::last_os_error());
         }
         Ok(accepted)
+    }
+}
+
+impl FrameSender for KernelTx {
+    fn send(&self, frames: &[&[u8]], sent: &mut [bool]) -> io::Result<()> {
+        let accepted = self.send_batch(frames)?;
+        mark(accepted, sent);
+        Ok(())
     }
 }
 

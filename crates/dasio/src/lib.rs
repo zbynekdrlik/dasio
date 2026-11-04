@@ -20,6 +20,16 @@ pub mod run;
 pub mod service;
 pub mod turnaround;
 
+/// How an instance runs beyond its device config (the service's flags).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Tuning {
+    /// Block periods the DAW gets beyond the first (`--spare-blocks`).
+    pub spare: u32,
+    /// Audio TX through dasio's NDIS filter (`--kernel-tx`, dasio#1),
+    /// the UDP sockets where it cannot be opened.
+    pub kernel_tx: bool,
+}
+
 use dstack::clock::latency_samples;
 use dstack::device::DeviceConfig;
 use dstack::stream::Timing;

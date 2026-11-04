@@ -43,7 +43,11 @@ param(
     [switch]$KeepHeldDriver,
     # Block periods the DAW gets beyond the first (0 or 1): a heavy set's
     # late blocks still play, its outputs that many blocks later.
-    [ValidateRange(0, 1)][int]$SpareBlocks = 0
+    [ValidateRange(0, 1)][int]$SpareBlocks = 0,
+    # Audio TX through dasio's NDIS filter (dasio_pacer, drivers/ndis-pacer):
+    # past Winsock, tcpip and WFP. Without the filter the UDP sockets carry
+    # it, as without this switch.
+    [switch]$KernelTx
 )
 $ErrorActionPreference = "Stop"
 
@@ -262,6 +266,7 @@ $log = Join-Path $data "dasio.log"
 $bin_path = "`"$instExe`" service --instance $Instance --config `"$cfg`" --ip $Ip --log `"$log`""
 if ($TestClock) { $bin_path += " --clock system" }
 if ($SpareBlocks -gt 0) { $bin_path += " --spare-blocks $SpareBlocks" }
+if ($KernelTx) { $bin_path += " --kernel-tx" }
 $existing = Get-CimInstance Win32_Service -Filter "Name='$service'"
 if ($existing) {
     # Through CIM: the path's quotes reach the SCM unchanged (sc.exe's

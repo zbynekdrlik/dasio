@@ -11,8 +11,8 @@ use std::process::ExitCode;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: dasio run --instance <n> --config <device.toml> --ip <address> [--log <file>] [--clock system] [--spare-blocks <n>]\n       \
-         dasio service --instance <n> --config <device.toml> --ip <address> --log <file> [--clock system] [--spare-blocks <n>]\n       \
+        "usage: dasio run --instance <n> --config <device.toml> --ip <address> [--log <file>] [--clock system] [--spare-blocks <n>] [--kernel-tx]\n       \
+         dasio service --instance <n> --config <device.toml> --ip <address> --log <file> [--clock system] [--spare-blocks <n>] [--kernel-tx]\n       \
          dasio register --instance <n> --dll <path> [--name <shown to DAWs>]\n       \
          dasio stop --instance <n>\n       \
          dasio probe --instance <n> [--seconds <s>] [--affinity <hex mask>]\n       \
@@ -119,10 +119,15 @@ fn main() -> ExitCode {
                 Some(Ok(n)) if n <= 1 => n,
                 Some(_) => return usage(),
             };
+            // `--kernel-tx`: audio TX through dasio's NDIS filter.
+            let tuning = dasio::Tuning {
+                spare,
+                kernel_tx: args.iter().any(|a| a == "--kernel-tx"),
+            };
             if cmd == "service" {
-                service(instance, config.into(), ip, system_clock, spare)
+                service(instance, config.into(), ip, system_clock, tuning)
             } else {
-                run(instance, config.into(), ip, system_clock, spare)
+                run(instance, config.into(), ip, system_clock, tuning)
             }
         }
         _ => return usage(),
@@ -204,10 +209,10 @@ fn run(
     config: std::path::PathBuf,
     ip: std::net::Ipv4Addr,
     system_clock: bool,
-    spare: u32,
+    tuning: dasio::Tuning,
 ) -> Result<(), String> {
     let never = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    dasio::run::run(instance, config, ip, clock(system_clock), spare, never)
+    dasio::run::run(instance, config, ip, clock(system_clock), tuning, never)
 }
 
 #[cfg(windows)]
@@ -225,9 +230,9 @@ fn service(
     config: std::path::PathBuf,
     ip: std::net::Ipv4Addr,
     system_clock: bool,
-    spare: u32,
+    tuning: dasio::Tuning,
 ) -> Result<(), String> {
-    dasio::service::windows::dispatch(instance, config, ip, clock(system_clock), spare)
+    dasio::service::windows::dispatch(instance, config, ip, clock(system_clock), tuning)
 }
 
 #[cfg(not(windows))]
@@ -236,7 +241,7 @@ fn service(
     _config: std::path::PathBuf,
     _ip: std::net::Ipv4Addr,
     _system_clock: bool,
-    _spare: u32,
+    _tuning: dasio::Tuning,
 ) -> Result<(), String> {
     Err("Windows only".into())
 }
@@ -257,7 +262,7 @@ fn run(
     _config: std::path::PathBuf,
     _ip: std::net::Ipv4Addr,
     _system_clock: bool,
-    _spare: u32,
+    _tuning: dasio::Tuning,
 ) -> Result<(), String> {
     Err("Windows only".into())
 }
