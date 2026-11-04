@@ -129,6 +129,15 @@ if ($newDll -and (Test-Path $dll)) {
 if ($dllHeld -and -not $KeepHeldDriver) {
     throw "a DAW holds $dll (quit it, or pass -KeepHeldDriver to keep that driver for now); nothing changed"
 }
+# The shared memory's protocol between the driver and the service (shm's
+# VERSION; shm's tests check the two agree). A held driver of another
+# protocol would not find the new service's memory and play silence.
+$ShmProtocol = 4
+$protocolKey = "HKLM:\SOFTWARE\dasio"
+$heldProtocol = (Get-ItemProperty -Path $protocolKey -Name ShmProtocol -ErrorAction SilentlyContinue).ShmProtocol
+if ($dllHeld -and $heldProtocol -ne $ShmProtocol) {
+    throw "a DAW holds $dll, which speaks shared-memory protocol $(if ($heldProtocol) { $heldProtocol } else { 'before 4' }); this service speaks $ShmProtocol: quit the DAW first; nothing changed"
+}
 
 # The product's former name: that instance's service goes, its state
 # comes over.
@@ -199,6 +208,10 @@ if ($changed -contains "dasio.exe") {
 }
 try {
     foreach ($file in $changed) { Copy-Item (Join-Path $here $file) $bin -Force }
+    if (-not $dllHeld) {
+        if (-not (Test-Path $protocolKey)) { New-Item -Path $protocolKey | Out-Null }
+        New-ItemProperty -Path $protocolKey -Name ShmProtocol -Value $ShmProtocol -PropertyType DWord -Force | Out-Null
+    }
 } finally {
     foreach ($s in $paused) {
         Start-Service -Name $s.Name

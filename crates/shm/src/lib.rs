@@ -16,8 +16,10 @@ use std::sync::atomic::{AtomicU32, AtomicU64};
 
 /// `"DASI"`.
 pub const MAGIC: u32 = u32::from_le_bytes(*b"DASI");
-/// The layout's version.
-pub const VERSION: u32 = 3;
+/// The layout's version. 4: one section per device session, found through
+/// the instance's directory (`scripts/install.ps1`'s `$ShmProtocol` is the
+/// same number: a held driver of another protocol makes it refuse).
+pub const VERSION: u32 = 4;
 /// [`Header::start`] of a block with no media time (no clock).
 pub const NO_START: u64 = u64::MAX;
 /// Every buffer starts on this boundary.

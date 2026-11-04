@@ -59,3 +59,15 @@ fn the_size_is_the_header_then_two_halves() {
     // 16 samples: 64 bytes, already aligned; 3 + 2 channels.
     assert_eq!(Shape::new(3, 2, 16).unwrap().size(), header + 2 * 5 * 64);
 }
+
+// install.ps1 refuses to keep a held driver of another protocol: its
+// number must be this crate's VERSION.
+#[test]
+fn the_installer_s_protocol_is_the_layout_s_version() {
+    let script = include_str!("../../../scripts/install.ps1");
+    let want = format!("$ShmProtocol = {VERSION}");
+    assert!(
+        script.lines().any(|l| l.trim() == want),
+        "scripts/install.ps1 must set {want}"
+    );
+}

@@ -233,10 +233,22 @@ try {
     if ((Get-CimInstance Win32_Service -Filter "Name='dasio-$second'").ProcessId -ne $pid2) { throw "the refused install stopped dasio-$second" }
     & (Join-Path $newest "install.ps1") -Instance $second -Ip $ip -Config $cfg2 -Name "ci-asio-dante-2" -TestClock -KeepHeldDriver
     if ((Get-FileHash $dll).Hash -ne (Get-FileHash (Join-Path $newer "dasio_driver.dll")).Hash) { throw "the held driver was replaced" }
+    # A held driver of an older shared-memory protocol would not find the new
+    # service's memory: -KeepHeldDriver is refused then.
+    $key = "HKLM:\SOFTWARE\dasio"
+    $proto = (Get-ItemProperty -Path $key -Name ShmProtocol).ShmProtocol
+    Set-ItemProperty -Path $key -Name ShmProtocol -Value 3
+    try {
+        $refused = $false
+        try { & (Join-Path $newest "install.ps1") -Instance $second -Ip $ip -Config $cfg2 -Name "ci-asio-dante-2" -TestClock -KeepHeldDriver } catch { $refused = $_.Exception.Message -match "protocol 3" }
+        if (-not $refused) { throw "a held driver of another protocol was kept" }
+    } finally {
+        Set-ItemProperty -Path $key -Name ShmProtocol -Value $proto
+    }
 } finally {
     $held.Close()
 }
-Write-Output "a held driver: refused, or kept with -KeepHeldDriver"
+Write-Output "a held driver: refused, kept with -KeepHeldDriver, refused across a protocol change"
 
 & (Join-Path $newer "uninstall.ps1") -Instance $second -Ip $ip -Name "ci-asio-dante-2"
 Wait-Until { -not (Get-Service -Name "dasio-$second" -ErrorAction SilentlyContinue) } 15 "the second service's removal"
