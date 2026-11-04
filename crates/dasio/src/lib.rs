@@ -129,6 +129,37 @@ pub fn process_cpus(own: usize, l3: &[usize], fallback: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn helpers_go_to_the_process_s_cpus_the_media_threads_leave_free() {
+        // Master on FOH: Lasso gives 8-11, the media threads hold 8-10.
+        assert_eq!(super::helper_cpus(0xF00, 0x700), 0x800);
+        // Band: 12-15, media 12-14.
+        assert_eq!(super::helper_cpus(0xF000, 0x7000), 0x8000);
+        // No pins (mbc): nothing to move.
+        assert_eq!(super::helper_cpus(0xFFF, 0), 0);
+        // The process holds only the media CPUs: nowhere to put them.
+        assert_eq!(super::helper_cpus(0x700, 0x700), 0);
+    }
+
+    #[test]
+    fn only_dstack_s_media_threads_stay_where_they_are() {
+        for name in ["dstack-engine", "dstack-tx", "dstack-rx"] {
+            assert!(super::is_media_thread(name), "{name}");
+        }
+        for name in [
+            "",
+            "main",
+            "pc-profile",
+            "turnaround",
+            "kernel-tx-adapter",
+            "mdns-service",
+            "tokio-runtime-worker",
+            "dstack-device",
+        ] {
+            assert!(!super::is_media_thread(name), "{name}");
+        }
+    }
     use super::Clock;
 
     #[test]
