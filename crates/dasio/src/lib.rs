@@ -108,6 +108,22 @@ pub fn own_cpus(cfg: &DeviceConfig) -> usize {
         .fold(0, |m, c| m | 1 << c)
 }
 
+/// The CPUs the process's helper threads (everything but the media
+/// threads: the main loop, the log, mDNS, the runtime, the profile check)
+/// are kept on: the process's CPUs the media threads leave free; 0 when
+/// none is free or nothing is pinned. A media thread's spin tail yields
+/// its CPU to any ready thread there, and a helper took it for a quantum:
+/// TX lanes restarted about once a minute (FOH, dasio#1, 4.11.2026).
+pub fn helper_cpus(process: usize, own: usize) -> usize {
+    if own == 0 { 0 } else { process & !own }
+}
+
+/// Whether a thread (by its name) is one of dstack's media threads, which
+/// pin themselves to their own CPU.
+pub fn is_media_thread(name: &str) -> bool {
+    matches!(name, "dstack-engine" | "dstack-tx" | "dstack-rx")
+}
+
 /// The CPUs the process runs on: every L3 group (an AMD CCD) that holds one
 /// of `own`'s CPUs, whole, so the device's other threads (runtime, mDNS,
 /// log) run on the media threads' chiplet and never beside other
@@ -129,6 +145,37 @@ pub fn process_cpus(own: usize, l3: &[usize], fallback: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn helpers_go_to_the_process_s_cpus_the_media_threads_leave_free() {
+        // Master on FOH: Lasso gives 8-11, the media threads hold 8-10.
+        assert_eq!(super::helper_cpus(0xF00, 0x700), 0x800);
+        // Band: 12-15, media 12-14.
+        assert_eq!(super::helper_cpus(0xF000, 0x7000), 0x8000);
+        // No pins (mbc): nothing to move.
+        assert_eq!(super::helper_cpus(0xFFF, 0), 0);
+        // The process holds only the media CPUs: nowhere to put them.
+        assert_eq!(super::helper_cpus(0x700, 0x700), 0);
+    }
+
+    #[test]
+    fn only_dstack_s_media_threads_stay_where_they_are() {
+        for name in ["dstack-engine", "dstack-tx", "dstack-rx"] {
+            assert!(super::is_media_thread(name), "{name}");
+        }
+        for name in [
+            "",
+            "main",
+            "pc-profile",
+            "turnaround",
+            "kernel-tx-adapter",
+            "mdns-service",
+            "tokio-runtime-worker",
+            "dstack-device",
+        ] {
+            assert!(!super::is_media_thread(name), "{name}");
+        }
+    }
     use super::Clock;
 
     #[test]

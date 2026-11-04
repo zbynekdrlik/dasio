@@ -2,8 +2,9 @@
 //! must keep for dasio, declared once in a private TOML file on the PC
 //! (`C:\ProgramData\dasio\pc-profile.toml`, site data, never in the repo),
 //! so a Windows upgrade or a reinstall never means finding them again.
-//! The service checks it at start and every [`CHECK_EVERY_S`] and reports
-//! what differs; `dasio pc-profile apply` sets what differs.
+//! The service checks it at start and every [`CHECK_EVERY_S`], in a child
+//! process off the media CPUs ([`ChildCheck`]), and reports what differs;
+//! `dasio pc-profile apply` sets what differs.
 //!
 //! Three kinds of entries:
 //! - `[[registry]]`: one value under `HKLM\...` (a DWORD, a string, or
@@ -387,6 +388,34 @@ pub fn get_ini(text: &str, key: &str) -> Option<String> {
             .strip_prefix(&prefix)
             .map(str::to_string)
     })
+}
+
+/// What a `dasio pc-profile check` child process found: the service runs
+/// the periodic check in a child at normal priority, off the media CPUs.
+/// On dasio's own thread the check held a CPU a media thread's spin tail
+/// yielded for a whole quantum: 16 ms gaps at the receivers every 10 min
+/// (FOH, dasio#1, 4.11.2026).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChildCheck {
+    /// The profile was read: its problems (none when the PC is as it says).
+    Problems(Vec<String>),
+    /// The profile was not read (absent or broken): why, as the child said.
+    NoProfile(String),
+}
+
+/// The child's output: `PROBLEM <text>` lines and a `PC profile ...`
+/// summary when the profile was read; otherwise only an error on stderr.
+pub fn read_child_check(stdout: &str, stderr: &str) -> ChildCheck {
+    let lines = || stdout.lines().map(|l| l.trim_end_matches('\r'));
+    if !lines().any(|l| l.starts_with("PC profile ")) {
+        return ChildCheck::NoProfile(stderr.trim().to_string());
+    }
+    ChildCheck::Problems(
+        lines()
+            .filter_map(|l| l.strip_prefix("PROBLEM "))
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 #[cfg(test)]

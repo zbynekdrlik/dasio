@@ -290,3 +290,31 @@ fn an_ini_line_is_set_in_place_and_a_missing_one_added() {
     assert_eq!(set_ini("A=1\n", "B", "2"), "A=1\nB=2\n");
     assert_eq!(set_ini("A=1", "B", "2"), "A=1\nB=2");
 }
+
+#[test]
+fn a_child_check_s_output_reads_back_as_its_problems_or_no_profile() {
+    let clean = "PC profile FOH Ableton PC: as it should be (220 entries)\n";
+    assert_eq!(read_child_check(clean, ""), ChildCheck::Problems(vec![]));
+    let two = "PROBLEM registry A\\B: 2 (0x2) (the profile wants 4 (0x4))\r\n\
+               PROBLEM process x.exe affinity: 0xFFFF (the profile wants 0xF0)\r\n\
+               PC profile FOH: 2 problems of 220 entries\r\n";
+    assert_eq!(
+        read_child_check(two, ""),
+        ChildCheck::Problems(vec![
+            "registry A\\B: 2 (0x2) (the profile wants 4 (0x4))".into(),
+            "process x.exe affinity: 0xFFFF (the profile wants 0xF0)".into(),
+        ])
+    );
+    // No summary line: the profile was not read (absent or broken).
+    let absent = "dasio: the profile C:\\ProgramData\\dasio\\pc-profile.toml: not found\r\n";
+    assert_eq!(
+        read_child_check("", absent),
+        ChildCheck::NoProfile(
+            "dasio: the profile C:\\ProgramData\\dasio\\pc-profile.toml: not found".into()
+        )
+    );
+    assert_eq!(
+        read_child_check("", ""),
+        ChildCheck::NoProfile(String::new())
+    );
+}

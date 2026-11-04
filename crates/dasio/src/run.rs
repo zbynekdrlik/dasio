@@ -187,7 +187,13 @@ pub fn run(
     let mut status = Every::new(STATUS_EVERY, start, true);
     let mut window = crate::app_status::LateWindow::default();
     let mut window_s = u64::MAX;
-    let mut profile = ProfileWatch::default();
+    let profile = ProfileWatch::new(own);
+    if own != 0 {
+        std::thread::Builder::new()
+            .name("helper-placer".into())
+            .spawn(move || place_helpers(own))
+            .map_err(|e| format!("the helper placer: {e}"))?;
+    }
     let mut profile_at: Option<Instant> = None;
     let why = loop {
         let h = shared.header();
@@ -206,7 +212,7 @@ pub fn run(
             now.duration_since(t) >= Duration::from_secs(crate::pc_profile::CHECK_EVERY_S)
         }) {
             profile_at = Some(now);
-            pc_problems.store(profile.check(), Ordering::Relaxed);
+            profile.start(&pc_problems);
         }
         if counts.due(now) {
             let v = stats.view();
@@ -470,51 +476,237 @@ fn kernel_tx(media: &dstack::daemon::media::Media, ip: std::net::Ipv4Addr) {
     }
 }
 
+/// Keeps every thread of this process but the media threads on the CPUs
+/// those leave free ([`crate::helper_cpus`]), once a second: Process Lasso
+/// resets thread pins when it sets the process's affinity, and threads
+/// start later (the runtime, mDNS). The thread moves itself first, so its
+/// own work never runs on a media CPU.
+fn place_helpers(own: usize) {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE, LocalFree};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, GetCurrentProcessId, GetCurrentThread, GetProcessAffinityMask,
+        GetThreadDescription, OpenThread, SetThreadAffinityMask, THREAD_QUERY_LIMITED_INFORMATION,
+        THREAD_SET_INFORMATION,
+    };
+    // SAFETY: no arguments.
+    let pid = unsafe { GetCurrentProcessId() };
+    let mut last: Option<(usize, u32)> = None;
+    loop {
+        let (mut process, mut system) = (0usize, 0usize);
+        // SAFETY: this process's pseudo handle and two writable masks.
+        unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut process, &mut system) };
+        let helpers = crate::helper_cpus(process, own);
+        if helpers != 0 {
+            // SAFETY: this thread's pseudo handle.
+            unsafe { SetThreadAffinityMask(GetCurrentThread(), helpers) };
+            let mut moved = 0u32;
+            // SAFETY: a thread snapshot, closed below.
+            let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+            if snap != INVALID_HANDLE_VALUE {
+                // SAFETY: a zeroed entry with its size set, as the API wants.
+                let mut e: THREADENTRY32 = unsafe { std::mem::zeroed() };
+                e.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+                // SAFETY: a valid snapshot and entry.
+                let mut ok = unsafe { Thread32First(snap, &mut e) } != 0;
+                while ok {
+                    if e.th32OwnerProcessID == pid {
+                        // SAFETY: a handle to one of this process's threads,
+                        // closed below.
+                        let h = unsafe {
+                            OpenThread(
+                                THREAD_SET_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION,
+                                0,
+                                e.th32ThreadID,
+                            )
+                        };
+                        if !h.is_null() {
+                            let mut text: *mut u16 = std::ptr::null_mut();
+                            // SAFETY: a valid handle; Windows allocates the
+                            // name, freed with LocalFree.
+                            let name = if unsafe { GetThreadDescription(h, &mut text) } >= 0
+                                && !text.is_null()
+                            {
+                                // SAFETY: a NUL-terminated string from Windows.
+                                let n = (0..).take_while(|&i| unsafe { *text.add(i) } != 0).count();
+                                // SAFETY: `n` chars before the NUL.
+                                let s = String::from_utf16_lossy(unsafe {
+                                    std::slice::from_raw_parts(text, n)
+                                });
+                                // SAFETY: allocated by GetThreadDescription.
+                                unsafe { LocalFree(text.cast()) };
+                                s
+                            } else {
+                                String::new()
+                            };
+                            // SAFETY: a valid handle with SET_INFORMATION.
+                            if !crate::is_media_thread(&name)
+                                && unsafe { SetThreadAffinityMask(h, helpers) } != 0
+                            {
+                                moved += 1;
+                            }
+                            // SAFETY: opened above.
+                            unsafe { CloseHandle(h) };
+                        }
+                    }
+                    // SAFETY: as above.
+                    ok = unsafe { Thread32Next(snap, &mut e) } != 0;
+                }
+                // SAFETY: the snapshot opened above.
+                unsafe { CloseHandle(snap) };
+            }
+            if last.is_none_or(|(m, n)| m != helpers || n != moved) {
+                info!(
+                    cpus = format!("{helpers:#x}"),
+                    threads = moved,
+                    "the helper threads kept off the media CPUs"
+                );
+                last = Some((helpers, moved));
+            }
+        } else if last != Some((0, 0)) {
+            info!(
+                process = format!("{process:#x}"),
+                media = format!("{own:#x}"),
+                "no CPU left for the helper threads: they stay on the process's CPUs"
+            );
+            last = Some((0, 0));
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
 /// The PC profile's checks (dasio#5): each problem is logged when it
-/// appears and when it goes; the count is the tray's.
-#[derive(Default)]
+/// appears and when it goes; the count is the tray's. The check runs in a
+/// `dasio pc-profile check` child at normal priority on the CPUs outside
+/// the media threads': on this process's own thread it held a CPU a media
+/// thread's spin tail yielded, for a whole quantum (16 ms gaps at the
+/// receivers every 10 min, FOH, dasio#1, 4.11.2026).
 struct ProfileWatch {
-    last: Option<Vec<String>>,
+    /// The media threads' CPUs, kept free of the child.
+    own: usize,
+    busy: Arc<AtomicBool>,
+    last: Arc<Mutex<Option<Vec<String>>>>,
 }
 
 impl ProfileWatch {
-    /// Checks the profile now; its problem count, or u32::MAX with none.
-    fn check(&mut self) -> u32 {
-        let path = std::path::Path::new(crate::pc_profile::DEFAULT_PATH);
-        let text = match std::fs::read_to_string(path) {
-            Ok(t) => t,
-            Err(e) => {
-                if self.last.is_none() {
-                    info!(path = %path.display(), %e, "no PC profile: its checks are off");
-                    self.last = Some(Vec::new());
-                }
-                return u32::MAX;
-            }
-        };
-        let p = match crate::pc_profile::parse(&text) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!(path = %path.display(), %e, "the PC profile cannot be read: its checks are off");
-                return u32::MAX;
-            }
-        };
-        let pc = crate::pc_profile::windows::Pc::new(&p);
-        let now: Vec<String> = crate::pc_profile::check(&p, &pc)
-            .iter()
-            .map(ToString::to_string)
-            .collect();
-        let before = self.last.take().unwrap_or_default();
-        for t in now.iter().filter(|t| !before.contains(t)) {
-            warn!(profile = %p.name, "PC profile: {t}");
+    fn new(own: usize) -> Self {
+        Self {
+            own,
+            busy: Arc::new(AtomicBool::new(false)),
+            last: Arc::new(Mutex::new(None)),
         }
-        for t in before.iter().filter(|t| !now.contains(t)) {
-            info!(profile = %p.name, "PC profile: fixed: {t}");
-        }
-        if now.is_empty() {
-            info!(profile = %p.name, entries = p.registry.len() + p.ini.len() + p.process.len(), "PC profile checked: as it should be");
-        }
-        let n = now.len() as u32;
-        self.last = Some(now);
-        n
     }
+
+    /// Starts a check (none while one runs); the count lands in `problems`
+    /// (u32::MAX without a profile).
+    fn start(&self, problems: &Arc<std::sync::atomic::AtomicU32>) {
+        if self.busy.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let (own, busy, last, problems) = (
+            self.own,
+            Arc::clone(&self.busy),
+            Arc::clone(&self.last),
+            Arc::clone(problems),
+        );
+        let spawned = std::thread::Builder::new()
+            .name("pc-profile".into())
+            .spawn(move || {
+                // No profile on this PC: no child to start.
+                let path = std::path::Path::new(crate::pc_profile::DEFAULT_PATH);
+                let found = if path.exists() {
+                    child_check(own)
+                } else {
+                    Ok(crate::pc_profile::ChildCheck::NoProfile(
+                        "the file does not exist".into(),
+                    ))
+                };
+                let n = match found {
+                    Ok(found) => record(&last, found),
+                    Err(e) => {
+                        warn!(%e, "the PC profile check did not run");
+                        u32::MAX
+                    }
+                };
+                problems.store(n, Ordering::Relaxed);
+                busy.store(false, Ordering::Release);
+            });
+        if let Err(e) = spawned {
+            warn!(%e, "the PC profile check's thread did not start");
+            self.busy.store(false, Ordering::Release);
+        }
+    }
+}
+
+/// Logs what appeared and what went since the last check; the count.
+fn record(last: &Mutex<Option<Vec<String>>>, found: crate::pc_profile::ChildCheck) -> u32 {
+    use crate::pc_profile::ChildCheck;
+    let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
+    let now = match found {
+        ChildCheck::NoProfile(why) => {
+            if last.is_none() {
+                info!(path = crate::pc_profile::DEFAULT_PATH, %why, "no PC profile: its checks are off");
+                *last = Some(Vec::new());
+            }
+            return u32::MAX;
+        }
+        ChildCheck::Problems(now) => now,
+    };
+    let before = last.take().unwrap_or_default();
+    for t in now.iter().filter(|t| !before.contains(t)) {
+        warn!("PC profile: {t}");
+    }
+    for t in before.iter().filter(|t| !now.contains(t)) {
+        info!("PC profile: fixed: {t}");
+    }
+    if now.is_empty() {
+        info!("PC profile checked: as it should be");
+    }
+    let n = now.len() as u32;
+    *last = Some(now);
+    n
+}
+
+/// Runs `dasio pc-profile check` (this exe) at normal priority, without a
+/// window, moved off `own` (the media CPUs) at once, and reads its output.
+fn child_check(own: usize) -> Result<crate::pc_profile::ChildCheck, String> {
+    use std::os::windows::io::AsRawHandle;
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::System::Threading::{
+        CREATE_NO_WINDOW, GetCurrentProcess, GetProcessAffinityMask, NORMAL_PRIORITY_CLASS,
+        SetProcessAffinityMask,
+    };
+    // The plain `dasio.exe` beside this instance's copy: Process Lasso's rule
+    // for the instance's exe name would put the child back on the media
+    // CPUs; `dasio.exe` falls under its catch-all.
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let plain = exe.with_file_name("dasio.exe");
+    let exe = if plain.exists() { plain } else { exe };
+    let child = std::process::Command::new(exe)
+        .args(["pc-profile", "check"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .creation_flags(CREATE_NO_WINDOW | NORMAL_PRIORITY_CLASS)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    if own != 0 {
+        let (mut mine, mut system) = (0usize, 0usize);
+        // SAFETY: this process's pseudo handle and two writable masks.
+        unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut mine, &mut system) };
+        let off = system & !own;
+        if off != 0 {
+            // SAFETY: the child's process handle, open while `child` lives.
+            if unsafe { SetProcessAffinityMask(child.as_raw_handle(), off) } == 0 {
+                warn!(err = %std::io::Error::last_os_error(), "the PC profile check stays on the media CPUs");
+            }
+        }
+    }
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    Ok(crate::pc_profile::read_child_check(
+        &String::from_utf8_lossy(&out.stdout),
+        &String::from_utf8_lossy(&out.stderr),
+    ))
 }
