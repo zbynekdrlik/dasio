@@ -588,14 +588,6 @@ DRIVER_DISPATCH FilterDispatch;
 DRIVER_DISPATCH FilterDeviceIoControl;
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
-PMS_FILTER
-filterFindFilterModule(
-    _In_reads_bytes_(BufferLength)
-         PUCHAR                   Buffer,
-    _In_ ULONG                    BufferLength
-    );
-
-_IRQL_requires_max_(DISPATCH_LEVEL)
 NDIS_STATUS
 filterDoInternalRequest(
     _In_ PMS_FILTER                   FilterModuleContext,

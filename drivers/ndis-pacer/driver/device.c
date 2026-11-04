@@ -178,22 +178,6 @@ FilterDeviceIoControl(
         case IOCTL_FILTER_RESTART_ALL:
             break;
 
-        case IOCTL_FILTER_RESTART_ONE_INSTANCE:
-            InputBuffer = OutputBuffer = (PUCHAR)Irp->AssociatedIrp.SystemBuffer;
-            InputBufferLength = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
-
-            pFilter = filterFindFilterModule (InputBuffer, InputBufferLength);
-
-            if (pFilter == NULL)
-            {
-
-                break;
-            }
-
-            NdisFRestartFilter(pFilter->FilterHandle);
-
-            break;
-
         case IOCTL_FILTER_ENUMERATE_ALL_INSTANCES:
 
             InputBuffer = OutputBuffer = (PUCHAR)Irp->AssociatedIrp.SystemBuffer;
@@ -539,42 +523,6 @@ FilterDeviceIoControl(
 }
 
 
-_IRQL_requires_max_(DISPATCH_LEVEL)
-PMS_FILTER
-filterFindFilterModule(
-    _In_reads_bytes_(BufferLength)
-         PUCHAR                   Buffer,
-    _In_ ULONG                    BufferLength
-    )
-{
-
-   PMS_FILTER              pFilter;
-   PLIST_ENTRY             Link;
-   BOOLEAN                  bFalse = FALSE;
-
-   FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
-
-   Link = FilterModuleList.Flink;
-
-   while (Link != &FilterModuleList)
-   {
-       pFilter = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
-
-       if (BufferLength >= pFilter->FilterModuleName.Length)
-       {
-           if (NdisEqualMemory(Buffer, pFilter->FilterModuleName.Buffer, pFilter->FilterModuleName.Length))
-           {
-               FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
-               return pFilter;
-           }
-       }
-
-       Link = Link->Flink;
-   }
-
-   FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
-   return NULL;
-}
 
 
 

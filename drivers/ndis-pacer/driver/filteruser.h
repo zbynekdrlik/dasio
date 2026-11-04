@@ -12,7 +12,6 @@
             CTL_CODE(FILE_DEVICE_PHYSICAL_NETCARD, request, method, FILE_ANY_ACCESS)
 
 #define IOCTL_FILTER_RESTART_ALL            _NDIS_CONTROL_CODE(0, METHOD_BUFFERED)
-#define IOCTL_FILTER_RESTART_ONE_INSTANCE   _NDIS_CONTROL_CODE(1, METHOD_BUFFERED)
 #define IOCTL_FILTER_ENUERATE_ALL_INSTANCES _NDIS_CONTROL_CODE(2, METHOD_BUFFERED)
 #define IOCTL_FILTER_ENUMERATE_ALL_INSTANCES IOCTL_FILTER_ENUERATE_ALL_INSTANCES
 #define IOCTL_FILTER_QUERY_ALL_STAT         _NDIS_CONTROL_CODE(3, METHOD_BUFFERED)
@@ -191,16 +190,16 @@ typedef struct _DASIO_KTX_STATUS
     ULONG64         End;
     ULONG64         Now;
     ULONG64         IntervalUs;
-    ULONG64         Sent;             // frames handed to the miniport
-    ULONG64         Completed;
-    ULONG64         Failed;           // completed with an error status
+    ULONG64         Sent;             // test stream frames handed to the miniport
+    ULONG64         Completed;        // every frame of the slots (stream and media)
+    ULONG64         Failed;           // completed with an error status (stream and media)
     ULONG64         Out;              // not completed yet
     ULONG64         NoSlot;           // due frames dropped: every slot out
     ULONG64         Fires;
     ULONG64         MaxBatch;         // most frames sent in one fire
     ULONG64         MaxLate;          // 100 ns: a fire after its first due frame
-    // Version 2: media TX (IOCTL_DASIO_TX_SEND), sharing the slots; Sent,
-    // Completed, Failed and Out above count its frames too.
+    // Version 2: media TX (IOCTL_DASIO_TX_SEND), sharing the slots;
+    // Completed, Failed and Out above count its frames too, Sent does not.
     ULONG64         TxBatches;        // TX_SEND calls that sent a frame
     ULONG64         TxFrames;         // frames accepted and sent
     ULONG64         TxNoSlot;         // frames not accepted: every slot out

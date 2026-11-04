@@ -791,6 +791,13 @@ NOTE: Called at PASSIVE_LEVEL and the filter is in paused state
     }
 
 
+    // Off the list first, so no IOCTL (they all find the filter through the
+    // list under FilterListLock) reaches its timers or slots while they are
+    // torn down below.
+    FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
+    RemoveEntryList(&pFilter->FilterModuleLink);
+    FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
+
     // The timer goes first, at PASSIVE: deleting it waits for a running
     // callback, which is not allowed under a spin lock.
     if (pFilter->PaceTimer != NULL)
@@ -807,14 +814,11 @@ NOTE: Called at PASSIVE_LEVEL and the filter is in paused state
         NdisFreeNetBufferListPool(pFilter->PaceNblPool);
         pFilter->PaceNblPool = NULL;
     }
-    FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
     if (pFilter->PaceRing != NULL)
     {
         NdisFreeMemory(pFilter->PaceRing, 0, 0);
         pFilter->PaceRing = NULL;
     }
-    RemoveEntryList(&pFilter->FilterModuleLink);
-    FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
 
 
     //
@@ -2728,9 +2732,10 @@ ktxStartLocked(
     // The first frame 1 ms from now; the timer's first fire then.
     Filter->KtxStart = Now + KTX_TIMER_PERIOD;
     Filter->KtxEnd = Filter->KtxStart + (ULONG64)Start->DurationS * 10000000;
+    // Completed and Failed count every frame of the slots, media TX's
+    // included, and stay across test streams: a test stream started in
+    // production does not wipe the failure count.
     Filter->KtxSent = 0;
-    Filter->KtxCompleted = 0;
-    Filter->KtxFailed = 0;
     Filter->KtxNoSlot = 0;
     Filter->KtxFires = 0;
     Filter->KtxMaxBatch = 0;
@@ -2915,7 +2920,8 @@ txSendAtDispatch(
         *(PULONG)NET_BUFFER_LIST_CONTEXT_DATA_START(Nbl) = Slot;
         *Tail = Nbl;
         Tail = &NET_BUFFER_LIST_NEXT_NBL(Nbl);
-        Filter->KtxSent++;
+        // Media frames count in TxFrames only: KtxSent is the test stream's
+        // schedule (pacer_ktx_due).
         Filter->KtxOut++;
         Batch++;
     }
