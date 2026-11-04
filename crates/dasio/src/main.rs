@@ -17,6 +17,7 @@ fn usage() -> ExitCode {
          dasio stop --instance <n>\n       \
          dasio probe --instance <n> [--seconds <s>] [--affinity <hex mask>]\n       \
          dasio jitter --cpus <n,n,..> --seconds <s>\n       \
+         dasio pc-profile check|apply [--profile <file>] [--plan]\n       \
          dasio unregister --instance <n> [--name <shown to DAWs>]"
     );
     ExitCode::from(2)
@@ -71,6 +72,18 @@ fn main() -> ExitCode {
                 eprintln!("dasio: {e}");
                 ExitCode::FAILURE
             }
+        };
+    }
+    if cmd == "pc-profile" {
+        // `dasio pc-profile check|apply [--profile <file>] [--plan]`
+        // (dasio#5): the PC's Windows settings against its profile.
+        let path =
+            flag(&args, "--profile").unwrap_or_else(|| dasio::pc_profile::DEFAULT_PATH.into());
+        let plan_only = args.iter().any(|a| a == "--plan");
+        return match args.get(1).map(String::as_str) {
+            Some("check") => pc_profile(&path, false, true),
+            Some("apply") => pc_profile(&path, true, plan_only),
+            _ => usage(),
         };
     }
     let Some(instance) = flag(&args, "--instance").and_then(|n| n.parse::<u32>().ok()) else {
@@ -264,6 +277,69 @@ fn run(
     _tuning: dasio::Tuning,
 ) -> Result<(), String> {
     Err("Windows only".into())
+}
+
+/// Checks the PC against its profile; with `apply`, sets what differs
+/// (unless `plan_only`) and checks again. Exit 1 on any problem left.
+#[cfg(windows)]
+fn pc_profile(path: &str, apply: bool, plan_only: bool) -> ExitCode {
+    use dasio::pc_profile::{Action, check, parse, plan, takes_effect, windows::Pc};
+    let p = match std::fs::read_to_string(path)
+        .map_err(|e| e.to_string())
+        .and_then(|t| parse(&t))
+    {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("dasio: the profile {path}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let pc = Pc::new(&p);
+    if apply {
+        let actions = plan(&p, &pc);
+        for a in &actions {
+            let what = match a {
+                Action::Reg { key, name, value } => format!("registry {key}\\{name} = {value:?}"),
+                Action::Ini { file, key, value } => format!("{file} {key}={value}"),
+            };
+            if plan_only {
+                println!("would set {what} (takes effect after {})", takes_effect(a));
+                continue;
+            }
+            match pc.apply(a) {
+                Ok(()) => println!("set {what} (takes effect after {})", takes_effect(a)),
+                Err(e) => println!("FAILED {what}: {e}"),
+            }
+        }
+        if actions.is_empty() {
+            println!("nothing to set");
+        }
+        if plan_only {
+            return ExitCode::SUCCESS;
+        }
+    }
+    let problems = check(&p, &pc);
+    for pr in &problems {
+        println!("PROBLEM {pr}");
+    }
+    let entries = p.registry.len() + p.ini.len() + p.process.len();
+    if problems.is_empty() {
+        println!("PC profile {}: as it should be ({entries} entries)", p.name);
+        ExitCode::SUCCESS
+    } else {
+        println!(
+            "PC profile {}: {} problems of {entries} entries",
+            p.name,
+            problems.len()
+        );
+        ExitCode::FAILURE
+    }
+}
+
+#[cfg(not(windows))]
+fn pc_profile(_path: &str, _apply: bool, _plan_only: bool) -> ExitCode {
+    eprintln!("dasio: Windows only");
+    ExitCode::FAILURE
 }
 
 #[cfg(windows)]

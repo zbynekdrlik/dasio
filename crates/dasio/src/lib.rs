@@ -12,6 +12,7 @@ pub mod bridge;
 pub mod jitter;
 pub mod kernel_tx;
 pub mod logfile;
+pub mod pc_profile;
 #[cfg(windows)]
 pub mod probe;
 pub mod register;
