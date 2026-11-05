@@ -330,3 +330,16 @@ fn a_kernel_setting_under_session_manager_needs_a_reboot() {
     };
     assert_eq!(takes_effect(&a), "a reboot");
 }
+
+#[test]
+fn an_environment_value_under_session_manager_needs_a_new_logon() {
+    // Session Manager\Environment is read at logon (and by services at
+    // boot), not only at boot: "a reboot" overstates it (review of the
+    // Session Manager arm, dasio#1, 5.11.2026).
+    let a = Action::Reg {
+        key: r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment".into(),
+        name: "PATH".into(),
+        value: Value::String(r"C:\Windows".into()),
+    };
+    assert_eq!(takes_effect(&a), "a new logon (a reboot for services)");
+}
