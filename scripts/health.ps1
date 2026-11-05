@@ -59,7 +59,13 @@ function ProcCpu {
     foreach ($n in $procNames) {
         $h[$n] = @{}
         foreach ($p in @(Get-Process -Name $n -ErrorAction SilentlyContinue)) {
-            $h[$n][$p.Id] = [pscustomobject]@{ Seconds = $p.TotalProcessorTime.TotalSeconds; Start = $p.StartTime }
+            # A protected process can refuse these reads: it is left out
+            # and reported, not allowed to stop the run.
+            try {
+                $h[$n][$p.Id] = [pscustomobject]@{ Seconds = $p.TotalProcessorTime.TotalSeconds; Start = $p.StartTime }
+            } catch {
+                $h[$n][$p.Id] = $null
+            }
         }
     }
     return $h
@@ -86,7 +92,7 @@ $lines = @("health $($startUtc.ToString('yyyy-MM-ddTHH:mm:ssZ')) - $($endUtc.ToS
 $all = foreach ($s in $samples) { $s.CounterSamples }
 foreach ($kind in @('% processor time', '% dpc time', '% interrupt time')) {
     foreach ($g in $groupList) {
-        $names = $g.Cpus | ForEach-Object { "$_" }
+        $names = @($g.Cpus | ForEach-Object { "$_" } | Select-Object -Unique)
         $found = @($all | Where-Object { $_.Path -like "*\$kind" -and $names -contains $_.InstanceName } |
             Select-Object -ExpandProperty InstanceName -Unique)
         if ($found.Count -ne $names.Count) {
@@ -115,13 +121,18 @@ foreach ($dir in @('bytes received/sec', 'bytes sent/sec')) {
 
 # Processes: CPU time used in the window, as % of one CPU.
 foreach ($n in $procNames) {
-    $used = 0.0; $gone = 0; $new = 0
+    $used = 0.0; $gone = 0; $new = 0; $unread = 0
     foreach ($id in $proc0[$n].Keys) {
         $a = $proc0[$n][$id]; $b = $proc1[$n][$id]
-        if ($null -eq $b -or $b.Start -ne $a.Start) { $gone++ } else { $used += $b.Seconds - $a.Seconds }
+        if ($null -eq $a -or ($proc1[$n].ContainsKey($id) -and $null -eq $b)) { $unread++ }
+        elseif ($null -eq $b) { $gone++ }
+        elseif ($b.Start -ne $a.Start) { $gone++; $new++ }   # the id was reused by a new process
+        else { $used += $b.Seconds - $a.Seconds }
     }
-    foreach ($id in $proc1[$n].Keys) { if ($null -eq $proc0[$n][$id]) { $new++ } }
-    $note = if ($gone -or $new) { "  (in the window: $gone exited, $new started; only the ones alive throughout are counted)" } else { '' }
+    foreach ($id in $proc1[$n].Keys) { if (-not $proc0[$n].ContainsKey($id)) { $new++ } }
+    $note = if ($gone -or $new -or $unread) {
+        "  (in the window: $gone exited, $new started, $unread unreadable; only the ones alive and readable throughout are counted)"
+    } else { '' }
     $lines += ('proc {0,-30} {1,6:N1} % of one CPU{2}' -f $n, ($used / $elapsed * 100), $note)
 }
 
@@ -142,9 +153,20 @@ foreach ($dir in Get-ChildItem $Root -Directory -Filter 'instance-*') {
     # The log rotates to dasio.log.1 at 10 MB: a window that crosses a
     # rotation starts in the older file. Lines compare ordinally (ISO
     # timestamps), never by the culture's collation.
+    # Each file is streamed line by line (shared with the service that writes
+    # it) and only the window's lines are kept, so memory follows the
+    # window, not the 10 MB files.
     $files = @((Join-Path $dir.FullName 'dasio.log.1'), $log) | Where-Object { Test-Path $_ }
-    $w = $files | ForEach-Object { Get-Content $_ } |
-        Where-Object { [string]::CompareOrdinal($_, $from) -ge 0 -and [string]::CompareOrdinal($_, $toEnd) -le 0 }
+    $w = New-Object System.Collections.Generic.List[string]
+    foreach ($f in $files) {
+        $fs = New-Object System.IO.FileStream($f, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        $sr = New-Object System.IO.StreamReader($fs)
+        try {
+            while ($null -ne ($ln = $sr.ReadLine())) {
+                if ([string]::CompareOrdinal($ln, $from) -ge 0 -and [string]::CompareOrdinal($ln, $toEnd) -le 0) { $w.Add($ln) }
+            }
+        } finally { $sr.Dispose() }
+    }
     $restartSec = @($w | Select-String 'TX schedule starts again' | ForEach-Object { $_.Line.Substring(0, 19) } | Sort-Object -Unique).Count
     $failed = 0; $w | Select-String 'TX sends failed after' | ForEach-Object { if ($_.Line -match 'errors=(\d+)') { $failed += [int]$matches[1] } }
     $lateSec = @($w | Select-String 'TX packets older' | ForEach-Object { $_.Line.Substring(0, 19) } | Sort-Object -Unique).Count
