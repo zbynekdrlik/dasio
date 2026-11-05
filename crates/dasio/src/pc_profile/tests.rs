@@ -318,3 +318,28 @@ fn a_child_check_s_output_reads_back_as_its_problems_or_no_profile() {
         ChildCheck::NoProfile(String::new())
     );
 }
+
+#[test]
+fn a_kernel_setting_under_session_manager_needs_a_reboot() {
+    // ReservedCpuSets is read at boot; apply said "nothing more" (FOH,
+    // dasio#1, 5.11.2026).
+    let a = Action::Reg {
+        key: r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\kernel".into(),
+        name: "ReservedCpuSets".into(),
+        value: Value::Binary(vec![0xf0, 0xff, 0xff, 0xff, 0, 0, 0, 0]),
+    };
+    assert_eq!(takes_effect(&a), "a reboot");
+}
+
+#[test]
+fn an_environment_value_under_session_manager_needs_a_new_logon() {
+    // Session Manager\Environment is read at logon (and by services at
+    // boot), not only at boot: "a reboot" overstates it (review of the
+    // Session Manager arm, dasio#1, 5.11.2026).
+    let a = Action::Reg {
+        key: r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment".into(),
+        name: "PATH".into(),
+        value: Value::String(r"C:\Windows".into()),
+    };
+    assert_eq!(takes_effect(&a), "a new logon (a reboot for services)");
+}
