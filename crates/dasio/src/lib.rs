@@ -118,11 +118,13 @@ pub fn helper_cpus(process: usize, own: usize) -> usize {
     if own == 0 { 0 } else { process & !own }
 }
 
-/// The CPUs the PC profile check's child runs on: off this instance's media
-/// CPUs (`own`). 0 means it is not moved.
+/// The CPUs the PC profile check's child runs on: this process's helper
+/// CPUs ([`helper_cpus`]), never the rest of the system, where another
+/// instance's media threads are; 0 means it is not moved. Master's child on
+/// `system & !own` ran on band's media CPUs and band's TX schedule restarted
+/// (00:56:22Z, dasio#1, 5.11.2026).
 pub fn child_cpus(process: usize, system: usize, own: usize) -> usize {
-    let _ = process;
-    system & !own
+    helper_cpus(process, own) & system
 }
 
 /// The creation flags of the PC profile check's child: normal priority, no

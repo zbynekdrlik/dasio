@@ -726,7 +726,8 @@ fn record(last: &Mutex<Option<Vec<String>>>, found: crate::pc_profile::ChildChec
 }
 
 /// Runs `dasio pc-profile check` (this exe) at normal priority, without a
-/// window, moved off `own` (the media CPUs) at once, and reads its output.
+/// window, moved to the helper CPUs ([`crate::child_cpus`]) before it runs,
+/// and reads its output.
 fn child_check(own: usize) -> Result<crate::pc_profile::ChildCheck, String> {
     use std::os::windows::io::AsRawHandle;
     use std::os::windows::process::CommandExt;
@@ -759,6 +760,7 @@ fn child_check(own: usize) -> Result<crate::pc_profile::ChildCheck, String> {
         unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut mine, &mut system) };
         let off = crate::child_cpus(mine, system, own);
         if off != 0 {
+            info!(cpus = %format!("{off:#x}"), "the PC profile check runs on the helper CPUs");
             // SAFETY: the child's process handle, open while `child` lives.
             if unsafe { SetProcessAffinityMask(child.as_raw_handle(), off) } == 0 {
                 warn!(err = %std::io::Error::last_os_error(), "the PC profile check stays on the media CPUs");
