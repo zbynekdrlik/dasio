@@ -757,7 +757,7 @@ fn child_check(own: usize) -> Result<crate::pc_profile::ChildCheck, String> {
         let (mut mine, mut system) = (0usize, 0usize);
         // SAFETY: this process's pseudo handle and two writable masks.
         unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut mine, &mut system) };
-        let off = system & !own;
+        let off = crate::child_cpus(mine, system, own);
         if off != 0 {
             // SAFETY: the child's process handle, open while `child` lives.
             if unsafe { SetProcessAffinityMask(child.as_raw_handle(), off) } == 0 {

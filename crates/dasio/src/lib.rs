@@ -118,6 +118,13 @@ pub fn helper_cpus(process: usize, own: usize) -> usize {
     if own == 0 { 0 } else { process & !own }
 }
 
+/// The CPUs the PC profile check's child runs on: off this instance's media
+/// CPUs (`own`). 0 means it is not moved.
+pub fn child_cpus(process: usize, system: usize, own: usize) -> usize {
+    let _ = process;
+    system & !own
+}
+
 /// The creation flags of the PC profile check's child: normal priority, no
 /// window, and suspended when it must first leave the media CPUs (`own`):
 /// started running, it disturbed the media threads before it was moved
@@ -200,6 +207,20 @@ mod tests {
         // CREATE_SUSPENDED 0x4.
         assert_eq!(child_creation_flags(0x700), 0x0800_0024);
         assert_eq!(child_creation_flags(0), 0x0800_0020);
+    }
+
+    #[test]
+    fn the_profile_child_stays_off_every_instance_s_media_cpus() {
+        use super::child_cpus;
+        // Master on FOH: Lasso gives 8-11, its media threads hold 8-10;
+        // band's media threads hold 12-14. Master's child ran on band's
+        // CPUs and band's TX restarted (00:56:22Z, dasio#1, 5.11.2026).
+        assert_eq!(child_cpus(0xF00, 0xFFFF, 0x700), 0x800);
+        assert_eq!(child_cpus(0xF000, 0xFFFF, 0x7000), 0x8000);
+        // Nothing pinned (mbc): not moved.
+        assert_eq!(child_cpus(0xFFF, 0xFFF, 0), 0);
+        // No CPU free of the media threads: not moved.
+        assert_eq!(child_cpus(0x700, 0xFFFF, 0x700), 0);
     }
 
     #[test]
