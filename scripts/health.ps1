@@ -74,6 +74,48 @@ function ProcCpu {
 # The output folder must exist before the window, not after it.
 $outDir = Split-Path -Parent $Out
 if ($outDir -and -not (Test-Path $outDir)) { New-Item -ItemType Directory -Force $outDir | Out-Null }
+# So must the instances' folder: a wrong -Root fails now, not after the window.
+if (-not (Test-Path $Root)) { throw "no folder $Root (-Root)" }
+
+# The window's lines of one instance's log, from dasio.log.1 and dasio.log.
+# The log rotates at 10 MB (dasio.log -> dasio.log.1). A rotation while
+# the files are read can hide or move lines, so then both are read once
+# more and the passes are merged; a line carries a microsecond time stamp,
+# so a line read twice counts once. Files are streamed with FileShare
+# ReadWrite + Delete (the service may write, rename or delete them
+# meanwhile) and lines compare ordinally (ISO time stamps).
+function ReadWindow([string]$folder, [string]$from, [string]$toEnd) {
+    $log = Join-Path $folder 'dasio.log'
+    $old = Join-Path $folder 'dasio.log.1'
+    $share = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]'
+    $lines = New-Object System.Collections.Generic.List[string]
+    $rotated = $false
+    for ($pass = 0; $pass -lt 2; $pass++) {
+        $born = if (Test-Path $log) { (Get-Item $log).CreationTimeUtc } else { $null }
+        $missed = $false
+        foreach ($f in @($old, $log)) {
+            if (-not (Test-Path $f)) { continue }
+            try {
+                $fs = New-Object System.IO.FileStream($f, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
+            } catch [System.IO.FileNotFoundException] {
+                $missed = $true; continue
+            }
+            $sr = New-Object System.IO.StreamReader($fs)
+            try {
+                while ($null -ne ($ln = $sr.ReadLine())) {
+                    if ([string]::CompareOrdinal($ln, $from) -ge 0 -and [string]::CompareOrdinal($ln, $toEnd) -le 0 -and $seen.Add($ln)) {
+                        $lines.Add($ln)
+                    }
+                }
+            } finally { $sr.Dispose() }
+        }
+        $after = if (Test-Path $log) { (Get-Item $log).CreationTimeUtc } else { $null }
+        if (-not $missed -and $born -eq $after) { break }
+        $rotated = $true
+    }
+    return [pscustomobject]@{ Lines = $lines; Rotated = $rotated }
+}
 
 $startUtc = (Get-Date).ToUniversalTime()
 $pacer0 = PacerStatus
@@ -149,27 +191,10 @@ $to = $endUtc.ToString('yyyy-MM-ddTHH:mm:ss')
 $toEnd = "$to~"
 foreach ($dir in Get-ChildItem $Root -Directory -Filter 'instance-*') {
     $log = Join-Path $dir.FullName 'dasio.log'
-    if (-not (Test-Path $log)) { continue }
-    # The log rotates to dasio.log.1 at 10 MB: a window that crosses a
-    # rotation starts in the older file. Lines compare ordinally (ISO
-    # timestamps), never by the culture's collation.
-    # Each file is streamed line by line (shared with the service that writes
-    # it) and only the window's lines are kept, so memory follows the
-    # window, not the 10 MB files.
-    $files = @((Join-Path $dir.FullName 'dasio.log.1'), $log) | Where-Object { Test-Path $_ }
-    $w = New-Object System.Collections.Generic.List[string]
-    foreach ($f in $files) {
-        # ReadWrite + Delete: the service may write, rename (rotate) or delete
-        # the file while it is read here; this read never blocks its rotation.
-        $share = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
-        $fs = New-Object System.IO.FileStream($f, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
-        $sr = New-Object System.IO.StreamReader($fs)
-        try {
-            while ($null -ne ($ln = $sr.ReadLine())) {
-                if ([string]::CompareOrdinal($ln, $from) -ge 0 -and [string]::CompareOrdinal($ln, $toEnd) -le 0) { $w.Add($ln) }
-            }
-        } finally { $sr.Dispose() }
-    }
+    if (-not (Test-Path $log) -and -not (Test-Path (Join-Path $dir.FullName 'dasio.log.1'))) { continue }
+    $read = ReadWindow $dir.FullName $from $toEnd
+    $w = $read.Lines
+    $rotNote = if ($read.Rotated) { '  (the log rotated while read: re-read and merged)' } else { '' }
     $restartSec = @($w | Select-String 'TX schedule starts again' | ForEach-Object { $_.Line.Substring(0, 19) } | Sort-Object -Unique).Count
     $failed = 0; $w | Select-String 'TX sends failed after' | ForEach-Object { if ($_.Line -match 'errors=(\d+)') { $failed += [int]$matches[1] } }
     $lateSec = @($w | Select-String 'TX packets older' | ForEach-Object { $_.Line.Substring(0, 19) } | Sort-Object -Unique).Count
@@ -186,8 +211,8 @@ foreach ($dir in Get-ChildItem $Root -Directory -Filter 'instance-*') {
     }
     # dasio logs the DAW turnaround every ~10 s: 'p99' is the highest of
     # those reports' p99s, 'max' the highest single block.
-    $lines += ('dasio {0,-11} TX restart-sec {1}  TX failed {2}  late-sec {3}  pump-sec {4} overruns {5} missed {6}  daw worst-report-p99 {7} us max {8} us  rx-gap lines {9}  holdover {10}' -f
-        $dir.Name, $restartSec, $failed, $lateSec, $pumpSec, $ov, $ms, $p99, $maxTurn, $rxGaps, $hold)
+    $lines += ('dasio {0,-11} TX restart-sec {1}  TX failed {2}  late-sec {3}  pump-sec {4} overruns {5} missed {6}  daw worst-report-p99 {7} us max {8} us  rx-gap lines {9}  holdover {10}{11}' -f
+        $dir.Name, $restartSec, $failed, $lateSec, $pumpSec, $ov, $ms, $p99, $maxTurn, $rxGaps, $hold, $rotNote)
 }
 
 $lines | Set-Content $Out
