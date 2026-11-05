@@ -339,6 +339,13 @@ pub fn takes_effect(a: &Action) -> &'static str {
         Action::Reg { key, .. }
             if key
                 .to_ascii_lowercase()
+                .contains(r"\control\session manager") =>
+        {
+            "a reboot"
+        }
+        Action::Reg { key, .. }
+            if key
+                .to_ascii_lowercase()
                 .contains(r"\multimedia\systemprofile") =>
         {
             "a restart of the MMCSS service (or a reboot)"
