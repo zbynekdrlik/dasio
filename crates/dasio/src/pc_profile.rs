@@ -336,6 +336,16 @@ pub fn takes_effect(a: &Action) -> &'static str {
         {
             "a reboot"
         }
+        // Environment is read at logon (services read it at boot); every
+        // other Session Manager key (kernel, Memory Management, Power, ...)
+        // is read at boot.
+        Action::Reg { key, .. }
+            if key
+                .to_ascii_lowercase()
+                .contains(r"\control\session manager\environment") =>
+        {
+            "a new logon (a reboot for services)"
+        }
         Action::Reg { key, .. }
             if key
                 .to_ascii_lowercase()
