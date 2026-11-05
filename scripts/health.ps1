@@ -159,7 +159,10 @@ foreach ($dir in Get-ChildItem $Root -Directory -Filter 'instance-*') {
     $files = @((Join-Path $dir.FullName 'dasio.log.1'), $log) | Where-Object { Test-Path $_ }
     $w = New-Object System.Collections.Generic.List[string]
     foreach ($f in $files) {
-        $fs = New-Object System.IO.FileStream($f, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        # ReadWrite + Delete: the service may write, rename (rotate) or delete
+        # the file while it is read here; this read never blocks its rotation.
+        $share = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
+        $fs = New-Object System.IO.FileStream($f, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
         $sr = New-Object System.IO.StreamReader($fs)
         try {
             while ($null -ne ($ln = $sr.ReadLine())) {
