@@ -118,6 +118,48 @@ pub fn helper_cpus(process: usize, own: usize) -> usize {
     if own == 0 { 0 } else { process & !own }
 }
 
+/// The CPUs the PC profile check's child runs on: this process's helper
+/// CPUs ([`helper_cpus`]), never the rest of the system, where another
+/// instance's media threads are; 0 means it is not moved. Master's child on
+/// `system & !own` ran on band's media CPUs and band's TX schedule restarted
+/// (00:56:22Z, dasio#1, 5.11.2026).
+pub fn child_cpus(process: usize, system: usize, own: usize) -> usize {
+    helper_cpus(process, own) & system
+}
+
+/// The creation flags of the PC profile check's child: normal priority, no
+/// window, and suspended when it must first leave the media CPUs (`own`):
+/// started running, it disturbed the media threads before it was moved
+/// (band's receivers, 22:59:06Z, dasio#1, 5.11.2026).
+pub fn child_creation_flags(own: usize) -> u32 {
+    if own == 0 {
+        CHILD_FLAGS
+    } else {
+        CHILD_FLAGS_SUSPENDED
+    }
+}
+
+/// NORMAL_PRIORITY_CLASS (0x20) and CREATE_NO_WINDOW (0x0800_0000).
+const CHILD_FLAGS: u32 = 0x0800_0020;
+/// The same and CREATE_SUSPENDED (0x4).
+const CHILD_FLAGS_SUSPENDED: u32 = 0x0800_0024;
+
+/// The CPU set ids (Windows' `SYSTEM_CPU_SET_INFORMATION`, as
+/// `(group, logical processor index, id)`) of the group-0 CPUs in `mask`:
+/// the process's default CPU sets, so every thread it starts begins on the
+/// helper CPUs; a media thread's own affinity takes precedence over them.
+pub fn cpu_set_ids(mask: usize, sets: &[(u16, u8, u32)]) -> Vec<u32> {
+    sets.iter()
+        .filter(|&&(group, cpu, _)| {
+            group == 0
+                && 1usize
+                    .checked_shl(u32::from(cpu))
+                    .is_some_and(|b| mask & b != 0)
+        })
+        .map(|&(_, _, id)| id)
+        .collect()
+}
+
 /// Whether a thread (by its name) is one of dstack's media threads, which
 /// pin themselves to their own CPU.
 pub fn is_media_thread(name: &str) -> bool {
@@ -145,6 +187,43 @@ pub fn process_cpus(own: usize, l3: &[usize], fallback: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn new_threads_get_the_cpu_set_ids_of_the_helper_cpus_only() {
+        use super::cpu_set_ids;
+        // (group, logical processor index, CPU set id) as Windows lists
+        // them: ids start at 0x100 on FOH's Ryzen.
+        let sets: Vec<(u16, u8, u32)> = (0..16).map(|c| (0, c, 0x100 + c as u32)).collect();
+        assert_eq!(cpu_set_ids(0x800, &sets), vec![0x10B]);
+        assert_eq!(cpu_set_ids(0x8800, &sets), vec![0x10B, 0x10F]);
+        assert_eq!(cpu_set_ids(0, &sets), Vec::<u32>::new());
+        // Only group 0: the masks name group 0's CPUs.
+        let two = vec![(0, 3, 7), (1, 3, 9)];
+        assert_eq!(cpu_set_ids(0x8, &two), vec![7]);
+    }
+
+    #[test]
+    fn the_profile_child_starts_suspended_when_it_must_be_moved_first() {
+        use super::child_creation_flags;
+        // NORMAL_PRIORITY_CLASS 0x20, CREATE_NO_WINDOW 0x0800_0000,
+        // CREATE_SUSPENDED 0x4.
+        assert_eq!(child_creation_flags(0x700), 0x0800_0024);
+        assert_eq!(child_creation_flags(0), 0x0800_0020);
+    }
+
+    #[test]
+    fn the_profile_child_stays_off_every_instance_s_media_cpus() {
+        use super::child_cpus;
+        // Master on FOH: Lasso gives 8-11, its media threads hold 8-10;
+        // band's media threads hold 12-14. Master's child ran on band's
+        // CPUs and band's TX restarted (00:56:22Z, dasio#1, 5.11.2026).
+        assert_eq!(child_cpus(0xF00, 0xFFFF, 0x700), 0x800);
+        assert_eq!(child_cpus(0xF000, 0xFFFF, 0x7000), 0x8000);
+        // Nothing pinned (mbc): not moved.
+        assert_eq!(child_cpus(0xFFF, 0xFFF, 0), 0);
+        // No CPU free of the media threads: not moved.
+        assert_eq!(child_cpus(0x700, 0xFFFF, 0x700), 0);
+    }
 
     #[test]
     fn helpers_go_to_the_process_s_cpus_the_media_threads_leave_free() {
