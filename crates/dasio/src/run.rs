@@ -99,7 +99,10 @@ pub fn run(
         let clock = Arc::clone(&media.clock);
         let rate = cfg.sample_rate;
         move || clock.now_ns().map(|ns| dstack::clock::to_samples(ns, rate))
-    });
+    })
+    // A late block fades out and back in instead of cutting to silence
+    // (dasio#1, the 8.11.2026 service clicks).
+    .with_concealment(engine_tx.len(), shape.block as usize);
     let stale = bridge.stale_counter();
     let waited = bridge.waited_counter();
     // dtray's line for this instance (dstack's app status): the header's
@@ -187,6 +190,7 @@ pub fn run(
     let mut status = Every::new(STATUS_EVERY, start, true);
     let mut window = crate::app_status::LateWindow::default();
     let mut window_s = u64::MAX;
+    let mut bursts = crate::bursts::Bursts::default();
     let profile = ProfileWatch::new(own);
     if own != 0 {
         std::thread::Builder::new()
@@ -207,6 +211,23 @@ pub fn run(
                 window.take(secs, h.late.load(Ordering::Relaxed)),
                 Ordering::Relaxed,
             );
+        }
+        // A burst of blocks the DAW missed, placed to the 100 ms tick.
+        match bursts.tick(
+            start.elapsed().as_millis() as u64,
+            h.missed.load(Ordering::Relaxed),
+            h.late.load(Ordering::Relaxed),
+        ) {
+            Some(crate::bursts::Event::Start { missed, late }) => warn!(
+                driver_missed = missed,
+                late,
+                "the DAW missed blocks: a burst starts (seen within 100 ms of its first block)"
+            ),
+            Some(crate::bursts::Event::End { missed, late, ms }) => info!(
+                driver_missed = missed,
+                late, ms, "the DAW's burst of missed blocks ended"
+            ),
+            None => {}
         }
         if profile_at.is_none_or(|t| {
             now.duration_since(t) >= Duration::from_secs(crate::pc_profile::CHECK_EVERY_S)
