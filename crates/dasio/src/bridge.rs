@@ -158,6 +158,12 @@ impl Conceal {
         self.in_gap = true;
     }
 
+    /// No DAW holds the buffers: the pump plays silence, so the first
+    /// answer after it comes back fades in.
+    fn detached(&mut self) {
+        self.in_gap = true;
+    }
+
     /// The engine reopened (it fades in by itself): forget the last block.
     fn forget(&mut self) {
         self.last.fill(0.0);
@@ -301,6 +307,9 @@ impl<L: Link> Process for Bridge<L> {
 
     fn process(&mut self, block: &mut Block<'_>) {
         if !self.link.attached() {
+            if let Some(c) = self.conceal.as_mut() {
+                c.detached();
+            }
             return;
         }
         // The block whose outputs are due now.
