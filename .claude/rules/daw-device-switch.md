@@ -28,19 +28,22 @@ A switch is done only when all four steps below are checked.
 - A router such as VB-Matrix also linked the two DAWs directly (one DAW's outputs into the other's inputs) and mixed sums.
 - Map every live point of the router to a Dante subscription between our own devices, or to an owner decision.
 - After the switch, list every receiver that still subscribes to the old card or router: those receivers are silent now.
-- The DAW's inputs move too. On the new device, DAW input N is that device's RX N. Carry over every input subscription of the old device by its number, Unresolved ones included.
-  - A source that is off during the move (e.g. a wireless receiver powered off) still needs its subscription.
-  - The 5.11.2026 move of master onto the AIC128-D carried only the connected ones. Master's "Hand 1" input (card RX 1) stayed empty until the 8.11 service, where HAND 1 never reached master.
-  - Patches aimed at the old router's channels, such as card RX 49, feed nothing now.
+- The DAW's inputs move too. On the new device, DAW input N is that device's RX N.
+  1. Before the move, save the old device's full RX list (RX number → source channel@device, status), e.g. `netaudio subscription list` or dcontroller `/api/devices`, under `~/.config/dasio/snapshots/`.
+  2. Carry over every entry to the same RX number on the new device, with the same source. Unresolved ones are included: the source may only be off right now (e.g. a wireless receiver powered off), and it still needs its subscription.
+  3. Read the new device's RX list back and compare it with the saved list, number by number.
+- Patches aimed at the old router's channels (e.g. card RX 49 of the VB-Matrix era) feed nothing now.
+- Why: the 5.11.2026 move of master onto the AIC128-D carried only the connected entries, so master never got HAND 1 at the 8.11 service (dasio#1).
 
 ## 4. Verify with signal
 
-- A subscription in status "Subscribed" proves the transport only. Packets arriving at a card (dcontroller) prove nothing about the DAW either.
-- Check the receiving DAW's meter while the sending DAW plays.
+- A subscription in status "Subscribed" proves the transport only. So does a flow's packets in dcontroller's history (`/api/history/{device}`).
+- Check the receiving DAW's meter while the sending DAW plays. dasio reads no Ableton itself: ask fohmixer by peer for a read-only meter read of the named track.
 - A source nobody can play (a mic with nobody on site) is proven by a substitute source:
-  1. Point the same RX at a Dante channel that carries signal.
-  2. Read the DAW track's input meter (fohmixer, read only).
-  3. Point the RX back.
+  1. Note the RX's current state: its source, or none.
+  2. Point that same RX at a channel that carries signal right now, ideally one of our own TX channels. Only that RX changes; no other device's subscriptions are touched. When the RX belongs to a device that is not ours (e.g. the AIC128-D card), the owner OKs the change first, like any subscription change there.
+  3. fohmixer reads the DAW track's input meter: above 0 = the path from that RX into the DAW works.
+  4. Restore the noted state exactly (a source = re-subscribe it; none = remove the subscription), then read the RX back.
 - A track muted in the set passes nothing to the output even when its input meter moves. Report it to the owner; the set is not dasio's.
 
 ## Changing an instance's block or channel count
