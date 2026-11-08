@@ -6,8 +6,8 @@ use super::*;
 /// A stand-in DAW: `answers` says whether it returns a block; what it
 /// returns is its inputs negated.
 struct Fake {
-    attached: bool,
-    answers: bool,
+    attached: std::sync::atomic::AtomicBool,
+    answers: std::sync::atomic::AtomicBool,
     inputs: [Vec<i32>; 2],
     outputs: Mutex<[Vec<i32>; 2]>,
     ack: AtomicU64,
@@ -19,8 +19,8 @@ struct Fake {
 impl Fake {
     fn new(attached: bool, answers: bool, frames: usize) -> Self {
         Fake {
-            attached,
-            answers,
+            attached: std::sync::atomic::AtomicBool::new(attached),
+            answers: std::sync::atomic::AtomicBool::new(answers),
             inputs: [vec![0; frames], vec![0; frames]],
             outputs: Mutex::new([vec![0; frames], vec![0; frames]]),
             ack: AtomicU64::new(0),
@@ -30,24 +30,38 @@ impl Fake {
     }
 }
 
+impl Fake {
+    fn answers_off(&self) {
+        self.answers.store(false, Ordering::Relaxed);
+    }
+    fn answers_on(&self) {
+        self.answers.store(true, Ordering::Relaxed);
+    }
+    fn set_attached(&self, on: bool) {
+        self.attached.store(on, Ordering::Relaxed);
+    }
+}
+
 impl Link for Fake {
     fn attached(&self) -> bool {
-        self.attached
+        self.attached.load(Ordering::Relaxed)
     }
     fn input(&mut self, half: u32, _ch: usize) -> &mut [i32] {
         &mut self.inputs[half as usize]
     }
-    fn read_output(&self, half: u32, _ch: usize, dst: &mut [f64]) {
+    /// Output channel `ch` is the answer times `ch + 1` (channel 0 is
+    /// the answer itself), so channels differ.
+    fn read_output(&self, half: u32, ch: usize, dst: &mut [f64]) {
         for (y, &s) in dst
             .iter_mut()
             .zip(&self.outputs.lock().unwrap()[half as usize])
         {
-            *y = to_f64(s);
+            *y = to_f64(s) * (ch + 1) as f64;
         }
     }
     fn publish(&self, seq: u64, start: Option<u64>) {
         self.published.lock().unwrap().push((seq, start));
-        if self.answers {
+        if self.answers.load(Ordering::Relaxed) {
             let half = (seq % 2) as usize;
             self.outputs.lock().unwrap()[half] = self.inputs[half].iter().map(|s| -s).collect();
             self.ack.store(seq, Ordering::Release);
@@ -390,4 +404,207 @@ fn an_answer_already_in_needs_no_wait() {
     assert_eq!(out, vec![0.5; 4]);
     assert_eq!(reads.load(Ordering::Relaxed), 0);
     assert_eq!(waited.load(Ordering::Relaxed), 0);
+}
+
+/// A bridge on `Fake` with concealment for 1 output of `frames`.
+fn concealing(frames: usize) -> Bridge<Fake> {
+    Bridge::new(Fake::new(true, true, frames)).with_concealment(1, frames)
+}
+
+/// Plays blocks 1 and 2 (2 holds `last`), then stops the DAW's answers:
+/// returns what block 2's answer played as; the next block is late.
+fn play_then_stop(b: &mut Bridge<Fake>, last: &[f64]) -> Vec<f64> {
+    run(b, &vec![0.5; last.len()]);
+    run(b, last);
+    b.link.answers_off();
+    run(b, &vec![0.0; last.len()])
+}
+
+#[test]
+fn a_late_block_after_a_played_one_fades_out_from_its_last_sample() {
+    let mut b = concealing(4);
+    // Values 24 bits hold exactly.
+    let played = play_then_stop(&mut b, &[0.0, 0.125, 0.25, 0.5]);
+    assert_eq!(played, vec![0.0, -0.125, -0.25, -0.5], "block 2's answer");
+    let out = run(&mut b, &[0.0; 4]);
+    assert_eq!(b.link.late.load(Ordering::Relaxed), 1, "block 3 is late");
+    assert_eq!(
+        out[0], played[3],
+        "the gap starts at the last sample played (no step): {out:?}"
+    );
+    assert!(
+        out[3].abs() < 0.1 * played[3].abs(),
+        "and fades out towards 0: {out:?}"
+    );
+    assert!(
+        out.windows(2).all(|w| w[1].abs() <= w[0].abs()),
+        "monotonic fade: {out:?}"
+    );
+}
+
+#[test]
+fn further_late_blocks_are_silence() {
+    let mut b = concealing(4);
+    play_then_stop(&mut b, &[0.5; 4]);
+    let faded = run(&mut b, &[0.5; 4]);
+    assert_ne!(faded, vec![0.0; 4], "the first late block fades out");
+    assert_eq!(
+        run(&mut b, &[0.5; 4]),
+        vec![0.0; 4],
+        "the second is silence"
+    );
+    assert_eq!(b.link.late.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn the_first_answer_after_a_gap_fades_in() {
+    let mut b = concealing(4);
+    play_then_stop(&mut b, &[0.5; 4]);
+    run(&mut b, &[0.5; 4]);
+    run(&mut b, &[0.5; 4]);
+    b.link.answers_on();
+    // Without a spare block the next block goes to the DAW before the due
+    // one is taken; the DAW answers it at once, and its ack covers the due
+    // block too: the gap ends here.
+    let out = run(&mut b, &[0.5; 4]);
+    assert!(
+        out[0].abs() < 0.2,
+        "it starts near 0, where the gap left off: {out:?}"
+    );
+    assert_eq!(out[3], -0.5, "and reaches the DAW's level: {out:?}");
+    assert!(
+        out.windows(2).all(|w| w[1].abs() >= w[0].abs()),
+        "monotonic fade-in: {out:?}"
+    );
+    assert_eq!(
+        run(&mut b, &[0.25; 4]),
+        vec![-0.5; 4],
+        "the answer after it plays untouched"
+    );
+}
+
+#[test]
+fn played_answers_are_untouched_by_concealment() {
+    let mut b = concealing(4);
+    run(&mut b, &[0.5, -0.25, 0.0, 1.0 / 256.0]);
+    let out = run(&mut b, &[0.125; 4]);
+    assert_eq!(out, vec![-0.5, 0.25, 0.0, -1.0 / 256.0]);
+    assert_eq!(run(&mut b, &[0.0; 4]), vec![-0.125; 4]);
+}
+
+#[test]
+fn a_block_of_another_shape_is_not_concealed() {
+    // Concealment set for 4 frames; blocks of 2 play as before (nothing
+    // is allocated on the pump's thread to fit them).
+    let mut b = Bridge::new(Fake::new(true, true, 2)).with_concealment(1, 4);
+    play_then_stop(&mut b, &[0.5; 2]);
+    assert_eq!(run(&mut b, &[0.5; 2]), vec![0.0; 2]);
+}
+
+#[test]
+fn a_discontinuity_forgets_the_last_block() {
+    // After the engine's discontinuity (a reopen, which fades in by
+    // itself) the bridge neither fades the old block out nor fades in.
+    let mut b = concealing(4);
+    play_then_stop(&mut b, &[0.5; 4]);
+    b.discontinuity();
+    assert_eq!(run(&mut b, &[0.5; 4]), vec![0.0; 4]);
+}
+
+/// The fade-out's gain at sample `i` of `n` (raised cosine, 1 at 0).
+fn fade_out_gain(i: usize, n: usize) -> f64 {
+    0.5 * (1.0 + (std::f64::consts::PI * i as f64 / n as f64).cos())
+}
+
+#[test]
+fn the_fade_out_is_the_last_block_reversed_times_a_raised_cosine() {
+    let mut b = concealing(4);
+    let played = play_then_stop(&mut b, &[0.0, 0.125, 0.25, 0.5]);
+    let out = run(&mut b, &[0.0; 4]);
+    for (i, &y) in out.iter().enumerate() {
+        let want = played[3 - i] * fade_out_gain(i, 4);
+        assert!((y - want).abs() < 1e-12, "sample {i}: {y} vs {want}");
+    }
+}
+
+/// `run` for `outputs` channels of `input.len()` frames.
+fn run_n(bridge: &mut Bridge<Fake>, input: &[f64], outputs: usize) -> Vec<f64> {
+    let mut output = vec![0.0; input.len() * outputs];
+    let mut block = Block::new(input.len(), input, &mut output);
+    bridge.process(&mut block);
+    output
+}
+
+#[test]
+fn each_channel_fades_from_its_own_last_sample() {
+    let mut b = Bridge::new(Fake::new(true, true, 4)).with_concealment(2, 4);
+    run_n(&mut b, &[0.5; 4], 2);
+    run_n(&mut b, &[0.0, 0.125, 0.25, 0.25], 2);
+    b.link.answers_off();
+    let played = run_n(&mut b, &[0.0; 4], 2);
+    assert_eq!(played[3], -0.25, "channel 0's last sample");
+    assert_eq!(played[7], -0.5, "channel 1's last sample (twice channel 0)");
+    let out = run_n(&mut b, &[0.0; 4], 2);
+    assert_eq!(out[0], played[3], "channel 0 fades from its own sample");
+    assert_eq!(out[4], played[7], "channel 1 fades from its own sample");
+}
+
+#[test]
+fn with_a_spare_block_a_late_block_fades_out_too() {
+    let mut b = Bridge::with_spare(Fake::new(true, false, 2), 1).with_concealment(1, 2);
+    run(&mut b, &[0.25; 2]);
+    run(&mut b, &[0.5; 2]);
+    answer(&b, 1);
+    assert_eq!(run(&mut b, &[0.0; 2]), vec![-0.25; 2], "block 1, one later");
+    // Block 2 never comes back: late, faded from block 1's last sample.
+    let out = run(&mut b, &[0.0; 2]);
+    assert_eq!(b.link.late.load(Ordering::Relaxed), 1);
+    assert_eq!(out, vec![-0.25, -0.25 * fade_out_gain(1, 2)]);
+}
+
+#[test]
+fn a_stale_answer_is_concealed_like_a_late_one() {
+    let mut b = Bridge::new(Fake::new(true, true, 2)).with_concealment(1, 2);
+    let stale = b.stale_counter();
+    played_at(&mut b, &[0.25; 2], 0);
+    assert_eq!(played_at(&mut b, &[0.5; 2], 2), vec![-0.25; 2]);
+    // The pump skipped 8 blocks: block 2's answer belongs at 4, not 18.
+    let out = played_at(&mut b, &[0.75; 2], 2 + 8 * 2);
+    assert_eq!(stale.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        out,
+        vec![-0.25, -0.25 * fade_out_gain(1, 2)],
+        "faded from the last block played"
+    );
+    // The next answer is in its slot and fades in.
+    let out = played_at(&mut b, &[0.0; 2], 2 + 9 * 2);
+    assert_eq!(out[1], -0.75);
+    assert!(out[0].abs() < 0.75, "{out:?}");
+}
+
+#[test]
+fn the_first_answer_after_the_daw_comes_back_fades_in() {
+    let mut b = concealing(4);
+    run(&mut b, &[0.5; 4]);
+    assert_eq!(run(&mut b, &[0.5; 4]), vec![-0.5; 4]);
+    b.link.set_attached(false);
+    assert_eq!(run(&mut b, &[0.5; 4]), vec![0.0; 4], "no DAW: silence");
+    b.link.set_attached(true);
+    let out = run(&mut b, &[0.5; 4]);
+    assert!(out[0].abs() < 0.2, "no step up from silence: {out:?}");
+    assert_eq!(out[3], -0.5, "{out:?}");
+}
+
+#[test]
+fn after_a_discontinuity_in_a_gap_the_engine_fades_in_not_the_bridge() {
+    let mut b = concealing(4);
+    play_then_stop(&mut b, &[0.5; 4]);
+    run(&mut b, &[0.5; 4]);
+    b.discontinuity();
+    b.link.answers_on();
+    assert_eq!(
+        run(&mut b, &[0.5; 4]),
+        vec![-0.5; 4],
+        "untouched: the engine's own fade-in covers a reopen"
+    );
 }

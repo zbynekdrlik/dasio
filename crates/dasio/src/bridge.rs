@@ -9,6 +9,13 @@
 //! ([`Bridge::with_deadline`]) the bridge waits for a missing answer until
 //! then, so the DAW has a block period plus most of W. A missing answer is
 //! silence and a late count. The cost is one block on the way out.
+//!
+//! With concealment ([`Bridge::with_concealment`]), the gap has no steps:
+//! the first late block plays the last played block time-reversed and
+//! faded out (it starts at the last sample played and ends at 0), further
+//! late blocks are silence, and the first answer after the gap fades in.
+//! A hard cut to silence and back was a click at each edge of every gap
+//! (dasio#1, the 8.11.2026 service).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -68,6 +75,100 @@ pub struct Bridge<L: Link> {
     deadline: Option<(u64, MediaNow)>,
     /// Answers that came in during that wait (late without it).
     waited: Arc<AtomicU64>,
+    /// The concealment of late blocks; `None`: a late block is silence.
+    conceal: Option<Conceal>,
+}
+
+/// The last played block and the fades of a gap ([`Bridge::with_concealment`]),
+/// all allocated before the pump runs (its thread must not allocate).
+struct Conceal {
+    /// The last block played, channel-major (`outputs` × `frames`).
+    last: Vec<f64>,
+    frames: usize,
+    /// Raised-cosine fade-out over a block: 1 at the first sample, ~0 at
+    /// the last.
+    fade_out: Vec<f64>,
+    /// Raised-cosine fade-in over a block: ~0 at the first sample, 1 at
+    /// the last.
+    fade_in: Vec<f64>,
+    /// The block before was late: the next answer fades in.
+    in_gap: bool,
+}
+
+impl Conceal {
+    fn new(outputs: usize, frames: usize) -> Self {
+        let n = frames.max(1) as f64;
+        let pi = std::f64::consts::PI;
+        Conceal {
+            last: vec![0.0; outputs * frames],
+            frames,
+            fade_out: (0..frames)
+                .map(|i| 0.5 * (1.0 + (pi * i as f64 / n).cos()))
+                .collect(),
+            fade_in: (0..frames)
+                .map(|i| 0.5 * (1.0 - (pi * (i + 1) as f64 / n).cos()))
+                .collect(),
+            in_gap: false,
+        }
+    }
+
+    /// Whether `block` has the shape this was made for.
+    fn fits(&self, block: &Block<'_>) -> bool {
+        block.frames() == self.frames && block.outputs() * self.frames == self.last.len()
+    }
+
+    /// `block` plays an answer: faded in after a gap, then kept.
+    fn played(&mut self, block: &mut Block<'_>) {
+        if !self.fits(block) {
+            return;
+        }
+        for ch in 0..block.outputs() {
+            let out = block.output(ch);
+            if self.in_gap {
+                for (y, &g) in out.iter_mut().zip(&self.fade_in) {
+                    *y *= g;
+                }
+            }
+            let base = ch * self.frames;
+            self.last[base..base + self.frames].copy_from_slice(out);
+        }
+        self.in_gap = false;
+    }
+
+    /// `block` has no answer: the gap's first block fades the last one out
+    /// backwards, from its last sample; later ones stay silence.
+    fn missed(&mut self, block: &mut Block<'_>) {
+        if !self.fits(block) {
+            return;
+        }
+        if !self.in_gap {
+            for ch in 0..block.outputs() {
+                let base = ch * self.frames;
+                let last = &self.last[base..base + self.frames];
+                for ((y, &s), &g) in block
+                    .output(ch)
+                    .iter_mut()
+                    .zip(last.iter().rev())
+                    .zip(&self.fade_out)
+                {
+                    *y = s * g;
+                }
+            }
+        }
+        self.in_gap = true;
+    }
+
+    /// No DAW holds the buffers: the pump plays silence, so the first
+    /// answer after it comes back fades in.
+    fn detached(&mut self) {
+        self.in_gap = true;
+    }
+
+    /// The engine reopened (it fades in by itself): forget the last block.
+    fn forget(&mut self) {
+        self.last.fill(0.0);
+        self.in_gap = false;
+    }
 }
 
 impl<L: Link> Bridge<L> {
@@ -89,7 +190,16 @@ impl<L: Link> Bridge<L> {
             starts: vec![None; spare as usize + 2],
             deadline: None,
             waited: Arc::new(AtomicU64::new(0)),
+            conceal: None,
         }
+    }
+
+    /// A bridge that conceals late blocks (see the module docs) for
+    /// blocks of `outputs` channels of `frames` samples; a block of
+    /// another shape is not concealed. Allocates here, never in `process`.
+    pub fn with_concealment(mut self, outputs: usize, frames: usize) -> Self {
+        self.conceal = Some(Conceal::new(outputs, frames));
+        self
     }
 
     /// A bridge that waits for a missing answer until `offset` samples
@@ -151,10 +261,18 @@ impl<L: Link> Bridge<L> {
             for ch in 0..block.outputs() {
                 self.link.read_output(half, ch, block.output(ch));
             }
-        } else if self.link.ack() >= due {
+            if let Some(c) = self.conceal.as_mut() {
+                c.played(block);
+            }
+            return;
+        }
+        if self.link.ack() >= due {
             self.stale.fetch_add(1, Ordering::Relaxed);
         } else {
             self.link.count_late();
+        }
+        if let Some(c) = self.conceal.as_mut() {
+            c.missed(block);
         }
     }
 
@@ -181,8 +299,17 @@ impl<L: Link> Bridge<L> {
 }
 
 impl<L: Link> Process for Bridge<L> {
+    fn discontinuity(&mut self) {
+        if let Some(c) = self.conceal.as_mut() {
+            c.forget();
+        }
+    }
+
     fn process(&mut self, block: &mut Block<'_>) {
         if !self.link.attached() {
+            if let Some(c) = self.conceal.as_mut() {
+                c.detached();
+            }
             return;
         }
         // The block whose outputs are due now.
