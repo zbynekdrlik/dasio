@@ -418,8 +418,9 @@ fn play_then_stop(b: &mut Bridge<Fake>, last: &[f64]) -> Vec<f64> {
 #[test]
 fn a_late_block_after_a_played_one_fades_out_from_its_last_sample() {
     let mut b = concealing(4);
-    let played = play_then_stop(&mut b, &[0.0, 0.1, 0.2, 0.4]);
-    assert_eq!(played, vec![0.0, -0.1, -0.2, -0.4], "block 2's answer");
+    // Values 24 bits hold exactly.
+    let played = play_then_stop(&mut b, &[0.0, 0.125, 0.25, 0.5]);
+    assert_eq!(played, vec![0.0, -0.125, -0.25, -0.5], "block 2's answer");
     let out = run(&mut b, &[0.0; 4]);
     assert_eq!(b.link.late.load(Ordering::Relaxed), 1, "block 3 is late");
     assert_eq!(
@@ -457,9 +458,9 @@ fn the_first_answer_after_a_gap_fades_in() {
     run(&mut b, &[0.5; 4]);
     run(&mut b, &[0.5; 4]);
     b.link.answers_on();
-    // This block is still late (its DAW block went out unanswered); the
-    // DAW answers the one it publishes.
-    assert_eq!(run(&mut b, &[0.5; 4]), vec![0.0; 4]);
+    // Without a spare block the next block goes to the DAW before the due
+    // one is taken; the DAW answers it at once, and its ack covers the due
+    // block too: the gap ends here.
     let out = run(&mut b, &[0.5; 4]);
     assert!(
         out[0].abs() < 0.2,
