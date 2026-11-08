@@ -103,6 +103,13 @@ pub fn run(
     // A late block fades out and back in instead of cutting to silence
     // (dasio#1, the 8.11.2026 service clicks).
     .with_concealment(engine_tx.len(), shape.block as usize);
+    // The pump's blocks must have this shape, or a late block is plain
+    // silence again (the bridge never allocates to fit another).
+    info!(
+        outputs = engine_tx.len(),
+        frames = shape.block,
+        "late blocks are concealed (a fade out and back in) for blocks of this shape"
+    );
     let stale = bridge.stale_counter();
     let waited = bridge.waited_counter();
     // dtray's line for this instance (dstack's app status): the header's
