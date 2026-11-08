@@ -129,7 +129,8 @@ impl Conceal {
                     *y *= g;
                 }
             }
-            self.last[ch * self.frames..(ch + 1) * self.frames].copy_from_slice(out);
+            let base = ch * self.frames;
+            self.last[base..base + self.frames].copy_from_slice(out);
         }
         self.in_gap = false;
     }
@@ -142,7 +143,8 @@ impl Conceal {
         }
         if !self.in_gap {
             for ch in 0..block.outputs() {
-                let last = &self.last[ch * self.frames..(ch + 1) * self.frames];
+                let base = ch * self.frames;
+                let last = &self.last[base..base + self.frames];
                 for ((y, &s), &g) in block
                     .output(ch)
                     .iter_mut()
