@@ -46,12 +46,14 @@ impl Link for Fake {
     fn input(&mut self, half: u32, _ch: usize) -> &mut [i32] {
         &mut self.inputs[half as usize]
     }
-    fn read_output(&self, half: u32, _ch: usize, dst: &mut [f64]) {
+    /// Output channel `ch` is the answer times `ch + 1` (channel 0 is
+    /// the answer itself), so channels differ.
+    fn read_output(&self, half: u32, ch: usize, dst: &mut [f64]) {
         for (y, &s) in dst
             .iter_mut()
             .zip(&self.outputs.lock().unwrap()[half as usize])
         {
-            *y = to_f64(s);
+            *y = to_f64(s) * (ch + 1) as f64;
         }
     }
     fn publish(&self, seq: u64, start: Option<u64>) {
@@ -504,4 +506,42 @@ fn a_discontinuity_forgets_the_last_block() {
     play_then_stop(&mut b, &[0.5; 4]);
     b.discontinuity();
     assert_eq!(run(&mut b, &[0.5; 4]), vec![0.0; 4]);
+}
+
+/// The fade-out's gain at sample `i` of `n` (raised cosine, 1 at 0).
+fn fade_out_gain(i: usize, n: usize) -> f64 {
+    0.5 * (1.0 + (std::f64::consts::PI * i as f64 / n as f64).cos())
+}
+
+#[test]
+fn the_fade_out_is_the_last_block_reversed_times_a_raised_cosine() {
+    let mut b = concealing(4);
+    let played = play_then_stop(&mut b, &[0.0, 0.125, 0.25, 0.5]);
+    let out = run(&mut b, &[0.0; 4]);
+    for (i, &y) in out.iter().enumerate() {
+        let want = played[3 - i] * fade_out_gain(i, 4);
+        assert!((y - want).abs() < 1e-12, "sample {i}: {y} vs {want}");
+    }
+}
+
+/// `run` for `outputs` channels of `input.len()` frames.
+fn run_n(bridge: &mut Bridge<Fake>, input: &[f64], outputs: usize) -> Vec<f64> {
+    let mut output = vec![0.0; input.len() * outputs];
+    let mut block = Block::new(input.len(), input, &mut output);
+    bridge.process(&mut block);
+    output
+}
+
+#[test]
+fn each_channel_fades_from_its_own_last_sample() {
+    let mut b = Bridge::new(Fake::new(true, true, 4)).with_concealment(2, 4);
+    run_n(&mut b, &[0.5; 4], 2);
+    run_n(&mut b, &[0.0, 0.125, 0.25, 0.25], 2);
+    b.link.answers_off();
+    let played = run_n(&mut b, &[0.0; 4], 2);
+    assert_eq!(played[3], -0.25, "channel 0's last sample");
+    assert_eq!(played[7], -0.5, "channel 1's last sample (twice channel 0)");
+    let out = run_n(&mut b, &[0.0; 4], 2);
+    assert_eq!(out[0], played[3], "channel 0 fades from its own sample");
+    assert_eq!(out[4], played[7], "channel 1 fades from its own sample");
 }
