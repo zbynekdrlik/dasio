@@ -180,3 +180,15 @@ fn the_shared_clock_runs_forward_in_ns() {
         "a 20 ms sleep measured {slept} ns"
     );
 }
+
+// dasio#22: a slow block's ack is followed at once by the driver entering
+// the next block (it is already due). The slow block's callback start must
+// still be readable then, or the split drops exactly the slow blocks.
+#[test]
+fn a_slow_block_keeps_its_start_after_the_next_block_enters() {
+    let h = Header::default();
+    h.enter(10, 10_000);
+    h.enter(11, 11_000);
+    assert_eq!(h.entered(10), Some(10_000));
+    assert_eq!(h.entered(11), Some(11_000));
+}
