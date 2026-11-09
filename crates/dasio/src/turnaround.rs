@@ -138,6 +138,16 @@ pub fn split(
     (total, parts)
 }
 
+/// When the driver was free for block `ack`: the time the watcher saw the
+/// previous ack, only when that ack was `ack - 1`. After a skipped ack the
+/// time seen is an older block's, and wake-up would count the callback in
+/// between; then wake-up counts from the hand-over again.
+pub fn free_at(previous: Option<(u64, u64)>, ack: u64) -> Option<u64> {
+    previous
+        .filter(|&(seq, _)| seq.wrapping_add(1) == ack)
+        .map(|(_, at)| at)
+}
+
 impl Turnaround {
     /// One turnaround of `ns` with blocks of `period_ns`, and its split
     /// into wake-up and processing when known.
@@ -340,5 +350,13 @@ mod tests {
             split(1_000, Some(4_100), 6_000, Some(4_150)),
             (5_000, Some((0, 1_900)))
         );
+    }
+
+    #[test]
+    fn only_the_directly_previous_ack_frees_the_driver() {
+        assert_eq!(free_at(Some((41, 4_000)), 42), Some(4_000));
+        assert_eq!(free_at(Some((40, 4_000)), 42), None);
+        assert_eq!(free_at(Some((42, 4_000)), 42), None);
+        assert_eq!(free_at(None, 42), None);
     }
 }

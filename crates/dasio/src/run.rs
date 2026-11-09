@@ -16,7 +16,7 @@ use tracing::{info, warn};
 
 use crate::bridge::{Bridge, SharedLink};
 use crate::logfile::{COUNTS_EVERY, Every, STATUS_EVERY};
-use crate::turnaround::{Stamps, Turnaround, split};
+use crate::turnaround::{Stamps, Turnaround, free_at, split};
 
 /// Runs instance `instance` from the device config at `config` on `ip`
 /// with the media clock from `clock` (dantesync in production; the system
@@ -341,7 +341,8 @@ fn watch_turnaround(
             // SAFETY: the calling thread's pseudo handle.
             unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) };
             let mut last = 0u64;
-            let mut last_ack_at: Option<u64> = None;
+            // The previous ack seen, and when: (seq, ns).
+            let mut previous: Option<(u64, u64)> = None;
             while !stop.load(Ordering::Acquire) {
                 if !shared.wait_ready(100) {
                     continue;
@@ -357,11 +358,16 @@ fn watch_turnaround(
                 if let Some(at) = stamps.published(ack)
                     && let Ok(mut t) = out.lock()
                 {
-                    let (total, parts) = split(at, shared.header().entered(ack), now, last_ack_at);
+                    let (total, parts) = split(
+                        at,
+                        shared.header().entered(ack),
+                        now,
+                        free_at(previous, ack),
+                    );
                     t.record(total, period_ns, parts);
                 }
                 // The driver was free for the next block from about here.
-                last_ack_at = Some(now);
+                previous = Some((ack, now));
             }
         })
 }
