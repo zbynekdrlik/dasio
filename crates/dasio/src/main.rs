@@ -325,12 +325,12 @@ fn pc_profile(path: &str, apply: bool, plan_only: bool) -> ExitCode {
     for d in &p.disk {
         match dasio::pc_profile::Reader::free_bytes(&pc, &d.drive) {
             Ok(free) => println!(
-                "disk {}: {} free (floor {} GB)",
+                "disk {} free: {} (floor {} GB)",
                 d.drive,
                 dasio::pc_profile::gb_down(free),
                 d.min_free_gb
             ),
-            Err(e) => println!("disk {}: unreadable ({e})", d.drive),
+            Err(e) => println!("disk {} free: unreadable ({e})", d.drive),
         }
     }
     let entries = p.registry.len() + p.ini.len() + p.process.len() + p.disk.len();
