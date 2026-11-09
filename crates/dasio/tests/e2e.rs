@@ -18,8 +18,8 @@ use std::time::{Duration, Instant};
 use dstack::device::{DeviceConfig, DeviceState, Subscription};
 
 const TEST_DEVICE: &str = include_str!("../../../config/test-dante-device.toml");
-/// The instances the test runs (the driver's host tests use 5 to 10, the
-/// service test 14).
+/// The instances the test runs (the driver's host tests use 5 to 12 and 16,
+/// the service test 14).
 const FIRST: u32 = 13;
 const SECOND: u32 = 15;
 /// The second device's ARC, CMC and flow-control ports and its process id
