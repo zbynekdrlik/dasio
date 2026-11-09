@@ -72,57 +72,59 @@ fn the_installer_s_protocol_is_the_layout_s_version() {
     );
 }
 
-// The enter fields use what was padding: the header keeps its size, so a
+// The ack record uses what was padding: the header keeps its size, so a
 // driver and a device of either age share one layout (VERSION unchanged).
 #[test]
 fn the_header_keeps_its_size() {
     assert_eq!(std::mem::size_of::<Header>(), 128);
-    assert_eq!(std::mem::offset_of!(Header, enter_seq), 104);
-    assert_eq!(std::mem::offset_of!(Header, enter_ns), 112);
+    assert_eq!(std::mem::offset_of!(Header, acked_seq), 104);
+    assert_eq!(std::mem::offset_of!(Header, acked_entered_ns), 112);
 }
 
 #[test]
-fn an_entered_block_reads_back_its_time() {
+fn an_acked_block_reads_back_its_start() {
     let h = Header::default();
     // An older driver never writes it.
     assert_eq!(h.entered(1), None);
-    h.enter(7, 1_234);
+    h.ack_block(7, 1_234);
     assert_eq!(h.entered(7), Some(1_234));
-    // Another block's time is never paired with this seq.
+    // Another block's start is never paired with this seq.
     assert_eq!(h.entered(6), None);
     assert_eq!(h.entered(8), None);
-    h.enter(8, 5_678);
-    // The block before the latest stays readable (dasio#22: it is the
-    // slow one); two back is gone.
-    assert_eq!(h.entered(7), Some(1_234));
+    h.ack_block(8, 5_678);
     assert_eq!(h.entered(8), Some(5_678));
-    h.enter(9, 9_999);
     assert_eq!(h.entered(7), None);
+    // A start the driver did not know is no split.
+    h.ack_block(9, 0);
+    assert_eq!(h.entered(9), None);
+    assert_eq!(h.ack.load(Ordering::Acquire), 9);
     // Seq 0 is never a block.
-    h.enter(0, 9);
+    h.ack_block(0, 9);
     assert_eq!(h.entered(0), None);
 }
 
 #[test]
-fn a_half_written_enter_is_not_read() {
+fn a_half_written_record_is_not_read() {
     let h = Header::default();
-    h.enter(3, 100);
-    // The driver mid-write: seq cleared, time not yet paired.
-    h.enter_seq.store(0, Ordering::Release);
-    h.enter_ns[1].store(200, Ordering::Release);
+    h.ack_block(3, 100);
+    // The driver mid-write: seq cleared, start not yet paired.
+    h.acked_seq.store(0, Ordering::Release);
+    h.acked_entered_ns.store(200, Ordering::Release);
     assert_eq!(h.entered(3), None);
 }
 
-// 0.1.18's driver wrote the latest seq without the mark and one slot for
-// every block: its values are never read, so a mismatch gives no split
-// rather than a wrong one.
+// Older drivers wrote other values here: 0.1.18 the latest entered seq with
+// no mark, 0.1.21 the latest entered seq with bit 63 and one start per
+// half. Theirs are never read, so a mismatch gives no split rather than a
+// wrong one.
 #[test]
-fn a_driver_without_the_mark_is_never_read() {
+fn an_older_driver_is_never_read() {
     let h = Header::default();
-    h.enter_seq.store(10, Ordering::Release);
-    h.enter_ns[0].store(5_000, Ordering::Release);
+    h.acked_seq.store(10, Ordering::Release);
+    h.acked_entered_ns.store(5_000, Ordering::Release);
     assert_eq!(h.entered(10), None);
-    assert_eq!(h.entered(9), None);
+    h.acked_seq.store(10 | (1 << 63), Ordering::Release);
+    assert_eq!(h.entered(10), None);
 }
 
 #[test]
@@ -147,38 +149,26 @@ fn counter_ticks_turn_into_ns() {
 }
 
 // The seqlock under a real race: a reader never pairs one block's seq with
-// another block's time while the driver keeps writing. The reader ends when
-// the writer has (or has panicked), so a broken writer fails here, never
-// hangs.
+// another block's start while the driver keeps returning blocks. The
+// reader ends when the writer has (or has panicked), so a broken writer
+// fails here, never hangs.
 #[test]
-fn a_racing_reader_never_pairs_a_seq_with_another_time() {
+fn a_racing_reader_never_pairs_a_seq_with_another_start() {
     let h = Header::default();
     const N: u64 = 200_000;
     std::thread::scope(|s| {
         let writer = s.spawn(|| {
             for i in 1..=N {
-                h.enter(i, i * 1000);
+                h.ack_block(i, i * 1000);
             }
         });
         let mut paired = 0u64;
         loop {
             let finished = writer.is_finished();
-            let seq = h.enter_seq.load(Ordering::Acquire) & !ENTERED_MARK;
-            if seq != 0
-                && let Some(ns) = h.entered(seq)
-            {
-                assert_eq!(ns, seq * 1000, "seq {seq} read another block's time");
+            let seq = h.ack.load(Ordering::Acquire);
+            if let Some(ns) = h.entered(seq) {
+                assert_eq!(ns, seq * 1000, "seq {seq} read another block's start");
                 paired += 1;
-            }
-            if seq > 1
-                && let Some(ns) = h.entered(seq - 1)
-            {
-                assert_eq!(
-                    ns,
-                    (seq - 1) * 1000,
-                    "seq {} read another block's time",
-                    seq - 1
-                );
             }
             if finished {
                 break;
@@ -187,7 +177,6 @@ fn a_racing_reader_never_pairs_a_seq_with_another_time() {
         writer.join().expect("the writer ran through");
         assert!(paired > 0);
         assert_eq!(h.entered(N), Some(N * 1000));
-        assert_eq!(h.entered(N - 1), Some((N - 1) * 1000));
     });
 }
 
@@ -213,10 +202,9 @@ fn the_shared_clock_runs_forward_in_ns() {
 #[test]
 fn a_slow_block_keeps_its_start_after_the_next_block_enters() {
     let h = Header::default();
-    h.enter(10, 10_000);
-    h.enter(11, 11_000);
+    h.ack_block(10, 10_000);
+    // The driver enters block 11: it writes nothing until 11's ack.
     assert_eq!(h.entered(10), Some(10_000));
-    assert_eq!(h.entered(11), Some(11_000));
 }
 
 // dasio#22, the biggest stalls: after a long callback the driver jumps to
