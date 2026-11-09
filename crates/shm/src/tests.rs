@@ -109,8 +109,20 @@ fn a_half_written_enter_is_not_read() {
     h.enter(3, 100);
     // The driver mid-write: seq cleared, time not yet paired.
     h.enter_seq.store(0, Ordering::Release);
-    h.enter_ns.store(200, Ordering::Release);
+    h.enter_ns[1].store(200, Ordering::Release);
     assert_eq!(h.entered(3), None);
+}
+
+// 0.1.18's driver wrote the latest seq without the mark and one slot for
+// every block: its values are never read, so a mismatch gives no split
+// rather than a wrong one.
+#[test]
+fn a_driver_without_the_mark_is_never_read() {
+    let h = Header::default();
+    h.enter_seq.store(10, Ordering::Release);
+    h.enter_ns[0].store(5_000, Ordering::Release);
+    assert_eq!(h.entered(10), None);
+    assert_eq!(h.entered(9), None);
 }
 
 #[test]
@@ -153,12 +165,22 @@ fn a_racing_reader_never_pairs_a_seq_with_another_time() {
         let mut paired = 0u64;
         loop {
             let finished = done.load(Ordering::Acquire);
-            let seq = h.enter_seq.load(Ordering::Acquire);
+            let seq = h.enter_seq.load(Ordering::Acquire) & !ENTERED_MARK;
             if seq != 0
                 && let Some(ns) = h.entered(seq)
             {
                 assert_eq!(ns, seq * 1000, "seq {seq} read another block's time");
                 paired += 1;
+            }
+            if seq > 1
+                && let Some(ns) = h.entered(seq - 1)
+            {
+                assert_eq!(
+                    ns,
+                    (seq - 1) * 1000,
+                    "seq {} read another block's time",
+                    seq - 1
+                );
             }
             if finished {
                 break;
@@ -166,6 +188,7 @@ fn a_racing_reader_never_pairs_a_seq_with_another_time() {
         }
         assert!(paired > 0);
         assert_eq!(h.entered(N), Some(N * 1000));
+        assert_eq!(h.entered(N - 1), Some((N - 1) * 1000));
     });
 }
 

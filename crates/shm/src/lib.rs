@@ -68,34 +68,45 @@ pub struct Header {
     /// (written before its seq; [`NO_START`] without a clock): the DAW's
     /// sample position runs on it.
     pub start: [AtomicU64; 2],
-    /// The block whose DAW callback the driver last entered, and when (ns
-    /// on the system-wide performance counter, `qpc_ns` on Windows).
-    /// Written by [`Header::enter`] as a seqlock, read by
-    /// [`Header::entered`]; an older driver leaves both 0. They sit in what
-    /// was the header's padding: the size, the offsets and [`VERSION`]
-    /// stay, so either side may be the older one.
+    /// The block whose DAW callback the driver last entered, with
+    /// [`ENTERED_MARK`] set, and when the callback started for each half's
+    /// block (`enter_ns[seq % 2]`, ns on the system-wide performance
+    /// counter, `qpc_ns` on Windows). Written by [`Header::enter`], read by
+    /// [`Header::entered`]: a slow block's start stays readable after the
+    /// driver enters the next block (it writes the other half), dasio#22.
+    /// They sit in what was the header's padding: the size, the offsets
+    /// and [`VERSION`] stay. A driver without them leaves them 0; 0.1.18's
+    /// driver wrote one slot for every block and no mark, so its values
+    /// are never read.
     pub enter_seq: AtomicU64,
-    pub enter_ns: AtomicU64,
+    pub enter_ns: [AtomicU64; 2],
 }
+
+/// Set in [`Header::enter_seq`] by a driver that writes one start per half.
+pub const ENTERED_MARK: u64 = 1 << 63;
 
 impl Header {
     /// The driver enters the DAW's callback for block `seq` at `ns`.
     pub fn enter(&self, seq: u64, ns: u64) {
-        // 0 while the time changes: a reader never pairs a seq with
-        // another block's time.
+        // 0 while a slot changes: a reader never pairs a seq with another
+        // block's time.
         self.enter_seq.store(0, Ordering::Release);
-        self.enter_ns.store(ns, Ordering::Release);
-        self.enter_seq.store(seq, Ordering::Release);
+        self.enter_ns[(seq % 2) as usize].store(ns, Ordering::Release);
+        self.enter_seq.store(seq | ENTERED_MARK, Ordering::Release);
     }
 
-    /// When the driver entered the DAW's callback for block `seq`; `None`
-    /// when it has moved on (or never wrote it: an older driver).
+    /// When the driver entered the DAW's callback for block `seq`: while
+    /// `seq` is the latest block it entered or the one before it (the
+    /// latest wrote the other half). `None` once it has moved further, for
+    /// a block it never entered, or from a driver without the mark.
     pub fn entered(&self, seq: u64) -> Option<u64> {
-        if seq == 0 || self.enter_seq.load(Ordering::Acquire) != seq {
+        let mark = self.enter_seq.load(Ordering::Acquire);
+        let latest = mark & !ENTERED_MARK;
+        if seq == 0 || mark & ENTERED_MARK == 0 || (latest != seq && latest != seq + 1) {
             return None;
         }
-        let ns = self.enter_ns.load(Ordering::Acquire);
-        (self.enter_seq.load(Ordering::Acquire) == seq).then_some(ns)
+        let ns = self.enter_ns[(seq % 2) as usize].load(Ordering::Acquire);
+        (ns != 0 && self.enter_seq.load(Ordering::Acquire) == mark).then_some(ns)
     }
 }
 
