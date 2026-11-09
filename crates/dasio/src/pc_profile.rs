@@ -7,8 +7,9 @@
 //! `dasio pc-profile apply` sets what differs.
 //!
 //! Four kinds of entries:
-//! - `[[registry]]`: one value under `HKLM\...` (a DWORD, a string, or
-//!   binary as hex). `{nic_class}` and `{nic_device}` in a key stand for
+//! - `[[registry]]`: one value under `HKLM\...` (a DWORD, a string, a
+//!   list of strings (REG_MULTI_SZ, e.g. a NIC's `SubnetMask`), or binary
+//!   as hex). `{nic_class}` and `{nic_device}` in a key stand for
 //!   the Dante NIC's class key and its Enum `Device Parameters` key, found
 //!   from `nic_guid`.
 //! - `[[ini]]`: one `key=value` line of an ini file (Process Lasso's).
@@ -52,7 +53,8 @@ pub struct Profile {
     pub disk: Vec<DiskEntry>,
 }
 
-/// An expected registry value: exactly one of `dword`, `string`, `binary`.
+/// An expected registry value: exactly one of `dword`, `string`,
+/// `multi_sz`, `binary`.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RegEntry {
@@ -63,6 +65,9 @@ pub struct RegEntry {
     pub dword: Option<u32>,
     #[serde(default)]
     pub string: Option<String>,
+    /// A REG_MULTI_SZ, e.g. `["255.255.255.0"]`.
+    #[serde(default)]
+    pub multi_sz: Option<Vec<String>>,
     /// Hex bytes, e.g. `"0f00000000000000"`.
     #[serde(default)]
     pub binary: Option<String>,
@@ -119,6 +124,7 @@ const GB: u64 = 1 << 30;
 pub enum Value {
     Dword(u32),
     String(String),
+    MultiSz(Vec<String>),
     Binary(Vec<u8>),
 }
 
@@ -172,7 +178,7 @@ pub fn parse(text: &str) -> Result<Profile, String> {
     for r in &p.registry {
         if want_reg(r).is_none() {
             return Err(format!(
-                "registry {}\\{}: give exactly one of dword, string, binary (binary as hex)",
+                "registry {}\\{}: give exactly one of dword, string, binary (binary as hex), multi_sz",
                 r.key, r.name
             ));
         }
@@ -222,14 +228,38 @@ pub const PRIORITIES: [&str; 6] = [
 ];
 
 /// The value a registry entry wants; `None` unless exactly one of
-/// `dword`, `string`, `binary` (valid hex) is given.
+/// `dword`, `string`, `multi_sz`, `binary` (valid hex) is given.
 pub fn want_reg(r: &RegEntry) -> Option<Value> {
-    match (&r.dword, &r.string, &r.binary) {
-        (Some(d), None, None) => Some(Value::Dword(*d)),
-        (None, Some(s), None) => Some(Value::String(s.clone())),
-        (None, None, Some(b)) => hex(b).map(Value::Binary),
+    match (&r.dword, &r.string, &r.multi_sz, &r.binary) {
+        (Some(d), None, None, None) => Some(Value::Dword(*d)),
+        (None, Some(s), None, None) => Some(Value::String(s.clone())),
+        (None, None, Some(m), None) => Some(Value::MultiSz(m.clone())),
+        (None, None, None, Some(b)) => hex(b).map(Value::Binary),
         _ => None,
     }
+}
+
+/// A REG_MULTI_SZ's UTF-16 data as its strings: each ends with a NUL, an
+/// empty string ends the list (missing terminators are tolerated).
+pub fn multi_sz_from_wide(w: &[u16]) -> Vec<String> {
+    w.split(|&c| c == 0)
+        .take_while(|s| !s.is_empty())
+        .map(String::from_utf16_lossy)
+        .collect()
+}
+
+/// The UTF-16 data Windows stores for a REG_MULTI_SZ of `strings`: each
+/// with its NUL, then one more NUL.
+pub fn multi_sz_to_wide(strings: &[String]) -> Vec<u16> {
+    let mut w: Vec<u16> = strings
+        .iter()
+        .flat_map(|s| s.encode_utf16().chain(Some(0)))
+        .collect();
+    w.push(0);
+    if strings.is_empty() {
+        w.push(0);
+    }
+    w
 }
 
 fn hex(s: &str) -> Option<Vec<u8>> {
@@ -257,6 +287,7 @@ fn show(v: &Value) -> String {
     match v {
         Value::Dword(d) => format!("{d} (0x{d:X})"),
         Value::String(s) => format!("\"{s}\""),
+        Value::MultiSz(m) => format!("{m:?}"),
         Value::Binary(b) => b.iter().map(|x| format!("{x:02x}")).collect(),
     }
 }

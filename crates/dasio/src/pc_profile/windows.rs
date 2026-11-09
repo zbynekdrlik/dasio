@@ -12,8 +12,8 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::Registry::{
-    HKEY, HKEY_LOCAL_MACHINE, KEY_READ, REG_BINARY, REG_DWORD, REG_EXPAND_SZ, REG_SZ, RRF_RT_ANY,
-    RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, RegSetKeyValueW,
+    HKEY, HKEY_LOCAL_MACHINE, KEY_READ, REG_BINARY, REG_DWORD, REG_EXPAND_SZ, REG_MULTI_SZ, REG_SZ,
+    RRF_RT_ANY, RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, RegSetKeyValueW,
 };
 use windows_sys::Win32::System::Threading::{
     ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, GetPriorityClass,
@@ -224,6 +224,15 @@ fn read(key: &str, name: &str) -> Result<Option<Value>, String> {
         REG_DWORD if buf.len() >= 4 => {
             Value::Dword(u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]))
         }
+        REG_MULTI_SZ => {
+            let w: Vec<u16> = buf
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_le_bytes(*c))
+                .collect();
+            Value::MultiSz(super::multi_sz_from_wide(&w))
+        }
         REG_SZ | REG_EXPAND_SZ => {
             let w: Vec<u16> = buf
                 .as_chunks::<2>()
@@ -244,6 +253,13 @@ fn write(key: &str, name: &str, v: &Value) -> Result<(), String> {
         Value::String(s) => (
             REG_SZ,
             wide(s).iter().flat_map(|c| c.to_le_bytes()).collect(),
+        ),
+        Value::MultiSz(m) => (
+            REG_MULTI_SZ,
+            super::multi_sz_to_wide(m)
+                .iter()
+                .flat_map(|c| c.to_le_bytes())
+                .collect(),
         ),
         Value::Binary(b) => (REG_BINARY, b.clone()),
     };

@@ -432,3 +432,72 @@ fn a_disk_entry_with_a_mistake_is_refused() {
     let ok = "name = \"x\"\n[[disk]]\ndrive = \"d:\"\nmin_free_gb = 1\n";
     assert_eq!(parse(ok).unwrap().disk[0].min_free_gb, 1);
 }
+
+// A NIC's address settings are REG_MULTI_SZ (e.g. `SubnetMask`): the
+// profile holds them as lists, compares them as lists and writes them back
+// as REG_MULTI_SZ, never as binary (dasio#26).
+const MULTI: &str = r#"
+name = "FOH"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\{x}'
+name = "SubnetMask"
+multi_sz = ["255.255.255.0"]
+why = "the Dante network is 10.77.7.0/24 (router)"
+"#;
+
+#[test]
+fn a_list_value_is_checked_and_applied_as_a_list() {
+    let p = parse(MULTI).unwrap();
+    let key = r"HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\{x}";
+    let mut pc = Pc::default();
+    pc.reg.insert(
+        (key.into(), "SubnetMask".into()),
+        Value::MultiSz(vec!["255.255.255.0".into()]),
+    );
+    assert_eq!(check(&p, &pc), vec![]);
+    assert_eq!(plan(&p, &pc), vec![]);
+    // The /23 the PC had before 9.11.
+    pc.reg.insert(
+        (key.into(), "SubnetMask".into()),
+        Value::MultiSz(vec!["255.255.254.0".into()]),
+    );
+    let problems = check(&p, &pc);
+    assert_eq!(problems.len(), 1);
+    assert_eq!(problems[0].found, r#"["255.255.254.0"]"#);
+    assert_eq!(problems[0].want, r#"["255.255.255.0"]"#);
+    assert_eq!(
+        plan(&p, &pc),
+        vec![Action::Reg {
+            key: key.into(),
+            name: "SubnetMask".into(),
+            value: Value::MultiSz(vec!["255.255.255.0".into()]),
+        }]
+    );
+}
+
+#[test]
+fn a_list_value_with_another_kind_is_refused() {
+    let both = "name = \"x\"\n[[registry]]\nkey = 'HKLM\\A'\nname = \"B\"\nmulti_sz = [\"1\"]\nstring = \"1\"\n";
+    assert!(parse(both).unwrap_err().contains("multi_sz"));
+}
+
+#[test]
+fn a_list_reads_and_writes_as_windows_stores_it() {
+    let w = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+    // One string: its NUL, then the list's NUL.
+    assert_eq!(
+        multi_sz_to_wide(&["255.255.255.0".into()]),
+        w("255.255.255.0\0\0")
+    );
+    assert_eq!(multi_sz_to_wide(&["a".into(), "bc".into()]), w("a\0bc\0\0"));
+    // An empty list is two NULs.
+    assert_eq!(multi_sz_to_wide(&[]), w("\0\0"));
+    // Read back.
+    assert_eq!(multi_sz_from_wide(&w("a\0bc\0\0")), vec!["a", "bc"]);
+    assert_eq!(multi_sz_from_wide(&w("\0\0")), Vec::<String>::new());
+    assert_eq!(multi_sz_from_wide(&w("")), Vec::<String>::new());
+    // A list without its terminators still reads; an empty string ends it.
+    assert_eq!(multi_sz_from_wide(&w("a\0bc")), vec!["a", "bc"]);
+    assert_eq!(multi_sz_from_wide(&w("a\0\0zz\0\0")), vec!["a"]);
+}
