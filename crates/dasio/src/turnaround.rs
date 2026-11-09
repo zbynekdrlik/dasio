@@ -2,11 +2,12 @@
 //! until the driver returns its outputs (the header's ack), in ns. A block
 //! whose turnaround passes one block period is counted late by the bridge
 //! (its outputs are sent as silence). Measured to tell a slow DAW from a
-//! late wake-up on the FOH PC (dasio#1). A driver that stamps when it
-//! enters the DAW's callback (`shm::Header::enter`) splits it in two: the
-//! wake-up (hand-over until the callback starts: Windows waking the
-//! driver's thread) and the processing (callback start until the outputs
-//! return: the DAW's own work), dasio#22.
+//! late wake-up on the FOH PC (dasio#1). A driver that sends, with each
+//! block's ack, when the DAW's callback for it started
+//! (`shm::Header::ack_block`) splits it in two: the wake-up (hand-over
+//! until the callback starts: Windows waking the driver's thread) and the
+//! processing (callback start until the outputs return: the DAW's own
+//! work), dasio#22.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
