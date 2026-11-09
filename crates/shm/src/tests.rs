@@ -218,3 +218,20 @@ fn a_slow_block_keeps_its_start_after_the_next_block_enters() {
     assert_eq!(h.entered(10), Some(10_000));
     assert_eq!(h.entered(11), Some(11_000));
 }
+
+// dasio#22, the biggest stalls: after a long callback the driver jumps to
+// the newest block (the ones between are missed), which may share the slow
+// block's half. The slow block's callback start must stay readable from
+// its ack until the next block's ack, whatever block the driver enters.
+#[test]
+fn a_block_keeps_its_start_until_the_next_ack() {
+    let h = Header::default();
+    h.ack_block(10, 10_000);
+    assert_eq!(h.ack.load(Ordering::Acquire), 10);
+    // The driver jumps to block 14 (11-13 missed) and enters it: nothing in
+    // the header changes until it returns 14.
+    assert_eq!(h.entered(10), Some(10_000));
+    h.ack_block(14, 14_000);
+    assert_eq!(h.entered(14), Some(14_000));
+    assert_eq!(h.entered(10), None);
+}
