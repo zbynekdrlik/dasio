@@ -98,7 +98,7 @@ mod tests {
         // timeGetTime's stamps differ by whole ms; these by the counter's ns
         // (a preempted runner may stretch the 100 µs, never to whole ms).
         assert!(
-            b > a && (b - a) % 1_000_000 != 0,
+            b > a && !(b - a).is_multiple_of(1_000_000),
             "100 µs apart: {a} then {b}"
         );
     }
