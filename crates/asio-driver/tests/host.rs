@@ -4,7 +4,7 @@
 
 use core::ffi::c_void;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use dasio_driver::abi::*;
@@ -627,4 +627,99 @@ fn a_host_that_re_inits_the_same_driver_after_a_reset_sees_the_new_block() {
         "the re-inited driver opens the restarted device's block"
     );
     drop(device);
+}
+
+// A host that stops the driver from inside its kAsioLatenciesChanged
+// handler, on the driver's own thread (dasio#28 E16).
+static INNER: AtomicPtr<c_void> = AtomicPtr::new(core::ptr::null_mut());
+static INNER_STOP_MS: AtomicU32 = AtomicU32::new(u32::MAX);
+static INNER_STOPPED: AtomicBool = AtomicBool::new(false);
+static SWITCHES_AFTER_STOP: AtomicU32 = AtomicU32::new(0);
+
+unsafe extern "C" fn count_after_stop(_half: i32, _direct: ASIOBool) {
+    if INNER_STOPPED.load(Ordering::Acquire) {
+        SWITCHES_AFTER_STOP.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+unsafe extern "C" fn stop_inside(sel: i32, val: i32, _m: *mut c_void, _o: *mut f64) -> i32 {
+    if sel == K_ASIO_SELECTOR_SUPPORTED {
+        return i32::from(val == K_ASIO_LATENCIES_CHANGED);
+    }
+    if sel == K_ASIO_LATENCIES_CHANGED {
+        let d = INNER.load(Ordering::Acquire);
+        let t = Instant::now();
+        // SAFETY: the live driver, stopped by its host right here.
+        unsafe { (vt(d).stop)(d) };
+        INNER_STOP_MS.store(t.elapsed().as_millis() as u32, Ordering::Release);
+        INNER_STOPPED.store(true, Ordering::Release);
+        return 1;
+    }
+    0
+}
+
+#[test]
+fn a_host_that_stops_the_driver_inside_a_message_gets_no_more_blocks() {
+    let shape = Shape::new(1, 1, 32).unwrap();
+    let device = Shared::create(16, shape, 96_000, (56, 40)).unwrap();
+    let d = driver(16);
+    INNER.store(d, Ordering::Release);
+    let mut infos: Vec<ASIOBufferInfo> = (0..2)
+        .map(|k| ASIOBufferInfo {
+            isInput: k,
+            channelNum: 0,
+            buffers: [core::ptr::null_mut(); 2],
+        })
+        .collect();
+    let cb = ASIOCallbacks {
+        bufferSwitch: Some(count_after_stop),
+        sampleRateDidChange: None,
+        asioMessage: Some(stop_inside),
+        bufferSwitchTimeInfo: None,
+    };
+    // SAFETY: as a host.
+    unsafe {
+        assert_eq!((vt(d).init)(d, core::ptr::null_mut()), ASIO_TRUE);
+        assert_eq!(
+            (vt(d).createBuffers)(d, infos.as_mut_ptr(), 2, 32, &cb),
+            ASE_OK
+        );
+        assert_eq!((vt(d).start)(d), ASE_OK);
+    }
+    // The device publishes a block every ms; after 200 ms its latencies
+    // change, and it goes on for 300 ms after the host's stop.
+    let h = device.header();
+    let t = Instant::now();
+    let mut stopped_at: Option<Instant> = None;
+    let mut seq = 0u64;
+    while t.elapsed() < Duration::from_secs(5) {
+        seq += 1;
+        h.seq.store(seq, Ordering::Release);
+        device.signal_block();
+        if t.elapsed() > Duration::from_millis(200) {
+            h.latency_in.store(80, Ordering::Release);
+        }
+        if stopped_at.is_none() && INNER_STOPPED.load(Ordering::Acquire) {
+            stopped_at = Some(Instant::now());
+        }
+        if stopped_at.is_some_and(|s| s.elapsed() > Duration::from_millis(300)) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(stopped_at.is_some(), "the latency change reached the host");
+    let ms = INNER_STOP_MS.load(Ordering::Acquire);
+    assert!(ms < 200, "stop inside the host's callback took {ms} ms");
+    assert_eq!(
+        SWITCHES_AFTER_STOP.load(Ordering::Acquire),
+        0,
+        "no block handed over after the host stopped the driver"
+    );
+    // SAFETY: as a host: it starts the driver again and ends.
+    unsafe {
+        assert_eq!((vt(d).start)(d), ASE_OK);
+        (vt(d).stop)(d);
+        (vt(d).disposeBuffers)(d);
+        (vt(d).Release)(d);
+    }
 }

@@ -221,6 +221,17 @@ impl Driver {
             s.header().host_attached.store(0, Ordering::Release);
         }
         w.stop.store(true, Ordering::Release);
+        // The host stops us from inside its own callback, on the worker's
+        // thread (dasio#28 E16): the worker ends as soon as that callback
+        // returns, without another call into the host. It cannot be joined
+        // from inside itself; it returns through this DLL's code, so it
+        // counts as a live object for good, as a hung one does.
+        // SAFETY: plain call.
+        if self.rt.worker_tid.load(Ordering::Acquire) == unsafe { GetCurrentThreadId() } {
+            drop(w.handle);
+            crate::com::OBJECTS.fetch_add(1, Ordering::AcqRel);
+            return;
+        }
         // A handle handed back is dropped here: the thread is left running.
         if join_within(w.handle, STOP_WAIT).is_err() {
             if let Some(local) = state.created.as_mut().and_then(|c| c.local.take()) {
@@ -392,6 +403,8 @@ unsafe extern "system" fn start(this: *mut c_void) -> ASIOError {
                 .map_or(0, |s| s.header().seq.load(Ordering::Acquire)),
         };
         d.rt.position.store(0, Ordering::Relaxed);
+        // The new worker stores its own id; until then no stale one matches.
+        d.rt.worker_tid.store(0, Ordering::Release);
         d.rt.systime_offset
             .store(systime::calibrate(), Ordering::Release);
         match std::thread::Builder::new()
@@ -776,6 +789,11 @@ impl Job {
             match (shm.as_ref(), watch.as_mut()) {
                 (Some(s), Some(watch)) => {
                     if self.check(s, watch, &mut checked) {
+                        return;
+                    }
+                    // A host may stop us from inside a message the check
+                    // sent (dasio#28 E16): no block after that.
+                    if self.stop.load(Ordering::Acquire) {
                         return;
                     }
                     // The next block (see next_seq). Past QUIET without one,
