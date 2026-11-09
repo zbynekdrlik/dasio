@@ -131,19 +131,24 @@ fn counter_ticks_turn_into_ns() {
 }
 
 // The seqlock under a real race: a reader never pairs one block's seq with
-// another block's time while the driver keeps writing.
+// another block's time while the driver keeps writing. The reader ends when
+// the writer has, so a driver that never writes fails here, never hangs.
 #[test]
 fn a_racing_reader_never_pairs_a_seq_with_another_time() {
+    use std::sync::atomic::AtomicBool;
     let h = Header::default();
+    let done = AtomicBool::new(false);
     const N: u64 = 200_000;
     std::thread::scope(|s| {
         s.spawn(|| {
             for i in 1..=N {
                 h.enter(i, i * 1000);
             }
+            done.store(true, Ordering::Release);
         });
         let mut paired = 0u64;
         loop {
+            let finished = done.load(Ordering::Acquire);
             let seq = h.enter_seq.load(Ordering::Acquire);
             if seq != 0
                 && let Some(ns) = h.entered(seq)
@@ -151,11 +156,12 @@ fn a_racing_reader_never_pairs_a_seq_with_another_time() {
                 assert_eq!(ns, seq * 1000, "seq {seq} read another block's time");
                 paired += 1;
             }
-            if seq == N {
+            if finished {
                 break;
             }
         }
         assert!(paired > 0);
+        assert_eq!(h.entered(N), Some(N * 1000));
     });
 }
 
