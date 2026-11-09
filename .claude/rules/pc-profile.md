@@ -38,8 +38,14 @@ paths:
   profile holds it next to the service's `Start`. Seen on FOH, 9.11.2026
   (dasio#1).
 - Process Lasso can migrate its ini at start: the `Version` key changes and
-  new default keys appear. Diff the ini against its last backup. Move the
-  profile's expected `Version` only when every rule line is unchanged.
-- The DAWs on FOH never start on their own after a reboot: dasio starts
-  both (launchers in the private notes), then checks the DAW is attached
-  and Lasso's affinities hold.
+  new default keys appear. Diff the ini against the newest backup dasio
+  made before a Lasso change (`prolasso.ini.bak-*` / `prolasso.ini.before-*`
+  next to the ini). Every rule line unchanged: move the profile's expected
+  `Version`. A rule line changed: restore it first (or, when the change is
+  wanted, update the profile's entry for it in the same step), then move
+  `Version`.
+- The two Abletons on FOH (band and master) never start on their own after
+  a reboot. The dasio session starts both itself; the launch commands are in
+  its local memory (`foh-reboot-ableton-start`), not in the repo. Then it
+  checks that the band Ableton is attached to its dasio instance
+  (`attached=1` in the instance log) and that Lasso's affinities hold.
