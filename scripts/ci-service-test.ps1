@@ -250,6 +250,31 @@ try {
 }
 Write-Output "a held driver: refused, kept with -KeepHeldDriver, refused across a protocol change"
 
+# An install that fails after it stopped the instance (dasio#28 A37/E20):
+# the instance runs again as it was (its binary, config and service
+# command), and the failure says so. The installed config held open for
+# reading makes the config copy fail, past the stop and the new binary.
+$ownExe = (Get-CimInstance Win32_Service -Filter "Name='$service'").PathName
+$cmdBefore = $ownExe
+$ownExe = [regex]::Match($ownExe, '^"([^"]+)"').Groups[1].Value
+$exeBefore = (Get-FileHash $ownExe).Hash
+$cfgInstalled = Join-Path $env:ProgramData "dasio\instance-$instance\device.toml"
+$cfgBefore = (Get-FileHash $cfgInstalled).Hash
+$lock = [System.IO.File]::Open($cfgInstalled, "Open", "Read", "Read")
+try {
+    $why = $null
+    try { & (Join-Path $Bundle "install.ps1") -Instance $instance -Ip $ip -Config $cfg -Name "ci-asio-dante" -TestClock } catch { $why = $_.Exception.Message }
+} finally {
+    $lock.Close()
+}
+if (-not $why) { throw "the install did not fail with its config held" }
+if ($why -notmatch "rolled back") { throw "the failed install does not say it rolled back: $why" }
+if ((Get-Service -Name $service).Status -ne "Running") { throw "$service is $((Get-Service -Name $service).Status) after a failed install" }
+if ((Get-CimInstance Win32_Service -Filter "Name='$service'").PathName -ne $cmdBefore) { throw "$service's command changed in a failed install" }
+if ((Get-FileHash $ownExe).Hash -ne $exeBefore) { throw "the instance's binary is not the one it ran before the failed install" }
+if ((Get-FileHash $cfgInstalled).Hash -ne $cfgBefore) { throw "the instance's config changed in a failed install" }
+Write-Output "a failed install: the instance runs again as it was ($why)"
+
 & (Join-Path $newer "uninstall.ps1") -Instance $second -Ip $ip -Name "ci-asio-dante-2"
 Wait-Until { -not (Get-Service -Name "dasio-$second" -ErrorAction SilentlyContinue) } 15 "the second service's removal"
 if (Test-Path $own2) { throw "uninstall left the second instance's binary" }

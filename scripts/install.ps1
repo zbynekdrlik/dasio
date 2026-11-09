@@ -27,7 +27,10 @@
 #   instance's expected-device file %ProgramData%\dstack\devices\<device>.device,
 # - makes the service "dasio-<n>" (LocalSystem, started at boot before any
 #   logon; the SCM restarts it after 2 s, 5 s, then 30 s, also after an error
-#   exit, the count reset after a day) and starts it.
+#   exit, the count reset after a day) and starts it,
+# - after the instance's stop, a failure brings it back as it was (its
+#   binary, config and service command, kept in instance-<n>\rollback until
+#   the install ends) and says so; a first install has nothing to bring back.
 param(
     [Parameter(Mandatory)][ValidateRange(1, 16)][int]$Instance,
     [Parameter(Mandatory)][string]$Ip,
@@ -181,6 +184,27 @@ if (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue) {
     Unregister-ScheduledTask -TaskName $task -Confirm:$false
 }
 
+# From here the instance is stopped. A failure from here on brings it back
+# as it was (its binary, config and service command) and then reports the
+# failure (dasio#28 A37/E20); a first install has nothing to bring back.
+$instExe = Join-Path $bin $instExeName
+$cfg = Join-Path $data "device.toml"
+$before = Get-CimInstance Win32_Service -Filter "Name='$service'"
+$rollback = Join-Path $data "rollback"
+$beforeExe = $null
+if ($before) {
+    New-Item -ItemType Directory -Force $rollback | Out-Null
+    $beforeExe = [regex]::Match($before.PathName, '^"([^"]+)"').Groups[1].Value
+    if ($beforeExe -and (Test-Path $beforeExe)) { Copy-Item $beforeExe (Join-Path $rollback "instance.exe") -Force }
+    if (Test-Path $cfg) { Copy-Item $cfg (Join-Path $rollback "device.toml") -Force }
+}
+# Puts back `$Saved` over `$Path` when they differ.
+function Restore-File([string]$Saved, [string]$Path) {
+    if ((Test-Path $Saved) -and (-not (Test-Path $Path) -or (Get-FileHash $Path).Hash -ne (Get-FileHash $Saved).Hash)) {
+        Copy-Item $Saved $Path -Force
+    }
+}
+try {
 New-Item -ItemType Directory -Force $bin, $data | Out-Null
 # The files all instances share. An unchanged file stays. Every instance
 # runs its own copy of dasio.exe; one an older install made still runs the
@@ -250,11 +274,9 @@ if ($deviceName) {
     Set-Content (Join-Path $data "dtray-device") $deviceName
 }
 # The instance's own binary (its service is stopped).
-$instExe = Join-Path $bin $instExeName
 if (-not (Test-Path $instExe) -or (Get-FileHash $instExe).Hash -ne (Get-FileHash (Join-Path $bin "dasio.exe")).Hash) {
     Copy-Item (Join-Path $bin "dasio.exe") $instExe -Force
 }
-$cfg = Join-Path $data "device.toml"
 Copy-Item $Config $cfg -Force
 
 # The config's state file is this device's memory (its names and its
@@ -302,6 +324,25 @@ if ($LASTEXITCODE -ne 0) { throw "sc failure $service failed ($LASTEXITCODE)" }
 if ($LASTEXITCODE -ne 0) { throw "sc failureflag $service failed ($LASTEXITCODE)" }
 Start-Service -Name $service
 (Get-Service -Name $service).WaitForStatus("Running", [TimeSpan]::FromSeconds(10))
+} catch {
+    $failure = $_.Exception.Message
+    if (-not $before) { throw }
+    try {
+        if ($beforeExe) { Restore-File (Join-Path $rollback "instance.exe") $beforeExe }
+        Restore-File (Join-Path $rollback "device.toml") $cfg
+        $now = Get-CimInstance Win32_Service -Filter "Name='$service'"
+        if ($now.PathName -ne $before.PathName) {
+            $r = $now | Invoke-CimMethod -MethodName Change -Arguments @{ PathName = $before.PathName }
+            if ($r.ReturnValue -ne 0) { throw "changing $service back failed ($($r.ReturnValue))" }
+        }
+        Start-Service -Name $service
+        (Get-Service -Name $service).WaitForStatus("Running", [TimeSpan]::FromSeconds(10))
+    } catch {
+        throw "install failed: $failure; rolling instance $Instance back failed too: $($_.Exception.Message)"
+    }
+    throw "install failed: $failure; instance $Instance rolled back and running as before"
+}
+Remove-Item -Recurse -Force $rollback -ErrorAction SilentlyContinue
 
 # The former product's files, once no service runs them and no DAW holds
 # its driver.
