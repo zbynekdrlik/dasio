@@ -118,14 +118,23 @@ pub struct Summary {
 
 /// A block's turnaround from its hand-over at `published` until its ack
 /// seen at `now`, split at the driver's callback start `entered` (all ns
-/// on one clock): `(total, Some((wake, process)))`. No split without a
-/// start, or with one outside the turnaround (another clock, a stale
-/// value): the total still counts.
-pub fn split(published: u64, entered: Option<u64>, now: u64) -> (u64, Option<(u64, u64)>) {
+/// on one clock): `(total, Some((wake, process)))`. Wake-up counts from
+/// when the driver was free for this block: the previous block's ack
+/// (`free_at`), never before the hand-over; a block handed over while the
+/// previous callback still ran waits for it, and that wait is the DAW's,
+/// not Windows'. No split without a start, or with one outside the
+/// turnaround (another clock, a stale value): the total still counts.
+pub fn split(
+    published: u64,
+    entered: Option<u64>,
+    now: u64,
+    free_at: Option<u64>,
+) -> (u64, Option<(u64, u64)>) {
     let total = now.saturating_sub(published);
-    let parts = entered
-        .filter(|e| (published..=now).contains(e))
-        .map(|e| (e - published, now - e));
+    let parts = entered.filter(|e| (published..=now).contains(e)).map(|e| {
+        let from = free_at.map_or(published, |f| f.max(published)).min(e);
+        (e - from, now - e)
+    });
     (total, parts)
 }
 
@@ -253,18 +262,27 @@ mod tests {
     #[test]
     fn a_turnaround_splits_at_the_callback_start() {
         // Handed over at 1000, callback entered at 1300, ack seen at 2000.
-        assert_eq!(split(1_000, Some(1_300), 2_000), (1_000, Some((300, 700))));
+        assert_eq!(
+            split(1_000, Some(1_300), 2_000, None),
+            (1_000, Some((300, 700)))
+        );
         // An older driver gives no start: the total alone.
-        assert_eq!(split(1_000, None, 2_000), (1_000, None));
+        assert_eq!(split(1_000, None, 2_000, None), (1_000, None));
         // A start outside the turnaround (another clock, a stale value)
         // is no split; the total still counts.
-        assert_eq!(split(1_000, Some(900), 2_000), (1_000, None));
-        assert_eq!(split(1_000, Some(2_100), 2_000), (1_000, None));
+        assert_eq!(split(1_000, Some(900), 2_000, None), (1_000, None));
+        assert_eq!(split(1_000, Some(2_100), 2_000, None), (1_000, None));
         // On the edges it is a split.
-        assert_eq!(split(1_000, Some(1_000), 2_000), (1_000, Some((0, 1_000))));
-        assert_eq!(split(1_000, Some(2_000), 2_000), (1_000, Some((1_000, 0))));
+        assert_eq!(
+            split(1_000, Some(1_000), 2_000, None),
+            (1_000, Some((0, 1_000)))
+        );
+        assert_eq!(
+            split(1_000, Some(2_000), 2_000, None),
+            (1_000, Some((1_000, 0)))
+        );
         // A clock that went back is a zero total, never a wrap.
-        assert_eq!(split(2_000, None, 1_000), (0, None));
+        assert_eq!(split(2_000, None, 1_000, None), (0, None));
     }
 
     #[test]
