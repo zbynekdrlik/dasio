@@ -21,6 +21,11 @@ paths:
 - `[[process]]` entries only check what Process Lasso applied (affinity,
   priority class). The setting itself is Lasso's ini, which the profile
   holds key by key.
+- `[[disk]]` entries (`drive = "C:"`, `min_free_gb = N`) are a floor of
+  free space: below it, the check reports a problem. Checked only, never
+  applied. Add one to a PC's profile only after that PC runs a dasio that
+  knows `[[disk]]` (0.1.15+): an older one refuses the whole profile and
+  its checks go off.
 - Not covered yet: BCD settings (`disabledynamictick Yes`, `testsigning
   Yes`), checked by hand with `bcdedit /enum {current}`.
 

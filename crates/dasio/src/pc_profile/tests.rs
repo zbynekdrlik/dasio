@@ -9,6 +9,7 @@ struct Pc {
     unreadable: Vec<String>,
     ini: HashMap<(String, String), String>,
     procs: HashMap<String, ProcState>,
+    free: HashMap<String, u64>,
 }
 
 impl Reader for Pc {
@@ -23,6 +24,15 @@ impl Reader for Pc {
     }
     fn process(&self, exe: &str) -> Option<ProcState> {
         self.procs.get(&exe.to_ascii_lowercase()).cloned()
+    }
+    fn free_bytes(&self, drive: &str) -> Result<u64, String> {
+        if self.unreadable.iter().any(|k| k == drive) {
+            return Err("the device is not ready".into());
+        }
+        self.free
+            .get(drive)
+            .copied()
+            .ok_or_else(|| "no such drive".into())
     }
 }
 
@@ -56,6 +66,11 @@ why = "master off band's CCD"
 exe = "AbletonLiveMaster.exe"
 affinity = "0xF0"
 priority = "high"
+
+[[disk]]
+drive = "C:"
+min_free_gb = 50
+why = "a full C: stalls the DAWs"
 "#;
 
 fn matching_pc() -> Pc {
@@ -89,6 +104,7 @@ fn matching_pc() -> Pc {
             priority: "high".into(),
         },
     );
+    pc.free.insert("C:".into(), 100 << 30);
     pc
 }
 
@@ -342,4 +358,63 @@ fn an_environment_value_under_session_manager_needs_a_new_logon() {
         value: Value::String(r"C:\Windows".into()),
     };
     assert_eq!(takes_effect(&a), "a new logon (a reboot for services)");
+}
+
+#[test]
+fn a_drive_below_its_floor_is_a_problem_and_nothing_is_applied_for_it() {
+    let p = parse(PROFILE).unwrap();
+    let mut pc = matching_pc();
+    // FOH's C: on 9.11.2026: 26.5 GB free (dasio#1).
+    pc.free.insert("C:".into(), 53 << 29);
+    let text: Vec<String> = check(&p, &pc).iter().map(ToString::to_string).collect();
+    assert_eq!(
+        text,
+        vec![
+            "disk C: free space: 26.5 GB (the profile wants at least 50 GB) — a full C: stalls the DAWs"
+                .to_string()
+        ]
+    );
+    // Free space is only watched: no action can set it.
+    assert_eq!(plan(&p, &pc), vec![]);
+}
+
+#[test]
+fn a_drive_exactly_at_its_floor_is_fine_and_one_byte_under_is_not() {
+    let p = parse(PROFILE).unwrap();
+    let mut pc = matching_pc();
+    pc.free.insert("C:".into(), 50 << 30);
+    assert_eq!(check(&p, &pc), vec![]);
+    pc.free.insert("C:".into(), (50 << 30) - 1);
+    let problems = check(&p, &pc);
+    assert_eq!(problems.len(), 1);
+    assert_eq!(problems[0].found, "50.0 GB");
+    assert_eq!(problems[0].want, "at least 50 GB");
+}
+
+#[test]
+fn an_unreadable_drive_is_a_problem_that_says_why() {
+    let p = parse(PROFILE).unwrap();
+    let mut pc = matching_pc();
+    pc.unreadable.push("C:".into());
+    let problems = check(&p, &pc);
+    assert_eq!(problems.len(), 1);
+    assert_eq!(problems[0].what, "disk C: free space");
+    assert_eq!(problems[0].found, "unreadable (the device is not ready)");
+}
+
+#[test]
+fn a_disk_entry_with_a_mistake_is_refused() {
+    for drive in ["C", "CC", "CC:", "1:", "C:\\", ""] {
+        let text = format!("name = \"x\"\n[[disk]]\ndrive = '{drive}'\nmin_free_gb = 10\n");
+        assert!(
+            parse(&text).unwrap_err().contains("a letter and a colon"),
+            "drive {drive:?}"
+        );
+    }
+    let zero = "name = \"x\"\n[[disk]]\ndrive = \"D:\"\nmin_free_gb = 0\n";
+    assert!(parse(zero).unwrap_err().contains("above 0"));
+    let typo = "name = \"x\"\n[[disk]]\ndrive = \"D:\"\nmin_free = 10\n";
+    assert!(parse(typo).is_err(), "unknown fields are refused");
+    let ok = "name = \"x\"\n[[disk]]\ndrive = \"d:\"\nmin_free_gb = 1\n";
+    assert_eq!(parse(ok).unwrap().disk[0].min_free_gb, 1);
 }

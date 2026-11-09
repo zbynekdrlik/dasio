@@ -1,12 +1,13 @@
 //! The PC as the profile sees it: HKLM values (with the Dante NIC's keys
-//! resolved), ini lines and running processes; and the writes `apply`
-//! makes. No process is spawned.
+//! resolved), ini lines, running processes and free disk space; and the
+//! writes `apply` makes. No process is spawned.
 
 use std::path::Path;
 
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_SUCCESS, HANDLE, INVALID_HANDLE_VALUE,
 };
+use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
@@ -137,6 +138,26 @@ impl Reader for Pc {
             affinity: mask as u64,
             priority: priority.to_string(),
         })
+    }
+
+    fn free_bytes(&self, drive: &str) -> Result<u64, String> {
+        let root = wide(&format!("{drive}\\"));
+        let mut free = 0u64;
+        // SAFETY: a NUL-terminated path and one writable u64; the two
+        // totals are optional and passed as null.
+        let ok = unsafe {
+            GetDiskFreeSpaceExW(
+                root.as_ptr(),
+                &mut free,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        } != 0;
+        if ok {
+            Ok(free)
+        } else {
+            Err(std::io::Error::last_os_error().to_string())
+        }
     }
 }
 

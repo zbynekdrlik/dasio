@@ -322,7 +322,7 @@ fn pc_profile(path: &str, apply: bool, plan_only: bool) -> ExitCode {
     for pr in &problems {
         println!("PROBLEM {pr}");
     }
-    let entries = p.registry.len() + p.ini.len() + p.process.len();
+    let entries = p.registry.len() + p.ini.len() + p.process.len() + p.disk.len();
     if problems.is_empty() {
         println!("PC profile {}: as it should be ({entries} entries)", p.name);
         ExitCode::SUCCESS
