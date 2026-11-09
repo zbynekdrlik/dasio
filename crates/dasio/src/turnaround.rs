@@ -118,15 +118,34 @@ pub struct Summary {
 
 /// A block's turnaround from its hand-over at `published` until its ack
 /// seen at `now`, split at the driver's callback start `entered` (all ns
-/// on one clock): `(total, Some((wake, process)))`. No split without a
-/// start, or with one outside the turnaround (another clock, a stale
-/// value): the total still counts.
-pub fn split(published: u64, entered: Option<u64>, now: u64) -> (u64, Option<(u64, u64)>) {
+/// on one clock): `(total, Some((wake, process)))`. Wake-up counts from
+/// when the driver was free for this block: the previous block's ack
+/// (`free_at`), never before the hand-over; a block handed over while the
+/// previous callback still ran waits for it, and that wait is the DAW's,
+/// not Windows'. No split without a start, or with one outside the
+/// turnaround (another clock, a stale value): the total still counts.
+pub fn split(
+    published: u64,
+    entered: Option<u64>,
+    now: u64,
+    free_at: Option<u64>,
+) -> (u64, Option<(u64, u64)>) {
     let total = now.saturating_sub(published);
-    let parts = entered
-        .filter(|e| (published..=now).contains(e))
-        .map(|e| (e - published, now - e));
+    let parts = entered.filter(|e| (published..=now).contains(e)).map(|e| {
+        let from = free_at.map_or(published, |f| f.max(published)).min(e);
+        (e - from, now - e)
+    });
     (total, parts)
+}
+
+/// When the driver was free for block `ack`: the time the watcher saw the
+/// previous ack, only when that ack was `ack - 1`. After a skipped ack the
+/// time seen is an older block's, and wake-up would count the callback in
+/// between; then wake-up counts from the hand-over again.
+pub fn free_at(previous: Option<(u64, u64)>, ack: u64) -> Option<u64> {
+    previous
+        .filter(|&(seq, _)| seq.wrapping_add(1) == ack)
+        .map(|(_, at)| at)
 }
 
 impl Turnaround {
@@ -253,18 +272,27 @@ mod tests {
     #[test]
     fn a_turnaround_splits_at_the_callback_start() {
         // Handed over at 1000, callback entered at 1300, ack seen at 2000.
-        assert_eq!(split(1_000, Some(1_300), 2_000), (1_000, Some((300, 700))));
+        assert_eq!(
+            split(1_000, Some(1_300), 2_000, None),
+            (1_000, Some((300, 700)))
+        );
         // An older driver gives no start: the total alone.
-        assert_eq!(split(1_000, None, 2_000), (1_000, None));
+        assert_eq!(split(1_000, None, 2_000, None), (1_000, None));
         // A start outside the turnaround (another clock, a stale value)
         // is no split; the total still counts.
-        assert_eq!(split(1_000, Some(900), 2_000), (1_000, None));
-        assert_eq!(split(1_000, Some(2_100), 2_000), (1_000, None));
+        assert_eq!(split(1_000, Some(900), 2_000, None), (1_000, None));
+        assert_eq!(split(1_000, Some(2_100), 2_000, None), (1_000, None));
         // On the edges it is a split.
-        assert_eq!(split(1_000, Some(1_000), 2_000), (1_000, Some((0, 1_000))));
-        assert_eq!(split(1_000, Some(2_000), 2_000), (1_000, Some((1_000, 0))));
+        assert_eq!(
+            split(1_000, Some(1_000), 2_000, None),
+            (1_000, Some((0, 1_000)))
+        );
+        assert_eq!(
+            split(1_000, Some(2_000), 2_000, None),
+            (1_000, Some((1_000, 0)))
+        );
         // A clock that went back is a zero total, never a wrap.
-        assert_eq!(split(2_000, None, 1_000), (0, None));
+        assert_eq!(split(2_000, None, 1_000, None), (0, None));
     }
 
     #[test]
@@ -297,5 +325,38 @@ mod tests {
         assert_eq!((s.wake_max_us, s.process_max_us), (50, 17_150));
         assert_eq!(s.process_p99_us, u64::MAX);
         assert_eq!(s.wake_p99_us, 250);
+    }
+
+    // dasio#22: a block handed over while the previous callback still runs
+    // waits for it; that wait is not Windows' wake-up. Wake-up counts from
+    // when the driver was free again (the previous ack), never earlier than
+    // the hand-over.
+    #[test]
+    fn wake_up_counts_from_when_the_driver_was_free() {
+        // Handed over at 1000, the previous block's ack at 4000, this
+        // block's callback entered at 4100, its ack at 6000.
+        assert_eq!(
+            split(1_000, Some(4_100), 6_000, Some(4_000)),
+            (5_000, Some((100, 1_900)))
+        );
+        // The previous ack before the hand-over: wake-up from the hand-over.
+        assert_eq!(
+            split(1_000, Some(1_300), 2_000, Some(500)),
+            (1_000, Some((300, 700)))
+        );
+        // The watcher saw the previous ack after the driver entered this
+        // block (its own latency): no negative wake-up.
+        assert_eq!(
+            split(1_000, Some(4_100), 6_000, Some(4_150)),
+            (5_000, Some((0, 1_900)))
+        );
+    }
+
+    #[test]
+    fn only_the_directly_previous_ack_frees_the_driver() {
+        assert_eq!(free_at(Some((41, 4_000)), 42), Some(4_000));
+        assert_eq!(free_at(Some((40, 4_000)), 42), None);
+        assert_eq!(free_at(Some((42, 4_000)), 42), None);
+        assert_eq!(free_at(None, 42), None);
     }
 }
