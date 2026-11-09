@@ -12,6 +12,7 @@ windows-sys = { version = "0.61", features = [
   "Win32_Security",
   "Win32_Security_Authorization",
   "Win32_System_Memory",
+  "Win32_System_Performance",
   "Win32_System_Threading",
 ] }
 

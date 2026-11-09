@@ -344,11 +344,11 @@ mod win {
     use super::Link;
 
     /// The instance's mapping as the bridge's link; each hand-over's time
-    /// (ns since `base`) goes to `stamps` for the turnaround watcher.
+    /// (`shm::qpc_ns`, the driver's clock too) goes to `stamps` for the
+    /// turnaround watcher.
     pub struct SharedLink {
         pub shared: Arc<Shared>,
         pub stamps: Arc<crate::turnaround::Stamps>,
-        pub base: std::time::Instant,
     }
 
     impl Link for SharedLink {
@@ -385,8 +385,7 @@ mod win {
             // The half's media time before its seq: a driver that sees the
             // seq sees the start.
             h.start[(seq % 2) as usize].store(start.unwrap_or(shm::NO_START), Ordering::Relaxed);
-            self.stamps
-                .publish(seq, self.base.elapsed().as_nanos() as u64);
+            self.stamps.publish(seq, shm::qpc_ns());
             h.seq.store(seq, Ordering::Release);
             self.shared.signal_block();
         }

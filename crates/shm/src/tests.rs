@@ -71,3 +71,58 @@ fn the_installer_s_protocol_is_the_layout_s_version() {
         "scripts/install.ps1 must set {want}"
     );
 }
+
+// The enter fields use what was padding: the header keeps its size, so a
+// driver and a device of either age share one layout (VERSION unchanged).
+#[test]
+fn the_header_keeps_its_size() {
+    assert_eq!(std::mem::size_of::<Header>(), 128);
+    assert_eq!(std::mem::offset_of!(Header, enter_seq), 104);
+    assert_eq!(std::mem::offset_of!(Header, enter_ns), 112);
+}
+
+#[test]
+fn an_entered_block_reads_back_its_time() {
+    let h = Header::default();
+    // An older driver never writes it.
+    assert_eq!(h.entered(1), None);
+    h.enter(7, 1_234);
+    assert_eq!(h.entered(7), Some(1_234));
+    // Another block's time is never paired with this seq.
+    assert_eq!(h.entered(6), None);
+    assert_eq!(h.entered(8), None);
+    h.enter(8, 5_678);
+    assert_eq!(h.entered(7), None);
+    assert_eq!(h.entered(8), Some(5_678));
+    // Seq 0 is never a block.
+    h.enter(0, 9);
+    assert_eq!(h.entered(0), None);
+}
+
+#[test]
+fn a_half_written_enter_is_not_read() {
+    let h = Header::default();
+    h.enter(3, 100);
+    // The driver mid-write: seq cleared, time not yet paired.
+    h.enter_seq.store(0, Ordering::Release);
+    h.enter_ns.store(200, Ordering::Release);
+    assert_eq!(h.entered(3), None);
+}
+
+#[test]
+fn counter_ticks_turn_into_ns() {
+    // 10 MHz (Windows' usual QPC rate): one tick is 100 ns.
+    assert_eq!(ticks_to_ns(1, 10_000_000), 100);
+    assert_eq!(ticks_to_ns(10_000_000, 10_000_000), 1_000_000_000);
+    // An odd rate keeps the remainder's share.
+    assert_eq!(ticks_to_ns(3, 3_000_000), 1_000);
+    assert_eq!(ticks_to_ns(4, 3_000_000), 1_333);
+    // Large counts neither overflow nor lose the whole seconds.
+    assert_eq!(
+        ticks_to_ns(u64::MAX / 2, 10_000_000),
+        (u64::MAX / 2 / 10_000_000) * 1_000_000_000 + (u64::MAX / 2 % 10_000_000) * 100
+    );
+    assert_eq!(ticks_to_ns(u64::MAX, 1), u64::MAX);
+    // A zero rate is never a division by zero.
+    assert_eq!(ticks_to_ns(5, 0), 5_000_000_000);
+}
