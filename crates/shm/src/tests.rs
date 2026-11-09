@@ -117,11 +117,14 @@ fn counter_ticks_turn_into_ns() {
     // An odd rate keeps the remainder's share.
     assert_eq!(ticks_to_ns(3, 3_000_000), 1_000);
     assert_eq!(ticks_to_ns(4, 3_000_000), 1_333);
-    // Large counts neither overflow nor lose the whole seconds.
+    // Three years of a 10 MHz counter: ticks * 1e9 does not fit in a u64,
+    // the result does, exactly.
     assert_eq!(
-        ticks_to_ns(u64::MAX / 2, 10_000_000),
-        (u64::MAX / 2 / 10_000_000) * 1_000_000_000 + (u64::MAX / 2 % 10_000_000) * 100
+        ticks_to_ns(1_000_000_000_000_007, 10_000_000),
+        100_000_000_000_000_700
     );
+    // A result past u64 saturates, never wraps or panics.
+    assert_eq!(ticks_to_ns(u64::MAX, 10_000_000), u64::MAX);
     assert_eq!(ticks_to_ns(u64::MAX, 1), u64::MAX);
     // A zero rate is never a division by zero.
     assert_eq!(ticks_to_ns(5, 0), 5_000_000_000);

@@ -123,7 +123,7 @@ pub struct Summary {
 pub fn split(published: u64, entered: Option<u64>, now: u64) -> (u64, Option<(u64, u64)>) {
     let total = now.saturating_sub(published);
     let parts = entered
-        .filter(|&e| published <= e && e <= now)
+        .filter(|e| (published..=now).contains(e))
         .map(|e| (e - published, now - e));
     (total, parts)
 }
