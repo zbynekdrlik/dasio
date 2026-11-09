@@ -37,3 +37,12 @@ Owner rules from dasio#1. They hold for every change on a PC running dasio.
   comment of another ticket.
 - **A task that belongs to another project is handed over at once**, not
   filed here. That covers dstack, PCs dasio does not run, and the network.
+- **Packet captures with pktmon:**
+  - Start, restart and stop from one detached script, at fixed UTC times
+    agreed with the peers that capture on the other end.
+  - pktmon logs each packet at several stack components. Counts come out
+    about 8 times too high; the times and ports are what matter.
+  - `pktmon etl2txt` is huge (1.1 GB for 4 min of one audio flow). Use
+    `pktmon etl2pcap`, pull the pcap at 1 MB/s with `curl.exe --limit-rate 1M -T`,
+    and analyse it off the PC with tshark.
+  - A remote-shell call ends after 30 s: run the conversion detached too.
