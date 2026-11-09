@@ -1,0 +1,17 @@
+# cargo-deny (dasio#28, E15): the supply chain the CI checks.
+# - advisories: RustSec, every dependency; a yanked crate fails too.
+# - sources: crates.io and the owner's own git repos only.
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = [
+  "https://github.com/zbynekdrlik/dstack",
+  "https://github.com/zbynekdrlik/dsync",
+]
