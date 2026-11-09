@@ -76,6 +76,9 @@ struct Rt {
     ready_sent: AtomicBool,
     /// The DAW said it calls `outputReady` (it may skip it under load).
     seq_in_hand: AtomicU64,
+    /// When the DAW's callback for the block in hand started (`shm::qpc_ns`):
+    /// it goes with that block's ack (dasio#22).
+    entered_ns: AtomicU64,
     /// Samples handed to the DAW since `start`.
     position: AtomicU64,
     /// The `timeGetTime` ms of the last hand-over.
@@ -162,6 +165,7 @@ impl Driver {
             rt: Arc::new(Rt {
                 ready_sent: AtomicBool::new(false),
                 seq_in_hand: AtomicU64::new(0),
+                entered_ns: AtomicU64::new(0),
                 position: AtomicU64::new(0),
                 systime_ms: AtomicU64::new(0),
                 shm: Mutex::new(None),
@@ -688,9 +692,10 @@ unsafe extern "system" fn output_ready(this: *mut c_void) -> ASIOError {
         // SAFETY: a live Driver.
         let rt = &unsafe { me(this) }.rt;
         if let Some(s) = rt.shm() {
-            s.header()
-                .ack
-                .store(rt.seq_in_hand.load(Ordering::Acquire), Ordering::Release);
+            s.header().ack_block(
+                rt.seq_in_hand.load(Ordering::Acquire),
+                rt.entered_ns.load(Ordering::Acquire),
+            );
             s.signal_ready();
             rt.ready_sent.store(true, Ordering::Release);
         }
@@ -777,13 +782,15 @@ impl Job {
                     half = (seq % 2) as i32;
                     self.rt.seq_in_hand.store(seq, Ordering::Release);
                     self.rt.ready_sent.store(false, Ordering::Release);
-                    // When the DAW's callback starts on this block: the
-                    // device splits its turnaround into our wake-up and the
-                    // DAW's processing (dasio#22).
-                    s.header().enter(seq, shm::qpc_ns());
+                    // When the DAW's callback starts on this block: it goes
+                    // with the block's ack, and the device splits the
+                    // turnaround into our wake-up and the DAW's processing
+                    // (dasio#22).
+                    self.rt.entered_ns.store(shm::qpc_ns(), Ordering::Release);
                     self.switch(&mut time, half);
                     if !self.rt.ready_sent.swap(false, Ordering::AcqRel) {
-                        s.header().ack.store(seq, Ordering::Release);
+                        s.header()
+                            .ack_block(seq, self.rt.entered_ns.load(Ordering::Acquire));
                         s.signal_ready();
                     }
                 }

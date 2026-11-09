@@ -19,10 +19,11 @@ exclude_globs = [
 # The `win` modules of register.rs and bridge.rs: Windows-only too.
 # RotatingLog's flush: std's File writes unbuffered, so its flush is a
 # no-op and `Ok(())` in its place is the same program.
-# Header::enter's `seq | ENTERED_MARK`: a seq never reaches bit 63, so `^`
-# gives the same value (an equivalent mutant no test can tell apart).
+# `seq | ACKED_MARK` in Header::ack_block and Header::entered: a seq never
+# reaches bit 62, so `^` gives the same value (an equivalent mutant no test
+# can tell apart).
 exclude_re = [
   "\\bwin::",
   "RotatingLog>::flush",
-  "replace \\| with \\^ in Header::enter",
+  "replace \\| with \\^ in Header::(ack_block|entered)",
 ]
