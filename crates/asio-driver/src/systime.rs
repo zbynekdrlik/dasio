@@ -95,6 +95,11 @@ mod tests {
         let t = shm::qpc_ns();
         while shm::qpc_ns() < t + 100_000 {}
         let b = stamp(shm::qpc_ns(), o);
-        assert!(b > a && b - a < 1_000_000, "100 µs apart: {a} then {b}");
+        // timeGetTime's stamps differ by whole ms; these by the counter's ns
+        // (a preempted runner may stretch the 100 µs, never to whole ms).
+        assert!(
+            b > a && (b - a) % 1_000_000 != 0,
+            "100 µs apart: {a} then {b}"
+        );
     }
 }
