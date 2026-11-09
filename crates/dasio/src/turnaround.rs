@@ -298,4 +298,29 @@ mod tests {
         assert_eq!(s.process_p99_us, u64::MAX);
         assert_eq!(s.wake_p99_us, 250);
     }
+
+    // dasio#22: a block handed over while the previous callback still runs
+    // waits for it; that wait is not Windows' wake-up. Wake-up counts from
+    // when the driver was free again (the previous ack), never earlier than
+    // the hand-over.
+    #[test]
+    fn wake_up_counts_from_when_the_driver_was_free() {
+        // Handed over at 1000, the previous block's ack at 4000, this
+        // block's callback entered at 4100, its ack at 6000.
+        assert_eq!(
+            split(1_000, Some(4_100), 6_000, Some(4_000)),
+            (5_000, Some((100, 1_900)))
+        );
+        // The previous ack before the hand-over: wake-up from the hand-over.
+        assert_eq!(
+            split(1_000, Some(1_300), 2_000, Some(500)),
+            (1_000, Some((300, 700)))
+        );
+        // The watcher saw the previous ack after the driver entered this
+        // block (its own latency): no negative wake-up.
+        assert_eq!(
+            split(1_000, Some(4_100), 6_000, Some(4_150)),
+            (5_000, Some((0, 1_900)))
+        );
+    }
 }
