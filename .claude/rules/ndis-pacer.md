@@ -43,3 +43,16 @@ paths:
   txset`) bounds the frames out; `install.ps1` writes 200, the value
   measured on FOH (0 failures, 0 holes overnight). Frames over the bound
   go to the socket and count in `TxNoSlot`.
+
+## Test PCs and NIC drivers
+
+- A test PC runs the current filter build or none, never a leftover one.
+  Record which on the ticket.
+- On a PC with one NIC, record on the ticket why, before any NIC driver
+  install or uninstall. After it, ping the gateway with 1472-byte packets
+  and see 0 % loss before leaving the PC.
+- After a `/force` uninstall, never leave a PC on a fallback driver without
+  saying so on the ticket.
+- Never turn interrupt moderation off on a USB NIC. An AX88179 lost the
+  PC's network that way (dasio#1, 5.11.2026). Middle is the known-good
+  setting.
