@@ -6,7 +6,7 @@
 //! process off the media CPUs ([`ChildCheck`]), and reports what differs;
 //! `dasio pc-profile apply` sets what differs.
 //!
-//! Three kinds of entries:
+//! Four kinds of entries:
 //! - `[[registry]]`: one value under `HKLM\...` (a DWORD, a string, or
 //!   binary as hex). `{nic_class}` and `{nic_device}` in a key stand for
 //!   the Dante NIC's class key and its Enum `Device Parameters` key, found
@@ -15,6 +15,9 @@
 //! - `[[process]]`: what a running process must have (affinity, priority
 //!   class), to see that the tool which sets it (Lasso) did; checked only,
 //!   never applied, and skipped while the process does not run.
+//! - `[[disk]]`: a floor of free space on a drive, so a filling disk shows
+//!   as a problem before it hurts (FOH's C: had 26.5 GB left, owner
+//!   9.11.2026, dasio#1); checked only, never applied.
 //!
 //! This part is portable and tested everywhere; reading and writing the
 //! PC is [`windows`](self::windows).
@@ -45,6 +48,8 @@ pub struct Profile {
     pub ini: Vec<IniEntry>,
     #[serde(default)]
     pub process: Vec<ProcEntry>,
+    #[serde(default)]
+    pub disk: Vec<DiskEntry>,
 }
 
 /// An expected registry value: exactly one of `dword`, `string`, `binary`.
@@ -93,6 +98,22 @@ pub struct ProcEntry {
     pub why: String,
 }
 
+/// A floor of free space on a drive.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DiskEntry {
+    /// The drive, e.g. `C:`.
+    pub drive: String,
+    /// The least free space it may have, in GB (2^30 bytes, as Explorer
+    /// shows it).
+    pub min_free_gb: u64,
+    #[serde(default)]
+    pub why: String,
+}
+
+/// Bytes in the GB the profile and its problems use.
+const GB: u64 = 1 << 30;
+
 /// A registry value as read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
@@ -118,6 +139,8 @@ pub trait Reader {
     fn ini(&self, file: &str, key: &str) -> Result<Option<String>, String>;
     /// The first running process with image `exe`; `None` when none runs.
     fn process(&self, exe: &str) -> Option<ProcState>;
+    /// The free bytes on `drive` (e.g. `C:`) for the reading account.
+    fn free_bytes(&self, drive: &str) -> Result<u64, String>;
 }
 
 /// One setting that is not as the profile says.
@@ -171,6 +194,18 @@ pub fn parse(text: &str) -> Result<Profile, String> {
                 "process {}: priority {c} is not one of {PRIORITIES:?}",
                 e.exe
             ));
+        }
+    }
+    for d in &p.disk {
+        let b = d.drive.as_bytes();
+        if b.len() != 2 || !b[0].is_ascii_alphabetic() || b[1] != b':' {
+            return Err(format!(
+                "disk {}: give the drive as a letter and a colon, e.g. C:",
+                d.drive
+            ));
+        }
+        if d.min_free_gb == 0 {
+            return Err(format!("disk {}: min_free_gb must be above 0", d.drive));
         }
     }
     Ok(p)
@@ -282,7 +317,31 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
             });
         }
     }
+    for e in &p.disk {
+        // The text stays the same while the drive stays under its floor:
+        // the service logs a problem again only when its text changes, so
+        // the live amount (which moves all the time) is not in it. The
+        // check command prints the amount on its own line ([`gb_down`]).
+        let found = match r.free_bytes(&e.drive) {
+            Ok(free) if free >= e.min_free_gb.saturating_mul(GB) => continue,
+            Ok(_) => "below the floor".to_string(),
+            Err(err) => format!("unreadable ({err})"),
+        };
+        out.push(Problem {
+            what: format!("disk {} free space", e.drive),
+            found,
+            want: format!("at least {} GB", e.min_free_gb),
+            why: e.why.clone(),
+        });
+    }
     out
+}
+
+/// `bytes` in GB with one decimal, rounded down, so an amount under a
+/// floor never reads as the floor itself.
+pub fn gb_down(bytes: u64) -> String {
+    let tenths = u128::from(bytes) * 10 / u128::from(GB);
+    format!("{}.{} GB", tenths / 10, tenths % 10)
 }
 
 /// One change `apply` makes.

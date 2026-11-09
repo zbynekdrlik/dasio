@@ -322,7 +322,18 @@ fn pc_profile(path: &str, apply: bool, plan_only: bool) -> ExitCode {
     for pr in &problems {
         println!("PROBLEM {pr}");
     }
-    let entries = p.registry.len() + p.ini.len() + p.process.len();
+    for d in &p.disk {
+        match dasio::pc_profile::Reader::free_bytes(&pc, &d.drive) {
+            Ok(free) => println!(
+                "disk {}: {} free (floor {} GB)",
+                d.drive,
+                dasio::pc_profile::gb_down(free),
+                d.min_free_gb
+            ),
+            Err(e) => println!("disk {}: unreadable ({e})", d.drive),
+        }
+    }
+    let entries = p.registry.len() + p.ini.len() + p.process.len() + p.disk.len();
     if problems.is_empty() {
         println!("PC profile {}: as it should be ({entries} entries)", p.name);
         ExitCode::SUCCESS
