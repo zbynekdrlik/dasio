@@ -23,3 +23,23 @@ paths:
   holds key by key.
 - Not covered yet: BCD settings (`disabledynamictick Yes`, `testsigning
   Yes`), checked by hand with `bcdedit /enum {current}`.
+
+## After a reboot
+
+- The service's first check runs about a minute before Process Lasso
+  starts. Its power plan and process affinity findings at boot are Lasso's
+  pending work, not drift. Judge the second check, 10 min later: it logs
+  "fixed" for them.
+- A board's firmware can re-install a vendor service at every boot through
+  WPBT: the exe in `System32` is rewritten at boot and its `Start` goes back
+  to 2, with no SCM 7040 event. Disabling the service does not hold.
+  `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager`
+  `DisableWpbtExecution` = 1 (DWORD) stops it from the next boot on. The
+  profile holds it next to the service's `Start`. Seen on FOH, 9.11.2026
+  (dasio#1).
+- Process Lasso can migrate its ini at start: the `Version` key changes and
+  new default keys appear. Diff the ini against its last backup. Move the
+  profile's expected `Version` only when every rule line is unchanged.
+- The DAWs on FOH never start on their own after a reboot: dasio starts
+  both (launchers in the private notes), then checks the DAW is attached
+  and Lasso's affinities hold.
