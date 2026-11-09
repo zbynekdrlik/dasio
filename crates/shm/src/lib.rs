@@ -12,7 +12,7 @@
 //! and, once the DAW has written its outputs, stores the same number in
 //! [`Header::ack`] and signals the ready event.
 
-use std::sync::atomic::{AtomicU32, AtomicU64};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// `"DASI"`.
 pub const MAGIC: u32 = u32::from_le_bytes(*b"DASI");
@@ -68,6 +68,44 @@ pub struct Header {
     /// (written before its seq; [`NO_START`] without a clock): the DAW's
     /// sample position runs on it.
     pub start: [AtomicU64; 2],
+    /// The block whose DAW callback the driver last entered, and when (ns
+    /// on the system-wide performance counter, `qpc_ns` on Windows).
+    /// Written by [`Header::enter`] as a seqlock, read by
+    /// [`Header::entered`]; an older driver leaves both 0. They sit in what
+    /// was the header's padding: the size, the offsets and [`VERSION`]
+    /// stay, so either side may be the older one.
+    pub enter_seq: AtomicU64,
+    pub enter_ns: AtomicU64,
+}
+
+impl Header {
+    /// The driver enters the DAW's callback for block `seq` at `ns`.
+    pub fn enter(&self, seq: u64, ns: u64) {
+        // 0 while the time changes: a reader never pairs a seq with
+        // another block's time.
+        self.enter_seq.store(0, Ordering::Release);
+        self.enter_ns.store(ns, Ordering::Release);
+        self.enter_seq.store(seq, Ordering::Release);
+    }
+
+    /// When the driver entered the DAW's callback for block `seq`; `None`
+    /// when it has moved on (or never wrote it: an older driver).
+    pub fn entered(&self, seq: u64) -> Option<u64> {
+        if seq == 0 || self.enter_seq.load(Ordering::Acquire) != seq {
+            return None;
+        }
+        let ns = self.enter_ns.load(Ordering::Acquire);
+        (self.enter_seq.load(Ordering::Acquire) == seq).then_some(ns)
+    }
+}
+
+/// `ticks` of a counter running at `freq` per second, in ns (no overflow
+/// for any `u64` tick count).
+pub fn ticks_to_ns(ticks: u64, freq: u64) -> u64 {
+    let freq = u128::from(freq.max(1));
+    let ns =
+        u128::from(ticks) / freq * 1_000_000_000 + u128::from(ticks) % freq * 1_000_000_000 / freq;
+    u64::try_from(ns).unwrap_or(u64::MAX)
 }
 
 /// The layout's shape: channels each way and the block.
@@ -122,7 +160,7 @@ impl Shape {
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::Shared;
+pub use windows::{Shared, qpc_ns};
 
 #[cfg(test)]
 mod tests;

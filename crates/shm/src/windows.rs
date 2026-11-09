@@ -26,7 +26,28 @@ use windows_sys::Win32::System::Threading::{
     CreateEventW, EVENT_ALL_ACCESS, OpenEventW, SetEvent, WaitForSingleObject,
 };
 
-use crate::{Header, MAGIC, Shape, VERSION};
+use crate::{Header, MAGIC, Shape, VERSION, ticks_to_ns};
+
+/// Now on the system-wide performance counter, ns: the one clock the
+/// driver (in the DAW's process) and the device share, so a time one of
+/// them writes into the header is comparable with the other's.
+pub fn qpc_ns() -> u64 {
+    use std::sync::OnceLock;
+    use windows_sys::Win32::System::Performance::{
+        QueryPerformanceCounter, QueryPerformanceFrequency,
+    };
+    static FREQ: OnceLock<u64> = OnceLock::new();
+    let freq = *FREQ.get_or_init(|| {
+        let mut f = 0i64;
+        // SAFETY: a valid out pointer; never fails on XP and later.
+        unsafe { QueryPerformanceFrequency(&mut f) };
+        f.max(1) as u64
+    });
+    let mut t = 0i64;
+    // SAFETY: a valid out pointer; never fails on XP and later.
+    unsafe { QueryPerformanceCounter(&mut t) };
+    ticks_to_ns(t.max(0) as u64, freq)
+}
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()

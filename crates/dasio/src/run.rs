@@ -16,7 +16,7 @@ use tracing::{info, warn};
 
 use crate::bridge::{Bridge, SharedLink};
 use crate::logfile::{COUNTS_EVERY, Every, STATUS_EVERY};
-use crate::turnaround::{Stamps, Turnaround};
+use crate::turnaround::{Stamps, Turnaround, split};
 
 /// Runs instance `instance` from the device config at `config` on `ip`
 /// with the media clock from `clock` (dantesync in production; the system
@@ -85,12 +85,10 @@ pub fn run(
     let stats = Arc::new(PumpStats::new(timing, cfg.sample_rate));
     media.attach_engine(Arc::clone(&stats));
     let stamps = Arc::new(Stamps::default());
-    let base = Instant::now();
     let bridge = Bridge::with_spare(
         SharedLink {
             shared: Arc::clone(&shared),
             stamps: Arc::clone(&stamps),
-            base,
         },
         u64::from(spare),
     )
@@ -168,7 +166,6 @@ pub fn run(
     let watcher = watch_turnaround(
         Arc::clone(&shared),
         stamps,
-        base,
         period_ns,
         Arc::clone(&turnaround),
         Arc::clone(&stop),
@@ -261,17 +258,37 @@ pub fn run(
                 "counts"
             );
             // The DAW's turnaround since the last counts (see turnaround).
+            // Its wake-up and processing parts only when the driver gave
+            // them (an older driver gives none): never a 0 that reads as
+            // a measured 0 µs.
             if let Ok(t) = turnaround.lock().map(|mut t| t.take())
                 && t.count > 0
             {
-                info!(
-                    blocks = t.count,
-                    p50_us = t.p50_us,
-                    p99_us = t.p99_us,
-                    max_us = t.max_us,
-                    over_period = t.over,
-                    "DAW turnaround"
-                );
+                if t.split > 0 {
+                    info!(
+                        blocks = t.count,
+                        p50_us = t.p50_us,
+                        p99_us = t.p99_us,
+                        max_us = t.max_us,
+                        over_period = t.over,
+                        split = t.split,
+                        wake_p99_us = t.wake_p99_us,
+                        wake_max_us = t.wake_max_us,
+                        process_p99_us = t.process_p99_us,
+                        process_max_us = t.process_max_us,
+                        "DAW turnaround"
+                    );
+                } else {
+                    info!(
+                        blocks = t.count,
+                        p50_us = t.p50_us,
+                        p99_us = t.p99_us,
+                        max_us = t.max_us,
+                        over_period = t.over,
+                        split = 0,
+                        "DAW turnaround"
+                    );
+                }
             }
             if status.due(now) {
                 info!(status = %dstack::ctl::answer("status", &media), "device status");
@@ -303,13 +320,14 @@ pub fn run(
 }
 
 /// The turnaround watcher: sleeps on the driver's ready event, and each
-/// newly returned block's time since its hand-over goes to `out`. A
-/// sleeping thread at the top priority wakes within µs of the driver's
-/// signal, so it measures the DAW, not itself, and spins no core.
+/// newly returned block's time since its hand-over goes to `out`, split at
+/// the driver's callback start when the driver wrote one (dasio#22). All
+/// times are `shm::qpc_ns`, the clock the driver stamps with. A sleeping
+/// thread at the top priority wakes within µs of the driver's signal, so it
+/// measures the DAW, not itself, and spins no core.
 fn watch_turnaround(
     shared: Arc<Shared>,
     stamps: Arc<Stamps>,
-    base: Instant,
     period_ns: u64,
     out: Arc<Mutex<Turnaround>>,
     stop: Arc<AtomicBool>,
@@ -327,8 +345,10 @@ fn watch_turnaround(
                 if !shared.wait_ready(100) {
                     continue;
                 }
-                let now = base.elapsed().as_nanos() as u64;
+                // The ack before the time: the driver's callback start for
+                // that block came before its ack, so it is never after `now`.
                 let ack = shared.header().ack.load(Ordering::Acquire);
+                let now = shm::qpc_ns();
                 if ack == last {
                     continue;
                 }
@@ -336,7 +356,8 @@ fn watch_turnaround(
                 if let Some(at) = stamps.published(ack)
                     && let Ok(mut t) = out.lock()
                 {
-                    t.record(now.saturating_sub(at), period_ns);
+                    let (total, parts) = split(at, shared.header().entered(ack), now);
+                    t.record(total, period_ns, parts);
                 }
             }
         })

@@ -777,6 +777,10 @@ impl Job {
                     half = (seq % 2) as i32;
                     self.rt.seq_in_hand.store(seq, Ordering::Release);
                     self.rt.ready_sent.store(false, Ordering::Release);
+                    // When the DAW's callback starts on this block: the
+                    // device splits its turnaround into our wake-up and the
+                    // DAW's processing (dasio#22).
+                    s.header().enter(seq, shm::qpc_ns());
                     self.switch(&mut time, half);
                     if !self.rt.ready_sent.swap(false, Ordering::AcqRel) {
                         s.header().ack.store(seq, Ordering::Release);
