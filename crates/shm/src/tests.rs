@@ -92,8 +92,12 @@ fn an_entered_block_reads_back_its_time() {
     assert_eq!(h.entered(6), None);
     assert_eq!(h.entered(8), None);
     h.enter(8, 5_678);
-    assert_eq!(h.entered(7), None);
+    // The block before the latest stays readable (dasio#22: it is the
+    // slow one); two back is gone.
+    assert_eq!(h.entered(7), Some(1_234));
     assert_eq!(h.entered(8), Some(5_678));
+    h.enter(9, 9_999);
+    assert_eq!(h.entered(7), None);
     // Seq 0 is never a block.
     h.enter(0, 9);
     assert_eq!(h.entered(0), None);
