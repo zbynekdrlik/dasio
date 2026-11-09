@@ -112,6 +112,7 @@ fn main() -> ExitCode {
             None => return usage(),
         },
         "run" | "service" => {
+            quiet_crashes();
             let (Some(config), Some(ip)) = (
                 flag(&args, "--config"),
                 flag(&args, "--ip").and_then(|ip| ip.parse().ok()),
@@ -152,6 +153,20 @@ fn main() -> ExitCode {
         }
     }
 }
+
+/// A crash of the device process ends it at once (no error box, no WER
+/// UI): the SCM restarts it instead of it holding its Dante ports.
+#[cfg(windows)]
+fn quiet_crashes() {
+    let mode = dasio::run::quiet_crashes();
+    tracing::info!(
+        error_mode = mode,
+        "crashes end the process without a dialog"
+    );
+}
+
+#[cfg(not(windows))]
+fn quiet_crashes() {}
 
 #[cfg(windows)]
 fn apply(entries: &[dasio::register::Entry]) -> Result<(), String> {

@@ -831,3 +831,43 @@ fn child_check(own: usize) -> Result<crate::pc_profile::ChildCheck, String> {
         &String::from_utf8_lossy(&out.stderr),
     ))
 }
+
+/// The device process crashes quietly (dasio#28): no Windows error box and
+/// no WER dialog, so a crashed device never sits on its Dante ports waiting
+/// for a click nobody gives; the process ends and the SCM restarts it.
+/// Returns the error mode now in force.
+pub fn quiet_crashes() -> u32 {
+    use windows_sys::Win32::System::Diagnostics::Debug::{
+        GetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SEM_NOOPENFILEERRORBOX,
+        SetErrorMode,
+    };
+    use windows_sys::Win32::System::ErrorReporting::{WER_FAULT_REPORTING_NO_UI, WerSetFlags};
+    // SAFETY: plain calls on this process.
+    unsafe {
+        SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+        let r = WerSetFlags(WER_FAULT_REPORTING_NO_UI);
+        if r < 0 {
+            warn!(hresult = r, "WER keeps its fault UI");
+        }
+        GetErrorMode()
+    }
+}
+
+#[cfg(test)]
+mod quiet_tests {
+    use windows_sys::Win32::System::Diagnostics::Debug::{
+        SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SEM_NOOPENFILEERRORBOX,
+    };
+
+    #[test]
+    fn a_crash_shows_no_error_box() {
+        let mode = super::quiet_crashes();
+        for bit in [
+            SEM_FAILCRITICALERRORS,
+            SEM_NOGPFAULTERRORBOX,
+            SEM_NOOPENFILEERRORBOX,
+        ] {
+            assert_ne!(mode & bit, 0, "error mode {mode:#x} lacks {bit:#x}");
+        }
+    }
+}
