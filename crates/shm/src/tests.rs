@@ -92,8 +92,12 @@ fn an_entered_block_reads_back_its_time() {
     assert_eq!(h.entered(6), None);
     assert_eq!(h.entered(8), None);
     h.enter(8, 5_678);
-    assert_eq!(h.entered(7), None);
+    // The block before the latest stays readable (dasio#22: it is the
+    // slow one); two back is gone.
+    assert_eq!(h.entered(7), Some(1_234));
     assert_eq!(h.entered(8), Some(5_678));
+    h.enter(9, 9_999);
+    assert_eq!(h.entered(7), None);
     // Seq 0 is never a block.
     h.enter(0, 9);
     assert_eq!(h.entered(0), None);
@@ -105,8 +109,20 @@ fn a_half_written_enter_is_not_read() {
     h.enter(3, 100);
     // The driver mid-write: seq cleared, time not yet paired.
     h.enter_seq.store(0, Ordering::Release);
-    h.enter_ns.store(200, Ordering::Release);
+    h.enter_ns[1].store(200, Ordering::Release);
     assert_eq!(h.entered(3), None);
+}
+
+// 0.1.18's driver wrote the latest seq without the mark and one slot for
+// every block: its values are never read, so a mismatch gives no split
+// rather than a wrong one.
+#[test]
+fn a_driver_without_the_mark_is_never_read() {
+    let h = Header::default();
+    h.enter_seq.store(10, Ordering::Release);
+    h.enter_ns[0].store(5_000, Ordering::Release);
+    assert_eq!(h.entered(10), None);
+    assert_eq!(h.entered(9), None);
 }
 
 #[test]
@@ -132,36 +148,46 @@ fn counter_ticks_turn_into_ns() {
 
 // The seqlock under a real race: a reader never pairs one block's seq with
 // another block's time while the driver keeps writing. The reader ends when
-// the writer has, so a driver that never writes fails here, never hangs.
+// the writer has (or has panicked), so a broken writer fails here, never
+// hangs.
 #[test]
 fn a_racing_reader_never_pairs_a_seq_with_another_time() {
-    use std::sync::atomic::AtomicBool;
     let h = Header::default();
-    let done = AtomicBool::new(false);
     const N: u64 = 200_000;
     std::thread::scope(|s| {
-        s.spawn(|| {
+        let writer = s.spawn(|| {
             for i in 1..=N {
                 h.enter(i, i * 1000);
             }
-            done.store(true, Ordering::Release);
         });
         let mut paired = 0u64;
         loop {
-            let finished = done.load(Ordering::Acquire);
-            let seq = h.enter_seq.load(Ordering::Acquire);
+            let finished = writer.is_finished();
+            let seq = h.enter_seq.load(Ordering::Acquire) & !ENTERED_MARK;
             if seq != 0
                 && let Some(ns) = h.entered(seq)
             {
                 assert_eq!(ns, seq * 1000, "seq {seq} read another block's time");
                 paired += 1;
             }
+            if seq > 1
+                && let Some(ns) = h.entered(seq - 1)
+            {
+                assert_eq!(
+                    ns,
+                    (seq - 1) * 1000,
+                    "seq {} read another block's time",
+                    seq - 1
+                );
+            }
             if finished {
                 break;
             }
         }
+        writer.join().expect("the writer ran through");
         assert!(paired > 0);
         assert_eq!(h.entered(N), Some(N * 1000));
+        assert_eq!(h.entered(N - 1), Some((N - 1) * 1000));
     });
 }
 
@@ -179,4 +205,16 @@ fn the_shared_clock_runs_forward_in_ns() {
         (20_000_000..2_000_000_000).contains(&slept),
         "a 20 ms sleep measured {slept} ns"
     );
+}
+
+// dasio#22: a slow block's ack is followed at once by the driver entering
+// the next block (it is already due). The slow block's callback start must
+// still be readable then, or the split drops exactly the slow blocks.
+#[test]
+fn a_slow_block_keeps_its_start_after_the_next_block_enters() {
+    let h = Header::default();
+    h.enter(10, 10_000);
+    h.enter(11, 11_000);
+    assert_eq!(h.entered(10), Some(10_000));
+    assert_eq!(h.entered(11), Some(11_000));
 }
