@@ -25,6 +25,22 @@ jobs:
         with:
           persist-credentials: false
       - run: cargo fmt --all --check
+      # Rules the compiler does not check (dasio#28, E14).
+      - run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      - run: python3 scripts/integrity.py
+
+  supply-chain:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-deny@0.20.2
+      # RustSec advisories and allowed sources (deny.toml, dasio#28 E15).
+      - run: cargo deny --locked check advisories sources
 
   test:
     strategy:
