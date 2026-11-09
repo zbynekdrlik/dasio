@@ -46,3 +46,7 @@ Owner rules from dasio#1. They hold for every change on a PC running dasio.
     `pktmon etl2pcap`, pull the pcap at 1 MB/s with `curl.exe --limit-rate 1M -T`,
     and analyse it off the PC with tshark.
   - A remote-shell call ends after 30 s: run the conversion detached too.
+- **A device's service restart re-makes every receiver's flows from it.**
+  On band that is iem-mixer's return channels and more; on mbc it is
+  stream-obs. Before a band restart, tell iemmixer and camera-box; before
+  an mbc restart, tell camera-box. Give a UTC time and keep to it.

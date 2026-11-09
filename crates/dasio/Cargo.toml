@@ -7,8 +7,8 @@ publish = false
 description = "dasio's device process: one Dante device per instance, its audio through the shared memory to the ASIO driver"
 
 [dependencies]
-dstack-audio-io = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.63" }
-dstack = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.63" }
+dstack-audio-io = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.64" }
+dstack = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.64" }
 shm = { path = "../shm" }
 asio-driver = { path = "../asio-driver" }
 serde = { version = "1.0", features = ["derive"] }
