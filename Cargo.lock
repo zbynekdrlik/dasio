@@ -67,8 +67,8 @@ dependencies = [
 
 [[package]]
 name = "dstack"
-version = "0.6.59"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.59#342adf267d9f0e2e00ee7430c47690d877b8161d"
+version = "0.6.61"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.61#3ed5a0cba4aa26c576440e4b78c70122fddf89ae"
 dependencies = [
  "dstack-audio-io",
  "dsync-ptp",
@@ -90,8 +90,8 @@ dependencies = [
 
 [[package]]
 name = "dstack-audio-io"
-version = "0.6.59"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.59#342adf267d9f0e2e00ee7430c47690d877b8161d"
+version = "0.6.61"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.61#3ed5a0cba4aa26c576440e4b78c70122fddf89ae"
 
 [[package]]
 name = "dsync-ptp"
@@ -221,11 +221,12 @@ dependencies = [
 [[package]]
 name = "mdns-sd"
 version = "0.21.6"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.59#342adf267d9f0e2e00ee7430c47690d877b8161d"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.61#3ed5a0cba4aa26c576440e4b78c70122fddf89ae"
 dependencies = [
  "fastrand",
  "flume",
  "if-addrs 0.15.0",
+ "libc",
  "log",
  "mio",
  "socket-pktinfo",
