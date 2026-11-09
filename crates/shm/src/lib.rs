@@ -102,15 +102,24 @@ impl Header {
 
     /// When the DAW's callback for block `seq` started, while `seq` is the
     /// block the driver last returned; `None` once it has returned another,
-    /// for an unknown start, or from an older driver.
+    /// for an unknown start, or from an older driver. A reader late by a
+    /// whole block (the next ack came first) gets `None`: that block counts
+    /// in the turnaround's total but not in its split.
     pub fn entered(&self, seq: u64) -> Option<u64> {
-        let want = seq | ACKED_MARK;
-        if seq == 0 || self.acked_seq.load(Ordering::Acquire) != want {
-            return None;
-        }
+        let first = self.acked_seq.load(Ordering::Acquire);
         let ns = self.acked_entered_ns.load(Ordering::Acquire);
-        (ns != 0 && self.acked_seq.load(Ordering::Acquire) == want).then_some(ns)
+        let second = self.acked_seq.load(Ordering::Acquire);
+        paired(seq, first, ns, second)
     }
+}
+
+/// The start a reader of block `seq` may take from one read of the ack
+/// record: the mark before (`first`) and after (`second`) its start (`ns`).
+/// Both must be `seq`'s mark (a change between them is a torn read), and
+/// the start known.
+pub fn paired(seq: u64, first: u64, ns: u64, second: u64) -> Option<u64> {
+    let want = seq | ACKED_MARK;
+    (seq != 0 && first == want && second == want && ns != 0).then_some(ns)
 }
 
 /// `ticks` of a counter running at `freq` per second, in ns (no overflow

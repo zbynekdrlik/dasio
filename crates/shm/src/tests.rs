@@ -169,6 +169,15 @@ fn a_racing_reader_never_pairs_a_seq_with_another_start() {
             if let Some(ns) = h.entered(seq) {
                 assert_eq!(ns, seq * 1000, "seq {seq} read another block's start");
                 paired += 1;
+            } else if seq != 0 {
+                // No pairing only because the driver already writes a newer
+                // record: never one behind the ack a reader sees (the record
+                // is written before its ack).
+                let record = h.acked_seq.load(Ordering::Acquire) & !ACKED_MARK;
+                assert!(
+                    record == 0 || record > seq,
+                    "ack {seq} visible before its record ({record})"
+                );
             }
             if finished {
                 break;
@@ -196,17 +205,6 @@ fn the_shared_clock_runs_forward_in_ns() {
     );
 }
 
-// dasio#22: a slow block's ack is followed at once by the driver entering
-// the next block (it is already due). The slow block's callback start must
-// still be readable then, or the split drops exactly the slow blocks.
-#[test]
-fn a_slow_block_keeps_its_start_after_the_next_block_enters() {
-    let h = Header::default();
-    h.ack_block(10, 10_000);
-    // The driver enters block 11: it writes nothing until 11's ack.
-    assert_eq!(h.entered(10), Some(10_000));
-}
-
 // dasio#22, the biggest stalls: after a long callback the driver jumps to
 // the newest block (the ones between are missed), which may share the slow
 // block's half. The slow block's callback start must stay readable from
@@ -222,4 +220,22 @@ fn a_block_keeps_its_start_until_the_next_ack() {
     h.ack_block(14, 14_000);
     assert_eq!(h.entered(14), Some(14_000));
     assert_eq!(h.entered(10), None);
+}
+
+// The pairing rule on its own, deterministically: a torn read (the mark
+// changed between the two loads), another block's mark, an unknown start
+// and seq 0 are never a pairing.
+#[test]
+fn a_torn_or_foreign_read_never_pairs() {
+    let m = |seq: u64| seq | ACKED_MARK;
+    assert_eq!(paired(5, m(5), 500, m(5)), Some(500));
+    // The driver started block 6's record between the two loads.
+    assert_eq!(paired(5, m(5), 600, 0), None);
+    assert_eq!(paired(5, m(5), 600, m(6)), None);
+    assert_eq!(paired(5, 0, 500, m(5)), None);
+    // Another block's record, an older driver's value, an unknown start.
+    assert_eq!(paired(5, m(4), 400, m(4)), None);
+    assert_eq!(paired(5, 5, 500, 5), None);
+    assert_eq!(paired(5, m(5), 0, m(5)), None);
+    assert_eq!(paired(0, m(0), 1, m(0)), None);
 }

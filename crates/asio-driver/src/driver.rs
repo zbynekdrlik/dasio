@@ -28,7 +28,7 @@ use shm::{Shape, Shared};
 use windows_sys::Win32::Media::timeGetTime;
 use windows_sys::Win32::System::Threading::{
     AVRT_PRIORITY_CRITICAL, AvSetMmThreadCharacteristicsW, AvSetMmThreadPriority, GetCurrentThread,
-    SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
+    GetCurrentThreadId, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
 };
 
 use crate::abi::*;
@@ -76,9 +76,15 @@ struct Rt {
     ready_sent: AtomicBool,
     /// The DAW said it calls `outputReady` (it may skip it under load).
     seq_in_hand: AtomicU64,
-    /// When the DAW's callback for the block in hand started (`shm::qpc_ns`):
-    /// it goes with that block's ack (dasio#22).
+    /// When the driver called the DAW's callback for the block in hand
+    /// (`shm::qpc_ns`, just before the call: the few µs of our own preamble
+    /// count as processing): it goes with that block's ack (dasio#22).
     entered_ns: AtomicU64,
+    /// The worker's thread id: `outputReady` on that thread (inside the
+    /// callback, as ASIO hosts call it) pairs the start; on any other
+    /// thread the worker may already be on the next block, so the start
+    /// goes as unknown rather than wrong.
+    worker_tid: AtomicU32,
     /// Samples handed to the DAW since `start`.
     position: AtomicU64,
     /// The `timeGetTime` ms of the last hand-over.
@@ -166,6 +172,7 @@ impl Driver {
                 ready_sent: AtomicBool::new(false),
                 seq_in_hand: AtomicU64::new(0),
                 entered_ns: AtomicU64::new(0),
+                worker_tid: AtomicU32::new(0),
                 position: AtomicU64::new(0),
                 systime_ms: AtomicU64::new(0),
                 shm: Mutex::new(None),
@@ -692,10 +699,16 @@ unsafe extern "system" fn output_ready(this: *mut c_void) -> ASIOError {
         // SAFETY: a live Driver.
         let rt = &unsafe { me(this) }.rt;
         if let Some(s) = rt.shm() {
-            s.header().ack_block(
-                rt.seq_in_hand.load(Ordering::Acquire),
-                rt.entered_ns.load(Ordering::Acquire),
-            );
+            // SAFETY: plain call.
+            let on_worker =
+                unsafe { GetCurrentThreadId() } == rt.worker_tid.load(Ordering::Acquire);
+            let entered = if on_worker {
+                rt.entered_ns.load(Ordering::Acquire)
+            } else {
+                0
+            };
+            s.header()
+                .ack_block(rt.seq_in_hand.load(Ordering::Acquire), entered);
             s.signal_ready();
             rt.ready_sent.store(true, Ordering::Release);
         }
@@ -720,6 +733,10 @@ struct Job {
 
 impl Job {
     fn run(self) {
+        // SAFETY: plain call.
+        self.rt
+            .worker_tid
+            .store(unsafe { GetCurrentThreadId() }, Ordering::Release);
         pro_audio();
         let shm = self.rt.shm();
         let mut time = ASIOTime {
