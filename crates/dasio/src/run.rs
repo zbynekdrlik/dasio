@@ -258,22 +258,37 @@ pub fn run(
                 "counts"
             );
             // The DAW's turnaround since the last counts (see turnaround).
+            // Its wake-up and processing parts only when the driver gave
+            // them (an older driver gives none): never a 0 that reads as
+            // a measured 0 µs.
             if let Ok(t) = turnaround.lock().map(|mut t| t.take())
                 && t.count > 0
             {
-                info!(
-                    blocks = t.count,
-                    p50_us = t.p50_us,
-                    p99_us = t.p99_us,
-                    max_us = t.max_us,
-                    over_period = t.over,
-                    split = t.split,
-                    wake_p99_us = t.wake_p99_us,
-                    wake_max_us = t.wake_max_us,
-                    process_p99_us = t.process_p99_us,
-                    process_max_us = t.process_max_us,
-                    "DAW turnaround"
-                );
+                if t.split > 0 {
+                    info!(
+                        blocks = t.count,
+                        p50_us = t.p50_us,
+                        p99_us = t.p99_us,
+                        max_us = t.max_us,
+                        over_period = t.over,
+                        split = t.split,
+                        wake_p99_us = t.wake_p99_us,
+                        wake_max_us = t.wake_max_us,
+                        process_p99_us = t.process_p99_us,
+                        process_max_us = t.process_max_us,
+                        "DAW turnaround"
+                    );
+                } else {
+                    info!(
+                        blocks = t.count,
+                        p50_us = t.p50_us,
+                        p99_us = t.p99_us,
+                        max_us = t.max_us,
+                        over_period = t.over,
+                        split = 0,
+                        "DAW turnaround"
+                    );
+                }
             }
             if status.due(now) {
                 info!(status = %dstack::ctl::answer("status", &media), "device status");
@@ -330,8 +345,10 @@ fn watch_turnaround(
                 if !shared.wait_ready(100) {
                     continue;
                 }
-                let now = shm::qpc_ns();
+                // The ack before the time: the driver's callback start for
+                // that block came before its ack, so it is never after `now`.
                 let ack = shared.header().ack.load(Ordering::Acquire);
+                let now = shm::qpc_ns();
                 if ack == last {
                     continue;
                 }

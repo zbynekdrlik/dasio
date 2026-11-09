@@ -126,3 +126,48 @@ fn counter_ticks_turn_into_ns() {
     // A zero rate is never a division by zero.
     assert_eq!(ticks_to_ns(5, 0), 5_000_000_000);
 }
+
+// The seqlock under a real race: a reader never pairs one block's seq with
+// another block's time while the driver keeps writing.
+#[test]
+fn a_racing_reader_never_pairs_a_seq_with_another_time() {
+    let h = Header::default();
+    const N: u64 = 200_000;
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            for i in 1..=N {
+                h.enter(i, i * 1000);
+            }
+        });
+        let mut paired = 0u64;
+        loop {
+            let seq = h.enter_seq.load(Ordering::Acquire);
+            if seq != 0
+                && let Some(ns) = h.entered(seq)
+            {
+                assert_eq!(ns, seq * 1000, "seq {seq} read another block's time");
+                paired += 1;
+            }
+            if seq == N {
+                break;
+            }
+        }
+        assert!(paired > 0);
+    });
+}
+
+// The shared clock runs forward and in ns: a 20 ms sleep measures at least
+// 20 ms (a sleep never ends early) and not absurdly more.
+#[cfg(windows)]
+#[test]
+fn the_shared_clock_runs_forward_in_ns() {
+    let a = qpc_ns();
+    let b = qpc_ns();
+    assert!(b >= a);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let slept = qpc_ns() - b;
+    assert!(
+        (20_000_000..2_000_000_000).contains(&slept),
+        "a 20 ms sleep measured {slept} ns"
+    );
+}
