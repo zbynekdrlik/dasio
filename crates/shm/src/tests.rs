@@ -79,6 +79,21 @@ fn the_header_keeps_its_size() {
     assert_eq!(std::mem::size_of::<Header>(), 128);
     assert_eq!(std::mem::offset_of!(Header, acked_seq), 104);
     assert_eq!(std::mem::offset_of!(Header, acked_entered_ns), 112);
+    assert_eq!(std::mem::offset_of!(Header, driver_messages), 120);
+}
+
+// dasio#28 E16: each kind counts on its own; an older driver's 0 reads as
+// none sent.
+#[test]
+fn the_driver_s_messages_are_counted_by_kind() {
+    let h = Header::default();
+    assert_eq!(h.messages(), (0, 0));
+    h.note_message(DriverMessage::Reset);
+    h.note_message(DriverMessage::Latencies);
+    h.note_message(DriverMessage::Latencies);
+    assert_eq!(h.messages(), (1, 2));
+    assert_eq!(split_messages((7 << 32) | 3), (3, 7));
+    assert_eq!(split_messages(u64::MAX), (u32::MAX, u32::MAX));
 }
 
 #[test]

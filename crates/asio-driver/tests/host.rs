@@ -280,6 +280,7 @@ fn a_reshaped_device_gets_one_reset_request_within_the_budget() {
     device.header().block.store(64, Ordering::Release);
     wait_for(1, Duration::from_secs(3));
     assert_eq!(RESETS.load(Ordering::Acquire), 1, "one reset request");
+    assert_eq!(device.header().messages(), (1, 0), "counted for the device");
     // And changed again at once: the budget holds the next request back.
     device.header().block.store(128, Ordering::Release);
     std::thread::sleep(Duration::from_secs(3));
@@ -715,6 +716,7 @@ fn a_host_that_stops_the_driver_inside_a_message_gets_no_more_blocks() {
         0,
         "no block handed over after the host stopped the driver"
     );
+    assert_eq!(device.header().messages(), (0, 1), "counted for the device");
     // SAFETY: as a host: it starts the driver again and ends.
     unsafe {
         assert_eq!((vt(d).start)(d), ASE_OK);
