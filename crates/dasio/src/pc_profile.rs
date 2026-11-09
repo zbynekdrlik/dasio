@@ -318,9 +318,13 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
         }
     }
     for e in &p.disk {
+        // The text stays the same while the drive stays under its floor:
+        // the service logs a problem again only when its text changes, so
+        // the live amount (which moves all the time) is not in it. The
+        // check command prints the amount on its own line ([`gb_down`]).
         let found = match r.free_bytes(&e.drive) {
             Ok(free) if free >= e.min_free_gb.saturating_mul(GB) => continue,
-            Ok(free) => format!("{:.1} GB", free as f64 / GB as f64),
+            Ok(_) => "below the floor".to_string(),
             Err(err) => format!("unreadable ({err})"),
         };
         out.push(Problem {
@@ -331,6 +335,13 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
         });
     }
     out
+}
+
+/// `bytes` in GB with one decimal, rounded down, so an amount under a
+/// floor never reads as the floor itself.
+pub fn gb_down(bytes: u64) -> String {
+    let tenths = u128::from(bytes) * 10 / u128::from(GB);
+    format!("{}.{} GB", tenths / 10, tenths % 10)
 }
 
 /// One change `apply` makes.

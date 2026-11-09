@@ -370,12 +370,26 @@ fn a_drive_below_its_floor_is_a_problem_and_nothing_is_applied_for_it() {
     assert_eq!(
         text,
         vec![
-            "disk C: free space: 26.5 GB (the profile wants at least 50 GB) — a full C: stalls the DAWs"
+            "disk C: free space: below the floor (the profile wants at least 50 GB) — a full C: stalls the DAWs"
                 .to_string()
         ]
     );
     // Free space is only watched: no action can set it.
     assert_eq!(plan(&p, &pc), vec![]);
+    // The service logs a problem again only when its text changes: while
+    // the drive stays under its floor, the text stays the same.
+    pc.free.insert("C:".into(), 30 << 30);
+    let again: Vec<String> = check(&p, &pc).iter().map(ToString::to_string).collect();
+    assert_eq!(again, text);
+}
+
+#[test]
+fn free_space_reads_in_gb_rounded_down() {
+    assert_eq!(gb_down(53 << 29), "26.5 GB");
+    assert_eq!(gb_down((50 << 30) - 1), "49.9 GB");
+    assert_eq!(gb_down(50 << 30), "50.0 GB");
+    assert_eq!(gb_down(0), "0.0 GB");
+    assert_eq!(gb_down(u64::MAX), "17179869183.9 GB");
 }
 
 #[test]
@@ -387,7 +401,7 @@ fn a_drive_exactly_at_its_floor_is_fine_and_one_byte_under_is_not() {
     pc.free.insert("C:".into(), (50 << 30) - 1);
     let problems = check(&p, &pc);
     assert_eq!(problems.len(), 1);
-    assert_eq!(problems[0].found, "50.0 GB");
+    assert_eq!(problems[0].found, "below the floor");
     assert_eq!(problems[0].want, "at least 50 GB");
 }
 
