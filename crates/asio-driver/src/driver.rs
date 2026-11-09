@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use shm::{Shape, Shared};
+use shm::{DriverMessage, Shape, Shared};
 use windows_sys::Win32::System::Threading::{
     AVRT_PRIORITY_CRITICAL, AvSetMmThreadCharacteristicsW, AvSetMmThreadPriority, GetCurrentThread,
     GetCurrentThreadId, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
@@ -967,8 +967,19 @@ impl Job {
         }
     }
 
+    /// Sends the DAW `selector`; a reset request or a latency change counts
+    /// in the header first (dasio#28 E16: the device logs them), so one the
+    /// DAW hangs on is counted too.
     fn message(&self, selector: i32) {
         if let Some(m) = self.callbacks.asioMessage {
+            let kind = match selector {
+                K_ASIO_RESET_REQUEST => Some(DriverMessage::Reset),
+                K_ASIO_LATENCIES_CHANGED => Some(DriverMessage::Latencies),
+                _ => None,
+            };
+            if let (Some(k), Some(s)) = (kind, self.rt.shm()) {
+                s.header().note_message(k);
+            }
             // SAFETY: the host's callback.
             unsafe { m(selector, 0, core::ptr::null_mut(), core::ptr::null_mut()) };
         }

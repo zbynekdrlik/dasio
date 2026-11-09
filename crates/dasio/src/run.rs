@@ -241,6 +241,7 @@ pub fn run(
         }
         if counts.due(now) {
             let v = stats.view();
+            let (resets_asked, latencies_changed) = h.messages();
             info!(
                 seq = h.seq.load(Ordering::Relaxed),
                 ack = h.ack.load(Ordering::Relaxed),
@@ -255,6 +256,8 @@ pub fn run(
                 overruns = v.overruns,
                 rebootstraps = v.rebootstraps,
                 max_process_us = v.max_process_us,
+                resets_asked,
+                latencies_changed,
                 "counts"
             );
             // The DAW's turnaround since the last counts (see turnaround).

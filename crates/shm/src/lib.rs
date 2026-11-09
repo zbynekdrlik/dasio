@@ -80,8 +80,21 @@ pub struct Header {
     /// 0.1.21: the entered seq with bit 63); theirs are never read.
     pub acked_seq: AtomicU64,
     pub acked_entered_ns: AtomicU64,
-    /// Unused (the rest of the former padding).
-    pub spare: AtomicU64,
+    /// The messages the driver sent its DAW (dasio#28 E16): reset
+    /// requests in the low 32 bits, latency changes in the high 32
+    /// ([`Header::note_message`], [`Header::messages`]). The last of the
+    /// former padding: drivers before 0.1.34 leave it 0.
+    pub driver_messages: AtomicU64,
+}
+
+/// A message the driver sends its DAW, counted in
+/// [`Header::driver_messages`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriverMessage {
+    /// `kAsioResetRequest`.
+    Reset,
+    /// `kAsioLatenciesChanged`.
+    Latencies,
 }
 
 /// Set in [`Header::acked_seq`] by a driver that writes the ack record.
@@ -111,6 +124,25 @@ impl Header {
         let second = self.acked_seq.load(Ordering::Acquire);
         paired(seq, first, ns, second)
     }
+
+    /// The driver sends its DAW `m`.
+    pub fn note_message(&self, m: DriverMessage) {
+        let one = match m {
+            DriverMessage::Reset => 1,
+            DriverMessage::Latencies => 1 << 32,
+        };
+        self.driver_messages.fetch_add(one, Ordering::Relaxed);
+    }
+
+    /// The reset requests and latency changes the driver sent its DAW.
+    pub fn messages(&self) -> (u32, u32) {
+        split_messages(self.driver_messages.load(Ordering::Relaxed))
+    }
+}
+
+/// [`Header::driver_messages`] as (reset requests, latency changes).
+pub fn split_messages(v: u64) -> (u32, u32) {
+    (v as u32, (v >> 32) as u32)
 }
 
 /// The start a reader of block `seq` may take from one read of the ack
