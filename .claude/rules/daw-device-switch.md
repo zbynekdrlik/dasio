@@ -56,3 +56,15 @@ A switch is done only when all four steps below are checked.
   restarting it until the DAW lets go.
 - A restart with the same shape (W, TX latency, margins) is fine with the
   DAW open.
+
+## Restarting a DAW or toggling its audio engine
+
+- After a DAW restart or an Audio Engine toggle, check the instance log for
+  `attached=1`, and Ableton's own Start line, before the next step.
+- A new driver DLL loads only when the DAW opens the driver again.
+  `install.ps1 -KeepHeldDriver` keeps the old DLL while a DAW holds it.
+- Quit a DAW only after checking two things: the window title for `*`
+  (unsaved changes), and the PC's last input time (someone working).
+- At the save prompt, answer No unless the change is one the set needs
+  (owner 4.11.2026). Never save after load or recording tests.
+- In event mode, nothing is saved for dasio's sake.
