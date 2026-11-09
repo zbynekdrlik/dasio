@@ -11,9 +11,9 @@ pub const WRAP_NS: u64 = (1u64 << 32) * 1_000_000;
 
 /// The shift from counter ns into timeGetTime's base, from a tick edge:
 /// timeGetTime read `ms` for the first time at counter time `qpc_ns`.
+/// Within (0, 2·WRAP_NS]: [`stamp`] takes it modulo the wrap.
 pub fn offset(ms: u32, qpc_ns: u64) -> u64 {
-    let ms_ns = u64::from(ms) * 1_000_000;
-    (ms_ns + WRAP_NS - qpc_ns % WRAP_NS) % WRAP_NS
+    u64::from(ms) * 1_000_000 + WRAP_NS - qpc_ns % WRAP_NS
 }
 
 /// The stamp at counter time `qpc_ns`, in timeGetTime's base and wrap.
@@ -50,6 +50,8 @@ mod tests {
             (1_234, 987_654_321),
             (u32::MAX, 5),
             (7, WRAP_NS + 3),
+            (7, 5 * WRAP_NS + 3),
+            (1_234, u64::MAX - 10),
         ] {
             assert_eq!(stamp(qpc, offset(ms, qpc)), u64::from(ms) * 1_000_000);
         }

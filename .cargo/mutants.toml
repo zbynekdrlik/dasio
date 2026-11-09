@@ -23,11 +23,12 @@ exclude_globs = [
 # reaches bit 62, so `^` gives the same value (an equivalent mutant no test
 # can tell apart). These two functions use `|` for nothing else; a new `|`
 # there needs this line narrowed.
-# systime::calibrate reads timeGetTime: Windows-only, tested on the
-# Windows runner (systime's own test), compiled out here.
+# systime.rs's calibrate reads timeGetTime: Windows-only, tested on the
+# Windows runner (systime's own test), compiled out here. Mutant names
+# carry the file path and the bare function name, so the pattern does too.
 exclude_re = [
   "\\bwin::",
-  "systime::calibrate",
+  "src/systime\\.rs:.*\\bcalibrate\\b",
   "RotatingLog>::flush",
   "replace \\| with \\^ in (Header::ack_block|paired)",
 ]
