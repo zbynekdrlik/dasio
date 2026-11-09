@@ -25,7 +25,6 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use shm::{Shape, Shared};
-use windows_sys::Win32::Media::timeGetTime;
 use windows_sys::Win32::System::Threading::{
     AVRT_PRIORITY_CRITICAL, AvSetMmThreadCharacteristicsW, AvSetMmThreadPriority, GetCurrentThread,
     GetCurrentThreadId, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
@@ -37,6 +36,7 @@ use crate::guard::{guard, join_within, lock};
 use crate::ident::{MAX_INSTANCES, driver_name, instance_of};
 use crate::liveness::{Facts, Verdict, Watch};
 use crate::reset::Budget;
+use crate::systime;
 
 /// The rate: Dante at 96 kHz.
 pub const RATE: f64 = 96_000.0;
@@ -87,8 +87,12 @@ struct Rt {
     worker_tid: AtomicU32,
     /// Samples handed to the DAW since `start`.
     position: AtomicU64,
-    /// The `timeGetTime` ms of the last hand-over.
-    systime_ms: AtomicU64,
+    /// The last hand-over's `systemTime`, ns in timeGetTime's base
+    /// ([`systime`]).
+    systime_ns: AtomicU64,
+    /// The shift from counter ns into timeGetTime's base, measured at
+    /// `start` ([`systime::calibrate`]).
+    systime_offset: AtomicU64,
     /// The instance's mapping: opened by `init`, and opened again by an
     /// `init` after the device published a new session (a host that
     /// re-inits the same object after a reset, instead of making a new one).
@@ -174,7 +178,8 @@ impl Driver {
                 entered_ns: AtomicU64::new(0),
                 worker_tid: AtomicU32::new(0),
                 position: AtomicU64::new(0),
-                systime_ms: AtomicU64::new(0),
+                systime_ns: AtomicU64::new(0),
+                systime_offset: AtomicU64::new(0),
                 shm: Mutex::new(None),
                 verdict: AtomicU8::new(0),
                 restarts: AtomicU32::new(0),
@@ -387,6 +392,8 @@ unsafe extern "system" fn start(this: *mut c_void) -> ASIOError {
                 .map_or(0, |s| s.header().seq.load(Ordering::Acquire)),
         };
         d.rt.position.store(0, Ordering::Relaxed);
+        d.rt.systime_offset
+            .store(systime::calibrate(), Ordering::Release);
         match std::thread::Builder::new()
             .name("dasio".into())
             .spawn(move || job.run())
@@ -548,7 +555,7 @@ unsafe extern "system" fn get_sample_position(
         let d = unsafe { me(this) };
         unsafe {
             *pos = Asio64::new(d.rt.position.load(Ordering::Acquire));
-            *stamp = Asio64::new(d.rt.systime_ms.load(Ordering::Acquire) * 1_000_000);
+            *stamp = Asio64::new(d.rt.systime_ns.load(Ordering::Acquire));
         }
         ASE_OK
     })
@@ -955,11 +962,13 @@ impl Job {
             .rt
             .position
             .fetch_add(u64::from(self.shape.block), Ordering::AcqRel);
-        // SAFETY: plain call.
-        let ms = u64::from(unsafe { timeGetTime() });
-        self.rt.systime_ms.store(ms, Ordering::Release);
+        let ns = systime::stamp(
+            shm::qpc_ns(),
+            self.rt.systime_offset.load(Ordering::Acquire),
+        );
+        self.rt.systime_ns.store(ns, Ordering::Release);
         time.timeInfo.samplePosition = Asio64::new(pos);
-        time.timeInfo.systemTime = Asio64::new(ms * 1_000_000);
+        time.timeInfo.systemTime = Asio64::new(ns);
         if self.time_info
             && let Some(f) = self.callbacks.bufferSwitchTimeInfo
         {
