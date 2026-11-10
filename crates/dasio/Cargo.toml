@@ -33,3 +33,8 @@ windows-sys = { version = "0.61", features = [
   "Win32_System_Threading",
 ] }
 windows-service = "0.8.1"
+
+[dev-dependencies]
+# The bridge's real-time proof (tests/rt_bridge.rs, dasio#28 E13): counts
+# allocations inside `assert_no_alloc` instead of aborting.
+assert_no_alloc = { version = "1.1.2", default-features = false, features = ["warn_debug", "warn_release"] }
