@@ -24,7 +24,10 @@ Owner rules from dasio#1. They hold for every change on a PC running dasio.
     song.
   - No jumping between songs while recording.
 - **Jobs started through the remote MCP shell:**
-  - start them detached, with no output redirects;
+  - start them detached, with no output redirects. A `Start-Process
+    -RedirectStandardOutput` job on mbc (9.11.2026 23:21Z) left every
+    later MCP call to that PC timing out for hours. Redirect inside the
+    job's own script instead (`*> file`);
   - set their priority class yourself, because they start at BelowNormal;
   - write their result to a file.
 - **Zero clicks is the requirement** (owner 9.11.2026).
