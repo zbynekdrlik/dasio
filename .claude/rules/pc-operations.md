@@ -77,3 +77,9 @@ Owner rules from dasio#1. They hold for every change on a PC running dasio.
   On band that is iem-mixer's return channels and more; on mbc it is
   stream-obs. Before a band restart, tell iemmixer and camera-box; before
   an mbc restart, tell camera-box. Give a UTC time and keep to it.
+- **After a restart, check that the flows came back in the device's own
+  log.** dcontroller can be down: on 10.11 its host lost its Dante address
+  in a NIC cutover. Count the `TX flow started` lines since the restart and
+  compare them with the count before; there must be no `older than the
+  latency` lines. Flow requests logged as "held: our TX clock is not ready
+  yet" in the first seconds are normal.
