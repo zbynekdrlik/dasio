@@ -130,6 +130,26 @@ impl MinuteAgg {
         row.attached = attached;
         done
     }
+
+    /// The device stops at `unix_s`: its last tick (as [`tick`](Self::tick),
+    /// with the counters as they stand), then the minute in progress, so a
+    /// restart loses no minute (dasio#28). The rows to write, oldest first.
+    /// A device restarted within a minute writes that minute twice: one row
+    /// from each run.
+    pub fn finish(
+        &mut self,
+        unix_s: u64,
+        totals: Totals,
+        window: Window,
+        attached: bool,
+    ) -> Vec<Row> {
+        let mut rows: Vec<Row> = self
+            .tick(unix_s, totals, window, attached)
+            .into_iter()
+            .collect();
+        rows.extend(self.current.take());
+        rows
+    }
 }
 
 /// The civil (proleptic Gregorian) date of day `days` after 1970-01-01

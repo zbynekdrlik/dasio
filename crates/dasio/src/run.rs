@@ -281,38 +281,17 @@ pub fn run(
             // a measured 0 µs.
             let t = turnaround.lock().map(|mut t| t.take()).unwrap_or_default();
             if let Some(row) = minutes.tick(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_secs()),
-                crate::minutes::Totals {
-                    late: h.late.load(Ordering::Relaxed),
-                    driver_missed: h.missed.load(Ordering::Relaxed),
-                    stale: stale.load(Ordering::Relaxed),
-                    waited: waited.load(Ordering::Relaxed),
-                    pump_late: v.late,
-                    missed: v.missed,
-                    overruns: v.overruns,
-                    rebootstraps: v.rebootstraps,
-                },
-                crate::minutes::Window {
-                    blocks: t.count,
-                    over: t.over,
-                    max_us: t.max_us,
-                    wake_max_us: t.wake_max_us,
-                    process_max_us: t.process_max_us,
-                },
+                unix_now(),
+                minute_totals(
+                    h,
+                    stale.load(Ordering::Relaxed),
+                    waited.load(Ordering::Relaxed),
+                    &v,
+                ),
+                minute_window(&t),
                 h.host_attached.load(Ordering::Relaxed) != 0,
             ) {
-                // A failing disk never stops the device: one WARN, then
-                // the next minute tries again.
-                match minute_log.write(&row) {
-                    Ok(()) => minute_log_failed = false,
-                    Err(e) if !minute_log_failed => {
-                        minute_log_failed = true;
-                        warn!(err = %e, dir = %minutes_dir.display(), "the per-minute counters could not be written");
-                    }
-                    Err(_) => {}
-                }
+                write_minute(&mut minute_log, &row, &mut minute_log_failed, &minutes_dir);
             }
             if t.count > 0 {
                 if t.split > 0 {
@@ -363,6 +342,23 @@ pub fn run(
         }
         std::thread::sleep(Duration::from_millis(100));
     };
+    // The minute in progress, before anything stops: a stall just before a
+    // restart is the minute to keep (dasio#28).
+    let h = shared.header();
+    let t = turnaround.lock().map(|mut t| t.take()).unwrap_or_default();
+    for row in minutes.finish(
+        unix_now(),
+        minute_totals(
+            h,
+            stale.load(Ordering::Relaxed),
+            waited.load(Ordering::Relaxed),
+            &stats.view(),
+        ),
+        minute_window(&t),
+        h.host_attached.load(Ordering::Relaxed) != 0,
+    ) {
+        write_minute(&mut minute_log, &row, &mut minute_log_failed, &minutes_dir);
+    }
     stop.store(true, Ordering::Release);
     let _ = pump.join();
     let _ = watcher.join();
@@ -373,6 +369,61 @@ pub fn run(
     match why {
         None => Ok(()),
         Some(e) => Err(e),
+    }
+}
+
+/// Seconds since the Unix epoch (0 before it).
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// The counters a minute row folds, as they stand (dasio#28 A36).
+fn minute_totals(
+    h: &shm::Header,
+    stale: u64,
+    waited: u64,
+    v: &dstack::stream::PumpView,
+) -> crate::minutes::Totals {
+    crate::minutes::Totals {
+        late: h.late.load(Ordering::Relaxed),
+        driver_missed: h.missed.load(Ordering::Relaxed),
+        stale,
+        waited,
+        pump_late: v.late,
+        missed: v.missed,
+        overruns: v.overruns,
+        rebootstraps: v.rebootstraps,
+    }
+}
+
+/// The DAW turnaround a minute row folds.
+fn minute_window(t: &crate::turnaround::Summary) -> crate::minutes::Window {
+    crate::minutes::Window {
+        blocks: t.count,
+        over: t.over,
+        max_us: t.max_us,
+        wake_max_us: t.wake_max_us,
+        process_max_us: t.process_max_us,
+    }
+}
+
+/// Appends `row`. A failing disk never stops the device: one WARN, then
+/// the next minute tries again.
+fn write_minute(
+    log: &mut crate::minutes::MinuteLog,
+    row: &crate::minutes::Row,
+    failed: &mut bool,
+    dir: &std::path::Path,
+) {
+    match log.write(row) {
+        Ok(()) => *failed = false,
+        Err(e) if !*failed => {
+            *failed = true;
+            warn!(err = %e, dir = %dir.display(), "the per-minute counters could not be written");
+        }
+        Err(_) => {}
     }
 }
 
