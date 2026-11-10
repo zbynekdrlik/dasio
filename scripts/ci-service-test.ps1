@@ -127,22 +127,11 @@ Write-Output "refused: a bundle, a config or a data folder others may change, an
 $stateWin = $state -replace '/', '\'
 Set-Content -Path $stateWin -Value "name = `"foreign-device`"`nconfig_name = `"foreign-device`""
 
-# The product's former name (dasio#1, 3.11.2026): its service of this
-# instance goes and its state files come over.
-$formerData = Join-Path $env:ProgramData "dante-asio\instance-$instance"
-New-Item -ItemType Directory -Force $formerData | Out-Null
-Set-Content -Path (Join-Path $formerData "state-former.toml") -Value "name = `"former-device`""
-New-Service -Name "dante-asio-$instance" -BinaryPathName "`"$env:SystemRoot\System32\svchost.exe`"" -StartupType Manual | Out-Null
-
 # A failed native command just before (FOH 3.11.2026: the install stopped
 # the band's service and threw, as dtray.exe, a GUI program, leaves the
 # exit code of whatever ran before it).
 cmd /c exit 7
 & (Join-Path $Bundle "install.ps1") -Instance $instance -Ip $ip -Config $cfg -Name "ci-asio-dante" -TestClock
-if (Get-Service -Name "dante-asio-$instance" -ErrorAction SilentlyContinue) { throw "the former service is still there" }
-if (-not (Test-Path (Join-Path $env:ProgramData "dasio\instance-$instance\state-former.toml"))) { throw "the former state file did not come over" }
-Remove-Item -Recurse -Force (Join-Path $env:ProgramData "dante-asio")
-Write-Output "the former service went and its state came over"
 # dasio's data folder: protected from what ProgramData passes down (users
 # may add files and folders there); users read it and change nothing in it.
 $rootAcl = Get-Acl $data

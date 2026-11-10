@@ -17,10 +17,6 @@
 # - refuses, before anything changes, a new dasio_driver.dll while a DAW
 #   holds the installed one (a DAW keeps the driver loaded until it quits),
 #   unless -KeepHeldDriver leaves that one in place,
-# - moves an instance of the product's former name over: its service
-#   "dante-asio-<n>" is stopped and removed, its state files are copied from
-#   C:\ProgramData\dante-asio\instance-<n>, and the former files go when
-#   nothing holds them,
 # - adds no address: -Ip is one the PC already has. Several instances share it
 #   (dstack's per-PC manager), each on its own ports and process id from its
 #   config (arc_port, cmc_port, flows_port, process_id); a config that clashes
@@ -286,28 +282,6 @@ function Protect-DataFolder([string]$Root) {
 }
 Protect-DataFolder $root
 
-# The product's former name: that instance's service goes, its state
-# comes over.
-$formerService = "dante-asio-$Instance"
-$formerData = Join-Path $env:ProgramData "dante-asio\instance-$Instance"
-if (Get-Service -Name $formerService -ErrorAction SilentlyContinue) {
-    Stop-Service -Name $formerService
-    (Get-Service -Name $formerService).WaitForStatus("Stopped", [TimeSpan]::FromSeconds(15))
-    & sc.exe delete $formerService | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "sc delete $formerService failed ($LASTEXITCODE)" }
-    Write-Output "removed the former service $formerService"
-}
-if (Test-Path $formerData) {
-    New-Item -ItemType Directory -Force $data | Out-Null
-    Get-ChildItem $formerData -File -Filter "*.toml*" | ForEach-Object {
-        $to = Join-Path $data $_.Name
-        if (-not (Test-Path $to)) {
-            Copy-Item $_.FullName $to
-            Write-Output "copied $($_.Name) from $formerData"
-        }
-    }
-}
-
 $installed = Join-Path $env:ProgramFiles "dasio\dasio.exe"
 if (Get-Service -Name $service -ErrorAction SilentlyContinue) {
     # The SCM's Stop: the device ends within its stop's 7 s.
@@ -488,15 +462,4 @@ Start-Service -Name $service
 }
 Remove-Item -Recurse -Force $rollback -ErrorAction SilentlyContinue
 
-# The former product's files, once no service runs them and no DAW holds
-# its driver.
-$formerBin = Join-Path $env:ProgramFiles "dante-asio"
-if ((Test-Path $formerBin) -and -not (Get-Service -Name "dante-asio-*" -ErrorAction SilentlyContinue)) {
-    try {
-        Remove-Item -Recurse -Force $formerBin
-        Write-Output "removed $formerBin"
-    } catch {
-        Write-Warning "kept $formerBin for now: $($_.Exception.Message)"
-    }
-}
 Write-Output "dasio instance $Instance installed and started ($instExeName)"
