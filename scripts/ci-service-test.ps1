@@ -113,6 +113,16 @@ if ($LASTEXITCODE -ne 0) { throw "icacls $planted failed ($LASTEXITCODE)" }
 Assert-Refused { & (Join-Path $Bundle "install.ps1") -Instance $instance -Ip $ip -Config $cfg -Name "ci-asio-dante" -TestClock } ([regex]::Escape("BUILTIN\Users (on $planted)"))
 if ((Get-Acl $data).AreAccessRulesProtected) { throw "the refused install changed the permissions of $data" }
 Remove-Item -Recurse -Force $planted
+# An entry a folder in it only passes down (inherit-only): its items carry it
+# as inherited, and protecting the data folder would not remove it.
+$passer = Join-Path $data "instance-$instance\passer"
+New-Item -ItemType Directory -Force $passer | Out-Null
+& icacls.exe $passer /grant "*S-1-5-32-545:(OI)(CI)(IO)M" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "icacls $passer failed ($LASTEXITCODE)" }
+Set-Content -Path (Join-Path $passer "device.toml") -Value "x"
+Assert-Refused { & (Join-Path $Bundle "install.ps1") -Instance $instance -Ip $ip -Config $cfg -Name "ci-asio-dante" -TestClock } ([regex]::Escape("BUILTIN\Users (on $passer)"))
+if ((Get-Acl $data).AreAccessRulesProtected) { throw "the refused install changed the permissions of $data" }
+Remove-Item -Recurse -Force $passer
 $link = Join-Path $data "instance-$instance\link"
 New-Item -ItemType Junction -Path $link -Target $env:TEMP | Out-Null
 Assert-Refused { & (Join-Path $Bundle "install.ps1") -Instance $instance -Ip $ip -Config $cfg -Name "ci-asio-dante" -TestClock } ([regex]::Escape("links under $data"))
