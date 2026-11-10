@@ -32,6 +32,12 @@ pub fn run(
 ) -> Result<(), String> {
     let spare = tuning.spare;
     let cfg = host::read_config(&config).map_err(|e| e.to_string())?;
+    // The per-minute counters go next to the instance's config and log
+    // (dasio#28 A36).
+    let minutes_dir = config
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
     // The process on its own cores first: it starts with its parent's set
     // (on the FOH PC Process Lasso moves it later), and a thread cannot be
     // pinned outside its process's set (error 87 there).
@@ -195,6 +201,9 @@ pub fn run(
     let mut window = crate::app_status::LateWindow::default();
     let mut window_s = u64::MAX;
     let mut bursts = crate::bursts::Bursts::default();
+    let mut minutes = crate::minutes::MinuteAgg::default();
+    let mut minute_log = crate::minutes::MinuteLog::new(&minutes_dir, crate::minutes::KEEP_DAYS);
+    let mut minute_log_failed = false;
     let profile = ProfileWatch::new(own);
     if own != 0 {
         std::thread::Builder::new()
@@ -269,9 +278,42 @@ pub fn run(
             // Its wake-up and processing parts only when the driver gave
             // them (an older driver gives none): never a 0 that reads as
             // a measured 0 µs.
-            if let Ok(t) = turnaround.lock().map(|mut t| t.take())
-                && t.count > 0
-            {
+            let t = turnaround.lock().map(|mut t| t.take()).unwrap_or_default();
+            if let Some(row) = minutes.tick(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs()),
+                crate::minutes::Totals {
+                    late: h.late.load(Ordering::Relaxed),
+                    driver_missed: h.missed.load(Ordering::Relaxed),
+                    stale: stale.load(Ordering::Relaxed),
+                    waited: waited.load(Ordering::Relaxed),
+                    pump_late: v.late,
+                    missed: v.missed,
+                    overruns: v.overruns,
+                    rebootstraps: v.rebootstraps,
+                },
+                crate::minutes::Window {
+                    blocks: t.count,
+                    over: t.over,
+                    max_us: t.max_us,
+                    wake_max_us: t.wake_max_us,
+                    process_max_us: t.process_max_us,
+                },
+                h.host_attached.load(Ordering::Relaxed) != 0,
+            ) {
+                // A failing disk never stops the device: one WARN, then
+                // the next minute tries again.
+                match minute_log.write(&row) {
+                    Ok(()) => minute_log_failed = false,
+                    Err(e) if !minute_log_failed => {
+                        minute_log_failed = true;
+                        warn!(err = %e, dir = %minutes_dir.display(), "the per-minute counters could not be written");
+                    }
+                    Err(_) => {}
+                }
+            }
+            if t.count > 0 {
                 if t.split > 0 {
                     info!(
                         blocks = t.count,

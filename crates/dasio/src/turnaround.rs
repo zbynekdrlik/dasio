@@ -102,7 +102,7 @@ pub struct Turnaround {
 /// median and the 99th percentile (µs; `u64::MAX` above the last bound),
 /// the longest, and how many passed the block period. `split` of them came
 /// with the driver's callback start: their wake-up and processing parts.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct Summary {
     pub count: u64,
     pub p50_us: u64,
