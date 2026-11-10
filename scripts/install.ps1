@@ -103,7 +103,11 @@ function Get-OtherWriters([string]$Path, [int]$Rights, [switch]$ExplicitOnly) {
         if ($rule.AccessControlType -ne "Allow") { continue }
         if ($ExplicitOnly -and $rule.IsInherited) { continue }
         if ($trusted -contains $sid -or (@("S-1-3-0", "S-1-3-1", "S-1-3-4") -contains $sid)) { continue }
-        if ([int]($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }
+        # An inherit-only entry gives nothing on $Path itself, but an item's
+        # own one is passed to everything in it, and protecting a folder
+        # above does not remove it.
+        $inheritOnly = [int]($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0
+        if ($inheritOnly -and -not $ExplicitOnly) { continue }
         if (([int]$rule.FileSystemRights -band $Rights) -ne 0) { $sids += $sid }
     }
     foreach ($sid in @($sids | Select-Object -Unique)) {
