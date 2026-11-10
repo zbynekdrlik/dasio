@@ -48,7 +48,7 @@ pub fn log_panics() {
         tracing::error!(
             thread = %thread.name().unwrap_or("unnamed"),
             place = %place,
-            message = %message,
+            panic = %message,
             "a panic"
         );
         before(info);
