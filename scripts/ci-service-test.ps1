@@ -26,14 +26,29 @@ function Get-ServicePid {
     (Get-CimInstance Win32_Service -Filter "Name='$service'").ProcessId
 }
 
+# The bundle and the configs as the PC keeps them: in a folder only SYSTEM
+# and administrators may change, users read (install.ps1 refuses any other,
+# dasio#28 E19).
+function New-AdminOnlyFolder([string]$Path) {
+    New-Item -ItemType Directory -Force $Path | Out-Null
+    & icacls.exe $Path /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "icacls $Path failed ($LASTEXITCODE)" }
+}
+$data = Join-Path $env:ProgramData "dasio"
+$bundles = Join-Path $data "bundles"
+$staged = Join-Path $bundles "ci"
+New-AdminOnlyFolder $staged
+Copy-Item -Force (Join-Path $Bundle "*") $staged
+$Bundle = $staged
+
 $route = Find-NetRoute -RemoteIPAddress 192.0.2.1 | Where-Object { $_.IPAddress } | Select-Object -First 1
 $ip = $route.IPAddress
 Write-Output "runner address $ip"
 
-# The test device at 10 ms (a shared runner's scheduling), its state file in
-# a writable folder.
-$work = Join-Path $env:RUNNER_TEMP "dasio-service"
-New-Item -ItemType Directory -Force $work | Out-Null
+# The test device at 10 ms (a shared runner's scheduling), its config and
+# state file in an admin-only folder.
+$work = Join-Path $bundles "ci-service"
+New-AdminOnlyFolder $work
 $state = (Join-Path $work "state.toml") -replace '\\', '/'
 $text = (Get-Content $DeviceConfig) | Where-Object { $_ -notmatch '^state_file' } | ForEach-Object {
     if ($_ -match '^latency_ns') { 'latency_ns = 10000000' } else { $_ }
@@ -58,6 +73,46 @@ Set-Content -Path (Join-Path $other "device.toml") -Value "arc_port = 4441`ncmc_
 Assert-Refused { & (Join-Path $Bundle "install.ps1") -Instance $instance -Ip $ip -Config $cfg -Name "ci-asio-dante" -TestClock } "cmc_port 8800 is taken by instance-15"
 Remove-Item -Recurse -Force $other
 
+# Elevated, the install runs only what non-administrators cannot change
+# (dasio#28 E19). Refused before anything changes: a bundle in a folder
+# users may change (a folder made directly under C:\ inherits Authenticated
+# Users: Modify, as FOH's C:\dasio-runs did), a config in one, and an
+# admin-only bundle inside a folder users may delete (renamed away, a
+# folder of their own takes its place).
+$open = "C:\dasio-ci-open"
+New-Item -ItemType Directory -Force $open | Out-Null
+& icacls.exe $open /grant "*S-1-5-32-545:(OI)(CI)M" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "icacls $open failed ($LASTEXITCODE)" }
+$openBundle = Join-Path $open "bundle"
+New-Item -ItemType Directory -Force $openBundle | Out-Null
+Copy-Item -Force (Join-Path $Bundle "*") $openBundle
+Assert-Refused { & (Join-Path $openBundle "install.ps1") -Instance $instance -Ip $ip -Config $cfg -Name "ci-asio-dante" -TestClock } ("the bundle folder .+" + [regex]::Escape("BUILTIN\Users (on $openBundle)"))
+$openCfg = Join-Path $open "device.toml"
+Copy-Item -Force $cfg $openCfg
+Assert-Refused { & (Join-Path $Bundle "install.ps1") -Instance $instance -Ip $ip -Config $openCfg -Name "ci-asio-dante" -TestClock } "the config .+ can be changed by BUILTIN\\Users"
+$inner = Join-Path $open "inner"
+New-AdminOnlyFolder $inner
+Copy-Item -Force (Join-Path $Bundle "*") $inner
+Assert-Refused { & (Join-Path $inner "install.ps1") -Instance $instance -Ip $ip -Config $cfg -Name "ci-asio-dante" -TestClock } ([regex]::Escape("BUILTIN\Users (on $open)"))
+Remove-Item -Recurse -Force $open
+# dasio's data folder becomes admin-only; refused with nothing else changed:
+# a folder in it users may change (a rollback folder made before the
+# install: the exe the install keeps there goes back into Program Files on
+# a failure, and the LocalSystem service runs it), and a link in it (this
+# elevated script would follow it).
+$planted = Join-Path $data "instance-$instance\rollback"
+New-Item -ItemType Directory -Force $planted | Out-Null
+& icacls.exe $planted /grant "*S-1-5-32-545:(OI)(CI)M" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "icacls $planted failed ($LASTEXITCODE)" }
+Assert-Refused { & (Join-Path $Bundle "install.ps1") -Instance $instance -Ip $ip -Config $cfg -Name "ci-asio-dante" -TestClock } ([regex]::Escape("BUILTIN\Users (on $planted)"))
+Remove-Item -Recurse -Force $planted
+$link = Join-Path $data "instance-$instance\link"
+New-Item -ItemType Junction -Path $link -Target $env:TEMP | Out-Null
+Assert-Refused { & (Join-Path $Bundle "install.ps1") -Instance $instance -Ip $ip -Config $cfg -Name "ci-asio-dante" -TestClock } ([regex]::Escape("links under $data"))
+# The junction only, never what it points to.
+[System.IO.Directory]::Delete($link)
+Write-Output "refused: a bundle, a config or a data folder others may change, and a link in the data folder"
+
 # A state file another device left at this config's state path (1.11.2026,
 # FOH PC: the new config came up under the old device's name with its
 # subscriptions): the install moves it aside, the device starts as the
@@ -81,6 +136,19 @@ if (Get-Service -Name "dante-asio-$instance" -ErrorAction SilentlyContinue) { th
 if (-not (Test-Path (Join-Path $env:ProgramData "dasio\instance-$instance\state-former.toml"))) { throw "the former state file did not come over" }
 Remove-Item -Recurse -Force (Join-Path $env:ProgramData "dante-asio")
 Write-Output "the former service went and its state came over"
+# dasio's data folder: protected from what ProgramData passes down (users
+# may add files and folders there); users read it and change nothing in it.
+$rootAcl = Get-Acl $data
+if (-not $rootAcl.AreAccessRulesProtected) { throw "$data still inherits ProgramData's permissions" }
+$others = @("S-1-5-32-545", "S-1-5-11", "S-1-1-0", "S-1-5-4")
+foreach ($path in $data, (Join-Path $data "instance-$instance"), (Join-Path $data "instance-$instance\device.toml")) {
+    foreach ($rule in (Get-Acl $path).GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
+        if ($rule.AccessControlType -eq "Allow" -and $others -contains $rule.IdentityReference.Value -and ([int]$rule.FileSystemRights -band 0x500D0046)) {
+            throw "$($rule.IdentityReference.Value) may change $path ($($rule.FileSystemRights))"
+        }
+    }
+}
+Write-Output "the data folder is admin-only, users read"
 # The instance runs its own binary, named after its device.
 $own = Join-Path $env:ProgramFiles "dasio\dasio-test-device.exe"
 if ((Get-CimInstance Win32_Service -Filter "Name='$service'").PathName -notmatch [regex]::Escape("`"$own`"")) { throw "$service does not run $own" }
@@ -140,8 +208,8 @@ Write-Output "restarted: pid $before -> $(Get-ServicePid)"
 # A second instance installed while the first runs: each runs its own
 # binary, so the first keeps running.
 $second = 15
-$work2 = Join-Path $env:RUNNER_TEMP "dasio-service-2"
-New-Item -ItemType Directory -Force $work2 | Out-Null
+$work2 = Join-Path $bundles "ci-service-2"
+New-AdminOnlyFolder $work2
 $state2 = (Join-Path $work2 "state.toml") -replace '\\', '/'
 $text2 = $text | Where-Object { $_ -notmatch '^state_file' } | ForEach-Object {
     if ($_ -match '^name ') { 'name = "dasio-ci-2"' } else { $_ }
@@ -164,8 +232,9 @@ Write-Output "second instance installed beside the first (pid $first kept)"
 
 # A new binary for the second instance while both run: only it restarts;
 # the first runs its own binary until its own install.
-$newer = Join-Path $env:RUNNER_TEMP "bundle-newer"
-Copy-Item -Recurse -Force $Bundle $newer
+$newer = Join-Path $bundles "ci-newer"
+New-AdminOnlyFolder $newer
+Copy-Item -Force (Join-Path $Bundle "*") $newer
 # One byte past the image: a different file Windows still runs.
 [System.IO.File]::AppendAllText((Join-Path $newer "dasio.exe"), " ")
 $sums = Get-Content (Join-Path $newer "SHA256SUMS") | ForEach-Object {
@@ -215,8 +284,9 @@ Write-Output "six updates in turn: no instance ended on its own"
 # A DAW holds the installed driver (it keeps it loaded until it quits): a
 # new driver is refused before anything stops, or kept out with
 # -KeepHeldDriver.
-$newest = Join-Path $env:RUNNER_TEMP "bundle-newest"
-Copy-Item -Recurse -Force $newer $newest
+$newest = Join-Path $bundles "ci-newest"
+New-AdminOnlyFolder $newest
+Copy-Item -Force (Join-Path $newer "*") $newest
 [System.IO.File]::AppendAllText((Join-Path $newest "dasio_driver.dll"), " ")
 $sums = Get-Content (Join-Path $newest "SHA256SUMS") | ForEach-Object {
     $hash, $file = $_ -split "  ", 2
