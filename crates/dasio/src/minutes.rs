@@ -132,11 +132,12 @@ impl MinuteAgg {
     }
 }
 
-/// The civil (proleptic Gregorian) date of day `z` after 1970-01-01
-/// (Howard Hinnant's `civil_from_days`).
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+/// The civil (proleptic Gregorian) date of day `days` after 1970-01-01
+/// (Howard Hinnant's `civil_from_days`, for days from the epoch on: its
+/// era is never negative).
+fn civil_from_days(days: u64) -> (u64, u32, u32) {
+    let z = days + 719_468;
+    let era = z / 146_097;
     let doe = z - era * 146_097;
     let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
     let y = yoe + era * 400;
@@ -149,7 +150,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 
 /// `YYYY-MM-DD` (UTC) of `unix_s`.
 pub fn date(unix_s: u64) -> String {
-    let (y, m, d) = civil_from_days((unix_s / 86_400) as i64);
+    let (y, m, d) = civil_from_days(unix_s / 86_400);
     format!("{y:04}-{m:02}-{d:02}")
 }
 

@@ -221,3 +221,30 @@ fn a_file_that_cannot_go_keeps_the_row_and_the_rest_still_go() {
     );
     assert!(d.join("counters-2026-01-01.csv").exists());
 }
+
+#[test]
+fn every_counter_s_growth_reaches_the_row() {
+    let mut agg = MinuteAgg::default();
+    let at = |n: u64| Totals {
+        late: n,
+        driver_missed: 2 * n,
+        stale: 3 * n,
+        waited: 4 * n,
+        pump_late: 5 * n,
+        missed: 6 * n,
+        overruns: 7 * n,
+        rebootstraps: 8 * n,
+    };
+    agg.tick(T + 5, at(1), Window::default(), true);
+    agg.tick(T + 15, at(3), Window::default(), true);
+    agg.tick(T + 25, at(4), Window::default(), true);
+    let row = agg
+        .tick(T + 65, at(4), Window::default(), true)
+        .expect("the 10:07 row");
+    // Two ticks' growth, summed field by field: 3 times each multiplier.
+    assert_eq!(row.grown, at(3));
+    assert_eq!(
+        line(&row),
+        "2026-11-10T10:07Z,3,6,9,12,15,18,21,24,0,0,0,0,0,1"
+    );
+}
