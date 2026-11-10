@@ -35,6 +35,24 @@ const FIRST_CPUS: &str = "pump_cpu = 1\n";
 const SECOND_CPUS: &str = "pump_cpu = 2\n";
 /// The CPUs the pumps take, and two more for the host and the rest.
 const CPUS_NEEDED: usize = 4;
+/// The pumps' CPUs (1 and 2) as a mask.
+const PUMP_CPUS: usize = 0b110;
+
+/// This process (the ASIO host) on every CPU of the runner but the pumps',
+/// as Process Lasso keeps Live off dasio's CPUs on the PCs. Unrestricted,
+/// the host at High priority took the second device's pump CPU after it
+/// had become the address's manager (CI 42891517726: 231 to 620 blocks
+/// missed a second, 10734 switches of 12000, dasio#28). A device started
+/// meanwhile would inherit the mask, so [`host_on_all_cpus`] lifts it first.
+fn host_off_pumps(cpus: usize) {
+    let all = (1usize << cpus) - 1;
+    dasio::probe::set_affinity(all & !PUMP_CPUS).expect("the host's CPUs");
+}
+
+/// This process back on every CPU, so a device it starts can pin its pump.
+fn host_on_all_cpus(cpus: usize) {
+    dasio::probe::set_affinity((1usize << cpus) - 1).expect("the host's CPUs");
+}
 /// How long a device may take to publish its shared memory.
 const READY: Duration = Duration::from_secs(20);
 /// How long a device may take to end after its stop.
@@ -284,6 +302,7 @@ fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_a
     );
     // A moment for the flows to be granted.
     std::thread::sleep(Duration::from_secs(2));
+    host_off_pumps(cpus);
 
     // The host at High priority, as Ableton runs (and `dasio probe`).
     // Timed with the first device alone: two devices spinning on a 4-CPU
@@ -322,6 +341,7 @@ fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_a
     // The second device on the same address, beside the running first:
     // on its own ports (ARC, CMC and flow control, each held by one of
     // them, so this process cannot take it).
+    host_on_all_cpus(cpus);
     let mut second = Device::start(
         SECOND,
         &device_in(
@@ -332,6 +352,7 @@ fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_a
         ip,
         dir.join("second.log"),
     );
+    host_off_pumps(cpus);
     std::thread::sleep(Duration::from_secs(2));
     for port in [4440, 8800, 4455, 4441, 8801, 4456] {
         assert!(
