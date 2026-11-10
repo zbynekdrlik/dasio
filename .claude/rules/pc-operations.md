@@ -30,6 +30,12 @@ Owner rules from dasio#1. They hold for every change on a PC running dasio.
     job's own script instead (`*> file`);
   - set their priority class yourself, because they start at BelowNormal;
   - write their result to a file.
+- **A program with a window never starts from the MCP Shell.** Start it
+  with the App tool, which runs it detached in the user's session, and
+  expect an elevation prompt for a vendor tool. On iem-snv (10.11.2026)
+  Realtek's 8169DiagV2.exe started from the Shell left remote control
+  unreachable from 13:36 to 17:48Z, until someone logged in at the desktop
+  (over RustDesk). The PC itself and its network stayed up.
 - **Elevated work runs only what non-administrators cannot change**
   (dasio#28 E19).
   - A bundle goes to an admin-only folder before `install.ps1` runs. That
