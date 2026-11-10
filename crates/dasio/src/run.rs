@@ -11,7 +11,7 @@ use dstack::daemon::{Options, Place};
 use dstack::host::{self, Signals, Stopped};
 use dstack::media::source::Source;
 use dstack::stream::{self, Map, Pump, PumpStats};
-use shm::{Shape, Shared};
+use shm::{HostUse, Shape, Shared};
 use tracing::{info, warn};
 
 use crate::bridge::{Bridge, SharedLink};
@@ -258,6 +258,11 @@ pub fn run(
                 max_process_us = v.max_process_us,
                 resets_asked,
                 latencies_changed,
+                // How the DAW drives the driver (dasio#28 E4); 0 from a
+                // driver before 0.1.36.
+                output_ready = u8::from(h.uses(HostUse::OutputReady)),
+                time_info = u8::from(h.uses(HostUse::TimeInfo)),
+                latency_reads = h.latency_reads.load(Ordering::Relaxed),
                 "counts"
             );
             // The DAW's turnaround since the last counts (see turnaround).

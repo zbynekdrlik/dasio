@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use shm::{DriverMessage, Shape, Shared};
+use shm::{DriverMessage, HostUse, Shape, Shared};
 use windows_sys::Win32::System::Threading::{
     AVRT_PRIORITY_CRITICAL, AvSetMmThreadCharacteristicsW, AvSetMmThreadPriority, GetCurrentThread,
     GetCurrentThreadId, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
@@ -389,10 +389,11 @@ unsafe extern "system" fn start(this: *mut c_void) -> ASIOError {
         let Some(created) = st.created.as_ref() else {
             return ASE_INVALID_MODE;
         };
+        let time_info = created.time_info;
         let stop = Arc::new(AtomicBool::new(false));
         let job = Job {
             callbacks: created.callbacks,
-            time_info: created.time_info,
+            time_info,
             shape: st.shape.unwrap_or(NO_DEVICE_SHAPE),
             instance: d.instance,
             rt: Arc::clone(&d.rt),
@@ -416,6 +417,9 @@ unsafe extern "system" fn start(this: *mut c_void) -> ASIOError {
                 // From now on the host answers blocks: the device waits for
                 // each answer (and counts a missing one as late).
                 if let Some(s) = d.rt.shm() {
+                    if time_info {
+                        s.header().note_use(HostUse::TimeInfo);
+                    }
                     s.header().host_attached.store(1, Ordering::Release);
                 }
                 ASE_OK
@@ -465,9 +469,15 @@ unsafe extern "system" fn get_latencies(
 ) -> ASIOError {
     guard(ASE_HW_MALFUNCTION, || {
         // SAFETY: a live Driver.
-        let (i, o) = unsafe { me(this) }.latencies();
+        let d = unsafe { me(this) };
+        let (i, o) = d.latencies();
         if ins.is_null() || outs.is_null() {
             return ASE_INVALID_PARAMETER;
+        }
+        // The device logs whether the DAW reads them again after a reset
+        // or a latency change (dasio#28 E4).
+        if let Some(s) = d.rt.shm() {
+            s.header().note_latency_read();
         }
         // SAFETY: checked non-null.
         unsafe {
@@ -727,6 +737,9 @@ unsafe extern "system" fn output_ready(this: *mut c_void) -> ASIOError {
             } else {
                 0
             };
+            // Before the ack: whoever sees this block returned sees the
+            // bit. Set once; later blocks only read it (dasio#28 E4).
+            s.header().note_use(HostUse::OutputReady);
             s.header()
                 .ack_block(rt.seq_in_hand.load(Ordering::Acquire), entered);
             s.signal_ready();

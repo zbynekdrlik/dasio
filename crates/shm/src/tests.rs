@@ -80,6 +80,30 @@ fn the_header_keeps_its_size() {
     assert_eq!(std::mem::offset_of!(Header, acked_seq), 104);
     assert_eq!(std::mem::offset_of!(Header, acked_entered_ns), 112);
     assert_eq!(std::mem::offset_of!(Header, driver_messages), 120);
+    // dasio#28 E4: the two former 4-byte pads.
+    assert_eq!(std::mem::offset_of!(Header, device_pid), 32);
+    assert_eq!(std::mem::offset_of!(Header, host_uses), 36);
+    assert_eq!(std::mem::offset_of!(Header, seq), 40);
+    assert_eq!(std::mem::offset_of!(Header, host_attached), 64);
+    assert_eq!(std::mem::offset_of!(Header, latency_reads), 68);
+    assert_eq!(std::mem::offset_of!(Header, late), 72);
+}
+
+// dasio#28 E4: each use is its own bit, set once; an older driver's 0
+// reads as neither.
+#[test]
+fn how_the_daw_drives_the_driver_is_kept_per_use() {
+    let h = Header::default();
+    assert!(!h.uses(HostUse::OutputReady) && !h.uses(HostUse::TimeInfo));
+    h.note_use(HostUse::TimeInfo);
+    assert!(h.uses(HostUse::TimeInfo) && !h.uses(HostUse::OutputReady));
+    h.note_use(HostUse::OutputReady);
+    h.note_use(HostUse::OutputReady);
+    assert_eq!(h.host_uses.load(Ordering::Relaxed), 3);
+    assert_eq!(h.latency_reads.load(Ordering::Relaxed), 0);
+    h.note_latency_read();
+    h.note_latency_read();
+    assert_eq!(h.latency_reads.load(Ordering::Relaxed), 2);
 }
 
 // dasio#28 E16: each kind counts on its own; an older driver's 0 reads as

@@ -51,6 +51,9 @@ pub struct Header {
     pub latency_out: AtomicU32,
     /// The device process's id (the driver checks it is alive).
     pub device_pid: AtomicU32,
+    /// How the DAW drives the driver ([`HostUse`] bits, set once each,
+    /// dasio#28 E4). In what was padding: drivers before 0.1.36 leave it 0.
+    pub host_uses: AtomicU32,
     /// Blocks the device published (half `seq % 2` is the newest).
     pub seq: AtomicU64,
     /// The newest block whose outputs the DAW returned.
@@ -59,6 +62,10 @@ pub struct Header {
     pub heartbeat_ms: AtomicU64,
     /// 1 while a driver has the buffers.
     pub host_attached: AtomicU32,
+    /// The DAW's `getLatencies` calls (dasio#28 E4): one more after a reset
+    /// or a latency change shows it read the new latencies. In what was
+    /// padding: drivers before 0.1.36 leave it 0.
+    pub latency_reads: AtomicU32,
     /// Blocks whose outputs came too late (sent as silence).
     pub late: AtomicU64,
     /// Blocks the driver never handed to the DAW (the device's seq moved on
@@ -82,8 +89,8 @@ pub struct Header {
     pub acked_entered_ns: AtomicU64,
     /// The messages the driver sent its DAW (dasio#28 E16): reset
     /// requests in the low 32 bits, latency changes in the high 32
-    /// ([`Header::note_message`], [`Header::messages`]). The last of the
-    /// former padding: drivers before 0.1.34 leave it 0.
+    /// ([`Header::note_message`], [`Header::messages`]). In what was
+    /// padding: drivers before 0.1.34 leave it 0.
     pub driver_messages: AtomicU64,
 }
 
@@ -95,6 +102,15 @@ pub enum DriverMessage {
     Reset,
     /// `kAsioLatenciesChanged`.
     Latencies,
+}
+
+/// How a DAW drives the driver, a bit each in [`Header::host_uses`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostUse {
+    /// The DAW calls `outputReady` once its outputs are written.
+    OutputReady = 1,
+    /// The DAW's callbacks take `bufferSwitchTimeInfo`.
+    TimeInfo = 2,
 }
 
 /// Set in [`Header::acked_seq`] by a driver that writes the ack record.
@@ -137,6 +153,25 @@ impl Header {
     /// The reset requests and latency changes the driver sent its DAW.
     pub fn messages(&self) -> (u32, u32) {
         split_messages(self.driver_messages.load(Ordering::Relaxed))
+    }
+
+    /// The DAW drives the driver with `u`. A bit already set is not
+    /// written again: called per block, it costs a read only.
+    pub fn note_use(&self, u: HostUse) {
+        let bit = u as u32;
+        if self.host_uses.load(Ordering::Relaxed) & bit == 0 {
+            self.host_uses.fetch_or(bit, Ordering::Relaxed);
+        }
+    }
+
+    /// Whether the DAW drives the driver with `u`.
+    pub fn uses(&self, u: HostUse) -> bool {
+        self.host_uses.load(Ordering::Relaxed) & u as u32 != 0
+    }
+
+    /// The DAW read the latencies once more.
+    pub fn note_latency_read(&self) {
+        self.latency_reads.fetch_add(1, Ordering::Relaxed);
     }
 }
 

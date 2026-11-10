@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use dasio_driver::abi::*;
 use dasio_driver::ident::clsid;
-use shm::{Shape, Shared};
+use shm::{HostUse, Shape, Shared};
 
 #[test]
 fn abi_layout_matches_the_sdk_x64() {
@@ -134,6 +134,8 @@ fn a_block_reaches_the_host_and_back_and_the_buffer_size_is_the_instance_s() {
         assert_eq!((vt(d).canSampleRate)(d, 48_000.0), ASE_NO_CLOCK);
         assert_eq!((vt(d).canSampleRate)(d, 96_000.0), ASE_OK);
     }
+    // dasio#28 E4: the device sees each read of the latencies.
+    assert_eq!(device.header().latency_reads.load(Ordering::Acquire), 1);
     assert_eq!(create(d, 32), ASE_INVALID_MODE, "only the instance's block");
     assert_eq!(create(d, 64), ASE_OK);
     // Attached only while the host's callbacks run: from start to stop. The
@@ -158,6 +160,10 @@ fn a_block_reaches_the_host_and_back_and_the_buffer_size_is_the_instance_s() {
     assert!(device.wait_ready(1000), "the driver returned the outputs");
     assert_eq!(device.header().ack.load(Ordering::Acquire), 3);
     assert_eq!(LAST_HALF.load(Ordering::Acquire), 1);
+    // A host with plain bufferSwitch and no outputReady: the driver
+    // returned the block itself, and the device sees neither use.
+    assert!(!device.header().uses(HostUse::OutputReady));
+    assert!(!device.header().uses(HostUse::TimeInfo));
     let output = device.buffer(1, false, 0).unwrap();
     for k in 0..64 {
         // SAFETY: 64 samples.
@@ -177,8 +183,12 @@ fn a_block_reaches_the_host_and_back_and_the_buffer_size_is_the_instance_s() {
     }
 }
 
+// dasio#28 A91: a host started before its device free-runs on the
+// driver's clock; once the device appears the driver asks it for one reset,
+// and the host's next driver attaches. E4: the device then sees how the
+// host drives it.
 #[test]
-fn no_device_free_runs_silence() {
+fn a_host_started_before_the_device_free_runs_then_attaches() {
     let d = driver(6);
     // SAFETY: as a host.
     unsafe {
@@ -197,7 +207,7 @@ fn no_device_free_runs_silence() {
     let cb = ASIOCallbacks {
         bufferSwitch: Some(count_only),
         sampleRateDidChange: None,
-        asioMessage: Some(message),
+        asioMessage: Some(count_early_resets),
         bufferSwitchTimeInfo: None,
     };
     // SAFETY: as a host.
@@ -217,12 +227,117 @@ fn no_device_free_runs_silence() {
         FREE.load(Ordering::Acquire) >= 50,
         "the DAW is called on its own clock"
     );
+    assert_eq!(EARLY_RESETS.load(Ordering::Acquire), 0);
+
+    // The device starts now.
+    let device = Shared::create(6, Shape::new(1, 1, 64).unwrap(), 96_000, (88, 40)).unwrap();
+    let t = Instant::now();
+    while EARLY_RESETS.load(Ordering::Acquire) == 0 && t.elapsed() < Duration::from_secs(3) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        EARLY_RESETS.load(Ordering::Acquire),
+        1,
+        "one reset request once the device appears"
+    );
+    // As a DAW answers a reset: this driver goes, a new one opens the device.
+    // SAFETY: as a host.
+    unsafe {
+        (vt(d).stop)(d);
+        (vt(d).disposeBuffers)(d);
+        (vt(d).Release)(d);
+    }
+    let d = driver(6);
+    TIME_HOST.store(d, Ordering::Release);
+    let mut infos = [
+        ASIOBufferInfo {
+            isInput: 1,
+            channelNum: 0,
+            buffers: [core::ptr::null_mut(); 2],
+        },
+        ASIOBufferInfo {
+            isInput: 0,
+            channelNum: 0,
+            buffers: [core::ptr::null_mut(); 2],
+        },
+    ];
+    let cb = ASIOCallbacks {
+        bufferSwitch: None,
+        sampleRateDidChange: None,
+        asioMessage: Some(takes_time_info),
+        bufferSwitchTimeInfo: Some(switch_then_ready),
+    };
+    // SAFETY: as a host.
+    unsafe {
+        assert_eq!((vt(d).init)(d, core::ptr::null_mut()), ASIO_TRUE);
+        let (mut i, mut o) = (0, 0);
+        assert_eq!((vt(d).getLatencies)(d, &mut i, &mut o), ASE_OK);
+        assert_eq!((i, o), (88, 40));
+        assert_eq!(
+            (vt(d).createBuffers)(d, infos.as_mut_ptr(), 2, 64, &cb),
+            ASE_OK
+        );
+        assert_eq!((vt(d).start)(d), ASE_OK);
+    }
+    assert_eq!(device.header().host_attached.load(Ordering::Acquire), 1);
+    device.header().seq.store(1, Ordering::Release);
+    device.signal_block();
+    assert!(
+        device.wait_ready(1000),
+        "the attached host returned block 1"
+    );
+    assert_eq!(device.header().ack.load(Ordering::Acquire), 1);
+    assert!(TIME_SWITCHES.load(Ordering::Acquire) >= 1);
+    // E4: what the device's counts line shows of this host.
+    let h = device.header();
+    assert!(h.uses(HostUse::OutputReady), "the host called outputReady");
+    assert!(
+        h.uses(HostUse::TimeInfo),
+        "the host takes bufferSwitchTimeInfo"
+    );
+    assert_eq!(h.latency_reads.load(Ordering::Acquire), 1);
     // SAFETY: as a host ends.
     unsafe {
         (vt(d).stop)(d);
         (vt(d).disposeBuffers)(d);
         (vt(d).Release)(d);
     }
+}
+
+// The early host's reset requests (instance 6).
+static EARLY_RESETS: AtomicU32 = AtomicU32::new(0);
+
+unsafe extern "C" fn count_early_resets(sel: i32, _v: i32, _m: *mut c_void, _o: *mut f64) -> i32 {
+    if sel == K_ASIO_RESET_REQUEST {
+        EARLY_RESETS.fetch_add(1, Ordering::AcqRel);
+    }
+    0
+}
+
+// A host that takes bufferSwitchTimeInfo and calls outputReady from it
+// (instance 6's second driver).
+static TIME_HOST: AtomicPtr<c_void> = AtomicPtr::new(core::ptr::null_mut());
+static TIME_SWITCHES: AtomicU32 = AtomicU32::new(0);
+
+unsafe extern "C" fn takes_time_info(sel: i32, val: i32, _m: *mut c_void, _o: *mut f64) -> i32 {
+    match (sel, val) {
+        (K_ASIO_SELECTOR_SUPPORTED, K_ASIO_SUPPORTS_TIME_INFO) | (K_ASIO_SUPPORTS_TIME_INFO, _) => {
+            1
+        }
+        _ => 0,
+    }
+}
+
+unsafe extern "C" fn switch_then_ready(
+    t: *mut ASIOTime,
+    _half: i32,
+    _direct: ASIOBool,
+) -> *mut ASIOTime {
+    TIME_SWITCHES.fetch_add(1, Ordering::AcqRel);
+    let d = TIME_HOST.load(Ordering::Acquire);
+    // SAFETY: the live driver this host opened.
+    unsafe { (vt(d).outputReady)(d) };
+    t
 }
 
 static FREE: AtomicU32 = AtomicU32::new(0);
