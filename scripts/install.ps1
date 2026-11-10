@@ -1,6 +1,12 @@
 # dasio: install or update one instance (plan Task 9). Run as administrator
 # from the unpacked bundle:
 #   .\install.ps1 -Instance 1 -Ip <the PC's address> -Config <device.toml>
+# - refuses, before anything changes, a bundle folder, bundle file or config
+#   anyone but SYSTEM and the administrators could change (or swap through a
+#   folder above it): keep both in an admin-only folder such as
+#   C:\ProgramData\dasio\bundles\<name> (dasio#28 E19),
+# - makes C:\ProgramData\dasio admin-only (users read it) and refuses a link
+#   in it, or an item in it someone else owns or may change,
 # - copies dasio.exe and dasio_driver.dll to C:\Program Files\dasio, and
 #   dasio.exe again as dasio-<device name>.exe, the instance's own binary
 #   (its service runs it, so Process Lasso can pin each instance by name);
@@ -65,11 +71,77 @@ $service = "dasio-$Instance"
 $task = "dasio-$Instance"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-# The bundle's checksums first.
-Get-Content (Join-Path $here "SHA256SUMS") | ForEach-Object {
+# Elevated, this script installs only what non-administrators cannot change
+# (dasio#28 E19). A bundle in a folder users may change (any folder made
+# directly under C:\ gives Authenticated Users Modify) could be swapped
+# after its checksums are read; so could a config.
+# Who counts as an administrator: SYSTEM, Administrators, TrustedInstaller,
+# the local administrators and the user running this.
+$trusted = @("S-1-5-18", "S-1-5-32-544", "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
+    [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
+try {
+    $trusted += @(Get-LocalGroupMember -SID "S-1-5-32-544" | ForEach-Object { $_.SID.Value })
+} catch {
+    Write-Warning "the local administrators could not be listed ($($_.Exception.Message)); only SYSTEM, Administrators, TrustedInstaller and you count"
+}
+# Rights that change an item: write or append data (add a file or folder),
+# delete a child, delete, change permissions, take ownership, generic write
+# and generic all.
+$ChangeRights = 0x500D0046
+# Rights on a folder above an item that let its holder swap the item:
+# delete the folder or a child, change permissions, take ownership,
+# generic all.
+$SwapRights = 0x100D0040
+# Everyone else who can change $Path: its owner (an owner can always grant
+# itself more) and each allow entry with one of $Rights. CREATOR OWNER,
+# CREATOR GROUP and OWNER RIGHTS stand for the owner.
+function Get-OtherWriters([string]$Path, [int]$Rights) {
+    $acl = Get-Acl -LiteralPath $Path
+    $sids = @()
+    $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+    if ($trusted -notcontains $owner) { $sids += $owner }
+    foreach ($rule in $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
+        $sid = $rule.IdentityReference.Value
+        if ($rule.AccessControlType -ne "Allow") { continue }
+        if ($trusted -contains $sid -or (@("S-1-3-0", "S-1-3-1", "S-1-3-4") -contains $sid)) { continue }
+        if ([int]($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }
+        if (([int]$rule.FileSystemRights -band $Rights) -ne 0) { $sids += $sid }
+    }
+    foreach ($sid in @($sids | Select-Object -Unique)) {
+        $who = $sid
+        try { $who = (New-Object System.Security.Principal.SecurityIdentifier $sid).Translate([System.Security.Principal.NTAccount]).Value } catch { Write-Verbose "no name for $sid" }
+        "$who (on $Path)"
+    }
+}
+# Refuses $Path when anyone else can change it, or swap it through a folder
+# above it.
+function Assert-AdminOnly([string]$Path, [string]$What) {
+    $item = Get-Item -LiteralPath $Path -Force
+    $found = @(Get-OtherWriters $item.FullName $ChangeRights)
+    $up = if ($item.PSIsContainer) { $item.Parent } else { $item.Directory }
+    while ($up) {
+        $found += @(Get-OtherWriters $up.FullName $SwapRights)
+        $up = $up.Parent
+    }
+    if ($found.Count) {
+        throw "$What can be changed by $($found -join ', '): put the bundle and the config in a folder only administrators may change (e.g. C:\ProgramData\dasio\bundles\<name>) and run the install from there; nothing changed"
+    }
+}
+Assert-AdminOnly $here "the bundle folder $here"
+$Config = (Resolve-Path -LiteralPath $Config).ProviderPath
+Assert-AdminOnly $Config "the config $Config"
+
+# The bundle's checksums, read where nobody else can change them.
+$sumsFile = Join-Path $here "SHA256SUMS"
+$writers = @(Get-OtherWriters $sumsFile $ChangeRights)
+if ($writers.Count) { throw "SHA256SUMS in the bundle can be changed by $($writers -join ', '); nothing changed" }
+Get-Content $sumsFile | ForEach-Object {
     # Not $name: PowerShell names are case-blind, so it would overwrite -Name.
     $hash, $file = $_ -split "  ", 2
-    $got = (Get-FileHash (Join-Path $here $file) -Algorithm SHA256).Hash.ToLower()
+    $bundled = Join-Path $here $file
+    $writers = @(Get-OtherWriters $bundled $ChangeRights)
+    if ($writers.Count) { throw "$file in the bundle can be changed by $($writers -join ', '); nothing changed" }
+    $got = (Get-FileHash $bundled -Algorithm SHA256).Hash.ToLower()
     if ($got -ne $hash) { throw "$file does not match SHA256SUMS" }
 }
 
@@ -141,6 +213,46 @@ $heldProtocol = (Get-ItemProperty -Path $protocolKey -Name ShmProtocol -ErrorAct
 if ($dllHeld -and $heldProtocol -ne $ShmProtocol) {
     throw "a DAW holds $dll, which speaks shared-memory protocol $(if ($heldProtocol) { $heldProtocol } else { 'before 4' }); this service speaks ${ShmProtocol}: quit the DAW first; nothing changed"
 }
+
+# dasio's data folder (configs, states, logs, the rollback copies, the PC
+# profile): only SYSTEM and administrators change what is in it, users read
+# it (dasio#28 E19). ProgramData lets users add files and folders: a
+# rollback folder a user made first would be theirs, and the exe the
+# install keeps there goes back into Program Files on a failure, for the
+# LocalSystem service to run. The folder is protected from what ProgramData
+# passes down; what is in it inherits only that. Nothing is changed below
+# it by hand: a link there, or an item someone else owns or may change, is
+# refused for an administrator to look at (a recursive change would follow
+# a link a user planted).
+function Get-Tree([System.IO.DirectoryInfo]$Dir) {
+    foreach ($item in $Dir.GetFileSystemInfos()) {
+        $item
+        $isDir = [int]($item.Attributes -band [System.IO.FileAttributes]::Directory) -ne 0
+        $isLink = [int]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+        if ($isDir -and -not $isLink) { Get-Tree $item }
+    }
+}
+function Protect-DataFolder([string]$Root) {
+    New-Item -ItemType Directory -Force $Root | Out-Null
+    $rootItem = Get-Item -LiteralPath $Root -Force
+    if ([int]($rootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw "$Root is a link; nothing changed" }
+    $owner = (Get-Acl -LiteralPath $Root).GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+    if ($trusted -notcontains $owner) { throw "$Root belongs to $owner, not an administrator; nothing changed" }
+    $links = @(Get-Tree $rootItem | Where-Object { [int]($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 })
+    if ($links.Count) { throw "links under ${Root}: $(($links | ForEach-Object { $_.FullName }) -join ', ') (remove them; never what they point to); nothing changed" }
+    $sec = New-Object System.Security.AccessControl.DirectorySecurity
+    $sec.SetAccessRuleProtection($true, $false)
+    foreach ($grant in @(@("S-1-5-18", "FullControl"), @("S-1-5-32-544", "FullControl"), @("S-1-5-32-545", "ReadAndExecute"))) {
+        $sid = New-Object System.Security.Principal.SecurityIdentifier $grant[0]
+        $sec.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, $grant[1], "ContainerInherit, ObjectInherit", "None", "Allow")))
+    }
+    $rootItem.SetAccessControl($sec)
+    $open = @(Get-Tree $rootItem | ForEach-Object { Get-OtherWriters $_.FullName $ChangeRights })
+    if ($open.Count) {
+        throw "in ${Root}, $($open -join ', ') can change what dasio's service runs or reads: remove those entries or items ($Root itself is admin-only now); nothing else changed"
+    }
+}
+Protect-DataFolder $root
 
 # The product's former name: that instance's service goes, its state
 # comes over.
