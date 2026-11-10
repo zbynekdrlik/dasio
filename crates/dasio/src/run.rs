@@ -213,7 +213,8 @@ pub fn run(
             .map_err(|e| format!("the helper placer: {e}"))?;
     }
     // Who held the CPU when the DAW missed blocks (dasio#22).
-    let cpu_snap =
+    // The thread ends when `cpu_snap` drops at the end of the run.
+    let (cpu_snap, _cpu_snap_thread) =
         crate::cpu_snap::windows::spawn(start).map_err(|e| format!("the CPU sampler: {e}"))?;
     let mut cpu_snap_lost = false;
     let mut profile_at: Option<Instant> = None;

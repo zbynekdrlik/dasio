@@ -218,3 +218,24 @@ fn a_spinning_thread_shows_in_this_process_and_by_its_name() {
     );
     assert!(threads[0].us >= 100_000, "{threads:?}");
 }
+
+/// The `cpu-snap` thread on the real Windows: it answers a burst request
+/// and ends once its sender is dropped.
+#[cfg(windows)]
+#[test]
+fn the_sampler_thread_answers_a_burst_and_ends_with_its_sender() {
+    use std::time::{Duration, Instant};
+    let (tx, thread) = windows::spawn(Instant::now()).expect("the sampler");
+    std::thread::sleep(Duration::from_millis(1200));
+    tx.send(()).expect("the sampler is running");
+    drop(tx);
+    let t = Instant::now();
+    while !thread.is_finished() {
+        assert!(
+            t.elapsed() < Duration::from_secs(5),
+            "the sampler did not end after its sender was dropped"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    thread.join().expect("the sampler did not panic");
+}
