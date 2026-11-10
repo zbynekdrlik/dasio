@@ -25,34 +25,25 @@ const SECOND: u32 = 15;
 /// The second device's ARC, CMC and flow-control ports and its process id
 /// (the first keeps the stack's 4440, 8800, 4455 and 0).
 const SECOND_PORTS: &str = "arc_port = 4441\ncmc_port = 8801\nflows_port = 4456\nprocess_id = 1\n";
-/// Each device's pump on a CPU of its own, as each instance has its own
-/// CPUs on the PCs. Unpinned, the first device's spinning pump lost its
-/// core while the second ran (CI 42774079830 and 42820731724: 8442 and
-/// 10078 switches of 12000, the pump missing up to 958 blocks a second,
-/// dasio#28). Their TX and RX threads stay unpinned: both devices' on one
-/// CPU left the second device receiving nothing (CI 42822347591).
+/// The first device's pump on a CPU of its own, as each instance has its
+/// own CPUs on the PCs. Unpinned, its spinning pump lost its core while the
+/// second ran (CI 42774079830 and 42820731724: 8442 and 10078 switches of
+/// 12000, the pump missing up to 958 blocks a second, dasio#28). Its TX and
+/// RX threads stay unpinned: both devices' on one CPU left the second device
+/// receiving nothing (CI 42822347591).
 const FIRST_CPUS: &str = "pump_cpu = 1\n";
-const SECOND_CPUS: &str = "pump_cpu = 2\n";
-/// The CPUs the pumps take, and two more for the host and the rest.
+/// The second device on the "normal" timing profile, as mbc runs: no spin,
+/// no real-time priority, timers for the whole wait, a 2 ms work margin
+/// (192 samples). Two low-latency devices spin a pump and a TX thread each,
+/// more spinners than a 4-CPU runner has CPUs: with both on it, each pump
+/// lost up to 4083 blocks a second (CI 42891517726, 42896309664: 1 run in
+/// 4 failed, dasio#28). This test is about two devices on one address; the
+/// first device's real-time timing is checked alone, before the second
+/// starts.
+const SECOND_TIMING: &str = "timing = \"normal\"\nwork_margin = 192\n";
+/// The CPUs the test needs: the first device's pump, its TX and RX, the
+/// host, and the second device beside them.
 const CPUS_NEEDED: usize = 4;
-/// The pumps' CPUs (1 and 2) as a mask.
-const PUMP_CPUS: usize = 0b110;
-
-/// This process (the ASIO host) on every CPU of the runner but the pumps',
-/// as Process Lasso keeps Live off dasio's CPUs on the PCs. Unrestricted,
-/// the host at High priority took the second device's pump CPU after it
-/// had become the address's manager (CI 42891517726: 231 to 620 blocks
-/// missed a second, 10734 switches of 12000, dasio#28). A device started
-/// meanwhile would inherit the mask, so [`host_on_all_cpus`] lifts it first.
-fn host_off_pumps(cpus: usize) {
-    let all = (1usize << cpus) - 1;
-    dasio::probe::set_affinity(all & !PUMP_CPUS).expect("the host's CPUs");
-}
-
-/// This process back on every CPU, so a device it starts can pin its pump.
-fn host_on_all_cpus(cpus: usize) {
-    dasio::probe::set_affinity((1usize << cpus) - 1).expect("the host's CPUs");
-}
 /// How long a device may take to publish its shared memory.
 const READY: Duration = Duration::from_secs(20);
 /// How long a device may take to end after its stop.
@@ -302,7 +293,6 @@ fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_a
     );
     // A moment for the flows to be granted.
     std::thread::sleep(Duration::from_secs(2));
-    host_off_pumps(cpus);
 
     // The host at High priority, as Ableton runs (and `dasio probe`).
     // Timed with the first device alone: two devices spinning on a 4-CPU
@@ -341,18 +331,16 @@ fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_a
     // The second device on the same address, beside the running first:
     // on its own ports (ARC, CMC and flow control, each held by one of
     // them, so this process cannot take it).
-    host_on_all_cpus(cpus);
     let mut second = Device::start(
         SECOND,
         &device_in(
             &dir.join("second"),
             "test-device-2",
-            &format!("{SECOND_PORTS}{SECOND_CPUS}"),
+            &format!("{SECOND_PORTS}{SECOND_TIMING}"),
         ),
         ip,
         dir.join("second.log"),
     );
-    host_off_pumps(cpus);
     std::thread::sleep(Duration::from_secs(2));
     for port in [4440, 8800, 4455, 4441, 8801, 4456] {
         assert!(
