@@ -97,7 +97,7 @@ Assert-Refused { & (Join-Path $inner "install.ps1") -Instance $instance -Ip $ip 
 Remove-Item -Recurse -Force $open
 # A path through a link: the checks would read the target's permissions,
 # never those of the folders above the target.
-$viaLink = Join-Path $env:TEMP "dasio-ci-via-link"
+$viaLink = Join-Path $env:ProgramData "dasio-ci-via-link"
 New-Item -ItemType Junction -Path $viaLink -Target $Bundle | Out-Null
 Assert-Refused { & (Join-Path $viaLink "install.ps1") -Instance $instance -Ip $ip -Config $cfg -Name "ci-asio-dante" -TestClock } ([regex]::Escape("goes through a link ($viaLink)"))
 [System.IO.Directory]::Delete($viaLink)
