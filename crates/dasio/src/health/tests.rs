@@ -103,6 +103,11 @@ impl Write for Log {
     }
 }
 
+/// A panic, as a bug in any of the device's threads would raise.
+fn panics_in_the_device() {
+    panic!("a test panic in the device");
+}
+
 #[test]
 fn a_panic_is_written_to_the_log() {
     let log = Log::default();
@@ -113,7 +118,7 @@ fn a_panic_is_written_to_the_log() {
         .finish();
     log_panics();
     tracing::subscriber::with_default(subscriber, || {
-        let caught = std::panic::catch_unwind(|| panic!("a test panic in the device"));
+        let caught = std::panic::catch_unwind(panics_in_the_device);
         assert!(caught.is_err());
     });
     let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
