@@ -14,6 +14,7 @@ pub mod health;
 pub mod jitter;
 pub mod kernel_tx;
 pub mod logfile;
+pub mod minutes;
 pub mod pc_profile;
 #[cfg(windows)]
 pub mod probe;

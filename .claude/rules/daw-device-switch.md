@@ -73,3 +73,9 @@ A switch is done only when all four steps below are checked.
 - At the save prompt, answer No unless the change is one the set needs
   (owner 4.11.2026). Never save after load or recording tests.
 - In event mode, nothing is saved for dasio's sake.
+- Before a reboot, quit Live through its own quit (No at the save prompt).
+  - After a forced restart, Live offers to recover the set from its undo
+    store: answer **No**, so that the saved set loads.
+  - On mbc, 10.11.2026, "Yes" brought back three track mutes that differed
+    from the saved set. The stream lost its sync mic and was ~19 dB quiet
+    until they were set back.
