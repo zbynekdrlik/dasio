@@ -8,6 +8,7 @@ exclude_globs = [
   "crates/asio-driver/src/com.rs",
   "crates/asio-driver/src/driver.rs",
   "crates/shm/src/windows.rs",
+  "crates/dasio/src/cpu_snap/windows.rs",
   "crates/dasio/src/jitter.rs",
   "crates/dasio/src/kernel_tx/windows.rs",
   "crates/dasio/src/pc_profile/windows.rs",
@@ -21,8 +22,10 @@ exclude_globs = [
 # no-op and `Ok(())` in its place is the same program.
 # `seq | ACKED_MARK` in Header::ack_block and shm's paired(): a seq never
 # reaches bit 62, so `^` gives the same value (an equivalent mutant no test
-# can tell apart). These two functions use `|` for nothing else; a new `|`
-# there needs this line narrowed.
+# can tell apart). cpu_snap's filetime joins a high half shifted by 32
+# with a low half: they never overlap, so `^` is `|` there too. These
+# functions use `|` for nothing else; a new `|` there needs this line
+# narrowed.
 # systime.rs's calibrate reads timeGetTime: Windows-only, tested on the
 # Windows runner (systime's own test), compiled out here. Mutant names
 # carry the file path and the bare function name, so the pattern does too.
@@ -30,5 +33,5 @@ exclude_re = [
   "\\bwin::",
   "src/systime\\.rs:.*\\bcalibrate\\b",
   "RotatingLog>::flush",
-  "replace \\| with \\^ in (Header::ack_block|paired)",
+  "replace \\| with \\^ in (Header::ack_block|paired|filetime)",
 ]
