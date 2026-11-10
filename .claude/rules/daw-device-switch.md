@@ -61,8 +61,13 @@ A switch is done only when all four steps below are checked.
 
 - After a DAW restart or an Audio Engine toggle, check the instance log for
   `attached=1`, and Ableton's own Start line, before the next step.
-- A new driver DLL loads only when the DAW opens the driver again.
-  `install.ps1 -KeepHeldDriver` keeps the old DLL while a DAW holds it.
+- A new driver DLL reaches a DAW only after the DAW quits and starts
+  again. `install.ps1 -KeepHeldDriver` keeps the old DLL file while a DAW
+  holds it.
+- An Audio Engine off/on does not load a new driver. Live keeps
+  `dasio_driver.dll` loaded with its engine off (FOH, 10.11.2026). COM
+  also keeps a loaded DLL per CLSID, so re-registering another file name
+  does not help either (dasio#28).
 - Quit a DAW only after checking two things: the window title for `*`
   (unsaved changes), and the PC's last input time (someone working).
 - At the save prompt, answer No unless the change is one the set needs
