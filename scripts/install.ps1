@@ -94,7 +94,14 @@ $SwapRights = 0x100D0040
 # -ExplicitOnly, only the entries $Path has of its own, not inherited).
 # CREATOR OWNER, CREATOR GROUP and OWNER RIGHTS stand for the owner.
 function Get-OtherWriters([string]$Path, [int]$Rights, [switch]$ExplicitOnly) {
-    $acl = Get-Acl -LiteralPath $Path
+    # An item gone since it was listed (a running device renames its state
+    # .tmp, its log rotates) has nobody who can change it.
+    try {
+        $acl = Get-Acl -LiteralPath $Path
+    } catch {
+        if (-not (Test-Path -LiteralPath $Path)) { return }
+        throw
+    }
     $sids = @()
     $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
     if ($trusted -notcontains $owner) { $sids += $owner }
@@ -243,7 +250,14 @@ if ($dllHeld -and $heldProtocol -ne $ShmProtocol) {
 # refused for an administrator to look at (a recursive change would follow
 # a link a user planted).
 function Get-Tree([System.IO.DirectoryInfo]$Dir) {
-    foreach ($item in $Dir.GetFileSystemInfos()) {
+    # A folder gone since it was listed has nothing in it.
+    try {
+        $items = $Dir.GetFileSystemInfos()
+    } catch {
+        if (-not (Test-Path -LiteralPath $Dir.FullName)) { return }
+        throw
+    }
+    foreach ($item in $items) {
         $item
         $isDir = [int]($item.Attributes -band [System.IO.FileAttributes]::Directory) -ne 0
         if ($isDir -and -not (Test-Link $item)) { Get-Tree $item }
@@ -278,8 +292,9 @@ function Protect-DataFolder([string]$Root) {
         $sec.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, $grant[1], "ContainerInherit, ObjectInherit", "None", "Allow")))
     }
     $rootItem.SetAccessControl($sec)
-    # What is in it inherits only that now.
-    $found = @($tree | ForEach-Object { Get-OtherWriters $_.FullName $ChangeRights })
+    # What is in it now inherits only that (listed again: files came and
+    # went meanwhile).
+    $found = @(Get-Tree $rootItem | ForEach-Object { Get-OtherWriters $_.FullName $ChangeRights })
     if ($found.Count) {
         throw "in ${Root}, $($found -join ', ') can still change what dasio's service runs or reads after $Root was made admin-only; fix those by hand"
     }
