@@ -95,6 +95,12 @@ New-AdminOnlyFolder $inner
 Copy-Item -Force (Join-Path $Bundle "*") $inner
 Assert-Refused { & (Join-Path $inner "install.ps1") -Instance $instance -Ip $ip -Config $cfg -Name "ci-asio-dante" -TestClock } ([regex]::Escape("BUILTIN\Users (on $open)"))
 Remove-Item -Recurse -Force $open
+# A path through a link: the checks would read the target's permissions,
+# never those of the folders above the target.
+$viaLink = Join-Path $env:TEMP "dasio-ci-via-link"
+New-Item -ItemType Junction -Path $viaLink -Target $Bundle | Out-Null
+Assert-Refused { & (Join-Path $viaLink "install.ps1") -Instance $instance -Ip $ip -Config $cfg -Name "ci-asio-dante" -TestClock } ([regex]::Escape("goes through a link ($viaLink)"))
+[System.IO.Directory]::Delete($viaLink)
 # dasio's data folder becomes admin-only; refused with nothing else changed:
 # a folder in it users may change (a rollback folder made before the
 # install: the exe the install keeps there goes back into Program Files on
@@ -105,6 +111,7 @@ New-Item -ItemType Directory -Force $planted | Out-Null
 & icacls.exe $planted /grant "*S-1-5-32-545:(OI)(CI)M" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "icacls $planted failed ($LASTEXITCODE)" }
 Assert-Refused { & (Join-Path $Bundle "install.ps1") -Instance $instance -Ip $ip -Config $cfg -Name "ci-asio-dante" -TestClock } ([regex]::Escape("BUILTIN\Users (on $planted)"))
+if ((Get-Acl $data).AreAccessRulesProtected) { throw "the refused install changed the permissions of $data" }
 Remove-Item -Recurse -Force $planted
 $link = Join-Path $data "instance-$instance\link"
 New-Item -ItemType Junction -Path $link -Target $env:TEMP | Out-Null
