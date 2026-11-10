@@ -702,7 +702,8 @@ fn place_helpers(own: usize) {
                             )
                         };
                         if !h.is_null() {
-                            let name = crate::cpu_snap::windows::thread_name(h);
+                            // SAFETY: opened above with limited query rights.
+                            let name = unsafe { crate::cpu_snap::windows::thread_name(h) };
                             // SAFETY: a valid handle with SET_INFORMATION.
                             if !crate::is_media_thread(&name)
                                 && unsafe { SetThreadAffinityMask(h, helpers) } != 0

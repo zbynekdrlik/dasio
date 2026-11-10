@@ -30,9 +30,12 @@ fn utf16(s: &[u16]) -> String {
     String::from_utf16_lossy(&s[..n])
 }
 
-/// `h`'s description (`SetThreadDescription`), empty without one. `h` needs
-/// THREAD_QUERY_LIMITED_INFORMATION.
-pub fn thread_name(h: HANDLE) -> String {
+/// `h`'s description (`SetThreadDescription`), empty without one.
+///
+/// # Safety
+///
+/// `h` is an open thread handle with THREAD_QUERY_LIMITED_INFORMATION.
+pub unsafe fn thread_name(h: HANDLE) -> String {
     let mut text: *mut u16 = std::ptr::null_mut();
     // SAFETY: a valid handle; Windows allocates the name, freed below.
     if unsafe { GetThreadDescription(h, &mut text) } < 0 || text.is_null() {
@@ -119,7 +122,8 @@ fn threads() -> Vec<Thread> {
                 if unsafe { GetThreadTimes(h, &mut c, &mut x, &mut k, &mut u) } != 0 {
                     out.push(Thread {
                         tid: e.th32ThreadID,
-                        name: thread_name(h),
+                        // SAFETY: opened above with limited query rights.
+                        name: unsafe { thread_name(h) },
                         cpu_100ns: cpu(&k, &u),
                     });
                 }
