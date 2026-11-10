@@ -24,9 +24,36 @@ Owner rules from dasio#1. They hold for every change on a PC running dasio.
     song.
   - No jumping between songs while recording.
 - **Jobs started through the remote MCP shell:**
-  - start them detached, with no output redirects;
+  - start them detached, with no output redirects. A `Start-Process
+    -RedirectStandardOutput` job on mbc (9.11.2026 23:21Z) left every
+    later MCP call to that PC timing out for hours. Redirect inside the
+    job's own script instead (`*> file`);
   - set their priority class yourself, because they start at BelowNormal;
   - write their result to a file.
+- **Elevated work runs only what non-administrators cannot change**
+  (dasio#28 E19).
+  - A bundle goes to an admin-only folder before `install.ps1` runs. That
+    script refuses any other place, because a folder made directly under
+    `C:\` gives Authenticated Users Modify. Use this recipe:
+
+    ```powershell
+    $b = "C:\ProgramData\dasio\bundles\<name>"
+    New-Item -ItemType Directory -Force $b | Out-Null
+    icacls $b /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX"
+    ```
+
+    Then put the bundle and the instance's config in `$b` (download, or
+    copy from the user-side download), check `SHA256SUMS` there, and run
+    `$b\install.ps1 -Config $b\device-<n>.toml ...`.
+  - `install.ps1` keeps `C:\ProgramData\dasio` admin-only, with Users
+    allowed to read. It refuses a link in that folder, or an item there
+    that someone else owns or may change, and names it. Check it by hand
+    and fix it there. Never do a recursive `takeown` or `icacls /T` there:
+    it would follow a link someone planted.
+  - Before `Add-Type`, an elevated ad-hoc script points `TEMP` and `TMP` at
+    an admin-only folder, for example `C:\ProgramData\dasio\tmp` made like
+    the bundle folder. `Add-Type` compiles into TEMP and loads the DLL
+    from there.
 - **Zero clicks is the requirement** (owner 9.11.2026).
   - Latency comes down only by removing the causes of the DAW's stalls.
   - Never trade reserve or buffer size for clicks.
