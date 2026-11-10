@@ -12,8 +12,18 @@ paths:
   PC goes into that PC's profile in the same step. A change that lives only
   on the PC is lost with the next Windows upgrade or reinstall.
 - The profile is site data: it lives at `C:\ProgramData\dasio\pc-profile.toml`
-  on the PC, never in the repo. The FOH copy is also kept in the dev box's
-  `~/.config/dasio/foh-pc-profile.toml`; keep both the same.
+  on the PC, never in the repo. The dev box keeps a copy of each PC's
+  profile: `~/.config/dasio/foh-pc-profile.toml` and
+  `~/.config/dasio/mbc-pc-profile.toml` (since 10.11.2026). Keep each copy
+  the same as its PC's.
+- A NIC advanced-property change restarts the adapter.
+  - Set it from a detached script at a fixed UTC time. The remote shell
+    can ride that NIC: mbc has no other one.
+  - The script sets the keys with `-NoRestart`, restarts the adapter once,
+    waits for the link and the address, then reads them back.
+  - Tell the receivers about 30 s. On mbc, 10.11, the adapter was down 6 s
+    and the address was back after 9 s, but a receiver whose flow request
+    went unanswered retried only 18 s later. Its holes lasted 19 s.
 - Check it: `dasio pc-profile check`. Preview and set what differs:
   `dasio pc-profile apply --plan`, then `dasio pc-profile apply`. The
   service checks it at start and every 10 min: each problem is a WARN line
