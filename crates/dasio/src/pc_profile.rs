@@ -71,6 +71,11 @@ pub struct RegEntry {
     /// Hex bytes, e.g. `"0f00000000000000"`.
     #[serde(default)]
     pub binary: Option<String>,
+    /// An absent value (or key) is fine too: e.g. the `Start` of a service
+    /// that may be uninstalled. A value other than the wanted one is still
+    /// a problem, and nothing is created for an absent one.
+    #[serde(default)]
+    pub absent_ok: bool,
     /// Why (the evidence): shown with a mismatch.
     #[serde(default)]
     pub why: String,
@@ -300,6 +305,7 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
         let found = r.reg(&e.key, &e.name);
         let found_text = match &found {
             Ok(Some(v)) if *v == want => continue,
+            Ok(None) if e.absent_ok => continue,
             Ok(Some(v)) => show(v),
             Ok(None) => "absent".to_string(),
             Err(err) => format!("unreadable ({err})"),
@@ -397,7 +403,12 @@ pub fn plan(p: &Profile, r: &dyn Reader) -> Vec<Action> {
     let mut out = Vec::new();
     for e in &p.registry {
         let Some(want) = want_reg(e) else { continue };
-        if !matches!(r.reg(&e.key, &e.name), Ok(Some(ref v)) if *v == want) {
+        let fine = match r.reg(&e.key, &e.name) {
+            Ok(Some(v)) => v == want,
+            Ok(None) => e.absent_ok,
+            Err(_) => false,
+        };
+        if !fine {
             out.push(Action::Reg {
                 key: e.key.clone(),
                 name: e.name.clone(),

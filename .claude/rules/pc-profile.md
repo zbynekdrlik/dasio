@@ -36,6 +36,12 @@ paths:
   applied. Add one to a PC's profile only after that PC runs a dasio that
   knows `[[disk]]` (0.1.15+): an older one refuses the whole profile and
   its checks go off.
+- A `[[registry]]` entry with `absent_ok = true` accepts an absent value:
+  use it for the `Start` of a service that may be uninstalled. Any other
+  value is still a problem, and `apply` creates nothing for an absent one.
+  Add it to a PC's profile only after that PC runs a dasio that knows it
+  (0.1.46+): an older one refuses the whole profile. FOH's
+  `GigabyteUpdateService` has been gone since the 10.11.2026 reboot.
 - Not covered yet: BCD settings (`disabledynamictick Yes`, `testsigning
   Yes`), checked by hand with `bcdedit /enum {current}`.
 

@@ -501,3 +501,75 @@ fn a_list_reads_and_writes_as_windows_stores_it() {
     assert_eq!(multi_sz_from_wide(&w("a\0bc")), vec!["a", "bc"]);
     assert_eq!(multi_sz_from_wide(&w("a\0\0zz\0\0")), vec!["a"]);
 }
+
+#[test]
+fn an_absent_value_may_be_fine_but_a_wrong_one_never_is() {
+    // FOH, 10.11.2026: GigabyteUpdateService was uninstalled, so its
+    // Start value is gone. The entry still catches a re-install (Start 2).
+    let p = parse(
+        r#"
+name = "FOH"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\GigabyteUpdateService'
+name = "Start"
+dword = 4
+absent_ok = true
+why = "off, or gone"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\MMCSS'
+name = "Start"
+dword = 4
+"#,
+    )
+    .unwrap();
+    let gigabyte = (
+        r"HKLM\SYSTEM\CurrentControlSet\Services\GigabyteUpdateService".to_string(),
+        "Start".to_string(),
+    );
+    let mmcss = (
+        r"HKLM\SYSTEM\CurrentControlSet\Services\MMCSS".to_string(),
+        "Start".to_string(),
+    );
+    // Both absent: only the entry without absent_ok is a problem, and only
+    // its value is planned (nothing is created for the gone service).
+    let mut pc = Pc::default();
+    let problems = check(&p, &pc);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert_eq!(problems[0].what, format!(r"registry {}\Start", mmcss.0));
+    assert_eq!(problems[0].found, "absent");
+    assert_eq!(
+        plan(&p, &pc),
+        vec![Action::Reg {
+            key: mmcss.0.clone(),
+            name: "Start".into(),
+            value: Value::Dword(4),
+        }]
+    );
+    // The firmware re-installed the service: Start 2 is a problem again.
+    pc.reg.insert(mmcss, Value::Dword(4));
+    pc.reg.insert(gigabyte.clone(), Value::Dword(2));
+    let problems = check(&p, &pc);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert_eq!(problems[0].found, "2 (0x2)");
+    assert_eq!(problems[0].why, "off, or gone");
+    assert_eq!(
+        plan(&p, &pc),
+        vec![Action::Reg {
+            key: gigabyte.0.clone(),
+            name: "Start".into(),
+            value: Value::Dword(4),
+        }]
+    );
+    // Its wanted value is fine too.
+    pc.reg.insert(gigabyte, Value::Dword(4));
+    assert_eq!(check(&p, &pc), vec![]);
+    assert_eq!(plan(&p, &pc), vec![]);
+    // An unreadable value is still a problem with absent_ok.
+    pc.unreadable
+        .push(r"HKLM\SYSTEM\CurrentControlSet\Services\GigabyteUpdateService".into());
+    let problems = check(&p, &pc);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].found.starts_with("unreadable"), "{problems:?}");
+}
