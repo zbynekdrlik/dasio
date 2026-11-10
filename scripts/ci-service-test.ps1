@@ -236,6 +236,34 @@ Wait-Until { (Get-Content (Join-Path $env:ProgramData "dasio\instance-$second\da
 if ((Get-ServicePid) -ne $first) { throw "the same binary restarted the first instance: pid $first -> $(Get-ServicePid)" }
 Write-Output "second instance installed beside the first (pid $first kept)"
 
+# An install while files come and go under the data folder: a running
+# device writes its state through a .tmp it renames, its log rotates
+# (main CI 42801226358: the protection pass read a .tmp that had just
+# gone, and the install failed).
+$churnDir = Join-Path $data "instance-$instance"
+$churn = Start-Job -ArgumentList $churnDir -ScriptBlock {
+    param($d)
+    $end = (Get-Date).AddSeconds(90)
+    $i = 0
+    while ((Get-Date) -lt $end) {
+        $f = Join-Path $d "churn-$($i % 50).tmp"
+        Set-Content -Path $f -Value "x"
+        Remove-Item -LiteralPath $f -ErrorAction SilentlyContinue
+        $i++
+    }
+}
+try {
+    foreach ($k in 1..3) {
+        & (Join-Path $Bundle "install.ps1") -Instance $second -Ip $ip -Config $cfg2 -Name "ci-asio-dante-2" -TestClock | Out-Null
+    }
+} finally {
+    Stop-Job $churn
+    Remove-Job $churn -Force
+    Get-ChildItem $churnDir -Filter "churn-*.tmp" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+}
+if ((Get-Service "dasio-$second").Status -ne "Running") { throw "dasio-$second is not running after the installs beside the churn" }
+Write-Output "three installs while files came and went in the data folder"
+
 # A new binary for the second instance while both run: only it restarts;
 # the first runs its own binary until its own install.
 $newer = Join-Path $bundles "ci-newer"
