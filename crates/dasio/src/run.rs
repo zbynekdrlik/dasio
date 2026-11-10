@@ -12,7 +12,7 @@ use dstack::host::{self, Signals, Stopped};
 use dstack::media::source::Source;
 use dstack::stream::{self, Map, Pump, PumpStats};
 use shm::{HostUse, Shape, Shared};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::bridge::{Bridge, SharedLink};
 use crate::logfile::{COUNTS_EVERY, Every, STATUS_EVERY};
@@ -310,6 +310,12 @@ pub fn run(
             break None;
         }
         if let Some(e) = device.ended() {
+            break Some(e);
+        }
+        // A pump that no longer runs the bridge leaves the device silent
+        // while it lives: it ends, and the SCM restarts it (dasio#28 E17).
+        if let Some(e) = crate::health::pump_failure(&stats.stream_stats(), pump.is_finished()) {
+            error!(why = %e, "the device ends");
             break Some(e);
         }
         std::thread::sleep(Duration::from_millis(100));

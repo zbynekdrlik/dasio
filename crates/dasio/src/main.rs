@@ -113,6 +113,8 @@ fn main() -> ExitCode {
         },
         "run" | "service" => {
             quiet_crashes();
+            // A panic in any thread reaches the instance log (dasio#28 E17).
+            dasio::health::log_panics();
             let (Some(config), Some(ip)) = (
                 flag(&args, "--config"),
                 flag(&args, "--ip").and_then(|ip| ip.parse().ok()),
