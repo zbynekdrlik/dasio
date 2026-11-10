@@ -44,8 +44,160 @@ pub unsafe fn thread_name(h: HANDLE) -> String {
     s
 }
 
-/// Every process Windows lets us query, with its CPU time so far.
-fn procs() -> Vec<Proc> {
+/// How often the process and thread lists are read again (new processes,
+/// ended ones, our new threads). Between, a sample only reads the times of
+/// the handles already open: Toolhelp's lists cost tens of ms on a busy PC
+/// (54 ms on a CI runner, 153 processes), the times microseconds.
+const REFRESH_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// An open handle and what it is.
+struct Open {
+    id: u32,
+    name: String,
+    h: HANDLE,
+}
+
+/// Kernel plus user time from `times` (a GetProcessTimes or GetThreadTimes
+/// call on four FILETIMEs), `None` once it fails (the process or thread
+/// ended).
+fn cpu_of(times: impl FnOnce(&mut [FILETIME; 4]) -> windows_sys::core::BOOL) -> Option<u64> {
+    let z = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut t = [z; 4];
+    (times(&mut t) != 0).then(|| cpu(&t[2], &t[3]))
+}
+
+/// Every process (limited-query handles) and this process's threads, kept
+/// open between samples and read again every [`REFRESH_EVERY`].
+pub struct Gatherer {
+    procs: Vec<Open>,
+    threads: Vec<Open>,
+    refreshed: Option<std::time::Instant>,
+    /// The last refresh's cost, µs.
+    pub refresh_us: u64,
+}
+
+impl Default for Gatherer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Gatherer {
+    pub fn new() -> Self {
+        Gatherer {
+            procs: Vec::new(),
+            threads: Vec::new(),
+            refreshed: None,
+            refresh_us: 0,
+        }
+    }
+
+    /// Opens what is new in the process list and our thread list; keeps
+    /// what stays (same id and name), closes what ended.
+    fn refresh(&mut self) {
+        let t = std::time::Instant::now();
+        let procs = list_procs();
+        keep_and_open(&mut self.procs, procs, |id| {
+            // SAFETY: a limited-query handle to a process, closed by
+            // `close` or Drop.
+            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, id) }
+        });
+        let threads = list_threads();
+        keep_and_open(&mut self.threads, threads, |id| {
+            // SAFETY: a limited-query handle to one of our threads, closed
+            // by `close` or Drop.
+            unsafe { OpenThread(THREAD_QUERY_LIMITED_INFORMATION, 0, id) }
+        });
+        for o in &mut self.threads {
+            if o.name.is_empty() {
+                // SAFETY: opened above with limited query rights.
+                o.name = unsafe { thread_name(o.h) };
+            }
+        }
+        self.refreshed = Some(std::time::Instant::now());
+        self.refresh_us = u64::try_from(t.elapsed().as_micros()).unwrap_or(u64::MAX);
+    }
+
+    /// A sample now, `at_ms` on the caller's steady clock; the lists are
+    /// read again first when [`REFRESH_EVERY`] has passed.
+    pub fn sample(&mut self, at_ms: u64) -> Sample {
+        if self.refreshed.is_none_or(|t| t.elapsed() >= REFRESH_EVERY) {
+            self.refresh();
+        }
+        Sample {
+            at_ms,
+            procs: self
+                .procs
+                .iter()
+                .filter_map(|o| {
+                    cpu_of(|[c, x, k, u]| {
+                        // SAFETY: an open handle and four writable FILETIMEs.
+                        unsafe { GetProcessTimes(o.h, c, x, k, u) }
+                    })
+                    .map(|cpu_100ns| Proc {
+                        pid: o.id,
+                        name: o.name.clone(),
+                        cpu_100ns,
+                    })
+                })
+                .collect(),
+            threads: self
+                .threads
+                .iter()
+                .filter_map(|o| {
+                    cpu_of(|[c, x, k, u]| {
+                        // SAFETY: an open handle and four writable FILETIMEs.
+                        unsafe { GetThreadTimes(o.h, c, x, k, u) }
+                    })
+                    .map(|cpu_100ns| Thread {
+                        tid: o.id,
+                        name: o.name.clone(),
+                        cpu_100ns,
+                    })
+                })
+                .collect(),
+        }
+    }
+}
+
+impl Drop for Gatherer {
+    fn drop(&mut self) {
+        for o in self.procs.drain(..).chain(self.threads.drain(..)) {
+            // SAFETY: opened by `refresh`, closed once here.
+            unsafe { CloseHandle(o.h) };
+        }
+    }
+}
+
+/// `open` becomes `now` (ids and names): an entry in both keeps its handle,
+/// one only in `open` is closed, one only in `now` is opened with `opener`
+/// (left out when that fails).
+fn keep_and_open(open: &mut Vec<Open>, now: Vec<(u32, String)>, opener: impl Fn(u32) -> HANDLE) {
+    let mut old = std::mem::take(open);
+    for (id, name) in now {
+        if let Some(i) = old
+            .iter()
+            .position(|o| o.id == id && (o.name == name || name.is_empty()))
+        {
+            open.push(old.swap_remove(i));
+            continue;
+        }
+        let h = opener(id);
+        if !h.is_null() {
+            open.push(Open { id, name, h });
+        }
+    }
+    for o in old {
+        // SAFETY: opened by an earlier refresh, closed once here.
+        unsafe { CloseHandle(o.h) };
+    }
+}
+
+/// Every process's id and exe name (Toolhelp).
+fn list_procs() -> Vec<(u32, String)> {
     let mut out = Vec::new();
     // SAFETY: a process snapshot, closed below.
     let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
@@ -59,25 +211,7 @@ fn procs() -> Vec<Proc> {
     // SAFETY: a valid snapshot and an entry with its size set.
     let mut ok = unsafe { Process32FirstW(snap, &mut e) } != 0;
     while ok {
-        // SAFETY: a limited-query handle to a process, closed below.
-        let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, e.th32ProcessID) };
-        if !h.is_null() {
-            let z = FILETIME {
-                dwLowDateTime: 0,
-                dwHighDateTime: 0,
-            };
-            let (mut c, mut x, mut k, mut u) = (z, z, z, z);
-            // SAFETY: a valid handle and four writable FILETIMEs.
-            if unsafe { GetProcessTimes(h, &mut c, &mut x, &mut k, &mut u) } != 0 {
-                out.push(Proc {
-                    pid: e.th32ProcessID,
-                    name: super::utf16_name(&e.szExeFile),
-                    cpu_100ns: cpu(&k, &u),
-                });
-            }
-            // SAFETY: opened above.
-            unsafe { CloseHandle(h) };
-        }
+        out.push((e.th32ProcessID, super::utf16_name(&e.szExeFile)));
         // SAFETY: as above.
         ok = unsafe { Process32NextW(snap, &mut e) } != 0;
     }
@@ -86,8 +220,8 @@ fn procs() -> Vec<Proc> {
     out
 }
 
-/// This process's threads with their CPU time so far.
-fn threads() -> Vec<Thread> {
+/// This process's thread ids (Toolhelp; names are read once opened).
+fn list_threads() -> Vec<(u32, String)> {
     let mut out = Vec::new();
     // SAFETY: no arguments.
     let pid = unsafe { GetCurrentProcessId() };
@@ -103,27 +237,7 @@ fn threads() -> Vec<Thread> {
     let mut ok = unsafe { Thread32First(snap, &mut e) } != 0;
     while ok {
         if e.th32OwnerProcessID == pid {
-            // SAFETY: a limited-query handle to one of our threads, closed
-            // below.
-            let h = unsafe { OpenThread(THREAD_QUERY_LIMITED_INFORMATION, 0, e.th32ThreadID) };
-            if !h.is_null() {
-                let z = FILETIME {
-                    dwLowDateTime: 0,
-                    dwHighDateTime: 0,
-                };
-                let (mut c, mut x, mut k, mut u) = (z, z, z, z);
-                // SAFETY: a valid handle and four writable FILETIMEs.
-                if unsafe { GetThreadTimes(h, &mut c, &mut x, &mut k, &mut u) } != 0 {
-                    out.push(Thread {
-                        tid: e.th32ThreadID,
-                        // SAFETY: opened above with limited query rights.
-                        name: unsafe { thread_name(h) },
-                        cpu_100ns: cpu(&k, &u),
-                    });
-                }
-                // SAFETY: opened above.
-                unsafe { CloseHandle(h) };
-            }
+            out.push((e.th32ThreadID, String::new()));
         }
         // SAFETY: as above.
         ok = unsafe { Thread32Next(snap, &mut e) } != 0;
@@ -131,15 +245,6 @@ fn threads() -> Vec<Thread> {
     // SAFETY: the snapshot from above.
     unsafe { CloseHandle(snap) };
     out
-}
-
-/// A sample now, `at_ms` on the caller's steady clock.
-pub fn sample(at_ms: u64) -> Sample {
-    Sample {
-        at_ms,
-        procs: procs(),
-        threads: threads(),
-    }
 }
 
 /// How often a sample is taken while no burst asks for one.
@@ -164,6 +269,7 @@ pub fn spawn(
 /// The samples' own cost since it was last logged.
 #[derive(Default)]
 struct Cost {
+    gatherer: Gatherer,
     taken: u64,
     sum_us: u64,
     max_us: u64,
@@ -173,7 +279,7 @@ impl Cost {
     /// A sample at `at` ms, its cost counted; the sample and its µs.
     fn take(&mut self, at: u64) -> (Sample, u64) {
         let t = std::time::Instant::now();
-        let s = sample(at);
+        let s = self.gatherer.sample(at);
         let us = u64::try_from(t.elapsed().as_micros()).unwrap_or(u64::MAX);
         self.taken += 1;
         self.sum_us = self.sum_us.saturating_add(us);
@@ -192,6 +298,7 @@ fn run(start: std::time::Instant, rx: &std::sync::mpsc::Receiver<()>) {
         procs = prev.procs.len(),
         threads = prev.threads.len(),
         sample_us = us,
+        refresh_us = cost.gatherer.refresh_us,
         every_ms = EVERY.as_millis() as u64,
         "CPU samples start: each burst of missed DAW blocks names who ran since the sample before"
     );
@@ -223,12 +330,13 @@ fn run(start: std::time::Instant, rx: &std::sync::mpsc::Receiver<()>) {
                 samples = cost.taken,
                 mean_us = cost.sum_us / cost.taken.max(1),
                 max_us = cost.max_us,
+                last_refresh_us = cost.gatherer.refresh_us,
                 procs = prev.procs.len(),
                 threads = prev.threads.len(),
                 "CPU samples' own cost in the last 10 min"
             );
             total += cost.taken;
-            cost = Cost::default();
+            (cost.taken, cost.sum_us, cost.max_us) = (0, 0, 0);
             cost_at = Instant::now();
         }
     }

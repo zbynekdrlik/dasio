@@ -177,7 +177,9 @@ fn a_utf16_name_ends_at_its_first_nul() {
 }
 
 /// The gatherer on the real Windows: a thread that spins 300 ms between
-/// two samples is this process's and its own top thread, by its name.
+/// two samples is this process's and its own top thread, by its name; the
+/// second sample reads the handles the first opened (no refresh within
+/// 10 s).
 #[cfg(windows)]
 #[test]
 fn a_spinning_thread_shows_in_this_process_and_by_its_name() {
@@ -197,9 +199,10 @@ fn a_spinning_thread_shows_in_this_process_and_by_its_name() {
             let _ = hold.recv();
         })
         .unwrap();
-    let before = windows::sample(0);
+    let mut g = windows::Gatherer::new();
+    let before = g.sample(0);
     wait.recv().unwrap();
-    let now = windows::sample(300);
+    let now = g.sample(300);
     done.send(()).unwrap();
     spinner.join().unwrap();
 
