@@ -8,6 +8,7 @@ exclude_globs = [
   "crates/asio-driver/src/com.rs",
   "crates/asio-driver/src/driver.rs",
   "crates/shm/src/windows.rs",
+  "crates/dasio/src/cpu_snap/windows.rs",
   "crates/dasio/src/jitter.rs",
   "crates/dasio/src/kernel_tx/windows.rs",
   "crates/dasio/src/pc_profile/windows.rs",

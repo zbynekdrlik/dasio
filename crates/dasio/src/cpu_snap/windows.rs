@@ -20,14 +20,8 @@ use super::{Proc, Sample, Thread};
 
 /// Kernel plus user time of two FILETIMEs, 100 ns units.
 fn cpu(kernel: &FILETIME, user: &FILETIME) -> u64 {
-    let t = |f: &FILETIME| (u64::from(f.dwHighDateTime) << 32) | u64::from(f.dwLowDateTime);
-    t(kernel).saturating_add(t(user))
-}
-
-/// A NUL-terminated UTF-16 buffer as a string.
-fn utf16(s: &[u16]) -> String {
-    let n = s.iter().position(|&c| c == 0).unwrap_or(s.len());
-    String::from_utf16_lossy(&s[..n])
+    super::filetime(kernel.dwHighDateTime, kernel.dwLowDateTime)
+        .saturating_add(super::filetime(user.dwHighDateTime, user.dwLowDateTime))
 }
 
 /// `h`'s description (`SetThreadDescription`), empty without one.
@@ -77,7 +71,7 @@ fn procs() -> Vec<Proc> {
             if unsafe { GetProcessTimes(h, &mut c, &mut x, &mut k, &mut u) } != 0 {
                 out.push(Proc {
                     pid: e.th32ProcessID,
-                    name: utf16(&e.szExeFile),
+                    name: super::utf16_name(&e.szExeFile),
                     cpu_100ns: cpu(&k, &u),
                 });
             }
@@ -157,12 +151,14 @@ const COST_EVERY: std::time::Duration = std::time::Duration::from_secs(600);
 /// each `()` the returned sender gets (the run loop sends one at a burst
 /// start), logged against the sample before it. The thread ends when the
 /// sender is dropped. The helper placer keeps it on the helper CPUs.
-pub fn spawn(start: std::time::Instant) -> std::io::Result<std::sync::mpsc::Sender<()>> {
+pub fn spawn(
+    start: std::time::Instant,
+) -> std::io::Result<(std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>)> {
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::Builder::new()
+    let thread = std::thread::Builder::new()
         .name("cpu-snap".into())
         .spawn(move || run(start, &rx))?;
-    Ok(tx)
+    Ok((tx, thread))
 }
 
 /// The samples' own cost since it was last logged.

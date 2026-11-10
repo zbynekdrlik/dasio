@@ -117,6 +117,18 @@ pub fn list(spent: &[Spent]) -> String {
         .join(", ")
 }
 
+/// A FILETIME's two halves as one count of 100 ns units.
+pub fn filetime(high: u32, low: u32) -> u64 {
+    (u64::from(high) << 32) | u64::from(low)
+}
+
+/// A NUL-terminated UTF-16 buffer (a Toolhelp exe name) as a string: up to
+/// its first NUL, or all of it without one.
+pub fn utf16_name(s: &[u16]) -> String {
+    let n = s.iter().position(|&c| c == 0).unwrap_or(s.len());
+    String::from_utf16_lossy(&s[..n])
+}
+
 #[cfg(windows)]
 pub mod windows;
 

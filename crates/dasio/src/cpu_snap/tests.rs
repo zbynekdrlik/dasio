@@ -155,6 +155,27 @@ fn the_list_reads_name_id_and_ms_to_a_tenth() {
     assert_eq!(list(&[]), "");
 }
 
+#[test]
+fn a_filetime_joins_its_high_and_low_halves() {
+    assert_eq!(filetime(0, 0), 0);
+    assert_eq!(filetime(0, 7), 7);
+    assert_eq!(filetime(1, 0), 1 << 32);
+    assert_eq!(filetime(2, 5), (2 << 32) + 5);
+    assert_eq!(filetime(u32::MAX, u32::MAX), u64::MAX);
+}
+
+#[test]
+fn a_utf16_name_ends_at_its_first_nul() {
+    let mut buf = [0u16; 8];
+    for (d, c) in buf.iter_mut().zip("abc.exe".encode_utf16()) {
+        *d = c;
+    }
+    assert_eq!(utf16_name(&buf), "abc.exe");
+    let full: Vec<u16> = "xyz".encode_utf16().collect();
+    assert_eq!(utf16_name(&full), "xyz", "no NUL: all of it");
+    assert_eq!(utf16_name(&[0, 65]), "");
+}
+
 /// The gatherer on the real Windows: a thread that spins 300 ms between
 /// two samples is this process's and its own top thread, by its name.
 #[cfg(windows)]
