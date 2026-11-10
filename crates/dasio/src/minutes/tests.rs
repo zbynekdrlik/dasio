@@ -248,3 +248,49 @@ fn every_counter_s_growth_reaches_the_row() {
         "2026-11-10T10:07Z,3,6,9,12,15,18,21,24,0,0,0,0,0,1"
     );
 }
+
+#[test]
+fn a_stop_hands_over_the_minute_in_progress() {
+    // FOH, 10.11.2026: the device restarted at 12:45:00Z and its 12:44 row
+    // never came, the minute a stall before a restart would be in.
+    let mut agg = MinuteAgg::default();
+    let w = |blocks| Window {
+        blocks,
+        ..Window::default()
+    };
+    agg.tick(T + 5, totals(1, 0, 0), w(0), true);
+    agg.tick(T + 15, totals(3, 1, 0), w(10), true);
+    // Stopped at 10:07:20: the growth since the last tick counts too.
+    let rows = agg.finish(T + 20, totals(4, 1, 2), w(5), false);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].minute, T);
+    assert_eq!(rows[0].grown, totals(3, 1, 2));
+    assert_eq!(rows[0].window.blocks, 15);
+    assert!(!rows[0].attached, "as at the stop");
+}
+
+#[test]
+fn a_stop_just_after_a_minute_starts_hands_over_both_minutes() {
+    let mut agg = MinuteAgg::default();
+    agg.tick(T + 45, totals(1, 0, 0), Window::default(), true);
+    agg.tick(T + 55, totals(2, 0, 0), Window::default(), true);
+    // Stopped at 10:08:06 (its window's middle 10:08:01): 10:07, then the
+    // second of 10:08 so far.
+    let rows = agg.finish(T + 66, totals(5, 0, 0), Window::default(), true);
+    assert_eq!(
+        rows.iter().map(|r| r.minute).collect::<Vec<_>>(),
+        [T, T + 60]
+    );
+    assert_eq!(rows[0].grown, totals(1, 0, 0));
+    assert_eq!(rows[1].grown, totals(3, 0, 0));
+}
+
+#[test]
+fn a_stop_before_any_tick_still_writes_its_minute() {
+    // A device that stops within its first 10 s: one row, nothing grown.
+    let mut agg = MinuteAgg::default();
+    let rows = agg.finish(T + 30, totals(7, 7, 7), Window::default(), true);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].minute, T);
+    assert_eq!(rows[0].grown, totals(0, 0, 0));
+}

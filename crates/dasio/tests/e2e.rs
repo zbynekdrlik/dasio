@@ -25,6 +25,16 @@ const SECOND: u32 = 15;
 /// The second device's ARC, CMC and flow-control ports and its process id
 /// (the first keeps the stack's 4440, 8800, 4455 and 0).
 const SECOND_PORTS: &str = "arc_port = 4441\ncmc_port = 8801\nflows_port = 4456\nprocess_id = 1\n";
+/// Each device's pump on a CPU of its own, as each instance has its own
+/// CPUs on the PCs. Unpinned, the first device's spinning pump lost its
+/// core while the second ran (CI 42774079830 and 42820731724: 8442 and
+/// 10078 switches of 12000, the pump missing up to 958 blocks a second,
+/// dasio#28). Their TX and RX threads stay unpinned: both devices' on one
+/// CPU left the second device receiving nothing (CI 42822347591).
+const FIRST_CPUS: &str = "pump_cpu = 1\n";
+const SECOND_CPUS: &str = "pump_cpu = 2\n";
+/// The CPUs the pumps take, and two more for the host and the rest.
+const CPUS_NEEDED: usize = 4;
 /// How long a device may take to publish its shared memory.
 const READY: Duration = Duration::from_secs(20);
 /// How long a device may take to end after its stop.
@@ -259,11 +269,16 @@ fn round_trip_stalled(instance: u32, seconds: u64, stall_ms: u64) -> dasio::prob
 
 #[test]
 fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_address() {
+    let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
+    assert!(
+        cpus >= CPUS_NEEDED,
+        "{cpus} CPUs: the two devices' pinned threads need {CPUS_NEEDED}"
+    );
     let dir = std::env::temp_dir().join(format!("dasio-e2e-{}", std::process::id()));
     let ip = routed_ipv4();
     let first = Device::start(
         FIRST,
-        &device_in(&dir.join("first"), "test-device", ""),
+        &device_in(&dir.join("first"), "test-device", FIRST_CPUS),
         ip,
         dir.join("first.log"),
     );
@@ -271,10 +286,10 @@ fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_a
     std::thread::sleep(Duration::from_secs(2));
 
     // The host at High priority, as Ableton runs (and `dasio probe`).
-    // Timed with the first device alone: two unpinned devices spinning on
-    // a 4-CPU runner share its CPUs (31.10.2026: 2 late blocks with no
-    // host gap); on the PC each instance has its own CPUs, and that is the
-    // PC's gate (HIL, soak).
+    // Timed with the first device alone: two devices spinning on a 4-CPU
+    // runner still share its CPUs beyond their pumps (31.10.2026: 2 late
+    // blocks with no host gap); on the PC each instance has its own CPUs,
+    // and that is the PC's gate (HIL, soak).
     dasio::probe::high_priority().expect("High priority");
     let r = round_trip(FIRST, 6);
     // A late block is the device's fault unless the host itself lost its
@@ -309,7 +324,11 @@ fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_a
     // them, so this process cannot take it).
     let mut second = Device::start(
         SECOND,
-        &device_in(&dir.join("second"), "test-device-2", SECOND_PORTS),
+        &device_in(
+            &dir.join("second"),
+            "test-device-2",
+            &format!("{SECOND_PORTS}{SECOND_CPUS}"),
+        ),
         ip,
         dir.join("second.log"),
     );
