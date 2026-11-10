@@ -212,6 +212,10 @@ pub fn run(
             .spawn(move || place_helpers(own))
             .map_err(|e| format!("the helper placer: {e}"))?;
     }
+    // Who held the CPU when the DAW missed blocks (dasio#22).
+    let cpu_snap =
+        crate::cpu_snap::windows::spawn(start).map_err(|e| format!("the CPU sampler: {e}"))?;
+    let mut cpu_snap_lost = false;
     let mut profile_at: Option<Instant> = None;
     let why = loop {
         let h = shared.header();
@@ -232,11 +236,17 @@ pub fn run(
             h.missed.load(Ordering::Relaxed),
             h.late.load(Ordering::Relaxed),
         ) {
-            Some(crate::bursts::Event::Start { missed, late }) => warn!(
-                driver_missed = missed,
-                late,
-                "the DAW missed blocks: a burst starts (seen within 100 ms of its first block)"
-            ),
+            Some(crate::bursts::Event::Start { missed, late }) => {
+                warn!(
+                    driver_missed = missed,
+                    late,
+                    "the DAW missed blocks: a burst starts (seen within 100 ms of its first block)"
+                );
+                if cpu_snap.send(()).is_err() && !cpu_snap_lost {
+                    cpu_snap_lost = true;
+                    warn!("the CPU sampler has ended: bursts are logged without who ran");
+                }
+            }
             Some(crate::bursts::Event::End { missed, late, ms }) => info!(
                 driver_missed = missed,
                 late, ms, "the DAW's burst of missed blocks ended"
@@ -648,13 +658,13 @@ fn kernel_tx(media: &dstack::daemon::media::Media, ip: std::net::Ipv4Addr) {
 /// start later (the runtime, mDNS). The thread moves itself first, so its
 /// own work never runs on a media CPU.
 fn place_helpers(own: usize) {
-    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE, LocalFree};
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
     };
     use windows_sys::Win32::System::Threading::{
         GetCurrentProcess, GetCurrentProcessId, GetCurrentThread, GetProcessAffinityMask,
-        GetThreadDescription, OpenThread, SetThreadAffinityMask, THREAD_QUERY_LIMITED_INFORMATION,
+        OpenThread, SetThreadAffinityMask, THREAD_QUERY_LIMITED_INFORMATION,
         THREAD_SET_INFORMATION,
     };
     // SAFETY: no arguments.
@@ -692,24 +702,7 @@ fn place_helpers(own: usize) {
                             )
                         };
                         if !h.is_null() {
-                            let mut text: *mut u16 = std::ptr::null_mut();
-                            // SAFETY: a valid handle; Windows allocates the
-                            // name, freed with LocalFree.
-                            let name = if unsafe { GetThreadDescription(h, &mut text) } >= 0
-                                && !text.is_null()
-                            {
-                                // SAFETY: a NUL-terminated string from Windows.
-                                let n = (0..).take_while(|&i| unsafe { *text.add(i) } != 0).count();
-                                // SAFETY: `n` chars before the NUL.
-                                let s = String::from_utf16_lossy(unsafe {
-                                    std::slice::from_raw_parts(text, n)
-                                });
-                                // SAFETY: allocated by GetThreadDescription.
-                                unsafe { LocalFree(text.cast()) };
-                                s
-                            } else {
-                                String::new()
-                            };
+                            let name = crate::cpu_snap::windows::thread_name(h);
                             // SAFETY: a valid handle with SET_INFORMATION.
                             if !crate::is_media_thread(&name)
                                 && unsafe { SetThreadAffinityMask(h, helpers) } != 0

@@ -9,6 +9,7 @@
 pub mod app_status;
 pub mod bridge;
 pub mod bursts;
+pub mod cpu_snap;
 pub mod health;
 #[cfg(windows)]
 pub mod jitter;
