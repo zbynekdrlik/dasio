@@ -78,6 +78,11 @@ pub struct Row {
     pub attached: bool,
 }
 
+/// How far before a tick its window's middle lies: half the counts tick
+/// (10 s). A tick's growth and turnaround belong to the minute that holds
+/// that middle, so a stall is at most 5 s off its minute.
+pub const HALF_TICK_S: u64 = 5;
+
 /// Folds the counts ticks into minutes.
 #[derive(Debug, Default)]
 pub struct MinuteAgg {
@@ -87,9 +92,12 @@ pub struct MinuteAgg {
 
 impl MinuteAgg {
     /// The tick at `unix_s` (seconds since the epoch): `totals` as they
-    /// stand, `window` the turnaround since the last tick. Returns the
-    /// minute before when this tick is the first of a new one. The first
-    /// tick only sets the base (nothing grew yet).
+    /// stand, `window` the turnaround since the last tick. The tick counts
+    /// in the minute of its window's middle ([`HALF_TICK_S`] before it).
+    /// Returns the minute before when this tick is the first of a later
+    /// one; a tick of an earlier minute (the clock stepped back) counts in
+    /// the current one, so no minute comes twice. The first tick only sets
+    /// the base (nothing grew yet).
     pub fn tick(
         &mut self,
         unix_s: u64,
@@ -97,13 +105,14 @@ impl MinuteAgg {
         window: Window,
         attached: bool,
     ) -> Option<Row> {
-        let minute = unix_s - unix_s % 60;
+        let at = unix_s.saturating_sub(HALF_TICK_S);
+        let minute = at - at % 60;
         let grown = self
             .last
             .map(|base| totals.since(&base))
             .unwrap_or_default();
         self.last = Some(totals);
-        let done = if self.current.is_some_and(|row| row.minute != minute) {
+        let done = if self.current.is_some_and(|row| minute > row.minute) {
             self.current.take()
         } else {
             None
@@ -150,6 +159,19 @@ pub fn minute_utc(unix_s: u64) -> String {
     format!("{}T{:02}:{:02}Z", date(unix_s), s / 3_600, s % 3_600 / 60)
 }
 
+/// Whether `s` has the shape `YYYY-MM-DD`.
+fn is_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 10
+        && b.iter().enumerate().all(|(i, c)| {
+            if i == 4 || i == 7 {
+                *c == b'-'
+            } else {
+                c.is_ascii_digit()
+            }
+        })
+}
+
 /// One row as a CSV line (no newline).
 pub fn line(r: &Row) -> String {
     let g = &r.grown;
@@ -190,29 +212,35 @@ impl MinuteLog {
         }
     }
 
-    /// Appends `row` to its day's file: a new file gets the header, and
-    /// opening another day's file first removes the files older than
-    /// `keep_days` days before it.
+    /// Appends `row` to its day's file: an empty file gets the header
+    /// first. Opening another day's file then removes the files older than
+    /// `keep_days` days before it (after the row is in, so a failed removal
+    /// never loses the row).
     pub fn write(&mut self, row: &Row) -> io::Result<()> {
         let day = date(row.minute);
-        if self.open.as_ref().is_none_or(|(open, _)| *open != day) {
+        let opened = self.open.as_ref().is_none_or(|(open, _)| *open != day);
+        if opened {
             let path = self.dir.join(format!("counters-{day}.csv"));
-            let new = !path.exists();
             let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
-            if new {
+            if file.metadata()?.len() == 0 {
                 writeln!(file, "{HEADER}")?;
             }
             self.open = Some((day, file));
-            self.prune(row.minute)?;
         }
         let (_, file) = self.open.as_mut().expect("opened above");
-        writeln!(file, "{}", line(row))
+        writeln!(file, "{}", line(row))?;
+        if opened {
+            self.prune(row.minute)?;
+        }
+        Ok(())
     }
 
     /// Removes `counters-YYYY-MM-DD.csv` files dated before `keep_days`
-    /// days ahead of `unix_s`; nothing else in the folder.
+    /// days ahead of `unix_s`; nothing else in the folder. Every old file
+    /// is tried; the first failure is returned after.
     fn prune(&self, unix_s: u64) -> io::Result<()> {
         let oldest = date(unix_s.saturating_sub(self.keep_days * 86_400));
+        let mut failed = Ok(());
         for entry in fs::read_dir(&self.dir)? {
             let entry = entry?;
             let name = entry.file_name();
@@ -223,11 +251,15 @@ impl MinuteLog {
             else {
                 continue;
             };
-            if day.len() == 10 && day < oldest.as_str() {
-                fs::remove_file(entry.path())?;
+            if is_date(day)
+                && day < oldest.as_str()
+                && let Err(e) = fs::remove_file(entry.path())
+                && failed.is_ok()
+            {
+                failed = Err(e);
             }
         }
-        Ok(())
+        failed
     }
 }
 

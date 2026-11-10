@@ -39,17 +39,29 @@ fn ticks_fold_into_their_minute_and_a_new_minute_hands_it_over() {
         wake_max_us: max_us / 10,
         process_max_us: max_us / 2,
     };
+    // A tick counts in the minute of its window's middle, 5 s before it:
+    // the tick at 10:07:03 is 10:06's, the one at 10:07:05 the first of
+    // 10:07.
+    assert_eq!(agg.tick(T + 3, totals(5, 2, 0), w(900, 0), true), None);
     // The first tick is the base: nothing grew yet.
-    assert_eq!(agg.tick(T, totals(5, 2, 0), w(900, 0), true), None);
-    assert_eq!(agg.tick(T + 10, totals(7, 2, 0), w(4_000, 2), true), None);
-    assert_eq!(agg.tick(T + 50, totals(8, 3, 1), w(1_200, 1), false), None);
-    // 10:08:00: the 10:07 row comes out.
     let row = agg
-        .tick(T + 60, totals(8, 3, 1), w(500, 0), true)
+        .tick(T + 5, totals(5, 2, 0), w(0, 0), true)
+        .expect("the 10:06 row");
+    assert_eq!(row.minute, T - 60);
+    assert_eq!(row.grown, totals(0, 0, 0));
+    assert_eq!(agg.tick(T + 15, totals(7, 2, 0), w(4_000, 2), true), None);
+    assert_eq!(agg.tick(T + 55, totals(8, 3, 1), w(1_200, 1), false), None);
+    // 10:08:05: the 10:07 row comes out.
+    let row = agg
+        .tick(T + 65, totals(8, 3, 1), w(500, 0), true)
         .expect("the 10:07 row");
     assert_eq!(row.minute, T);
     assert_eq!(row.grown, totals(3, 1, 1), "growth since the base");
-    assert_eq!(row.window.blocks, 3 * 3_750);
+    assert_eq!(
+        row.window.blocks,
+        3 * 3_750,
+        "the 10:07:05 tick's window too"
+    );
     assert_eq!(row.window.over, 3);
     assert_eq!(row.window.max_us, 4_000, "the longest");
     assert_eq!(row.window.wake_max_us, 400);
@@ -61,7 +73,7 @@ fn ticks_fold_into_their_minute_and_a_new_minute_hands_it_over() {
     );
     // The next minute starts from the last tick's totals.
     let row = agg
-        .tick(T + 120, totals(10, 3, 1), w(0, 0), true)
+        .tick(T + 125, totals(10, 3, 1), w(0, 0), true)
         .expect("the 10:08 row");
     assert_eq!(row.minute, T + 60);
     assert_eq!(row.grown, totals(0, 0, 0));
@@ -69,15 +81,31 @@ fn ticks_fold_into_their_minute_and_a_new_minute_hands_it_over() {
 }
 
 #[test]
+fn a_clock_stepped_back_never_gives_a_minute_twice() {
+    let mut agg = MinuteAgg::default();
+    agg.tick(T + 65, totals(1, 0, 0), Window::default(), true);
+    // dantesync steps the clock back into 10:07: counted in 10:08's row.
+    assert_eq!(
+        agg.tick(T + 40, totals(3, 0, 0), Window::default(), true),
+        None
+    );
+    let row = agg
+        .tick(T + 125, totals(3, 0, 0), Window::default(), true)
+        .expect("the 10:08 row");
+    assert_eq!(row.minute, T + 60);
+    assert_eq!(row.grown, totals(2, 0, 0));
+}
+
+#[test]
 fn a_counter_that_goes_back_adds_nothing() {
     let mut agg = MinuteAgg::default();
-    agg.tick(T, totals(9, 9, 9), Window::default(), true);
+    agg.tick(T + 5, totals(9, 9, 9), Window::default(), true);
     // Back to 1 (a restarted counter): no growth, no wrap.
-    agg.tick(T + 10, totals(1, 1, 1), Window::default(), true);
+    agg.tick(T + 15, totals(1, 1, 1), Window::default(), true);
     // Then it grows from there.
-    agg.tick(T + 20, totals(2, 1, 1), Window::default(), true);
+    agg.tick(T + 25, totals(2, 1, 1), Window::default(), true);
     let row = agg
-        .tick(T + 60, totals(2, 1, 1), Window::default(), true)
+        .tick(T + 65, totals(2, 1, 1), Window::default(), true)
         .unwrap();
     assert_eq!(row.grown, totals(1, 0, 0));
 }
@@ -128,7 +156,8 @@ fn a_new_day_removes_only_counter_files_older_than_kept() {
         "counters-2026-10-10.csv", // 31 days before: goes
         "counters-2026-10-11.csv", // 30 days before: kept
         "counters-2026-11-09.csv",
-        "counters-notes.csv", // not a date: kept
+        "counters-notes.csv",      // not a date: kept
+        "counters-0000000000.csv", // ten characters, not a date: kept
         "dasio.log",
     ] {
         std::fs::write(d.join(name), "x").unwrap();
@@ -147,6 +176,7 @@ fn a_new_day_removes_only_counter_files_older_than_kept() {
     assert_eq!(
         left,
         [
+            "counters-0000000000.csv",
             "counters-2026-10-11.csv",
             "counters-2026-11-09.csv",
             "counters-2026-11-10.csv",
@@ -154,4 +184,40 @@ fn a_new_day_removes_only_counter_files_older_than_kept() {
             "dasio.log"
         ]
     );
+}
+
+#[test]
+fn an_empty_day_file_gets_its_header() {
+    let d = dir("empty");
+    // A device that died between creating the file and its header.
+    std::fs::write(d.join("counters-2026-11-10.csv"), "").unwrap();
+    let mut log = MinuteLog::new(&d, KEEP_DAYS);
+    let row = Row {
+        minute: T,
+        ..Row::default()
+    };
+    log.write(&row).unwrap();
+    let text = std::fs::read_to_string(d.join("counters-2026-11-10.csv")).unwrap();
+    assert_eq!(text.lines().collect::<Vec<_>>(), [HEADER, &line(&row)[..]]);
+}
+
+#[test]
+fn a_file_that_cannot_go_keeps_the_row_and_the_rest_still_go() {
+    let d = dir("stuck");
+    // A directory by a dated name: removing it as a file fails.
+    std::fs::create_dir(d.join("counters-2026-01-01.csv")).unwrap();
+    std::fs::write(d.join("counters-2026-01-02.csv"), "x").unwrap();
+    let mut log = MinuteLog::new(&d, KEEP_DAYS);
+    let row = Row {
+        minute: T,
+        ..Row::default()
+    };
+    assert!(log.write(&row).is_err(), "the failed removal is reported");
+    let text = std::fs::read_to_string(d.join("counters-2026-11-10.csv")).unwrap();
+    assert_eq!(text.lines().last(), Some(&line(&row)[..]), "the row is in");
+    assert!(
+        !d.join("counters-2026-01-02.csv").exists(),
+        "the other old file went"
+    );
+    assert!(d.join("counters-2026-01-01.csv").exists());
 }

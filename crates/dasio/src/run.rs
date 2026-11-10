@@ -34,7 +34,8 @@ pub fn run(
     let cfg = host::read_config(&config).map_err(|e| e.to_string())?;
     // The per-minute counters go next to the instance's config and log
     // (dasio#28 A36).
-    let minutes_dir = config
+    let minutes_dir = std::path::absolute(&config)
+        .map_err(|e| format!("the config's path {}: {e}", config.display()))?
         .parent()
         .map(std::path::Path::to_path_buf)
         .unwrap_or_default();
