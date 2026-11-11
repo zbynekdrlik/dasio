@@ -305,6 +305,7 @@ impl<L: Link> Process for Bridge<L> {
         }
     }
 
+    #[cfg_attr(dasio_rtsan, sanitize(realtime = "nonblocking"))]
     fn process(&mut self, block: &mut Block<'_>) {
         if !self.link.attached() {
             if let Some(c) = self.conceal.as_mut() {
