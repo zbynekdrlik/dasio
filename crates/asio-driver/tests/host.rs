@@ -965,9 +965,12 @@ fn a_device_that_dies_while_the_daw_plays_leaves_it_running_and_comes_back() {
          {during} switches in 2.5 s, want at least {want}"
     );
     // The free-run waits for each tick, it does not spin through the period
-    // (dasio#87: a 0.67 ms period kept one core busy).
+    // (dasio#87: a 0.67 ms period kept one core busy, ~100 % of the dead
+    // phase). The bound sits below that and above the real work: ~1500
+    // callbacks a second plus the 100 us spin residue each; under the
+    // coverage build's instrumentation that took 51 % (CI 43031187316).
     assert!(
-        cpu < dead / 2,
+        cpu < dead * 4 / 5,
         "the worker sleeps between the blocks of a dead device: \
          {cpu:?} of CPU in {dead:?}"
     );
