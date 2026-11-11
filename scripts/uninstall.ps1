@@ -1,5 +1,5 @@
 # dasio: remove one instance (plan Task 9). Run as administrator:
-#   .\uninstall.ps1 -Instance 1 -Ip <its address>
+#   .\uninstall.ps1 -Instance 1 [-Ip <its address>]
 # Stops and removes its service and its own binary (and a logon task an
 # older install made) and its expected-device file for dtray; with the last
 # instance gone, dtray no longer starts at logon,
@@ -9,7 +9,9 @@
 # data folder stays (the device's names).
 param(
     [Parameter(Mandatory)][ValidateRange(1, 16)][int]$Instance,
-    [Parameter(Mandatory)][string]$Ip,
+    # Only for the extra address an older install added; an instance
+    # installed with -Iface (or on the PC's own address) needs none.
+    [string]$Ip = "",
     [string]$Name = ""
 )
 $ErrorActionPreference = "Stop"
@@ -52,7 +54,7 @@ if (Test-Path $exe) {
 # Only an extra address an older install.ps1 added (an address the interface
 # had before stays: it is the PC's own).
 $added = Join-Path $env:ProgramData "dasio\instance-$Instance\added-ip"
-if ((Test-Path $added) -and ((Get-Content $added) -eq $Ip)) {
+if ($Ip -and (Test-Path $added) -and ((Get-Content $added) -eq $Ip)) {
     if (Get-NetIPAddress -IPAddress $Ip -ErrorAction SilentlyContinue) {
         Remove-NetIPAddress -IPAddress $Ip -Confirm:$false
     }

@@ -43,7 +43,12 @@ $Bundle = $staged
 
 $route = Find-NetRoute -RemoteIPAddress 192.0.2.1 | Where-Object { $_.IPAddress } | Select-Object -First 1
 $ip = $route.IPAddress
-Write-Output "runner address $ip"
+# The first instance is installed by its interface's name (-Iface, dasio#29):
+# the device takes that interface's one IPv4 address at its start.
+$iface = $route.InterfaceAlias
+$ifaceAddrs = @(Get-NetIPAddress -InterfaceAlias $iface -AddressFamily IPv4)
+if ($ifaceAddrs.Count -ne 1 -or $ifaceAddrs[0].IPAddress -ne $ip) { throw "the runner's interface '$iface' does not hold exactly ${ip}: $($ifaceAddrs.IPAddress -join ', ')" }
+Write-Output "runner address $ip on '$iface'"
 
 # The test device at 10 ms (a shared runner's scheduling), its config and
 # state file in an admin-only folder.
@@ -72,6 +77,10 @@ New-Item -ItemType Directory -Force $other | Out-Null
 Set-Content -Path (Join-Path $other "device.toml") -Value "arc_port = 4441`ncmc_port = 8800`nflows_port = 4456`nprocess_id = 1"
 Assert-Refused { & (Join-Path $Bundle "install.ps1") -Instance $instance -Ip $ip -Config $cfg -Name "ci-asio-dante" -TestClock } "cmc_port 8800 is taken by instance-15"
 Remove-Item -Recurse -Force $other
+# -Ip or -Iface: exactly one; an interface without exactly one IPv4 address.
+Assert-Refused { & (Join-Path $Bundle "install.ps1") -Instance $instance -Ip $ip -Iface $iface -Config $cfg -Name "ci-asio-dante" -TestClock } "exactly one of -Ip <address> and -Iface"
+Assert-Refused { & (Join-Path $Bundle "install.ps1") -Instance $instance -Config $cfg -Name "ci-asio-dante" -TestClock } "exactly one of -Ip <address> and -Iface"
+Assert-Refused { & (Join-Path $Bundle "install.ps1") -Instance $instance -Iface "dasio-no-such-interface" -Config $cfg -Name "ci-asio-dante" -TestClock } "has 0 IPv4 addresses"
 
 # Elevated, the install runs only what non-administrators cannot change
 # (dasio#28 E19). Refused before anything changes: a bundle in a folder
@@ -141,7 +150,7 @@ Set-Content -Path $stateWin -Value "name = `"foreign-device`"`nconfig_name = `"f
 # the band's service and threw, as dtray.exe, a GUI program, leaves the
 # exit code of whatever ran before it).
 cmd /c exit 7
-& (Join-Path $Bundle "install.ps1") -Instance $instance -Ip $ip -Config $cfg -Name "ci-asio-dante" -TestClock
+& (Join-Path $Bundle "install.ps1") -Instance $instance -Iface $iface -Config $cfg -Name "ci-asio-dante" -TestClock
 # dasio's data folder: protected from what ProgramData passes down (users
 # may add files and folders there); users read it and change nothing in it.
 $rootAcl = Get-Acl $data
@@ -158,6 +167,7 @@ Write-Output "the data folder is admin-only, users read"
 # The instance runs its own binary, named after its device.
 $own = Join-Path $env:ProgramFiles "dasio\dasio-test-device.exe"
 if ((Get-CimInstance Win32_Service -Filter "Name='$service'").PathName -notmatch [regex]::Escape("`"$own`"")) { throw "$service does not run $own" }
+if ((Get-CimInstance Win32_Service -Filter "Name='$service'").PathName -notmatch [regex]::Escape("--iface `"$iface`"")) { throw "$service does not run on its interface's name" }
 $aside = @(Get-ChildItem $work -Filter "state.toml.replaced-*")
 if ($aside.Count -ne 1) { throw "the foreign state was not moved aside ($($aside.Count) copies)" }
 if ((Get-Content $aside[0].FullName -Raw) -notmatch 'foreign-device') { throw "the moved-aside file is not the foreign state" }
@@ -190,6 +200,10 @@ if ($flag -notmatch "TRUE") { throw "no restart after an error exit:`n$flag" }
 
 # The device drives a host on the driver: the probe through the service.
 Wait-Until { Test-Path (Join-Path $env:ProgramData "dasio\instance-$instance\dasio.log") } 20 "the device's log"
+# On its interface's address, its control ports the first free slot (its
+# config names none, dasio#89; nothing else holds slot 0 on the runner).
+Wait-Until { (Get-Content (Join-Path $env:ProgramData "dasio\instance-$instance\dasio.log") -ErrorAction SilentlyContinue) -match "the device's address ip=$([regex]::Escape($ip)) place=" } 20 "the device on its interface's address"
+Wait-Until { (Get-Content (Join-Path $env:ProgramData "dasio\instance-$instance\dasio.log") -ErrorAction SilentlyContinue) -match "the device's control ports: the first slot free on its address arc=4440 cmc=8800 flows=4455 process_id=0" } 20 "the device's picked control ports"
 Start-Sleep -Seconds 2
 $probe = (& $exe probe --instance $instance --seconds 3) -join "`n"
 if ($LASTEXITCODE -ne 0) { throw "probe failed ($LASTEXITCODE):`n$probe" }
@@ -233,6 +247,7 @@ if ((Get-CimInstance Win32_Service -Filter "Name='dasio-$second'").PathName -not
 Wait-Until { (Get-Content (Join-Path $env:ProgramData "dasio\instance-$second\dasio.log") -ErrorAction SilentlyContinue) -match "audio TX stays on the UDP sockets: dasio's NDIS filter could not be opened" } 20 "the second instance's kernel TX fallback"
 if ((Get-CimInstance Win32_Service -Filter "Name='dasio-$second'").PathName -notmatch '--spare-blocks 1') { throw "the second instance runs without its spare block" }
 Wait-Until { (Get-Content (Join-Path $env:ProgramData "dasio\instance-$second\dasio.log") -ErrorAction SilentlyContinue) -match 'spare_blocks=1' } 20 "the second instance serving with a spare block"
+Wait-Until { (Get-Content (Join-Path $env:ProgramData "dasio\instance-$second\dasio.log") -ErrorAction SilentlyContinue) -match "the device's control ports: from its config arc=4441 cmc=8801 flows=4456 process_id=1" } 20 "the second instance on its config's ports"
 if ((Get-ServicePid) -ne $first) { throw "the same binary restarted the first instance: pid $first -> $(Get-ServicePid)" }
 Write-Output "second instance installed beside the first (pid $first kept)"
 
