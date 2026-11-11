@@ -47,7 +47,7 @@ $ip = $route.IPAddress
 # the device takes that interface's one IPv4 address at its start.
 $iface = $route.InterfaceAlias
 $ifaceAddrs = @(Get-NetIPAddress -InterfaceAlias $iface -AddressFamily IPv4)
-if ($ifaceAddrs.Count -ne 1 -or $ifaceAddrs[0].IPAddress -ne $ip) { throw "the runner's interface '$iface' does not hold exactly $ip: $($ifaceAddrs.IPAddress -join ', ')" }
+if ($ifaceAddrs.Count -ne 1 -or $ifaceAddrs[0].IPAddress -ne $ip) { throw "the runner's interface '$iface' does not hold exactly ${ip}: $($ifaceAddrs.IPAddress -join ', ')" }
 Write-Output "runner address $ip on '$iface'"
 
 # The test device at 10 ms (a shared runner's scheduling), its config and
