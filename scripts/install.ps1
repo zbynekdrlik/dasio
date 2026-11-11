@@ -1,6 +1,7 @@
 # dasio: install or update one instance (plan Task 9). Run as administrator
 # from the unpacked bundle:
 #   .\install.ps1 -Instance 1 -Ip <the PC's address> -Config <device.toml>
+#   .\install.ps1 -Instance 1 -Iface <its interface name> -Config <device.toml>
 # - refuses, before anything changes, a bundle folder, bundle file or config
 #   anyone but SYSTEM and the administrators could change (or swap through a
 #   folder above it): keep both in an admin-only folder such as
@@ -17,10 +18,14 @@
 # - refuses, before anything changes, a new dasio_driver.dll while a DAW
 #   holds the installed one (a DAW keeps the driver loaded until it quits),
 #   unless -KeepHeldDriver leaves that one in place,
-# - adds no address: -Ip is one the PC already has. Several instances share it
-#   (dstack's per-PC manager), each on its own ports and process id from its
-#   config (arc_port, cmc_port, flows_port, process_id); a config that clashes
-#   with another installed instance's is refused before anything changes,
+# - adds no address: -Ip is one the PC already has, or -Iface names the
+#   interface (its alias, as Get-NetIPAddress lists it) whose one IPv4
+#   address the device takes at each start (exactly one of the two).
+#   Several instances share it (dstack's per-PC manager), each on its own
+#   ports and process id from its config (arc_port, cmc_port, flows_port,
+#   process_id; a config naming none takes the first free set at its start,
+#   dasio#89); a config that clashes with another installed instance's is
+#   refused before anything changes,
 # - registers the driver for the instance (HKLM: its COM class and its ASIO entry),
 # - puts the device config at C:\ProgramData\dasio\instance-<n>\device.toml,
 #   and moves aside a state file another config left at its state path,
@@ -36,7 +41,11 @@
 #   the install ends) and says so; a first install has nothing to bring back.
 param(
     [Parameter(Mandatory)][ValidateRange(1, 16)][int]$Instance,
-    [Parameter(Mandatory)][string]$Ip,
+    # The device's address (one the PC has), or -Iface: exactly one.
+    [string]$Ip = "",
+    # The device's interface by name (its alias): the device takes the
+    # interface's one IPv4 address at each start (dasio#29).
+    [string]$Iface = "",
     [Parameter(Mandatory)][string]$Config,
     # The name DAWs list the driver under (HKLM\SOFTWARE\ASIO), e.g. master-asio-dante.
     [string]$Name = "",
@@ -61,6 +70,7 @@ param(
 )
 $ErrorActionPreference = "Stop"
 if ($TestClock -and $DsyncClock) { throw "-TestClock and -DsyncClock exclude each other; nothing changed" }
+if ([bool]$Ip -eq [bool]$Iface) { throw "give exactly one of -Ip <address> and -Iface <interface name>; nothing changed" }
 
 $bin = Join-Path $env:ProgramFiles "dasio"
 $data = Join-Path $env:ProgramData "dasio\instance-$Instance"
@@ -170,18 +180,35 @@ Get-Content $sumsFile | ForEach-Object {
     if ($got -ne $hash) { throw "$file does not match SHA256SUMS" }
 }
 
-# The address is the PC's own: no extra address any more.
-if (-not (Get-NetIPAddress -IPAddress $Ip -AddressFamily IPv4 -ErrorAction SilentlyContinue)) {
-    throw "$Ip is not one of this PC's addresses; nothing changed"
+# The address is the PC's own: no extra address any more. An interface by
+# name must have exactly one IPv4 address now (the device's rule at start).
+if ($Iface) {
+    # The name goes into the service's command line in quotes.
+    if ($Iface.Contains('"')) { throw "-Iface: an interface name with a quote is not supported; nothing changed" }
+    # The exact name, as the device compares it (-InterfaceAlias would take
+    # a wildcard and ignore the case).
+    $ifaceAddrs = @(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -ceq $Iface })
+    if ($ifaceAddrs.Count -ne 1) {
+        throw "the interface '$Iface' has $($ifaceAddrs.Count) IPv4 addresses (or does not exist), the device needs exactly one; nothing changed"
+    }
+    $place = "--iface `"$Iface`""
+} else {
+    if (-not (Get-NetIPAddress -IPAddress $Ip -AddressFamily IPv4 -ErrorAction SilentlyContinue)) {
+        throw "$Ip is not one of this PC's addresses; nothing changed"
+    }
+    $place = "--ip $Ip"
 }
 
 # The ports and process id each device takes on the shared address (the
-# stack's defaults when the config leaves them out).
+# stack's defaults when the config leaves them out), and whether the config
+# names any (one naming none takes the first free slot at its start,
+# dasio#89, so beside another instance its slot is not known here).
 function Get-DeviceSlots([string]$Path) {
-    $slots = @{ arc_port = 4440; cmc_port = 8800; flows_port = 4455; process_id = 0 }
+    $slots = @{ arc_port = 4440; cmc_port = 8800; flows_port = 4455; process_id = 0; named = $false }
     foreach ($line in Get-Content $Path) {
         if ($line -match '^\s*(arc_port|cmc_port|flows_port|process_id)\s*=\s*(\d+)') {
             $slots[$Matches[1]] = [int]$Matches[2]
+            $slots.named = $true
         }
     }
     $slots
@@ -197,6 +224,9 @@ Get-ChildItem $root -Directory -Filter "instance-*" -ErrorAction SilentlyContinu
             if ($ports -contains $mine[$key]) { throw "$key $($mine[$key]) is taken by $($_.Name); nothing changed" }
         }
         if ($mine.process_id -eq $theirs.process_id) { throw "process_id $($mine.process_id) is taken by $($_.Name); nothing changed" }
+        if (-not ($mine.named -and $theirs.named)) {
+            Write-Warning "this config or $($_.Name)'s names no arc_port, cmc_port, flows_port or process_id: that device takes the first free slot at each start, which may be one the other names; name the ports in both configs when instances share this PC"
+        }
     }
 }
 
@@ -440,7 +470,7 @@ if ($Name) { $named = @("--name", $Name) }
 if ($LASTEXITCODE -ne 0) { throw "register failed ($LASTEXITCODE)" }
 
 $log = Join-Path $data "dasio.log"
-$bin_path = "`"$instExe`" service --instance $Instance --config `"$cfg`" --ip $Ip --log `"$log`""
+$bin_path = "`"$instExe`" service --instance $Instance --config `"$cfg`" $place --log `"$log`""
 if ($TestClock) { $bin_path += " --clock system" }
 if ($DsyncClock) { $bin_path += " --clock dsync" }
 if ($SpareBlocks -gt 0) { $bin_path += " --spare-blocks $SpareBlocks" }

@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use dstack::daemon::{Options, Place};
+use dstack::daemon::Place;
 use dstack::host::{self, Signals, Stopped};
 use dstack::media::source::Source;
 use dstack::stream::{self, Map, Pump, PumpStats};
@@ -31,7 +31,7 @@ pub fn run(
     stop_asked: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let spare = tuning.spare;
-    let cfg = host::read_config(&config).map_err(|e| e.to_string())?;
+    let cfg = device_config(&config, ip)?;
     // The per-minute counters go next to the instance's config and log
     // (dasio#28 A36).
     let minutes_dir = std::path::absolute(&config)
@@ -62,11 +62,6 @@ pub fn run(
     }
     let shape = Shape::new(cfg.rx.len() as u32, cfg.tx.len() as u32, cfg.block as u32)
         .ok_or("the channels (at most 64 each way) or the block do not fit the driver")?;
-    let opts = Options {
-        config,
-        place: Place::Ip(ip),
-        control: PathBuf::new(),
-    };
     let engine_tx: Vec<usize> = (0..cfg.tx.len()).collect();
     if clock == host::ClockSource::System {
         warn!(
@@ -74,7 +69,10 @@ pub fn run(
             "test clock: PTP time is this machine's clock, not the network's"
         );
     }
-    let prepared = host::prepare_with(&opts, &engine_tx, clock).map_err(|e| e.to_string())?;
+    // The config as read above, its slot included (Windows has no control
+    // socket: none).
+    let prepared = host::prepare_config(cfg, &Place::Ip(ip), None, &engine_tx, clock)
+        .map_err(|e| e.to_string())?;
     let cfg = prepared.config().clone();
     let media = prepared.media();
     if tuning.kernel_tx {
@@ -384,6 +382,53 @@ pub fn run(
         None => Ok(()),
         Some(e) => Err(e),
     }
+}
+
+/// The device config at `path`, its control ports and process id from the
+/// first free slot on `ip` when it names none ([`crate::place::device_config`]
+/// with dstack's `slots::pick`, the rule dsend and dlisten use, dasio#89).
+fn device_config(
+    path: &std::path::Path,
+    ip: std::net::Ipv4Addr,
+) -> Result<dstack::device::DeviceConfig, String> {
+    use crate::place::{Slot, SlotFrom};
+    let shown = path.display();
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{shown}: {e}"))?;
+    let (cfg, from) = crate::place::device_config(&text, || {
+        match dstack_endpoint::slots::pick(&Place::Ip(ip), None, None) {
+            (Some(p), Some(k)) => Some(Slot {
+                arc: p.arc,
+                cmc: p.cmc,
+                flows: p.flows,
+                process_id: k,
+            }),
+            _ => None,
+        }
+    })
+    .map_err(|e| format!("{shown}: {e}"))?;
+    let (arc, cmc, flows, process_id) =
+        (cfg.arc_port, cfg.cmc_port, cfg.flows_port, cfg.process_id);
+    match from {
+        SlotFrom::Config => info!(
+            arc,
+            cmc, flows, process_id, "the device's control ports: from its config"
+        ),
+        SlotFrom::Picked => info!(
+            arc,
+            cmc,
+            flows,
+            process_id,
+            "the device's control ports: the first slot free on its address"
+        ),
+        SlotFrom::Defaults => warn!(
+            arc,
+            cmc,
+            flows,
+            process_id,
+            "the device's control ports: no slot free on its address, the stack's defaults"
+        ),
+    }
+    Ok(cfg)
 }
 
 /// Seconds since the Unix epoch (0 before it).

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `dasio run --instance <n> --config <device.toml> --ip <address>`:
+//! `dasio run --instance <n> --config <device.toml> --ip <address>|--iface <name>`:
 //! one instance's Dante device and its shared memory for the driver;
 //! `dasio service ...` (same flags): the same, as the SCM starts it.
 //! `dasio register --instance <n> --dll <path> [--name <shown to DAWs>]` and
@@ -11,8 +11,8 @@ use std::process::ExitCode;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: dasio run --instance <n> --config <device.toml> --ip <address> [--log <file>] [--clock linked|dsync|system] [--spare-blocks <n>] [--kernel-tx]\n       \
-         dasio service --instance <n> --config <device.toml> --ip <address> --log <file> [--clock linked|dsync|system] [--spare-blocks <n>] [--kernel-tx]\n       \
+        "usage: dasio run --instance <n> --config <device.toml> (--ip <address> | --iface <interface name>) [--log <file>] [--clock linked|dsync|system] [--spare-blocks <n>] [--kernel-tx]\n       \
+         dasio service --instance <n> --config <device.toml> (--ip <address> | --iface <interface name>) --log <file> [--clock linked|dsync|system] [--spare-blocks <n>] [--kernel-tx]\n       \
          dasio register --instance <n> --dll <path> [--name <shown to DAWs>]\n       \
          dasio stop --instance <n>\n       \
          dasio probe --instance <n> [--seconds <s>] [--affinity <hex mask>]\n       \
@@ -115,11 +115,17 @@ fn main() -> ExitCode {
             quiet_crashes();
             // A panic in any thread reaches the instance log (dasio#28 E17).
             dasio::health::log_panics();
-            let (Some(config), Some(ip)) = (
-                flag(&args, "--config"),
-                flag(&args, "--ip").and_then(|ip| ip.parse().ok()),
-            ) else {
+            let Some(config) = flag(&args, "--config") else {
                 return usage();
+            };
+            // `--ip <address>` or `--iface <interface name>` (dasio#29):
+            // exactly one, once.
+            let place = match dasio::place::parse(&args) {
+                Ok(place) => place,
+                Err(e) => {
+                    eprintln!("dasio: {e}");
+                    return usage();
+                }
             };
             // `--clock`: linked (default: dsync's in-process PTP follower,
             // the service as fallback), dsync (the service only), system
@@ -140,9 +146,11 @@ fn main() -> ExitCode {
                 kernel_tx: args.iter().any(|a| a == "--kernel-tx"),
             };
             if cmd == "service" {
-                service(instance, config.into(), ip, clock, tuning)
+                // The service looks the address up once the box holds it.
+                service(instance, config.into(), place, clock, tuning)
             } else {
-                run(instance, config.into(), ip, clock, tuning)
+                dasio::place::address(&place)
+                    .and_then(|ip| run(instance, config.into(), ip, clock, tuning))
             }
         }
         _ => return usage(),
@@ -257,18 +265,18 @@ fn source(clock: dasio::Clock) -> dstack::host::ClockSource {
 fn service(
     instance: u32,
     config: std::path::PathBuf,
-    ip: std::net::Ipv4Addr,
+    place: dstack::daemon::Place,
     clock: dasio::Clock,
     tuning: dasio::Tuning,
 ) -> Result<(), String> {
-    dasio::service::windows::dispatch(instance, config, ip, source(clock), tuning)
+    dasio::service::windows::dispatch(instance, config, place, source(clock), tuning)
 }
 
 #[cfg(not(windows))]
 fn service(
     _instance: u32,
     _config: std::path::PathBuf,
-    _ip: std::net::Ipv4Addr,
+    _place: dstack::daemon::Place,
     _clock: dasio::Clock,
     _tuning: dasio::Tuning,
 ) -> Result<(), String> {
