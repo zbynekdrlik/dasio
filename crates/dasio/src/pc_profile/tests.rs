@@ -700,3 +700,12 @@ fn a_bcd_entry_needs_one_word_and_a_value() {
         "OptIn"
     );
 }
+
+#[test]
+fn every_kind_of_entry_counts() {
+    let p = parse(
+        "name = \"x\"\n[[registry]]\nkey = 'HKLM\\A'\nname = \"B\"\ndword = 1\n[[disk]]\ndrive = \"C:\"\nmin_free_gb = 1\n[[bcd]]\nname = \"nx\"\nvalue = \"OptIn\"\n[[bcd]]\nname = \"testsigning\"\nvalue = \"Yes\"\n",
+    )
+    .unwrap();
+    assert_eq!(p.entries(), 4, "a [[bcd]] entry counts like the others");
+}
