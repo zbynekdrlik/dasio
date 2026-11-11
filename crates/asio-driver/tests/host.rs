@@ -912,17 +912,24 @@ fn a_device_that_dies_while_the_daw_plays_leaves_it_running_and_comes_back() {
     assert_eq!(error_text(d), "", "a live device has nothing to report");
 
     // Dead: no block, no heartbeat. The DAW is still called, with silence
-    // in: once per QUIET (50 ms) without a block, so about 50 times in
-    // 2.5 s, not once per block period (dasio#28 E17 note). The driver
-    // looks at the heartbeat once per CHECK_EVERY (1 s): the first look
-    // after the death can still see it move, the next one finds it STALE,
-    // so 2.5 s covers two looks and a margin.
+    // in, at the block period (the ASIO contract: the host is called at the
+    // buffer rate), so its clock keeps real time (dasio#28 quiet device).
+    // Only the first QUIET (50 ms) without a block is lost, once per
+    // outage. The driver looks at the heartbeat once per CHECK_EVERY (1 s):
+    // the first look after the death can still see it move, the next one
+    // finds it STALE, so 2.5 s covers two looks and a margin.
+    let dead = Duration::from_millis(2500);
+    // The block this driver was created with (createBuffers, 64) at the
+    // device's rate (96 kHz).
+    let period = 64.0 / 96_000.0;
+    let want = (dead.as_secs_f64() / period * 0.8) as u32;
     let before = DEATH_SWITCHES.load(Ordering::Acquire);
-    std::thread::sleep(Duration::from_millis(2500));
+    std::thread::sleep(dead);
     let during = DEATH_SWITCHES.load(Ordering::Acquire) - before;
     assert!(
-        during >= 30,
-        "the DAW is still called while the device is dead: {during} switches in 2.5 s"
+        during >= want,
+        "the DAW is called at the block period while the device is dead: \
+         {during} switches in 2.5 s, want at least {want}"
     );
     for half in 0..2 {
         let input = device.buffer(half, true, 0).unwrap();
