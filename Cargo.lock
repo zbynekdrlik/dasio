@@ -19,7 +19,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "asio-driver"
-version = "0.1.59"
+version = "0.1.60"
 dependencies = [
  "shm",
  "windows-sys 0.61.2",
@@ -57,7 +57,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "dasio"
-version = "0.1.59"
+version = "0.1.60"
 dependencies = [
  "asio-driver",
  "assert_no_alloc",
@@ -74,8 +74,8 @@ dependencies = [
 
 [[package]]
 name = "dstack"
-version = "0.6.78"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.78#40f0ce5e0b140d0636a73fbf03e1ea57b576e088"
+version = "0.6.79"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.79#e3fd14c1c7eb25027b584533e961318bfefe0bbb"
 dependencies = [
  "dstack-audio-io",
  "dsync-ptp",
@@ -97,8 +97,8 @@ dependencies = [
 
 [[package]]
 name = "dstack-audio-io"
-version = "0.6.78"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.78#40f0ce5e0b140d0636a73fbf03e1ea57b576e088"
+version = "0.6.79"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.79#e3fd14c1c7eb25027b584533e961318bfefe0bbb"
 
 [[package]]
 name = "dsync-ptp"
@@ -228,7 +228,7 @@ dependencies = [
 [[package]]
 name = "mdns-sd"
 version = "0.21.6"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.78#40f0ce5e0b140d0636a73fbf03e1ea57b576e088"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.79#e3fd14c1c7eb25027b584533e961318bfefe0bbb"
 dependencies = [
  "fastrand",
  "flume",
@@ -404,7 +404,7 @@ dependencies = [
 
 [[package]]
 name = "shm"
-version = "0.1.59"
+version = "0.1.60"
 dependencies = [
  "windows-sys 0.61.2",
 ]
