@@ -6,9 +6,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use shm::{DriverMessage, Shape, Shared};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_FAILED};
 use windows_sys::Win32::System::Threading::{
-    AVRT_PRIORITY_CRITICAL, AvSetMmThreadCharacteristicsW, AvSetMmThreadPriority, GetCurrentThread,
-    GetCurrentThreadId, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
+    AVRT_PRIORITY_CRITICAL, AvSetMmThreadCharacteristicsW, AvSetMmThreadPriority,
+    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, GetCurrentThread,
+    GetCurrentThreadId, SetThreadPriority, SetWaitableTimer, THREAD_PRIORITY_TIME_CRITICAL,
+    TIMER_ALL_ACCESS, WaitForSingleObject,
 };
 
 use super::{RATE, Rt};
@@ -28,6 +31,12 @@ const QUIET: Duration = Duration::from_millis(50);
 const FREE_RUN_LAG: Duration = Duration::from_millis(100);
 /// How often the worker reads the device's state.
 const CHECK_EVERY: Duration = Duration::from_secs(1);
+/// The last stretch before a free-run tick, spun instead of waited (the
+/// high-resolution timer can wake this much early or late).
+const SPIN_RESIDUE: Duration = Duration::from_micros(100);
+/// How long past its due time a timer wait gives up (a timer that never
+/// fires must not hang the worker; the loop then looks at the clock).
+const TIMER_GRACE_MS: u32 = 5;
 
 /// Each instance's reset requests in this process (a host makes a new
 /// driver object after a reset, so the budget outlives the object).
@@ -101,6 +110,7 @@ impl Job {
             },
         };
         let period = Duration::from_secs_f64(f64::from(self.shape.block) / RATE);
+        let mut pacer = Pacer::new();
         let mut next = Instant::now();
         let mut half = 0i32;
         let mut checked = Instant::now();
@@ -133,7 +143,7 @@ impl Job {
                         Some(tick) => {
                             // A tick missed (a DAW callback that ran
                             // long) is dropped, never caught up.
-                            pace(tick, period, Duration::ZERO);
+                            pacer.pace(tick, period, Duration::ZERO);
                             *tick
                         }
                         None => Instant::now() + QUIET,
@@ -185,7 +195,7 @@ impl Job {
                 _ => {
                     // Free-run on our own clock; a device that appears asks
                     // the DAW for a reset (it then opens the real buffers).
-                    pace(&mut next, period, FREE_RUN_LAG);
+                    pacer.pace(&mut next, period, FREE_RUN_LAG);
                     half ^= 1;
                     self.switch(&mut time, half);
                     if checked.elapsed() > Duration::from_secs(1) {
@@ -387,31 +397,95 @@ fn pro_audio() {
     }
 }
 
-/// The free-run clock's next tick: `next` moves on by `period` and the
-/// thread sleeps until it; a clock more than `max_lag` behind (a stalled
-/// thread) restarts from now instead of catching up in a burst.
-fn pace(next: &mut Instant, period: Duration, max_lag: Duration) {
-    *next += period;
-    let now = Instant::now();
-    if *next > now {
-        sleep_until(*next);
-    } else if now - *next > max_lag {
-        *next = now;
+/// The free-run's clock on the worker thread: it waits for each tick on a
+/// high-resolution waitable timer, so a period under the scheduler's tick
+/// (64 samples at 96 kHz = 0.67 ms) does not keep a core busy (dasio#87).
+/// Without the timer (it could not be made, or a wait failed) it sleeps
+/// whole milliseconds and spins the rest.
+struct Pacer {
+    /// The timer; null without one.
+    timer: HANDLE,
+}
+
+impl Pacer {
+    fn new() -> Self {
+        // SAFETY: plain call: no security attributes, no name.
+        let timer = unsafe {
+            CreateWaitableTimerExW(
+                core::ptr::null(),
+                core::ptr::null(),
+                CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                TIMER_ALL_ACCESS,
+            )
+        };
+        Self { timer }
+    }
+
+    /// The free-run clock's next tick: `next` moves on by `period` and the
+    /// thread sleeps until it; a clock more than `max_lag` behind (a stalled
+    /// thread) restarts from now instead of catching up in a burst.
+    fn pace(&mut self, next: &mut Instant, period: Duration, max_lag: Duration) {
+        *next += period;
+        let now = Instant::now();
+        if *next > now {
+            self.sleep_until(*next);
+        } else if now - *next > max_lag {
+            *next = now;
+        }
+    }
+
+    /// Sleeps until `t`: on the timer up to the last [`SPIN_RESIDUE`], which
+    /// is spun; without the timer whole milliseconds by sleep, the rest spun.
+    fn sleep_until(&mut self, t: Instant) {
+        loop {
+            let now = Instant::now();
+            if now >= t {
+                return;
+            }
+            let left = t - now;
+            if !self.timer.is_null() {
+                if left > SPIN_RESIDUE {
+                    self.wait(left - SPIN_RESIDUE);
+                } else {
+                    std::hint::spin_loop();
+                }
+            } else if left > Duration::from_millis(2) {
+                std::thread::sleep(left - Duration::from_millis(1));
+            } else {
+                std::hint::spin_loop();
+            }
+        }
+    }
+
+    /// Waits `d` on the timer. A timer that cannot be armed or waited is
+    /// closed: the pacer goes on without it.
+    fn wait(&mut self, d: Duration) {
+        // A relative due time: negative, in 100 ns units (at least one).
+        let due = -i64::try_from(d.as_nanos() / 100).unwrap_or(i64::MAX).max(1);
+        // Bounded: a period is milliseconds, and never INFINITE.
+        let ms = u32::try_from(d.as_millis()).unwrap_or(u32::MAX).min(60_000) + TIMER_GRACE_MS;
+        // SAFETY: our timer and a due time that outlives the call; no
+        // completion routine, no resume.
+        let armed =
+            unsafe { SetWaitableTimer(self.timer, &due, 0, None, core::ptr::null(), 0) } != 0;
+        // SAFETY: our timer, armed above.
+        if !armed || unsafe { WaitForSingleObject(self.timer, ms) } == WAIT_FAILED {
+            self.close();
+        }
+    }
+
+    /// Closes the timer once; the pacer then sleeps and spins.
+    fn close(&mut self) {
+        if !self.timer.is_null() {
+            // SAFETY: the timer this pacer made, closed once.
+            unsafe { CloseHandle(self.timer) };
+            self.timer = core::ptr::null_mut();
+        }
     }
 }
 
-/// Sleeps until `t`: whole milliseconds by sleep, the rest spun.
-fn sleep_until(t: Instant) {
-    loop {
-        let now = Instant::now();
-        if now >= t {
-            return;
-        }
-        let left = t - now;
-        if left > Duration::from_millis(2) {
-            std::thread::sleep(left - Duration::from_millis(1));
-        } else {
-            std::hint::spin_loop();
-        }
+impl Drop for Pacer {
+    fn drop(&mut self) {
+        self.close();
     }
 }
