@@ -551,8 +551,8 @@ fn xml_children(xml: &str) -> Vec<(&str, &str)> {
         let name = &rest[..end];
         let Some(gt) = rest.find('>') else { break };
         if rest[..gt].ends_with('/') {
+            // Self-closing: the next `<` is the next element.
             out.push((name, ""));
-            rest = &rest[gt + 1..];
             continue;
         }
         let body = &rest[gt + 1..];

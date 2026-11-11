@@ -780,7 +780,7 @@ fn a_task_s_xml_reads_as_on_and_its_triggers() {
     );
     let many = "<Task><Settings><Enabled>true</Enabled></Settings><Triggers>\
         <BootTrigger><Enabled>false</Enabled></BootTrigger>\
-        <LogonTrigger id=\"t2\"><UserId>X</UserId></LogonTrigger>\
+        <LogonTrigger id=\"t2\"><Enabled>true</Enabled><UserId>X</UserId></LogonTrigger>\
         <TimeTrigger><StartBoundary>2026-11-11T13:05:00</StartBoundary></TimeTrigger>\
         <CalendarTrigger><StartBoundary>2026-11-11T02:30:00</StartBoundary><ScheduleByDay><DaysInterval>3</DaysInterval></ScheduleByDay></CalendarTrigger>\
         <CalendarTrigger><StartBoundary>2026-11-11T06:00:00</StartBoundary><ScheduleByWeek><WeeksInterval>1</WeeksInterval></ScheduleByWeek></CalendarTrigger>\
