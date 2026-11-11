@@ -25,13 +25,17 @@ const SECOND: u32 = 15;
 /// The second device's ARC, CMC and flow-control ports and its process id
 /// (the first keeps the stack's 4440, 8800, 4455 and 0).
 const SECOND_PORTS: &str = "arc_port = 4441\ncmc_port = 8801\nflows_port = 4456\nprocess_id = 1\n";
-/// The first device's pump on a CPU of its own, as each instance has its
-/// own CPUs on the PCs. Unpinned, its spinning pump lost its core while the
-/// second ran (CI 42774079830 and 42820731724: 8442 and 10078 switches of
-/// 12000, the pump missing up to 958 blocks a second, dasio#28). Its TX and
-/// RX threads stay unpinned: both devices' on one CPU left the second device
-/// receiving nothing (CI 42822347591).
-const FIRST_CPUS: &str = "pump_cpu = 1\n";
+/// The first device's pump on a CPU of its own and its TX and RX on
+/// another, as the band instance has its own CPUs on FOH (pump, rx, io).
+/// Unpinned, its spinning pump lost its core while the second ran (CI
+/// 42774079830 and 42820731724: 8442 and 10078 switches of 12000, the pump
+/// missing up to 958 blocks a second, dasio#28). With only the pump pinned,
+/// its own spinning TX or RX could still land on the pump's CPU (CI
+/// 42944603438: the device alone lost up to 1137 blocks a second). Both
+/// devices' TX and RX on one CPU left the second receiving nothing (CI
+/// 42822347591): the second runs on the normal profile, unpinned, and takes
+/// none of these two CPUs' spinning.
+const FIRST_CPUS: &str = "pump_cpu = 1\nio_cpu = 2\n";
 /// The second device on the "normal" timing profile, as mbc runs: no spin,
 /// no real-time priority, timers for the whole wait, a 2 ms work margin
 /// (192 samples). Two low-latency devices spin a pump and a TX thread each,
@@ -41,8 +45,8 @@ const FIRST_CPUS: &str = "pump_cpu = 1\n";
 /// first device's real-time timing is checked alone, before the second
 /// starts.
 const SECOND_TIMING: &str = "timing = \"normal\"\nwork_margin = 192\n";
-/// The CPUs the test needs: the first device's pump, its TX and RX, the
-/// host, and the second device beside them.
+/// The CPUs the test needs: the first device's pump (1), its TX and RX
+/// (2), the host and the second device on the rest.
 const CPUS_NEEDED: usize = 4;
 /// How long a device may take to publish its shared memory.
 const READY: Duration = Duration::from_secs(20);
