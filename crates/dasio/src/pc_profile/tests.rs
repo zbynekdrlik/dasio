@@ -703,9 +703,38 @@ fn a_bcd_entry_needs_one_word_and_a_value() {
 
 #[test]
 fn every_kind_of_entry_counts() {
-    let p = parse(
-        "name = \"x\"\n[[registry]]\nkey = 'HKLM\\A'\nname = \"B\"\ndword = 1\n[[disk]]\ndrive = \"C:\"\nmin_free_gb = 1\n[[bcd]]\nname = \"nx\"\nvalue = \"OptIn\"\n[[bcd]]\nname = \"testsigning\"\nvalue = \"Yes\"\n",
-    )
-    .unwrap();
-    assert_eq!(p.entries(), 4, "a [[bcd]] entry counts like the others");
+    // Every kind present, each a different number of times: a sum with any
+    // term dropped or another operator gives another total.
+    let mut text = String::from("name = \"x\"\n");
+    text += "[[registry]]\nkey = 'HKLM\\\\A'\nname = \"B\"\ndword = 1\n";
+    for k in ["a", "b"] {
+        text += &format!("[[ini]]\nfile = 'C:\\\\l.ini'\nkey = \"{k}\"\nvalue = \"1\"\n");
+    }
+    for e in ["a.exe", "b.exe", "c.exe"] {
+        text += &format!("[[process]]\nexe = \"{e}\"\npriority = \"high\"\n");
+    }
+    for d in ["C:", "D:", "E:", "F:"] {
+        text += &format!("[[disk]]\ndrive = \"{d}\"\nmin_free_gb = 1\n");
+    }
+    for n in [
+        "nx",
+        "testsigning",
+        "disabledynamictick",
+        "useplatformclock",
+        "tscsyncpolicy",
+    ] {
+        text += &format!("[[bcd]]\nname = \"{n}\"\nvalue = \"Yes\"\n");
+    }
+    let p = parse(&text).unwrap();
+    assert_eq!(
+        (
+            p.registry.len(),
+            p.ini.len(),
+            p.process.len(),
+            p.disk.len(),
+            p.bcd.len()
+        ),
+        (1, 2, 3, 4, 5)
+    );
+    assert_eq!(p.entries(), 15, "every kind counts, [[bcd]] too");
 }
