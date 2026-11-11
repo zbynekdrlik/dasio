@@ -149,6 +149,11 @@ fn a_block_reaches_the_host_and_back_and_the_buffer_size_is_the_instance_s() {
     // SAFETY: as a host.
     assert_eq!(unsafe { (vt(d).start)(d) }, ASE_OK);
     assert_eq!(device.header().host_attached.load(Ordering::Acquire), 1);
+    assert_eq!(
+        device.host_pid(),
+        std::process::id(),
+        "the device knows the DAW's process while it has the buffers"
+    );
     // The device publishes block 3 in half 1: a ramp on its input.
     let input = device.buffer(1, true, 0).unwrap();
     for k in 0..64 {
@@ -177,6 +182,7 @@ fn a_block_reaches_the_host_and_back_and_the_buffer_size_is_the_instance_s() {
             0,
             "a stopped host answers no block"
         );
+        assert_eq!(device.host_pid(), 0, "nor is it the DAW any more");
         assert_eq!((vt(d).disposeBuffers)(d), ASE_OK);
         assert_eq!(device.header().host_attached.load(Ordering::Acquire), 0);
         (vt(d).Release)(d);

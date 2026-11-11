@@ -33,6 +33,9 @@ pub struct Sample {
     pub at_ms: u64,
     pub procs: Vec<Proc>,
     pub threads: Vec<Thread>,
+    /// The threads of the DAW that has the instance's buffers (empty
+    /// without one, or with a driver before 0.1.52, which does not say).
+    pub daw: Vec<Thread>,
 }
 
 /// What one process or thread spent between two samples, µs.
@@ -47,6 +50,8 @@ pub struct Spent {
 pub const TOP_PROCS: usize = 8;
 /// The device's own threads listed in a burst's line.
 pub const TOP_THREADS: usize = 4;
+/// The DAW's threads listed in a burst's line.
+pub const TOP_DAW_THREADS: usize = 6;
 
 /// What each of `now`'s entries spent since `before`, the largest first,
 /// at most `n`, none that spent nothing. An entry is the same one only with
@@ -90,18 +95,23 @@ pub fn top_procs(before: &Sample, now: &Sample, n: usize) -> Vec<Spent> {
     )
 }
 
-/// The device's threads that spent the most CPU from `before` to `now`.
-pub fn top_threads(before: &Sample, now: &Sample, n: usize) -> Vec<Spent> {
+/// The threads in `before` and `now` that spent the most CPU between.
+fn top_of(before: &[Thread], now: &[Thread], n: usize) -> Vec<Spent> {
     ranked(
-        before
-            .threads
-            .iter()
-            .map(|t| (t.tid, t.name.as_str(), t.cpu_100ns)),
-        now.threads
-            .iter()
-            .map(|t| (t.tid, t.name.as_str(), t.cpu_100ns)),
+        before.iter().map(|t| (t.tid, t.name.as_str(), t.cpu_100ns)),
+        now.iter().map(|t| (t.tid, t.name.as_str(), t.cpu_100ns)),
         n,
     )
+}
+
+/// The device's threads that spent the most CPU from `before` to `now`.
+pub fn top_threads(before: &Sample, now: &Sample, n: usize) -> Vec<Spent> {
+    top_of(&before.threads, &now.threads, n)
+}
+
+/// The DAW's threads that spent the most CPU from `before` to `now`.
+pub fn top_daw_threads(before: &Sample, now: &Sample, n: usize) -> Vec<Spent> {
+    top_of(&before.daw, &now.daw, n)
 }
 
 /// `spent` as `name(id)=ms`, comma separated, ms to 0.1; an unnamed thread

@@ -158,7 +158,10 @@ fn handle(h: HANDLE) -> io::Result<Handle> {
 #[repr(C)]
 struct Dir {
     magic: AtomicU32,
-    _pad: u32,
+    /// The DAW's process id while a driver has the buffers, 0 otherwise
+    /// (dasio#22: the device names the DAW's threads at a burst). In what
+    /// was padding: drivers before 0.1.52 leave it 0.
+    host_pid: AtomicU32,
     session: AtomicU64,
 }
 
@@ -392,6 +395,17 @@ impl Shared {
     /// The session of this section.
     pub fn session(&self) -> u64 {
         self.session
+    }
+
+    /// The DAW's process id while a driver has the buffers, 0 otherwise
+    /// (or with a driver before 0.1.52).
+    pub fn host_pid(&self) -> u32 {
+        self.dir.dir().host_pid.load(Ordering::Acquire)
+    }
+
+    /// The driver side: `pid` has the buffers now (0: nobody).
+    pub fn set_host_pid(&self, pid: u32) {
+        self.dir.dir().host_pid.store(pid, Ordering::Release);
     }
 
     /// The session the device publishes now: another one than
