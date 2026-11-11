@@ -461,7 +461,8 @@ impl Pacer {
     /// closed: the pacer goes on without it.
     fn wait(&mut self, d: Duration) {
         // A relative due time: negative, in 100 ns units (at least one).
-        let due = -i64::try_from(d.as_nanos() / 100).unwrap_or(i64::MAX).max(1);
+        let ticks = i64::try_from(d.as_nanos() / 100).unwrap_or(i64::MAX).max(1);
+        let due = -ticks;
         // Bounded: a period is milliseconds, and never INFINITE.
         let ms = u32::try_from(d.as_millis()).unwrap_or(u32::MAX).min(60_000) + TIMER_GRACE_MS;
         // SAFETY: our timer and a due time that outlives the call; no
