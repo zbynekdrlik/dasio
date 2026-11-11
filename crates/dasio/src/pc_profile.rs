@@ -58,6 +58,13 @@ pub struct Profile {
     pub bcd: Vec<BcdEntry>,
 }
 
+impl Profile {
+    /// How many entries it holds, of every kind.
+    pub fn entries(&self) -> usize {
+        self.registry.len() + self.ini.len() + self.process.len() + self.disk.len() + self.bcd.len()
+    }
+}
+
 /// An expected registry value: exactly one of `dword`, `string`,
 /// `multi_sz`, `binary`.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

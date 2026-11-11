@@ -350,7 +350,7 @@ fn pc_profile(path: &str, apply: bool, plan_only: bool) -> ExitCode {
             Err(e) => println!("disk {} free: unreadable ({e})", d.drive),
         }
     }
-    let entries = p.registry.len() + p.ini.len() + p.process.len() + p.disk.len();
+    let entries = p.entries();
     if problems.is_empty() {
         println!("PC profile {}: as it should be ({entries} entries)", p.name);
         ExitCode::SUCCESS
