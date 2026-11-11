@@ -57,6 +57,24 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
 
+  rtsan:
+    # The bridge's block under RealtimeSanitizer (dasio#28 E13): an
+    # allocation, lock or blocking call on the pump's real-time path aborts
+    # the test (tests/rtsan.rs). Same pinned nightly as dstack's job.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Nightly toolchain with rust-src (rtsan builds std with -Zbuild-std)
+        run: rustup toolchain install nightly-2026-09-20 --profile minimal --component rust-src
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: The rtsan test
+        env:
+          RUSTFLAGS: "-Zsanitizer=realtime --cfg dasio_rtsan"
+        run: cargo +nightly-2026-09-20 test --locked -Zbuild-std --target x86_64-unknown-linux-gnu -p dasio --test rtsan -- --nocapture
+
   # The NDIS send pacer's decisions (drivers/ndis-pacer/core): plain C, no
   # kernel types. Linux: gcc with ASan/UBSan and a line-coverage floor;
   # Windows: MSVC at /W4 /WX, the compiler the driver is built with.

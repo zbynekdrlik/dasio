@@ -6,6 +6,10 @@
 //! driver's registration ([`register`]) and the latencies the driver
 //! reports ([`latencies`]), run as a Windows service ([`service`]).
 
+// The rtsan CI job (nightly, `--cfg dasio_rtsan`) marks the bridge's
+// block as a real-time context (dasio#28 E13, tests/rtsan.rs).
+#![cfg_attr(dasio_rtsan, feature(sanitize))]
+
 pub mod app_status;
 pub mod bridge;
 pub mod bursts;
