@@ -2,12 +2,12 @@
 //! reports around [`crate::run::run`].
 
 use std::ffi::OsString;
-use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use dstack::daemon::Place;
 use dstack::host::ClockSource;
 use tracing::{error, info, warn};
 use windows_service::service::{
@@ -22,7 +22,7 @@ use super::{Answer, Control, STOP_HINT, address_held, answer, exit_code, name, w
 struct Args {
     instance: u32,
     config: PathBuf,
-    ip: Ipv4Addr,
+    place: Place,
     clock: ClockSource,
     tuning: crate::Tuning,
 }
@@ -35,14 +35,14 @@ define_windows_service!(ffi_service_main, service_main);
 pub fn dispatch(
     instance: u32,
     config: PathBuf,
-    ip: Ipv4Addr,
+    place: Place,
     clock: ClockSource,
     tuning: crate::Tuning,
 ) -> Result<(), String> {
     ARGS.set(Args {
         instance,
         config,
-        ip,
+        place,
         clock,
         tuning,
     })
@@ -119,18 +119,44 @@ fn service_main(_args: Vec<OsString>) {
     info!(instance = args.instance, "service running");
     // At boot the service starts before the NIC has its address; after a
     // link reset it comes back later. The device starts once it is there.
-    let ip = std::net::IpAddr::V4(args.ip);
-    if !wait_for_address(|| address_held(ip), &stop, std::thread::sleep) {
+    // An interface by name (`--iface`) is looked up each time: at boot it
+    // may have no address yet. Its error is logged when it changes.
+    let mut found = None;
+    let mut said: Option<String> = None;
+    let held = || match crate::place::address(&args.place) {
+        Ok(ip) => {
+            found = Some(ip);
+            address_held(std::net::IpAddr::V4(ip))
+        }
+        Err(e) => {
+            if said.as_deref() != Some(e.as_str()) {
+                warn!(%e, "the device's interface has no address yet");
+                said = Some(e);
+            }
+            false
+        }
+    };
+    if !wait_for_address(held, &stop, std::thread::sleep) {
         info!("service stopped before the address came");
         if let Err(e) = h.set_service_status(status(ServiceState::Stopped, 0, Duration::ZERO)) {
             error!(%e, "Stopped not reported");
         }
         return;
     }
+    let Some(ip) = found else {
+        // wait_for_address returns true only after `held` said so, which
+        // set `found`.
+        error!("the device's address was held but not recorded");
+        if let Err(e) = h.set_service_status(status(ServiceState::Stopped, 1, Duration::ZERO)) {
+            error!(%e, "Stopped not reported");
+        }
+        return;
+    };
+    info!(%ip, place = ?args.place, "the device's address");
     let result = crate::run::run(
         args.instance,
         args.config.clone(),
-        args.ip,
+        ip,
         args.clock,
         args.tuning,
         stop,
