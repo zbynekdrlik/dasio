@@ -7,6 +7,7 @@ test_tool = "nextest"
 exclude_globs = [
   "crates/asio-driver/src/com.rs",
   "crates/asio-driver/src/driver.rs",
+  "crates/asio-driver/src/driver/worker.rs",
   "crates/shm/src/windows.rs",
   "crates/dasio/src/cpu_snap/windows.rs",
   "crates/dasio/src/jitter.rs",
