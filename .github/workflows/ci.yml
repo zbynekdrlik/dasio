@@ -56,6 +56,9 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+      # The bridge's cost per block in the build the PCs run (dasio#28 E13):
+      # its time bound holds only in an optimized build.
+      - run: cargo test --release --locked -p dasio --test bench_bridge -- --nocapture
 
   rtsan:
     # The bridge's block under RealtimeSanitizer (dasio#28 E13): an
