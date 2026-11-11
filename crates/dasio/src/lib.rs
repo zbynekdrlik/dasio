@@ -21,6 +21,7 @@ pub mod kernel_tx;
 pub mod logfile;
 pub mod minutes;
 pub mod pc_profile;
+pub mod place;
 #[cfg(windows)]
 pub mod probe;
 pub mod register;
