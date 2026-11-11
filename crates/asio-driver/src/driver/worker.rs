@@ -23,6 +23,9 @@ use crate::systime;
 const SPIN_ROUNDS: u32 = 2_000;
 /// A device silent this long is treated as gone (free-run).
 const QUIET: Duration = Duration::from_millis(50);
+/// How far the no-device free-run may fall behind before it restarts its
+/// clock from now (shorter lags are caught up).
+const FREE_RUN_LAG: Duration = Duration::from_millis(100);
 /// How often the worker reads the device's state.
 const CHECK_EVERY: Duration = Duration::from_secs(1);
 
@@ -105,6 +108,9 @@ impl Job {
             .as_ref()
             .map(|s| Watch::new(self.shape, facts(s), Instant::now()));
         let mut last = self.seen;
+        // The free-run clock of a quiet device: the tick of the last silent
+        // block handed; `None` while the device delivers.
+        let mut quiet: Option<Instant> = None;
         let mut timeline = crate::timeline::Timeline::new();
         while !self.stop.load(Ordering::Acquire) {
             match (shm.as_ref(), watch.as_mut()) {
@@ -118,13 +124,32 @@ impl Job {
                         return;
                     }
                     // The next block (see next_seq). Past QUIET without one,
-                    // the device is quiet: the DAW keeps its clock on silence.
-                    let Some(seq) = self.next_seq(s, last) else {
+                    // the device is quiet: the DAW keeps its clock on
+                    // silence, one block per period on our own clock (the
+                    // host is called at the buffer rate, dasio#28), until a
+                    // block arrives again. The first QUIET is lost once per
+                    // outage: no catch-up burst.
+                    let until = match quiet.as_mut() {
+                        Some(tick) => {
+                            // A tick missed (a DAW callback that ran
+                            // long) is dropped, never caught up.
+                            pace(tick, period, Duration::ZERO);
+                            *tick
+                        }
+                        None => Instant::now() + QUIET,
+                    };
+                    let Some(seq) = self.next_seq(s, last, until) else {
+                        // A stop asked during the wait: no block after it.
+                        if self.stop.load(Ordering::Acquire) {
+                            return;
+                        }
+                        quiet.get_or_insert_with(Instant::now);
                         half ^= 1;
                         self.silence(s, half as u32);
                         self.switch(&mut time, half);
                         continue;
                     };
+                    quiet = None;
                     if seq > last + 1 {
                         s.header()
                             .missed
@@ -160,13 +185,7 @@ impl Job {
                 _ => {
                     // Free-run on our own clock; a device that appears asks
                     // the DAW for a reset (it then opens the real buffers).
-                    next += period;
-                    let now = Instant::now();
-                    if next > now {
-                        sleep_until(next);
-                    } else if now - next > Duration::from_millis(100) {
-                        next = now;
-                    }
+                    pace(&mut next, period, FREE_RUN_LAG);
                     half ^= 1;
                     self.switch(&mut time, half);
                     if checked.elapsed() > Duration::from_secs(1) {
@@ -252,9 +271,9 @@ impl Job {
     /// header's seq, then a sleep on the block event (a sleeping thread is
     /// woken at once and boosted; a spinning one shares its cores' quanta
     /// with the DAW's other audio threads: 30 ms stalls on the FOH PC);
-    /// `None` after [`QUIET`] without one, or when asked to stop.
-    fn next_seq(&self, s: &Shared, last: u64) -> Option<u64> {
-        let until = Instant::now() + QUIET;
+    /// `None` at `until` without one, or when asked to stop. An `until`
+    /// already passed checks once (the spin) without sleeping.
+    fn next_seq(&self, s: &Shared, last: u64, until: Instant) -> Option<u64> {
         for _ in 0..SPIN_ROUNDS {
             let seq = s.header().seq.load(Ordering::Acquire);
             if seq != last {
@@ -365,6 +384,19 @@ fn pro_audio() {
         // Without MMCSS the thread still runs above the DAW's own threads.
         // SAFETY: the calling thread's pseudo handle.
         unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) };
+    }
+}
+
+/// The free-run clock's next tick: `next` moves on by `period` and the
+/// thread sleeps until it; a clock more than `max_lag` behind (a stalled
+/// thread) restarts from now instead of catching up in a burst.
+fn pace(next: &mut Instant, period: Duration, max_lag: Duration) {
+    *next += period;
+    let now = Instant::now();
+    if *next > now {
+        sleep_until(*next);
+    } else if now - *next > max_lag {
+        *next = now;
     }
 }
 
