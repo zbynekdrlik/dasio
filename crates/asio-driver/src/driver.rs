@@ -87,6 +87,15 @@ struct Rt {
     worker_tid: AtomicU32,
     /// Samples handed to the DAW since `start`.
     position: AtomicU64,
+    /// The running worker's generation (0: none), so the position
+    /// advances: set by `start`, cleared by `stop_worker` and by a worker
+    /// that ends on its own (only its own generation, never a newer
+    /// worker's). `getSamplePosition` reads it lock-free: hosts call it
+    /// inside their callback, while a host's `stop` may hold the state lock
+    /// waiting for that callback.
+    running: AtomicU64,
+    /// Workers started: the next one's generation.
+    starts: AtomicU64,
     /// The last hand-over's `systemTime`, ns in timeGetTime's base
     /// ([`systime`]).
     systime_ns: AtomicU64,
@@ -128,6 +137,9 @@ struct Worker {
 struct Created {
     callbacks: ASIOCallbacks,
     time_info: bool,
+    /// The channels whose buffers `createBuffers` made, as (input, channel):
+    /// the only ones `getChannelInfo` reports active.
+    active: Vec<(bool, u32)>,
     /// Free-run buffers (no device): [half][channel] of `block` samples.
     local: Option<Vec<Vec<Box<[i32]>>>>,
 }
@@ -178,6 +190,8 @@ impl Driver {
                 entered_ns: AtomicU64::new(0),
                 worker_tid: AtomicU32::new(0),
                 position: AtomicU64::new(0),
+                running: AtomicU64::new(0),
+                starts: AtomicU64::new(0),
                 systime_ns: AtomicU64::new(0),
                 systime_offset: AtomicU64::new(0),
                 shm: Mutex::new(None),
@@ -216,6 +230,7 @@ impl Driver {
         let Some(w) = state.worker.take() else {
             return;
         };
+        self.rt.running.store(0, Ordering::Release);
         // No more answers: the device stops waiting for them first.
         if let Some(s) = self.rt.shm() {
             s.header().host_attached.store(0, Ordering::Release);
@@ -393,6 +408,7 @@ unsafe extern "system" fn start(this: *mut c_void) -> ASIOError {
         };
         let time_info = created.time_info;
         let stop = Arc::new(AtomicBool::new(false));
+        let generation = d.rt.starts.fetch_add(1, Ordering::AcqRel) + 1;
         let job = Job {
             callbacks: created.callbacks,
             time_info,
@@ -400,6 +416,7 @@ unsafe extern "system" fn start(this: *mut c_void) -> ASIOError {
             instance: d.instance,
             rt: Arc::clone(&d.rt),
             stop: Arc::clone(&stop),
+            generation,
             seen: d
                 .rt
                 .shm()
@@ -410,6 +427,8 @@ unsafe extern "system" fn start(this: *mut c_void) -> ASIOError {
         d.rt.worker_tid.store(0, Ordering::Release);
         d.rt.systime_offset
             .store(systime::calibrate(), Ordering::Release);
+        // Before the spawn: the worker's first callback may ask the position.
+        d.rt.running.store(generation, Ordering::Release);
         match std::thread::Builder::new()
             .name("dasio".into())
             .spawn(move || job.run())
@@ -428,6 +447,7 @@ unsafe extern "system" fn start(this: *mut c_void) -> ASIOError {
                 ASE_OK
             }
             Err(e) => {
+                d.rt.running.store(0, Ordering::Release);
                 st.error = format!("the worker thread did not start ({e})");
                 ASE_HW_MALFUNCTION
             }
@@ -583,7 +603,13 @@ unsafe extern "system" fn get_sample_position(
             *pos = Asio64::new(d.rt.position.load(Ordering::Acquire));
             *stamp = Asio64::new(d.rt.systime_ns.load(Ordering::Acquire));
         }
-        ASE_OK
+        // The SDK: with no worker the position does not advance (before
+        // `start`, after `stop`, after a worker that ended on its own).
+        if d.rt.running.load(Ordering::Acquire) != 0 {
+            ASE_OK
+        } else {
+            ASE_SP_NOT_ADVANCING
+        }
     })
 }
 
@@ -597,13 +623,20 @@ unsafe extern "system" fn get_channel_info(
         }
         // SAFETY: a live Driver; the host's struct with `channel` and `isInput` set.
         let (d, i) = unsafe { (me(this), &mut *info) };
-        let s = d.shape();
         let (ch, input) = (i.channel, i.isInput != 0);
+        let st = lock(&d.state);
+        let s = st.shape.unwrap_or(NO_DEVICE_SHAPE);
         let count = if input { s.rx } else { s.tx } as i32;
         if ch < 0 || ch >= count {
             return ASE_INVALID_PARAMETER;
         }
-        i.isActive = ASIO_TRUE;
+        // The SDK: active only while createBuffers' buffers exist for it.
+        let active = st
+            .created
+            .as_ref()
+            .is_some_and(|c| c.active.contains(&(input, ch as u32)));
+        drop(st);
+        i.isActive = if active { ASIO_TRUE } else { ASIO_FALSE };
         i.channelGroup = 0;
         i.type_ = ASIOST_INT32_LSB;
         let name = format!("{} {}", if input { "RX" } else { "TX" }, ch + 1);
@@ -639,6 +672,7 @@ unsafe extern "system" fn create_buffers(
         }
         let shm = d.rt.shm();
         let mut local: Vec<Vec<Box<[i32]>>> = vec![Vec::new(), Vec::new()];
+        let mut active = Vec::with_capacity(infos.len());
         for info in infos.iter_mut() {
             let input = info.isInput != 0;
             let ch = info.channelNum;
@@ -672,6 +706,7 @@ unsafe extern "system" fn create_buffers(
                 };
             }
             info.buffers = bufs;
+            active.push((input, ch));
         }
         // SAFETY: the host's callback, asked as the SDK says.
         let time_info = callbacks.asioMessage.is_some_and(|m| unsafe {
@@ -691,6 +726,7 @@ unsafe extern "system" fn create_buffers(
         st.created = Some(Created {
             callbacks,
             time_info,
+            active,
             local: shm.is_none().then_some(local),
         });
         ASE_OK
@@ -762,14 +798,40 @@ struct Job {
     rt: Arc<Rt>,
     /// This worker's own stop flag.
     stop: Arc<AtomicBool>,
+    /// This worker's generation in `Rt::running`.
+    generation: u64,
     /// The device's seq when `start` was called: the first block handed
     /// over is the next one (read on the host's thread, so a block published
     /// right after `start` is never missed).
     seen: u64,
 }
 
+/// Clears `running` when the worker ends, by a return (a reset asked or a
+/// stop) or a panic: its position stops advancing. Only its own generation:
+/// an abandoned worker that returns late never clears a newer worker's.
+struct Ended<'a>(&'a Job);
+
+impl Drop for Ended<'_> {
+    fn drop(&mut self) {
+        let g = self.0.generation;
+        // Err: `stop_worker` or a newer worker already holds the value.
+        let _ = self
+            .0
+            .rt
+            .running
+            .compare_exchange(g, 0, Ordering::AcqRel, Ordering::Acquire);
+    }
+}
+
 impl Job {
     fn run(self) {
+        let _ended = Ended(&self);
+        self.serve();
+    }
+
+    /// The worker's loop: blocks to the DAW until stopped, or until it asks
+    /// the DAW for a reset.
+    fn serve(&self) {
         // SAFETY: plain call.
         self.rt
             .worker_tid

@@ -11,6 +11,9 @@ use dasio_driver::abi::*;
 use dasio_driver::ident::clsid;
 use shm::{HostUse, Shape, Shared};
 
+mod common;
+use common::{driver, play, vt};
+
 #[test]
 fn abi_layout_matches_the_sdk_x64() {
     use std::mem::{offset_of, size_of};
@@ -23,31 +26,6 @@ fn abi_layout_matches_the_sdk_x64() {
     assert_eq!(size_of::<ASIOTimeCode>(), 84);
     assert_eq!(size_of::<ASIOTime>(), 148);
     assert_eq!(size_of::<IAsioVtbl>(), 24 * 8);
-}
-
-/// The driver for instance `n`, as COM makes it.
-fn driver(n: u32) -> *mut c_void {
-    let id = clsid(n).unwrap();
-    let mut factory: *mut c_void = core::ptr::null_mut();
-    // SAFETY: valid pointers.
-    let hr = unsafe { dasio_driver::DllGetClassObject(&id, &IID_ICLASSFACTORY, &mut factory) };
-    assert_eq!(hr, S_OK);
-    // SAFETY: the factory just made.
-    let fv = unsafe { &**(factory as *const *const IClassFactoryVtbl) };
-    let mut d: *mut c_void = core::ptr::null_mut();
-    // SAFETY: as a host calls it: the CLSID as the interface id.
-    assert_eq!(
-        unsafe { (fv.CreateInstance)(factory, core::ptr::null_mut(), &id, &mut d) },
-        S_OK
-    );
-    // SAFETY: the factory's last reference.
-    unsafe { (fv.Release)(factory) };
-    d
-}
-
-fn vt(d: *mut c_void) -> &'static IAsioVtbl {
-    // SAFETY: a live driver.
-    unsafe { &**(d as *const *const IAsioVtbl) }
 }
 
 // The host's callbacks (plain C functions): copy each input to its output
@@ -402,6 +380,23 @@ fn a_reshaped_device_gets_one_reset_request_within_the_budget() {
     wait_for(1, Duration::from_secs(3));
     assert_eq!(RESETS.load(Ordering::Acquire), 1, "one reset request");
     assert_eq!(device.header().messages(), (1, 0), "counted for the device");
+    // The worker ended after asking: its position no longer advances
+    // (dasio#28 E17, the SDK's ASE_SPNotAdvancing). It ends right after
+    // the request returns, so give it a moment.
+    let position = || {
+        let (mut pos, mut stamp) = (Asio64::default(), Asio64::default());
+        // SAFETY: as a host: two valid out-pointers.
+        unsafe { (vt(d).getSamplePosition)(d, &mut pos, &mut stamp) }
+    };
+    let t = Instant::now();
+    while position() != ASE_SP_NOT_ADVANCING && t.elapsed() < Duration::from_secs(1) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        position(),
+        ASE_SP_NOT_ADVANCING,
+        "a worker that ended on its own does not advance the position"
+    );
     // And changed again at once: the budget holds the next request back.
     device.header().block.store(128, Ordering::Release);
     std::thread::sleep(Duration::from_secs(3));
@@ -855,30 +850,6 @@ static DEATH_SWITCHES: AtomicU32 = AtomicU32::new(0);
 
 unsafe extern "C" fn count_death(_half: i32, _direct: ASIOBool) {
     DEATH_SWITCHES.fetch_add(1, Ordering::AcqRel);
-}
-
-/// A stand-in device on instance 4: it beats and publishes a block of a
-/// non-zero input every ms until `run` is cleared.
-fn play(device: &Shared, run: &AtomicBool, from_seq: u64) -> u64 {
-    let mut seq = from_seq;
-    let started = Instant::now();
-    while run.load(Ordering::Acquire) {
-        seq += 1;
-        let half = (seq % 2) as u32;
-        let input = device.buffer(half, true, 0).unwrap();
-        for k in 0..64 {
-            // SAFETY: 64 samples of the instance's input buffer.
-            unsafe { input.add(k).write(0x7f00) };
-        }
-        device
-            .header()
-            .heartbeat_ms
-            .store(started.elapsed().as_millis() as u64 + 1, Ordering::Release);
-        device.header().seq.store(seq, Ordering::Release);
-        device.signal_block();
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    seq
 }
 
 /// `getErrorMessage`'s text.

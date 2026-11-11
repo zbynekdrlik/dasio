@@ -90,8 +90,12 @@ Owner rules from dasio#1. They hold for every change on a PC running dasio.
   - A remote-shell call ends after 30 s: run the conversion detached too.
 - **A device's service restart re-makes every receiver's flows from it.**
   On band that is iem-mixer's return channels and more; on mbc it is
-  stream-obs. Before a band restart, tell iemmixer and camera-box; before
+  stream-obs. Before a band restart, tell camera-box and fohmixer; before
   an mbc restart, tell camera-box. Give a UTC time and keep to it.
+  iemmixer wants no notice of a routine band service restart (~5 s gap,
+  11.11.2026): it asks for the times when its gate sees a gap. Tell it
+  about a FOH PC restart and about any change on dasio's Dante side
+  (channels, latency, device name).
 - **After a restart, check that the flows came back in the device's own
   log.** dcontroller can be down: on 10.11 its host lost its Dante address
   in a NIC cutover. Count the `TX flow started` lines since the restart and
