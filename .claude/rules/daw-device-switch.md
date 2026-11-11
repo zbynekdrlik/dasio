@@ -61,9 +61,16 @@ A switch is done only when all four steps below are checked.
 
 - After a DAW restart or an Audio Engine toggle, check the instance log for
   `attached=1`, and Ableton's own Start line, before the next step.
-- A new driver DLL reaches a DAW only after the DAW quits and starts
-  again. `install.ps1 -KeepHeldDriver` keeps the old DLL file while a DAW
-  holds it.
+- A new driver DLL reaches a DAW only through an install that runs while
+  no DAW holds the DLL. `install.ps1 -KeepHeldDriver` leaves the OLD file
+  in place, so a later DAW restart alone loads the old DLL again (FOH,
+  11.11.2026: one wasted band Live restart).
+- To deliver it: arm a script that waits for the DLL to be free and then
+  runs `install.ps1` without `-KeepHeldDriver`. It writes `ok` to a done
+  file. The DAW owner (fohmixer on FOH) closes the DAW and starts it again
+  only after `ok`. Then check the loaded DLL's hash in the DAW process
+  against the bundle's (bundles\b0160\deploy-foh-driver.ps1 is the
+  pattern).
 - An Audio Engine off/on does not load a new driver. Live keeps
   `dasio_driver.dll` loaded with its engine off (FOH, 10.11.2026). COM
   also keeps a loaded DLL per CLSID, so re-registering another file name
