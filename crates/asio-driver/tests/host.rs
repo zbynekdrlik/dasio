@@ -10,6 +10,10 @@ use std::time::{Duration, Instant};
 use dasio_driver::abi::*;
 use dasio_driver::ident::clsid;
 use shm::{HostUse, Shape, Shared};
+use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+use windows_sys::Win32::System::Threading::{
+    GetCurrentThreadId, GetThreadTimes, OpenThread, THREAD_QUERY_LIMITED_INFORMATION,
+};
 
 mod common;
 use common::{driver, play, vt};
@@ -847,9 +851,34 @@ fn a_host_that_stops_the_driver_inside_a_message_gets_no_more_blocks() {
 // getErrorMessage names the stopped device, and once the device beats and
 // publishes again its blocks reach the DAW again (instance 4).
 static DEATH_SWITCHES: AtomicU32 = AtomicU32::new(0);
+/// The thread the DAW is called on: the driver's worker.
+static DEATH_TID: AtomicU32 = AtomicU32::new(0);
 
 unsafe extern "C" fn count_death(_half: i32, _direct: ASIOBool) {
+    // SAFETY: plain call.
+    DEATH_TID.store(unsafe { GetCurrentThreadId() }, Ordering::Release);
     DEATH_SWITCHES.fetch_add(1, Ordering::AcqRel);
+}
+
+/// The CPU time (user + kernel) thread `tid` has used so far.
+fn thread_cpu(tid: u32) -> Duration {
+    // SAFETY: plain call; the handle is closed below.
+    let h = unsafe { OpenThread(THREAD_QUERY_LIMITED_INFORMATION, 0, tid) };
+    assert!(!h.is_null(), "thread {tid} opens for its times");
+    let (mut created, mut exited, mut kernel, mut user) = (
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+    );
+    // SAFETY: a thread handle with query rights and four writable times.
+    let ok = unsafe { GetThreadTimes(h, &mut created, &mut exited, &mut kernel, &mut user) };
+    // SAFETY: the handle opened above.
+    unsafe { CloseHandle(h) };
+    assert_ne!(ok, 0, "thread {tid}'s times read");
+    let ticks = |f: FILETIME| (u64::from(f.dwHighDateTime) << 32) | u64::from(f.dwLowDateTime);
+    // FILETIME counts 100 ns units.
+    Duration::from_nanos((ticks(kernel) + ticks(user)) * 100)
 }
 
 /// `getErrorMessage`'s text.
@@ -923,13 +952,24 @@ fn a_device_that_dies_while_the_daw_plays_leaves_it_running_and_comes_back() {
     // device's rate (96 kHz).
     let period = 64.0 / 96_000.0;
     let want = (dead.as_secs_f64() / period * 0.8) as u32;
+    let worker = DEATH_TID.load(Ordering::Acquire);
+    assert_ne!(worker, 0, "the DAW was called on the worker");
     let before = DEATH_SWITCHES.load(Ordering::Acquire);
+    let cpu_before = thread_cpu(worker);
     std::thread::sleep(dead);
+    let cpu = thread_cpu(worker) - cpu_before;
     let during = DEATH_SWITCHES.load(Ordering::Acquire) - before;
     assert!(
         during >= want,
         "the DAW is called at the block period while the device is dead: \
          {during} switches in 2.5 s, want at least {want}"
+    );
+    // The free-run waits for each tick, it does not spin through the period
+    // (dasio#87: a 0.67 ms period kept one core busy).
+    assert!(
+        cpu < dead / 2,
+        "the worker sleeps between the blocks of a dead device: \
+         {cpu:?} of CPU in {dead:?}"
     );
     for half in 0..2 {
         let input = device.buffer(half, true, 0).unwrap();
