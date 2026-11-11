@@ -221,8 +221,8 @@ dependencies = [
 
 [[package]]
 name = "dlink"
-version = "0.6.93"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.93#c7afa006201793978975eb118ac97a27568e46d8"
+version = "0.6.94"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.94#3ab84c7d9280089b996308030b8357df7a6335bf"
 dependencies = [
  "dstack",
  "dstack-audio-io",
@@ -233,8 +233,8 @@ dependencies = [
 
 [[package]]
 name = "dstack"
-version = "0.6.93"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.93#c7afa006201793978975eb118ac97a27568e46d8"
+version = "0.6.94"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.94#3ab84c7d9280089b996308030b8357df7a6335bf"
 dependencies = [
  "dstack-audio-io",
  "dsync-ptp",
@@ -256,13 +256,13 @@ dependencies = [
 
 [[package]]
 name = "dstack-audio-io"
-version = "0.6.93"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.93#c7afa006201793978975eb118ac97a27568e46d8"
+version = "0.6.94"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.94#3ab84c7d9280089b996308030b8357df7a6335bf"
 
 [[package]]
 name = "dstack-endpoint"
-version = "0.6.93"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.93#c7afa006201793978975eb118ac97a27568e46d8"
+version = "0.6.94"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.94#3ab84c7d9280089b996308030b8357df7a6335bf"
 dependencies = [
  "cpal",
  "dlink",
@@ -276,8 +276,8 @@ dependencies = [
 
 [[package]]
 name = "dstack-resample"
-version = "0.6.93"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.93#c7afa006201793978975eb118ac97a27568e46d8"
+version = "0.6.94"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.94#3ab84c7d9280089b996308030b8357df7a6335bf"
 dependencies = [
  "rubato",
 ]
@@ -509,7 +509,7 @@ dependencies = [
 [[package]]
 name = "mdns-sd"
 version = "0.21.6"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.93#c7afa006201793978975eb118ac97a27568e46d8"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.94#3ab84c7d9280089b996308030b8357df7a6335bf"
 dependencies = [
  "fastrand",
  "flume",
