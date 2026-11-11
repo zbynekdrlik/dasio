@@ -106,6 +106,20 @@ jobs:
           line=$(gcov -n test-cov-pacer_core.gcda | grep -A1 "core/pacer_core.c'" | grep -o '[0-9.]*%' | head -1)
           echo "pacer_core.c lines: $line"
           awk -v l="${line%\%}" 'BEGIN { exit !(l >= 100) }'
+      - name: Fuzz the frame parsers (libFuzzer, 60 s)
+        if: runner.os == 'Linux'
+        working-directory: drivers/ndis-pacer
+        run: |
+          set -euo pipefail
+          clang -std=c99 -g -O1 -Wall -Wextra -Werror -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=all \
+            -o fuzz core/pacer_core.c tests/fuzz_pacer_core.c
+          mkdir -p corpus
+          # A crash, a sanitizer finding or a broken invariant (abort) exits non-zero.
+          # pipefail keeps the fuzzer's exit status through tail.
+          ./fuzz -max_total_time=60 -print_final_stats=1 corpus 2>&1 | tail -20
+          # It ran: libFuzzer kept inputs that reached new code.
+          echo "corpus files: $(ls corpus | wc -l)"
+          test "$(ls corpus | wc -l)" -gt 0
       - name: Test with MSVC
         if: runner.os == 'Windows'
         working-directory: drivers/ndis-pacer
