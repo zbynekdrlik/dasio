@@ -69,27 +69,30 @@ fn cpu_of(times: impl FnOnce(&mut [FILETIME; 4]) -> windows_sys::core::BOOL) -> 
     (times(&mut t) != 0).then(|| cpu(&t[2], &t[3]))
 }
 
-/// Every process (limited-query handles) and this process's threads, kept
-/// open between samples and read again every [`REFRESH_EVERY`].
+/// Every process (limited-query handles), this process's threads and the
+/// DAW's, kept open between samples and read again every
+/// [`REFRESH_EVERY`].
 pub struct Gatherer {
     procs: Vec<Open>,
     threads: Vec<Open>,
+    daw: Vec<Open>,
+    /// The DAW's process id (0: none): the driver's word in the shared
+    /// directory, read at each refresh.
+    host_pid: Box<dyn Fn() -> u32 + Send>,
     refreshed: Option<std::time::Instant>,
     /// The last refresh's cost, µs.
     pub refresh_us: u64,
 }
 
-impl Default for Gatherer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Gatherer {
-    pub fn new() -> Self {
+    /// A gatherer that asks `host_pid` for the DAW's process at each
+    /// refresh (0: no DAW).
+    pub fn new(host_pid: impl Fn() -> u32 + Send + 'static) -> Self {
         Gatherer {
             procs: Vec::new(),
             threads: Vec::new(),
+            daw: Vec::new(),
+            host_pid: Box::new(host_pid),
             refreshed: None,
             refresh_us: 0,
         }
@@ -105,13 +108,17 @@ impl Gatherer {
             // `close` or Drop.
             unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, id) }
         });
-        let threads = list_threads();
-        keep_and_open(&mut self.threads, threads, |id| {
-            // SAFETY: a limited-query handle to one of our threads, closed
-            // by `close` or Drop.
+        // SAFETY: no arguments.
+        let own = unsafe { GetCurrentProcessId() };
+        let (threads, daw) = list_threads(own, (self.host_pid)());
+        let open = |id| {
+            // SAFETY: a limited-query handle to a thread, closed by
+            // `keep_and_open` or Drop.
             unsafe { OpenThread(THREAD_QUERY_LIMITED_INFORMATION, 0, id) }
-        });
-        for o in &mut self.threads {
+        };
+        keep_and_open(&mut self.threads, threads, open);
+        keep_and_open(&mut self.daw, daw, open);
+        for o in self.threads.iter_mut().chain(self.daw.iter_mut()) {
             if o.name.is_empty() {
                 // SAFETY: opened above with limited query rights.
                 o.name = unsafe { thread_name(o.h) };
@@ -144,28 +151,37 @@ impl Gatherer {
                     })
                 })
                 .collect(),
-            threads: self
-                .threads
-                .iter()
-                .filter_map(|o| {
-                    cpu_of(|[c, x, k, u]| {
-                        // SAFETY: an open handle and four writable FILETIMEs.
-                        unsafe { GetThreadTimes(o.h, c, x, k, u) }
-                    })
-                    .map(|cpu_100ns| Thread {
-                        tid: o.id,
-                        name: o.name.clone(),
-                        cpu_100ns,
-                    })
-                })
-                .collect(),
+            threads: thread_times(&self.threads),
+            daw: thread_times(&self.daw),
         }
     }
 }
 
+/// The CPU times of `open` threads; one that ended is left out.
+fn thread_times(open: &[Open]) -> Vec<Thread> {
+    open.iter()
+        .filter_map(|o| {
+            cpu_of(|[c, x, k, u]| {
+                // SAFETY: an open handle and four writable FILETIMEs.
+                unsafe { GetThreadTimes(o.h, c, x, k, u) }
+            })
+            .map(|cpu_100ns| Thread {
+                tid: o.id,
+                name: o.name.clone(),
+                cpu_100ns,
+            })
+        })
+        .collect()
+}
+
 impl Drop for Gatherer {
     fn drop(&mut self) {
-        for o in self.procs.drain(..).chain(self.threads.drain(..)) {
+        for o in self
+            .procs
+            .drain(..)
+            .chain(self.threads.drain(..))
+            .chain(self.daw.drain(..))
+        {
             // SAFETY: opened by `refresh`, closed once here.
             unsafe { CloseHandle(o.h) };
         }
@@ -220,15 +236,14 @@ fn list_procs() -> Vec<(u32, String)> {
     out
 }
 
-/// This process's thread ids (Toolhelp; names are read once opened).
-fn list_threads() -> Vec<(u32, String)> {
-    let mut out = Vec::new();
-    // SAFETY: no arguments.
-    let pid = unsafe { GetCurrentProcessId() };
+/// The thread ids of process `own` and of process `daw` (0: none), from
+/// one Toolhelp list; names are read once opened.
+fn list_threads(own: u32, daw: u32) -> (Vec<(u32, String)>, Vec<(u32, String)>) {
+    let (mut mine, mut theirs) = (Vec::new(), Vec::new());
     // SAFETY: a thread snapshot, closed below.
     let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
     if snap == INVALID_HANDLE_VALUE {
-        return out;
+        return (mine, theirs);
     }
     // SAFETY: a zeroed entry with its size set, as the API wants.
     let mut e: THREADENTRY32 = unsafe { std::mem::zeroed() };
@@ -236,15 +251,19 @@ fn list_threads() -> Vec<(u32, String)> {
     // SAFETY: a valid snapshot and entry.
     let mut ok = unsafe { Thread32First(snap, &mut e) } != 0;
     while ok {
-        if e.th32OwnerProcessID == pid {
-            out.push((e.th32ThreadID, String::new()));
+        // Both lists for one process when the DAW is this one (a test).
+        if e.th32OwnerProcessID == own {
+            mine.push((e.th32ThreadID, String::new()));
+        }
+        if daw != 0 && e.th32OwnerProcessID == daw {
+            theirs.push((e.th32ThreadID, String::new()));
         }
         // SAFETY: as above.
         ok = unsafe { Thread32Next(snap, &mut e) } != 0;
     }
     // SAFETY: the snapshot from above.
     unsafe { CloseHandle(snap) };
-    out
+    (mine, theirs)
 }
 
 /// How often a sample is taken while no burst asks for one.
@@ -258,16 +277,16 @@ const COST_EVERY: std::time::Duration = std::time::Duration::from_secs(600);
 /// sender is dropped. The helper placer keeps it on the helper CPUs.
 pub fn spawn(
     start: std::time::Instant,
+    host_pid: impl Fn() -> u32 + Send + 'static,
 ) -> std::io::Result<(std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>)> {
     let (tx, rx) = std::sync::mpsc::channel();
     let thread = std::thread::Builder::new()
         .name("cpu-snap".into())
-        .spawn(move || run(start, &rx))?;
+        .spawn(move || run(start, Gatherer::new(host_pid), &rx))?;
     Ok((tx, thread))
 }
 
 /// The samples' own cost since it was last logged.
-#[derive(Default)]
 struct Cost {
     gatherer: Gatherer,
     taken: u64,
@@ -288,15 +307,21 @@ impl Cost {
     }
 }
 
-fn run(start: std::time::Instant, rx: &std::sync::mpsc::Receiver<()>) {
+fn run(start: std::time::Instant, gatherer: Gatherer, rx: &std::sync::mpsc::Receiver<()>) {
     use std::sync::mpsc::RecvTimeoutError;
     use std::time::Instant;
     let ms = || u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let mut cost = Cost::default();
+    let mut cost = Cost {
+        gatherer,
+        taken: 0,
+        sum_us: 0,
+        max_us: 0,
+    };
     let (mut prev, us) = cost.take(ms());
     tracing::info!(
         procs = prev.procs.len(),
         threads = prev.threads.len(),
+        daw_threads = prev.daw.len(),
         sample_us = us,
         refresh_us = cost.gatherer.refresh_us,
         every_ms = EVERY.as_millis() as u64,
@@ -310,10 +335,12 @@ fn run(start: std::time::Instant, rx: &std::sync::mpsc::Receiver<()>) {
                 let (now, us) = cost.take(ms());
                 let procs = super::top_procs(&prev, &now, super::TOP_PROCS);
                 let threads = super::top_threads(&prev, &now, super::TOP_THREADS);
+                let daw = super::top_daw_threads(&prev, &now, super::TOP_DAW_THREADS);
                 tracing::warn!(
                     span_ms = now.at_ms.saturating_sub(prev.at_ms),
                     procs = %super::list(&procs),
                     dasio_threads = %super::list(&threads),
+                    daw_threads = %super::list(&daw),
                     sample_us = us,
                     "who ran since the last CPU sample, at the DAW's burst of missed blocks"
                 );
@@ -333,6 +360,7 @@ fn run(start: std::time::Instant, rx: &std::sync::mpsc::Receiver<()>) {
                 last_refresh_us = cost.gatherer.refresh_us,
                 procs = prev.procs.len(),
                 threads = prev.threads.len(),
+                daw_threads = prev.daw.len(),
                 "CPU samples' own cost in the last 10 min"
             );
             total += cost.taken;

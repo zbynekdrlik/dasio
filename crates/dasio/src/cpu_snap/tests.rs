@@ -21,6 +21,7 @@ fn sample(at_ms: u64, procs: Vec<Proc>, threads: Vec<Thread>) -> Sample {
         at_ms,
         procs,
         threads,
+        daw: vec![],
     }
 }
 
@@ -199,7 +200,9 @@ fn a_spinning_thread_shows_in_this_process_and_by_its_name() {
             let _ = hold.recv();
         })
         .unwrap();
-    let mut g = windows::Gatherer::new();
+    // This test process stands in for the DAW: its threads are read as
+    // the DAW's too.
+    let mut g = windows::Gatherer::new(std::process::id);
     let before = g.sample(0);
     wait.recv().unwrap();
     let now = g.sample(300);
@@ -220,6 +223,12 @@ fn a_spinning_thread_shows_in_this_process_and_by_its_name() {
         "{threads:?}"
     );
     assert!(threads[0].us >= 100_000, "{threads:?}");
+    let daw = top_daw_threads(&before, &now, 1);
+    assert_eq!(
+        daw.first().map(|s| s.name.as_str()),
+        Some("cpu-snap-test"),
+        "the DAW's threads by its pid: {daw:?}"
+    );
 }
 
 /// The `cpu-snap` thread on the real Windows: it answers a burst request
@@ -228,7 +237,7 @@ fn a_spinning_thread_shows_in_this_process_and_by_its_name() {
 #[test]
 fn the_sampler_thread_answers_a_burst_and_ends_with_its_sender() {
     use std::time::{Duration, Instant};
-    let (tx, thread) = windows::spawn(Instant::now()).expect("the sampler");
+    let (tx, thread) = windows::spawn(Instant::now(), || 0).expect("the sampler");
     std::thread::sleep(Duration::from_millis(1200));
     tx.send(()).expect("the sampler is running");
     drop(tx);
@@ -241,4 +250,33 @@ fn the_sampler_thread_answers_a_burst_and_ends_with_its_sender() {
         std::thread::sleep(Duration::from_millis(20));
     }
     thread.join().expect("the sampler did not panic");
+}
+
+#[test]
+fn the_daw_threads_are_ranked_apart_from_the_device_s() {
+    let mut before = sample(0, vec![], vec![t(7, "dstack-engine", 100)]);
+    before.daw = vec![t(40, "Ableton audio", 1000), t(41, "GUI", 50)];
+    let mut now = sample(1000, vec![], vec![t(7, "dstack-engine", 101)]);
+    now.daw = vec![t(40, "Ableton audio", 1900), t(41, "GUI", 60)];
+    assert_eq!(
+        top_daw_threads(&before, &now, 6),
+        vec![
+            Spent {
+                id: 40,
+                name: "Ableton audio".into(),
+                us: 900_000
+            },
+            Spent {
+                id: 41,
+                name: "GUI".into(),
+                us: 10_000
+            },
+        ]
+    );
+    assert_eq!(
+        top_threads(&before, &now, 4).len(),
+        1,
+        "the device's own stay apart"
+    );
+    assert!(top_daw_threads(&sample(0, vec![], vec![]), &sample(1, vec![], vec![]), 6).is_empty());
 }

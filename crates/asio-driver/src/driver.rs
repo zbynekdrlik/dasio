@@ -219,6 +219,7 @@ impl Driver {
         // No more answers: the device stops waiting for them first.
         if let Some(s) = self.rt.shm() {
             s.header().host_attached.store(0, Ordering::Release);
+            s.set_host_pid(0);
         }
         w.stop.store(true, Ordering::Release);
         // The host stops us from inside its own callback, on the worker's
@@ -309,6 +310,7 @@ unsafe extern "system" fn release(this: *mut c_void) -> u32 {
                 d.stop_worker(&mut st);
                 if let Some(s) = d.rt.shm() {
                     s.header().host_attached.store(0, Ordering::Release);
+                    s.set_host_pid(0);
                 }
             }
             // SAFETY: the last reference: the Box this driver came from.
@@ -421,6 +423,7 @@ unsafe extern "system" fn start(this: *mut c_void) -> ASIOError {
                         s.header().note_use(HostUse::TimeInfo);
                     }
                     s.header().host_attached.store(1, Ordering::Release);
+                    s.set_host_pid(std::process::id());
                 }
                 ASE_OK
             }
@@ -703,6 +706,7 @@ unsafe extern "system" fn dispose_buffers(this: *mut c_void) -> ASIOError {
         st.created = None;
         if let Some(s) = d.rt.shm() {
             s.header().host_attached.store(0, Ordering::Release);
+            s.set_host_pid(0);
         }
         ASE_OK
     })
