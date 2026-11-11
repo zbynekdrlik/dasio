@@ -846,3 +846,146 @@ fn a_host_that_stops_the_driver_inside_a_message_gets_no_more_blocks() {
         (vt(d).Release)(d);
     }
 }
+
+// dasio#28 E17: the device dies while the DAW plays, then comes back. The
+// DAW keeps being called on the driver's clock with silent inputs, its
+// getErrorMessage names the stopped device, and once the device beats and
+// publishes again its blocks reach the DAW again (instance 4).
+static DEATH_SWITCHES: AtomicU32 = AtomicU32::new(0);
+
+unsafe extern "C" fn count_death(_half: i32, _direct: ASIOBool) {
+    DEATH_SWITCHES.fetch_add(1, Ordering::AcqRel);
+}
+
+/// A stand-in device on instance 4: it beats and publishes a block of a
+/// non-zero input every ms until `run` is cleared.
+fn play(device: &Shared, run: &AtomicBool, from_seq: u64) -> u64 {
+    let mut seq = from_seq;
+    let started = Instant::now();
+    while run.load(Ordering::Acquire) {
+        seq += 1;
+        let half = (seq % 2) as u32;
+        let input = device.buffer(half, true, 0).unwrap();
+        for k in 0..64 {
+            // SAFETY: 64 samples of the instance's input buffer.
+            unsafe { input.add(k).write(0x7f00) };
+        }
+        device
+            .header()
+            .heartbeat_ms
+            .store(started.elapsed().as_millis() as u64 + 1, Ordering::Release);
+        device.header().seq.store(seq, Ordering::Release);
+        device.signal_block();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    seq
+}
+
+/// `getErrorMessage`'s text.
+fn error_text(d: *mut c_void) -> String {
+    let mut text = [0 as core::ffi::c_char; 128];
+    // SAFETY: as a host: a buffer of at least 124 characters.
+    unsafe { (vt(d).getErrorMessage)(d, text.as_mut_ptr()) };
+    let bytes: Vec<u8> = text
+        .iter()
+        .take_while(|&&c| c != 0)
+        .map(|&c| c as u8)
+        .collect();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+#[test]
+fn a_device_that_dies_while_the_daw_plays_leaves_it_running_and_comes_back() {
+    let device = Shared::create(4, Shape::new(1, 1, 64).unwrap(), 96_000, (88, 40)).unwrap();
+    device.header().heartbeat_ms.store(1, Ordering::Release);
+    let d = driver(4);
+    let mut infos = [
+        ASIOBufferInfo {
+            isInput: 1,
+            channelNum: 0,
+            buffers: [core::ptr::null_mut(); 2],
+        },
+        ASIOBufferInfo {
+            isInput: 0,
+            channelNum: 0,
+            buffers: [core::ptr::null_mut(); 2],
+        },
+    ];
+    let cb = ASIOCallbacks {
+        bufferSwitch: Some(count_death),
+        sampleRateDidChange: None,
+        asioMessage: None,
+        bufferSwitchTimeInfo: None,
+    };
+    // SAFETY: as a host.
+    unsafe {
+        assert_eq!((vt(d).init)(d, core::ptr::null_mut()), ASIO_TRUE);
+        assert_eq!(
+            (vt(d).createBuffers)(d, infos.as_mut_ptr(), 2, 64, &cb),
+            ASE_OK
+        );
+        assert_eq!((vt(d).start)(d), ASE_OK);
+    }
+    let run = AtomicBool::new(true);
+    // Alive: the DAW answers the device's blocks.
+    let last = std::thread::scope(|s| {
+        let h = s.spawn(|| play(&device, &run, 0));
+        std::thread::sleep(Duration::from_millis(300));
+        run.store(false, Ordering::Release);
+        h.join().unwrap()
+    });
+    assert!(
+        device.header().ack.load(Ordering::Acquire) > 0,
+        "the DAW answered the device's blocks"
+    );
+    assert_eq!(error_text(d), "", "a live device has nothing to report");
+
+    // Dead: no block, no heartbeat. The DAW is still called, with silence
+    // in: once per QUIET (50 ms) without a block, so about 50 times in
+    // 2.5 s, not once per block period (dasio#28 E17 note). The driver
+    // looks at the heartbeat once per CHECK_EVERY (1 s): the first look
+    // after the death can still see it move, the next one finds it STALE,
+    // so 2.5 s covers two looks and a margin.
+    let before = DEATH_SWITCHES.load(Ordering::Acquire);
+    std::thread::sleep(Duration::from_millis(2500));
+    let during = DEATH_SWITCHES.load(Ordering::Acquire) - before;
+    assert!(
+        during >= 30,
+        "the DAW is still called while the device is dead: {during} switches in 2.5 s"
+    );
+    for half in 0..2 {
+        let input = device.buffer(half, true, 0).unwrap();
+        // SAFETY: 64 samples of the input buffer; the device is not writing.
+        let silent = (0..64).all(|k| unsafe { input.add(k).read() } == 0);
+        assert!(
+            silent,
+            "half {half}'s input is silence while the device is dead"
+        );
+    }
+    assert_eq!(error_text(d), "the device stopped (no heartbeat)");
+
+    // Back: it beats and publishes again, and its blocks reach the DAW.
+    let acked = device.header().ack.load(Ordering::Acquire);
+    run.store(true, Ordering::Release);
+    std::thread::scope(|s| {
+        let h = s.spawn(|| play(&device, &run, last));
+        std::thread::sleep(Duration::from_millis(1500));
+        run.store(false, Ordering::Release);
+        h.join().unwrap();
+    });
+    assert!(
+        device.header().ack.load(Ordering::Acquire) > acked,
+        "the DAW answers the device again once it is back"
+    );
+    assert_eq!(
+        error_text(d),
+        "",
+        "a device back alive has nothing to report"
+    );
+    // SAFETY: as a host ends.
+    unsafe {
+        assert_eq!((vt(d).stop)(d), ASE_OK);
+        assert_eq!((vt(d).disposeBuffers)(d), ASE_OK);
+        (vt(d).Release)(d);
+    }
+}
