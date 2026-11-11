@@ -23,6 +23,9 @@ use crate::systime;
 const SPIN_ROUNDS: u32 = 2_000;
 /// A device silent this long is treated as gone (free-run).
 const QUIET: Duration = Duration::from_millis(50);
+/// How far the no-device free-run may fall behind before it restarts its
+/// clock from now (shorter lags are caught up).
+const FREE_RUN_LAG: Duration = Duration::from_millis(100);
 /// How often the worker reads the device's state.
 const CHECK_EVERY: Duration = Duration::from_secs(1);
 
@@ -128,7 +131,9 @@ impl Job {
                     // outage: no catch-up burst.
                     let until = match quiet.as_mut() {
                         Some(tick) => {
-                            pace(tick, period);
+                            // A tick missed (a DAW callback that ran
+                            // long) is dropped, never caught up.
+                            pace(tick, period, Duration::ZERO);
                             *tick
                         }
                         None => Instant::now() + QUIET,
@@ -180,7 +185,7 @@ impl Job {
                 _ => {
                     // Free-run on our own clock; a device that appears asks
                     // the DAW for a reset (it then opens the real buffers).
-                    pace(&mut next, period);
+                    pace(&mut next, period, FREE_RUN_LAG);
                     half ^= 1;
                     self.switch(&mut time, half);
                     if checked.elapsed() > Duration::from_secs(1) {
@@ -383,14 +388,14 @@ fn pro_audio() {
 }
 
 /// The free-run clock's next tick: `next` moves on by `period` and the
-/// thread sleeps until it; a clock more than 100 ms behind (a stalled
+/// thread sleeps until it; a clock more than `max_lag` behind (a stalled
 /// thread) restarts from now instead of catching up in a burst.
-fn pace(next: &mut Instant, period: Duration) {
+fn pace(next: &mut Instant, period: Duration, max_lag: Duration) {
     *next += period;
     let now = Instant::now();
     if *next > now {
         sleep_until(*next);
-    } else if now - *next > Duration::from_millis(100) {
+    } else if now - *next > max_lag {
         *next = now;
     }
 }
