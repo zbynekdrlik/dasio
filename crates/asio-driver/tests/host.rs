@@ -941,14 +941,17 @@ fn a_device_that_dies_while_the_daw_plays_leaves_it_running_and_comes_back() {
     assert_eq!(error_text(d), "", "a live device has nothing to report");
 
     // Dead: no block, no heartbeat. The DAW is still called, with silence
-    // in: once per QUIET (50 ms) without a block, so about 32 times in
-    // 1.6 s, not once per block period (dasio#28 E17 note).
+    // in: once per QUIET (50 ms) without a block, so about 50 times in
+    // 2.5 s, not once per block period (dasio#28 E17 note). The driver
+    // looks at the heartbeat once per CHECK_EVERY (1 s): the first look
+    // after the death can still see it move, the next one finds it STALE,
+    // so 2.5 s covers two looks and a margin.
     let before = DEATH_SWITCHES.load(Ordering::Acquire);
-    std::thread::sleep(Duration::from_millis(1600));
+    std::thread::sleep(Duration::from_millis(2500));
     let during = DEATH_SWITCHES.load(Ordering::Acquire) - before;
     assert!(
-        during >= 20,
-        "the DAW is still called while the device is dead: {during} switches in 1.6 s"
+        during >= 30,
+        "the DAW is still called while the device is dead: {during} switches in 2.5 s"
     );
     for half in 0..2 {
         let input = device.buffer(half, true, 0).unwrap();
