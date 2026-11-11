@@ -50,6 +50,10 @@ pub unsafe fn thread_name(h: HANDLE) -> String {
 /// (54 ms on a CI runner, 153 processes), the times microseconds.
 const REFRESH_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Ids and names from a Toolhelp list (a thread's name is read once it is
+/// open).
+type Ids = Vec<(u32, String)>;
+
 /// An open handle and what it is.
 struct Open {
     id: u32,
@@ -191,7 +195,7 @@ impl Drop for Gatherer {
 /// `open` becomes `now` (ids and names): an entry in both keeps its handle,
 /// one only in `open` is closed, one only in `now` is opened with `opener`
 /// (left out when that fails).
-fn keep_and_open(open: &mut Vec<Open>, now: Vec<(u32, String)>, opener: impl Fn(u32) -> HANDLE) {
+fn keep_and_open(open: &mut Vec<Open>, now: Ids, opener: impl Fn(u32) -> HANDLE) {
     let mut old = std::mem::take(open);
     for (id, name) in now {
         if let Some(i) = old
@@ -213,7 +217,7 @@ fn keep_and_open(open: &mut Vec<Open>, now: Vec<(u32, String)>, opener: impl Fn(
 }
 
 /// Every process's id and exe name (Toolhelp).
-fn list_procs() -> Vec<(u32, String)> {
+fn list_procs() -> Ids {
     let mut out = Vec::new();
     // SAFETY: a process snapshot, closed below.
     let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
@@ -238,7 +242,7 @@ fn list_procs() -> Vec<(u32, String)> {
 
 /// The thread ids of process `own` and of process `daw` (0: none), from
 /// one Toolhelp list; names are read once opened.
-fn list_threads(own: u32, daw: u32) -> (Vec<(u32, String)>, Vec<(u32, String)>) {
+fn list_threads(own: u32, daw: u32) -> (Ids, Ids) {
     let (mut mine, mut theirs) = (Vec::new(), Vec::new());
     // SAFETY: a thread snapshot, closed below.
     let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
