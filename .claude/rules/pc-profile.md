@@ -47,6 +47,14 @@ paths:
   and value without case). Checked only, never applied: a BCD change takes
   a reboot. Add one to a PC's profile only after that PC runs a dasio that
   knows `[[bcd]]` (0.1.54+): an older one refuses the whole profile.
+- `[[task]]` entries (`name = '\fleetbackup-main'`, `enabled = true`,
+  `triggers = ["daily 04:00"]`) check one Task Scheduler task. A task's
+  triggers read as short lines: `daily HH:MM`, `every Nd HH:MM`,
+  `weekly HH:MM`, `time HH:MM`, `boot`, `logon`, with ` every PT2H` for a
+  repeat and ` (off)` for a disabled trigger. `absent_ok = true` accepts an
+  uninstalled task. Checked only, never applied: the task belongs to its
+  tool. Add one to a PC's profile only after that PC runs a dasio that
+  knows `[[task]]` (0.1.61+): an older one refuses the whole profile.
 
 ## After a reboot
 

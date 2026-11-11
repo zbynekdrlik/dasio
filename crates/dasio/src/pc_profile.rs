@@ -6,7 +6,7 @@
 //! process off the media CPUs ([`ChildCheck`]), and reports what differs;
 //! `dasio pc-profile apply` sets what differs.
 //!
-//! Five kinds of entries:
+//! Six kinds of entries:
 //! - `[[registry]]`: one value under `HKLM\...` (a DWORD, a string, a
 //!   list of strings (REG_MULTI_SZ, e.g. a NIC's `SubnetMask`), or binary
 //!   as hex). `{nic_class}` and `{nic_device}` in a key stand for
@@ -22,6 +22,10 @@
 //! - `[[bcd]]`: one setting of the boot entry Windows runs from
 //!   (`bcdedit /enum {current}`, e.g. `disabledynamictick Yes`); checked
 //!   only, never applied: a change takes a reboot.
+//! - `[[task]]`: one Task Scheduler task, whether it is on and its triggers
+//!   (`schtasks /query /tn <name> /xml`, e.g. FOH's fleetbackup moved from
+//!   every 2 h to daily 04:00); checked only, never applied: the task is
+//!   another tool's install.
 //!
 //! This part is portable and tested everywhere; reading and writing the
 //! PC is [`windows`](self::windows).
@@ -56,12 +60,19 @@ pub struct Profile {
     pub disk: Vec<DiskEntry>,
     #[serde(default)]
     pub bcd: Vec<BcdEntry>,
+    #[serde(default)]
+    pub task: Vec<TaskEntry>,
 }
 
 impl Profile {
     /// How many entries it holds, of every kind.
     pub fn entries(&self) -> usize {
-        self.registry.len() + self.ini.len() + self.process.len() + self.disk.len() + self.bcd.len()
+        self.registry.len()
+            + self.ini.len()
+            + self.process.len()
+            + self.disk.len()
+            + self.bcd.len()
+            + self.task.len()
     }
 }
 
@@ -146,6 +157,33 @@ pub struct BcdEntry {
     pub why: String,
 }
 
+/// An expected scheduled task.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TaskEntry {
+    /// The task's path as schtasks shows it, e.g. `\fleetbackup-main`.
+    pub name: String,
+    /// Whether the task is on; unchecked when not given.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Its triggers in order, as [`parse_task_xml`] describes them, e.g.
+    /// `["daily 04:00"]`; unchecked when not given.
+    #[serde(default)]
+    pub triggers: Option<Vec<String>>,
+    /// An absent task is fine too (the tool may be uninstalled).
+    #[serde(default)]
+    pub absent_ok: bool,
+    #[serde(default)]
+    pub why: String,
+}
+
+/// A scheduled task as read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskState {
+    pub enabled: bool,
+    pub triggers: Vec<String>,
+}
+
 /// Bytes in the GB the profile and its problems use.
 const GB: u64 = 1 << 30;
 
@@ -180,6 +218,9 @@ pub trait Reader {
     /// The running boot entry's settings, name and value
     /// ([`parse_bcdedit`] of `bcdedit /enum {current}`).
     fn bcd(&self) -> Result<Vec<(String, String)>, String>;
+    /// The scheduled task `name` ([`parse_task_xml`] of its XML); `Ok(None)`
+    /// when there is no such task.
+    fn task(&self, name: &str) -> Result<Option<TaskState>, String>;
 }
 
 /// One setting that is not as the profile says.
@@ -256,6 +297,17 @@ pub fn parse(text: &str) -> Result<Profile, String> {
         }
         if b.value.trim().is_empty() {
             return Err(format!("bcd {}: value must not be empty", b.name));
+        }
+    }
+    for e in &p.task {
+        if !e.name.starts_with('\\') {
+            return Err(format!(
+                "task {:?}: give the path as schtasks shows it, e.g. \\fleetbackup-main",
+                e.name
+            ));
+        }
+        if e.enabled.is_none() && e.triggers.is_none() {
+            return Err(format!("task {}: give enabled, triggers or both", e.name));
         }
     }
     Ok(p)
@@ -429,7 +481,154 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
             });
         }
     }
+    for e in &p.task {
+        let state = match r.task(&e.name) {
+            Ok(Some(s)) => s,
+            Ok(None) if e.absent_ok => continue,
+            Ok(None) => {
+                out.push(Problem {
+                    what: format!("task {}", e.name),
+                    found: "absent".into(),
+                    want: "the task".into(),
+                    why: e.why.clone(),
+                });
+                continue;
+            }
+            Err(err) => {
+                out.push(Problem {
+                    what: format!("task {}", e.name),
+                    found: format!("unreadable ({err})"),
+                    want: "the task".into(),
+                    why: e.why.clone(),
+                });
+                continue;
+            }
+        };
+        if let Some(want) = e.enabled
+            && state.enabled != want
+        {
+            let on = |b: bool| if b { "on" } else { "off" };
+            out.push(Problem {
+                what: format!("task {}", e.name),
+                found: on(state.enabled).into(),
+                want: on(want).into(),
+                why: e.why.clone(),
+            });
+        }
+        if let Some(want) = &e.triggers
+            && state.triggers != *want
+        {
+            out.push(Problem {
+                what: format!("task {} triggers", e.name),
+                found: format!("{:?}", state.triggers),
+                want: format!("{want:?}"),
+                why: e.why.clone(),
+            });
+        }
+    }
     out
+}
+
+/// The text inside the first `<tag>...</tag>` of `xml` (no attributes on
+/// the opening tag, as Task Scheduler writes the elements read here).
+fn xml_inner<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = xml.find(&open)? + open.len();
+    let len = xml[start..].find(&close)?;
+    Some(xml[start..start + len].trim())
+}
+
+/// The child elements of `xml`, as their tag name and inner text, in order.
+fn xml_children(xml: &str) -> Vec<(&str, &str)> {
+    let mut out = Vec::new();
+    let mut rest = xml;
+    while let Some(lt) = rest.find('<') {
+        rest = &rest[lt + 1..];
+        let end = rest
+            .find(|c: char| c == '>' || c == '/' || c.is_whitespace())
+            .unwrap_or(rest.len());
+        let name = &rest[..end];
+        let Some(gt) = rest.find('>') else { break };
+        if rest[..gt].ends_with('/') {
+            // Self-closing: the next `<` is the next element.
+            out.push((name, ""));
+            continue;
+        }
+        let body = &rest[gt + 1..];
+        let close = format!("</{name}>");
+        let Some(c) = body.find(&close) else { break };
+        out.push((name, body[..c].trim()));
+        rest = &body[c + close.len()..];
+    }
+    out
+}
+
+/// The `HH:MM` of a trigger's `StartBoundary` (`2026-11-05T04:00:00+01:00`),
+/// as written: the task's own local time.
+fn boundary_time(trigger: &str) -> String {
+    xml_inner(trigger, "StartBoundary")
+        .and_then(|b| b.split_once('T'))
+        .and_then(|(_, t)| t.get(..5))
+        .unwrap_or("?")
+        .to_string()
+}
+
+/// A scheduled task's state from `schtasks /query /xml`: on unless its
+/// `Settings` say `<Enabled>false</Enabled>`; each trigger as a short line:
+/// `daily HH:MM`, `every Nd HH:MM`, `weekly HH:MM`, `monthly HH:MM`,
+/// `time HH:MM`, `boot`, `logon`, `idle`, `event`, else `other:<Tag>`; with
+/// ` every <interval>` when it repeats (e.g. `every PT2H`) and ` (off)` when
+/// the trigger is disabled.
+pub fn parse_task_xml(xml: &str) -> TaskState {
+    let enabled = xml_inner(xml, "Settings")
+        .and_then(|s| xml_children(s).into_iter().find(|(n, _)| *n == "Enabled"))
+        .is_none_or(|(_, v)| !v.eq_ignore_ascii_case("false"));
+    let triggers = xml_inner(xml, "Triggers")
+        .map(|t| {
+            xml_children(t)
+                .into_iter()
+                .map(|(name, body)| {
+                    let at = boundary_time(body);
+                    let mut line = match name {
+                        "CalendarTrigger" => {
+                            if let Some(d) = xml_inner(body, "ScheduleByDay") {
+                                match xml_inner(d, "DaysInterval").unwrap_or("1") {
+                                    "1" => format!("daily {at}"),
+                                    n => format!("every {n}d {at}"),
+                                }
+                            } else if body.contains("<ScheduleByWeek>") {
+                                format!("weekly {at}")
+                            } else if body.contains("<ScheduleByMonth") {
+                                format!("monthly {at}")
+                            } else {
+                                format!("other:{name}")
+                            }
+                        }
+                        "TimeTrigger" => format!("time {at}"),
+                        "BootTrigger" => "boot".into(),
+                        "LogonTrigger" => "logon".into(),
+                        "IdleTrigger" => "idle".into(),
+                        "EventTrigger" => "event".into(),
+                        other => format!("other:{other}"),
+                    };
+                    if let Some(i) =
+                        xml_inner(body, "Repetition").and_then(|r| xml_inner(r, "Interval"))
+                    {
+                        line.push_str(&format!(" every {i}"));
+                    }
+                    if xml_children(body)
+                        .iter()
+                        .any(|(n, v)| *n == "Enabled" && v.eq_ignore_ascii_case("false"))
+                    {
+                        line.push_str(" (off)");
+                    }
+                    line
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    TaskState { enabled, triggers }
 }
 
 /// The settings of the entry `bcdedit /enum {current}` printed: each line

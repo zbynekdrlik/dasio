@@ -15,6 +15,9 @@ struct Pc {
     bcd_err: Option<String>,
     /// How often `bcd()` was called.
     bcd_reads: std::cell::Cell<u32>,
+    tasks: HashMap<String, TaskState>,
+    /// `task()` fails for these names.
+    task_err: Vec<String>,
 }
 
 impl Reader for Pc {
@@ -38,6 +41,12 @@ impl Reader for Pc {
             .get(drive)
             .copied()
             .ok_or_else(|| "no such drive".into())
+    }
+    fn task(&self, name: &str) -> Result<Option<TaskState>, String> {
+        if self.task_err.iter().any(|n| n == name) {
+            return Err("access denied".into());
+        }
+        Ok(self.tasks.get(name).cloned())
     }
     fn bcd(&self) -> Result<Vec<(String, String)>, String> {
         self.bcd_reads.set(self.bcd_reads.get() + 1);
@@ -725,6 +734,9 @@ fn every_kind_of_entry_counts() {
     ] {
         text += &format!("[[bcd]]\nname = \"{n}\"\nvalue = \"Yes\"\n");
     }
+    for n in ["a", "b", "c", "d", "e", "f"] {
+        text += &format!("[[task]]\nname = '\\{n}'\nenabled = true\n");
+    }
     let p = parse(&text).unwrap();
     assert_eq!(
         (
@@ -732,9 +744,121 @@ fn every_kind_of_entry_counts() {
             p.ini.len(),
             p.process.len(),
             p.disk.len(),
-            p.bcd.len()
+            p.bcd.len(),
+            p.task.len()
         ),
-        (1, 2, 3, 4, 5)
+        (1, 2, 3, 4, 5, 6)
     );
-    assert_eq!(p.entries(), 15, "every kind counts, [[bcd]] too");
+    assert_eq!(p.entries(), 21, "every kind counts, [[task]] too");
+}
+
+/// FOH's fleetbackup task as `schtasks /query /tn \fleetbackup-main /xml`
+/// printed it on 11.11.2026 (blank lines between elements, as schtasks
+/// writes them).
+const FLEETBACKUP_XML: &str = "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n\n<Task version=\"1.4\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n\n  <RegistrationInfo>\n\n    <Description>fleetbackup agent, daily backup set main (VSS)</Description>\n\n    <URI>\\fleetbackup-main</URI>\n\n  </RegistrationInfo>\n\n  <Settings>\n\n    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n\n    <RestartOnFailure>\n\n      <Count>3</Count>\n\n      <Interval>PT15M</Interval>\n\n    </RestartOnFailure>\n\n    <IdleSettings>\n\n      <StopOnIdleEnd>false</StopOnIdleEnd>\n\n    </IdleSettings>\n\n    <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>\n\n  </Settings>\n\n  <Triggers>\n\n    <CalendarTrigger>\n\n      <StartBoundary>2026-11-05T04:00:00+01:00</StartBoundary>\n\n      <ScheduleByDay>\n\n        <DaysInterval>1</DaysInterval>\n\n      </ScheduleByDay>\n\n    </CalendarTrigger>\n\n  </Triggers>\n\n  <Actions Context=\"Author\">\n\n    <Exec>\n\n      <Command>\"C:\\Program Files\\fleetbackup\\fbagent.exe\"</Command>\n\n    </Exec>\n\n  </Actions>\n\n</Task>\n";
+
+#[test]
+fn a_task_s_xml_reads_as_on_and_its_triggers() {
+    assert_eq!(
+        parse_task_xml(FLEETBACKUP_XML),
+        TaskState {
+            enabled: true,
+            triggers: vec!["daily 04:00".into()],
+        }
+    );
+    // The 5.11 shape before the fix: every 2 h from midnight, disabled.
+    let old = "<Task><Settings><Enabled>false</Enabled><IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd></IdleSettings></Settings><Triggers>\
+        <CalendarTrigger><Repetition><Interval>PT2H</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>\
+        <StartBoundary>2026-10-01T00:00:00</StartBoundary><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger>\
+        </Triggers></Task>";
+    assert_eq!(
+        parse_task_xml(old),
+        TaskState {
+            enabled: false,
+            triggers: vec!["daily 00:00 every PT2H".into()],
+        }
+    );
+    let many = "<Task><Settings><Enabled>true</Enabled></Settings><Triggers>\
+        <BootTrigger><Enabled>false</Enabled></BootTrigger>\
+        <LogonTrigger id=\"t2\"><Enabled>true</Enabled><UserId>X</UserId></LogonTrigger>\
+        <TimeTrigger><StartBoundary>2026-11-11T13:05:00</StartBoundary></TimeTrigger>\
+        <CalendarTrigger><StartBoundary>2026-11-11T02:30:00</StartBoundary><ScheduleByDay><DaysInterval>3</DaysInterval></ScheduleByDay></CalendarTrigger>\
+        <CalendarTrigger><StartBoundary>2026-11-11T06:00:00</StartBoundary><ScheduleByWeek><WeeksInterval>1</WeeksInterval></ScheduleByWeek></CalendarTrigger>\
+        <CalendarTrigger><StartBoundary>2026-11-11T07:00:00</StartBoundary><ScheduleByMonth><Months/></ScheduleByMonth></CalendarTrigger>\
+        <IdleTrigger/><EventTrigger><Subscription>x</Subscription></EventTrigger><SessionStateChangeTrigger><StateChange>x</StateChange></SessionStateChangeTrigger>\
+        </Triggers></Task>";
+    assert_eq!(
+        parse_task_xml(many).triggers,
+        [
+            "boot (off)",
+            "logon",
+            "time 13:05",
+            "every 3d 02:30",
+            "weekly 06:00",
+            "monthly 07:00",
+            "idle",
+            "event",
+            "other:SessionStateChangeTrigger",
+        ]
+    );
+    assert!(parse_task_xml(many).enabled);
+    assert!(parse_task_xml("<Task></Task>").triggers.is_empty());
+}
+
+fn task_profile(entries: &str) -> Profile {
+    parse(&format!("name = \"x\"\n{entries}")).unwrap()
+}
+
+#[test]
+fn a_task_as_wanted_is_no_problem() {
+    let p = task_profile(
+        "[[task]]\nname = '\\fleetbackup-main'\nenabled = true\ntriggers = [\"daily 04:00\"]\n",
+    );
+    let pc = Pc {
+        tasks: HashMap::from([("\\fleetbackup-main".into(), parse_task_xml(FLEETBACKUP_XML))]),
+        ..Pc::default()
+    };
+    assert!(check(&p, &pc).is_empty());
+}
+
+#[test]
+fn a_task_off_retriggered_absent_or_unreadable_is_a_problem() {
+    let p = task_profile(
+        "[[task]]\nname = '\\fb'\nenabled = true\ntriggers = [\"daily 04:00\"]\nwhy = \"its VSS stalled band\"\n\
+         [[task]]\nname = '\\gone'\nenabled = false\n\
+         [[task]]\nname = '\\maybe'\nenabled = false\nabsent_ok = true\n\
+         [[task]]\nname = '\\locked'\ntriggers = []\n",
+    );
+    let pc = Pc {
+        tasks: HashMap::from([(
+            "\\fb".into(),
+            TaskState {
+                enabled: false,
+                triggers: vec!["daily 00:00 every PT2H".into()],
+            },
+        )]),
+        task_err: vec!["\\locked".into()],
+        ..Pc::default()
+    };
+    let problems: Vec<String> = check(&p, &pc).iter().map(|x| x.to_string()).collect();
+    assert_eq!(
+        problems,
+        [
+            "task \\fb: off (the profile wants on) — its VSS stalled band",
+            "task \\fb triggers: [\"daily 00:00 every PT2H\"] (the profile wants [\"daily 04:00\"]) — its VSS stalled band",
+            "task \\gone: absent (the profile wants the task)",
+            "task \\locked: unreadable (access denied) (the profile wants the task)",
+        ]
+    );
+    // Only what an entry names is compared.
+    let only_on = task_profile("[[task]]\nname = '\\fb'\nenabled = false\n");
+    assert!(check(&only_on, &pc).is_empty());
+}
+
+#[test]
+fn a_task_entry_needs_a_path_and_something_to_check() {
+    assert!(parse("name = \"x\"\n[[task]]\nname = 'fb'\nenabled = true\n").is_err());
+    assert!(parse("name = \"x\"\n[[task]]\nname = '\\fb'\n").is_err());
+    assert!(parse("name = \"x\"\n[[task]]\nname = '\\fb'\nenabled = true\nrun = 1\n").is_err());
+    assert!(parse("name = \"x\"\n[[task]]\nname = '\\fb'\ntriggers = []\n").is_ok());
 }

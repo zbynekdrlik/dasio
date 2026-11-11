@@ -175,6 +175,34 @@ impl Reader for Pc {
         }
         Ok(super::parse_bcdedit(&text))
     }
+
+    fn task(&self, name: &str) -> Result<Option<super::TaskState>, String> {
+        let out = std::process::Command::new("schtasks")
+            .args(["/query", "/tn", name, "/xml"])
+            .output()
+            .map_err(|e| format!("schtasks: {e}"))?;
+        if out.status.success() {
+            return Ok(Some(super::parse_task_xml(&String::from_utf8_lossy(
+                &out.stdout,
+            ))));
+        }
+        // schtasks' "not found" text is localized; a task is a file under
+        // System32\Tasks, so its absence tells a missing task from a
+        // failed query.
+        let file = Path::new(r"C:\Windows\System32\Tasks").join(name.trim_start_matches('\\'));
+        if !file.exists() {
+            return Ok(None);
+        }
+        Err(format!(
+            "schtasks: {} {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+                .trim()
+                .lines()
+                .next()
+                .unwrap_or("")
+        ))
+    }
 }
 
 /// An ini file as text (UTF-16 with a BOM or 8-bit).
