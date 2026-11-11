@@ -10,6 +10,11 @@ struct Pc {
     ini: HashMap<(String, String), String>,
     procs: HashMap<String, ProcState>,
     free: HashMap<String, u64>,
+    bcd: Vec<(String, String)>,
+    /// `bcd()` fails with this.
+    bcd_err: Option<String>,
+    /// How often `bcd()` was called.
+    bcd_reads: std::cell::Cell<u32>,
 }
 
 impl Reader for Pc {
@@ -33,6 +38,13 @@ impl Reader for Pc {
             .get(drive)
             .copied()
             .ok_or_else(|| "no such drive".into())
+    }
+    fn bcd(&self) -> Result<Vec<(String, String)>, String> {
+        self.bcd_reads.set(self.bcd_reads.get() + 1);
+        match &self.bcd_err {
+            Some(e) => Err(e.clone()),
+            None => Ok(self.bcd.clone()),
+        }
     }
 }
 
@@ -572,4 +584,119 @@ dword = 4
     let problems = check(&p, &pc);
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(problems[0].found.starts_with("unreadable"), "{problems:?}");
+}
+
+/// `bcdedit /enum {current}` as FOH prints it (shortened; a list value
+/// continues on indented lines).
+const BCDEDIT: &str = "
+Windows Boot Loader
+-------------------
+identifier              {current}
+device                  partition=C:
+path                    \\WINDOWS\\system32\\winload.efi
+description             Windows 10
+recoverysequence        {8f6c1a2e-0000-0000-0000-000000000000}
+displaymessageoverride  Recovery
+testsigning             Yes
+nx                      OptIn
+badmemorylist           0x1
+                        0x2
+disabledynamictick      Yes
+";
+
+#[test]
+fn bcdedit_s_entry_reads_as_names_and_values() {
+    let list = parse_bcdedit(BCDEDIT);
+    assert_eq!(list[0], ("identifier".to_string(), "{current}".to_string()));
+    let get = |n: &str| list.iter().find(|(k, _)| k == n).map(|(_, v)| v.as_str());
+    assert_eq!(
+        get("description"),
+        Some("Windows 10"),
+        "a value with a space stays whole"
+    );
+    assert_eq!(get("testsigning"), Some("Yes"));
+    assert_eq!(
+        get("badmemorylist"),
+        Some("0x1"),
+        "a list keeps its first line"
+    );
+    assert_eq!(
+        get("disabledynamictick"),
+        Some("Yes"),
+        "after a continued list"
+    );
+    assert!(get("Windows").is_none(), "the title is not a setting");
+    assert!(list.iter().all(|(k, _)| !k.is_empty()));
+    assert!(parse_bcdedit("no dashes here\nfoo bar\n").is_empty());
+}
+
+fn bcd_profile(entries: &str) -> Profile {
+    parse(&format!("name = \"x\"\n{entries}")).unwrap()
+}
+
+#[test]
+fn a_bcd_setting_as_wanted_is_no_problem_whatever_its_case() {
+    let p = bcd_profile(
+        "[[bcd]]\nname = \"disabledynamictick\"\nvalue = \"yes\"\n[[bcd]]\nname = \"TestSigning\"\nvalue = \"Yes\"\n",
+    );
+    let pc = Pc {
+        bcd: parse_bcdedit(BCDEDIT),
+        ..Pc::default()
+    };
+    assert!(check(&p, &pc).is_empty());
+    assert_eq!(pc.bcd_reads.get(), 1, "bcdedit runs once per check");
+}
+
+#[test]
+fn a_bcd_setting_off_or_absent_or_unreadable_is_a_problem() {
+    let p = bcd_profile(
+        "[[bcd]]\nname = \"disabledynamictick\"\nvalue = \"Yes\"\nwhy = \"no tick on idle CPUs\"\n[[bcd]]\nname = \"useplatformclock\"\nvalue = \"No\"\n",
+    );
+    let pc = Pc {
+        bcd: vec![("disabledynamictick".into(), "No".into())],
+        ..Pc::default()
+    };
+    let problems = check(&p, &pc);
+    assert_eq!(problems.len(), 2);
+    assert_eq!(
+        problems[0].to_string(),
+        "bcd disabledynamictick: \"No\" (the profile wants \"Yes\") — no tick on idle CPUs"
+    );
+    assert_eq!(problems[1].what, "bcd useplatformclock");
+    assert_eq!(problems[1].found, "absent");
+    let down = Pc {
+        bcd_err: Some("bcdedit: exit code: 1 access denied".into()),
+        ..Pc::default()
+    };
+    let problems = check(&p, &down);
+    assert_eq!(problems.len(), 2);
+    assert!(
+        problems
+            .iter()
+            .all(|x| x.found == "unreadable (bcdedit: exit code: 1 access denied)")
+    );
+}
+
+#[test]
+fn no_bcd_entries_never_run_bcdedit() {
+    let pc = Pc::default();
+    let _ = check(&bcd_profile(""), &pc);
+    assert_eq!(pc.bcd_reads.get(), 0);
+}
+
+#[test]
+fn a_bcd_entry_needs_one_word_and_a_value() {
+    assert!(
+        parse("name = \"x\"\n[[bcd]]\nname = \"disable dynamictick\"\nvalue = \"Yes\"\n").is_err()
+    );
+    assert!(parse("name = \"x\"\n[[bcd]]\nname = \"\"\nvalue = \"Yes\"\n").is_err());
+    assert!(parse("name = \"x\"\n[[bcd]]\nname = \"nx\"\nvalue = \" \"\n").is_err());
+    assert!(
+        parse("name = \"x\"\n[[bcd]]\nname = \"nx\"\nvalue = \"OptIn\"\nwant = 1\n").is_err(),
+        "unknown keys are refused"
+    );
+    assert_eq!(
+        bcd_profile("[[bcd]]\nname = \"nx\"\nvalue = \"OptIn\"\n").bcd[0].value,
+        "OptIn"
+    );
 }

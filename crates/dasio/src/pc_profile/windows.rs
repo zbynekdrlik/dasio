@@ -159,6 +159,22 @@ impl Reader for Pc {
             Err(std::io::Error::last_os_error().to_string())
         }
     }
+
+    fn bcd(&self) -> Result<Vec<(String, String)>, String> {
+        let out = std::process::Command::new("bcdedit")
+            .args(["/enum", "{current}"])
+            .output()
+            .map_err(|e| format!("bcdedit: {e}"))?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        if !out.status.success() {
+            return Err(format!(
+                "bcdedit: {} {}",
+                out.status,
+                text.trim().lines().next().unwrap_or("")
+            ));
+        }
+        Ok(super::parse_bcdedit(&text))
+    }
 }
 
 /// An ini file as text (UTF-16 with a BOM or 8-bit).

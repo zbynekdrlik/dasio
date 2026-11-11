@@ -6,7 +6,7 @@
 //! process off the media CPUs ([`ChildCheck`]), and reports what differs;
 //! `dasio pc-profile apply` sets what differs.
 //!
-//! Four kinds of entries:
+//! Five kinds of entries:
 //! - `[[registry]]`: one value under `HKLM\...` (a DWORD, a string, a
 //!   list of strings (REG_MULTI_SZ, e.g. a NIC's `SubnetMask`), or binary
 //!   as hex). `{nic_class}` and `{nic_device}` in a key stand for
@@ -19,6 +19,9 @@
 //! - `[[disk]]`: a floor of free space on a drive, so a filling disk shows
 //!   as a problem before it hurts (FOH's C: had 26.5 GB left, owner
 //!   9.11.2026, dasio#1); checked only, never applied.
+//! - `[[bcd]]`: one setting of the boot entry Windows runs from
+//!   (`bcdedit /enum {current}`, e.g. `disabledynamictick Yes`); checked
+//!   only, never applied: a change takes a reboot.
 //!
 //! This part is portable and tested everywhere; reading and writing the
 //! PC is [`windows`](self::windows).
@@ -51,6 +54,8 @@ pub struct Profile {
     pub process: Vec<ProcEntry>,
     #[serde(default)]
     pub disk: Vec<DiskEntry>,
+    #[serde(default)]
+    pub bcd: Vec<BcdEntry>,
 }
 
 /// An expected registry value: exactly one of `dword`, `string`,
@@ -121,6 +126,19 @@ pub struct DiskEntry {
     pub why: String,
 }
 
+/// An expected setting of the running boot entry (`bcdedit /enum
+/// {current}`): its element name and value, both compared without case.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BcdEntry {
+    /// The element as bcdedit lists it, e.g. `disabledynamictick`.
+    pub name: String,
+    /// Its value as bcdedit lists it, e.g. `Yes`.
+    pub value: String,
+    #[serde(default)]
+    pub why: String,
+}
+
 /// Bytes in the GB the profile and its problems use.
 const GB: u64 = 1 << 30;
 
@@ -152,6 +170,9 @@ pub trait Reader {
     fn process(&self, exe: &str) -> Option<ProcState>;
     /// The free bytes on `drive` (e.g. `C:`) for the reading account.
     fn free_bytes(&self, drive: &str) -> Result<u64, String>;
+    /// The running boot entry's settings, name and value
+    /// ([`parse_bcdedit`] of `bcdedit /enum {current}`).
+    fn bcd(&self) -> Result<Vec<(String, String)>, String>;
 }
 
 /// One setting that is not as the profile says.
@@ -217,6 +238,17 @@ pub fn parse(text: &str) -> Result<Profile, String> {
         }
         if d.min_free_gb == 0 {
             return Err(format!("disk {}: min_free_gb must be above 0", d.drive));
+        }
+    }
+    for b in &p.bcd {
+        if b.name.is_empty() || b.name.contains(char::is_whitespace) {
+            return Err(format!(
+                "bcd {:?}: give the element as bcdedit lists it, one word, e.g. disabledynamictick",
+                b.name
+            ));
+        }
+        if b.value.trim().is_empty() {
+            return Err(format!("bcd {}: value must not be empty", b.name));
         }
     }
     Ok(p)
@@ -370,6 +402,50 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
             want: format!("at least {} GB", e.min_free_gb),
             why: e.why.clone(),
         });
+    }
+    if !p.bcd.is_empty() {
+        let found = r.bcd();
+        for e in &p.bcd {
+            let text = match &found {
+                Ok(list) => match list.iter().find(|(n, _)| n.eq_ignore_ascii_case(&e.name)) {
+                    Some((_, v)) if v.eq_ignore_ascii_case(e.value.trim()) => continue,
+                    Some((_, v)) => format!("\"{v}\""),
+                    None => "absent".to_string(),
+                },
+                Err(err) => format!("unreadable ({err})"),
+            };
+            out.push(Problem {
+                what: format!("bcd {}", e.name),
+                found: text,
+                want: format!("\"{}\"", e.value.trim()),
+                why: e.why.clone(),
+            });
+        }
+    }
+    out
+}
+
+/// The settings of the entry `bcdedit /enum {current}` printed: each line
+/// after the dashed line under the entry's title, as its first word and the
+/// rest. A value bcdedit continues on indented lines (a list) keeps only its
+/// first line; element names are never localized, the title is skipped.
+pub fn parse_bcdedit(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut body = false;
+    for line in text.lines() {
+        let t = line.trim_end();
+        if !body {
+            body = !t.is_empty() && t.chars().all(|c| c == '-');
+            continue;
+        }
+        if t.is_empty() || t.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let mut parts = t.splitn(2, char::is_whitespace);
+        let (Some(name), Some(value)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        out.push((name.to_string(), value.trim().to_string()));
     }
     out
 }
