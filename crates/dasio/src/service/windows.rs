@@ -119,8 +119,9 @@ fn service_main(_args: Vec<OsString>) {
     info!(instance = args.instance, "service running");
     // At boot the service starts before the NIC has its address; after a
     // link reset it comes back later. The device starts once it is there.
-    // An interface by name (`--iface`) is looked up each time: at boot it
-    // may have no address yet. Its error is logged when it changes.
+    // The address (`--ip`, or `--iface`'s interface) is looked up among the
+    // box's interfaces each time; the reason it is not there yet is logged
+    // when it changes.
     let mut found = None;
     let mut said: Option<String> = None;
     let held = || match crate::place::address(&args.place) {
@@ -130,7 +131,7 @@ fn service_main(_args: Vec<OsString>) {
         }
         Err(e) => {
             if said.as_deref() != Some(e.as_str()) {
-                warn!(%e, "the device's interface has no address yet");
+                warn!(%e, "the device's address is not on this box yet");
                 said = Some(e);
             }
             false

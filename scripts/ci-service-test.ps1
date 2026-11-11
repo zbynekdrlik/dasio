@@ -202,7 +202,7 @@ if ($flag -notmatch "TRUE") { throw "no restart after an error exit:`n$flag" }
 Wait-Until { Test-Path (Join-Path $env:ProgramData "dasio\instance-$instance\dasio.log") } 20 "the device's log"
 # On its interface's address, its control ports the first free slot (its
 # config names none, dasio#89; nothing else holds slot 0 on the runner).
-Wait-Until { (Get-Content (Join-Path $env:ProgramData "dasio\instance-$instance\dasio.log") -ErrorAction SilentlyContinue) -match "the device's address ip=$([regex]::Escape($ip))" } 20 "the device on its interface's address"
+Wait-Until { (Get-Content (Join-Path $env:ProgramData "dasio\instance-$instance\dasio.log") -ErrorAction SilentlyContinue) -match "the device's address ip=$([regex]::Escape($ip)) place=" } 20 "the device on its interface's address"
 Wait-Until { (Get-Content (Join-Path $env:ProgramData "dasio\instance-$instance\dasio.log") -ErrorAction SilentlyContinue) -match "the device's control ports: the first slot free on its address arc=4440 cmc=8800 flows=4455 process_id=0" } 20 "the device's picked control ports"
 Start-Sleep -Seconds 2
 $probe = (& $exe probe --instance $instance --seconds 3) -join "`n"

@@ -185,7 +185,9 @@ Get-Content $sumsFile | ForEach-Object {
 if ($Iface) {
     # The name goes into the service's command line in quotes.
     if ($Iface.Contains('"')) { throw "-Iface: an interface name with a quote is not supported; nothing changed" }
-    $ifaceAddrs = @(Get-NetIPAddress -InterfaceAlias $Iface -AddressFamily IPv4 -ErrorAction SilentlyContinue)
+    # The exact name, as the device compares it (-InterfaceAlias would take
+    # a wildcard and ignore the case).
+    $ifaceAddrs = @(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -ceq $Iface })
     if ($ifaceAddrs.Count -ne 1) {
         throw "the interface '$Iface' has $($ifaceAddrs.Count) IPv4 addresses (or does not exist), the device needs exactly one; nothing changed"
     }
@@ -198,12 +200,15 @@ if ($Iface) {
 }
 
 # The ports and process id each device takes on the shared address (the
-# stack's defaults when the config leaves them out).
+# stack's defaults when the config leaves them out), and whether the config
+# names any (one naming none takes the first free slot at its start,
+# dasio#89, so beside another instance its slot is not known here).
 function Get-DeviceSlots([string]$Path) {
-    $slots = @{ arc_port = 4440; cmc_port = 8800; flows_port = 4455; process_id = 0 }
+    $slots = @{ arc_port = 4440; cmc_port = 8800; flows_port = 4455; process_id = 0; named = $false }
     foreach ($line in Get-Content $Path) {
         if ($line -match '^\s*(arc_port|cmc_port|flows_port|process_id)\s*=\s*(\d+)') {
             $slots[$Matches[1]] = [int]$Matches[2]
+            $slots.named = $true
         }
     }
     $slots
@@ -219,6 +224,9 @@ Get-ChildItem $root -Directory -Filter "instance-*" -ErrorAction SilentlyContinu
             if ($ports -contains $mine[$key]) { throw "$key $($mine[$key]) is taken by $($_.Name); nothing changed" }
         }
         if ($mine.process_id -eq $theirs.process_id) { throw "process_id $($mine.process_id) is taken by $($_.Name); nothing changed" }
+        if (-not ($mine.named -and $theirs.named)) {
+            Write-Warning "this config or $($_.Name)'s names no arc_port, cmc_port, flows_port or process_id: that device takes the first free slot at each start, which may be one the other names; name the ports in both configs when instances share this PC"
+        }
     }
 }
 

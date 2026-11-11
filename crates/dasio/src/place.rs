@@ -43,28 +43,26 @@ pub fn parse(args: &[String]) -> Result<Place, String> {
     found.ok_or_else(|| ONE_PLACE.into())
 }
 
-/// The device's address on `place`: the given address, or the named
-/// interface's one IPv4 address among `addrs` (dstack's
-/// [`pick_interface`]: none, several, or a loopback one is refused).
+/// The device's address on `place` among `addrs`, dstack's rule
+/// ([`pick_interface`], as its own start applies it): the named
+/// interface's one IPv4 address, or the given address when an interface
+/// holds it; none, several, or one the Dante network cannot reach
+/// (loopback, unspecified) is refused.
 pub fn address_in(place: &Place, addrs: &[IfAddr]) -> Result<Ipv4Addr, String> {
-    match place {
-        Place::Ip(ip) => Ok(*ip),
-        Place::Iface(name) => pick_interface(place, addrs)
-            .map(|a| a.ip)
-            .map_err(|e| format!("the interface {name:?}: {e}")),
-    }
+    pick_interface(place, addrs)
+        .map(|a| a.ip)
+        .map_err(|e| match place {
+            Place::Iface(name) => format!("the interface {name:?}: {e}"),
+            Place::Ip(ip) => format!("{ip}: {e}"),
+        })
 }
 
-/// [`address_in`] on this box's interfaces now.
+/// [`address_in`] on this box's interfaces now (an interface at boot may
+/// have no address yet: the service asks again).
 pub fn address(place: &Place) -> Result<Ipv4Addr, String> {
-    match place {
-        Place::Ip(ip) => Ok(*ip),
-        Place::Iface(_) => {
-            let addrs = dstack::host::interfaces()
-                .map_err(|e| format!("the box's interfaces could not be read: {e}"))?;
-            address_in(place, &addrs)
-        }
-    }
+    let addrs = dstack::host::interfaces()
+        .map_err(|e| format!("the box's interfaces could not be read: {e}"))?;
+    address_in(place, &addrs)
 }
 
 /// The device config's keys that set its control ports and process id.
@@ -96,21 +94,22 @@ pub enum SlotFrom {
 /// names any of [`SLOT_KEYS`] (explicit ports win); else with the slot
 /// `pick` gives (`slots::pick` on the device's address), or dstack's
 /// defaults when it gives none. `pick` runs only for a config that names
-/// none.
+/// none and passes the checks as written; a picked slot the checks refuse
+/// is named in the error.
 pub fn device_config(
     text: &str,
     pick: impl FnOnce() -> Option<Slot>,
 ) -> Result<(DeviceConfig, SlotFrom), String> {
-    let check = |t: &str| DeviceConfig::from_toml(t).map_err(|e| e.to_string());
-    // Not TOML: dstack's own parse names the line.
-    let Ok(mut table) = text.parse::<toml::Table>() else {
-        return check(text).map(|c| (c, SlotFrom::Config));
-    };
+    // As written first: its errors name the file's own lines.
+    let written = DeviceConfig::from_toml(text).map_err(|e| e.to_string())?;
+    let mut table: toml::Table = text
+        .parse()
+        .map_err(|e| format!("the config as a TOML table: {e}"))?;
     if SLOT_KEYS.iter().any(|k| table.contains_key(*k)) {
-        return check(text).map(|c| (c, SlotFrom::Config));
+        return Ok((written, SlotFrom::Config));
     }
     let Some(slot) = pick() else {
-        return check(text).map(|c| (c, SlotFrom::Defaults));
+        return Ok((written, SlotFrom::Defaults));
     };
     for (key, value) in SLOT_KEYS
         .into_iter()
@@ -118,8 +117,14 @@ pub fn device_config(
     {
         table.insert(key.into(), toml::Value::Integer(i64::from(value)));
     }
-    let picked = toml::to_string(&table).map_err(|e| format!("the config with its slot: {e}"))?;
-    check(&picked).map(|c| (c, SlotFrom::Picked))
+    let named = format!(
+        "the free slot picked for it (arc_port {}, cmc_port {}, flows_port {}, process_id {})",
+        slot.arc, slot.cmc, slot.flows, slot.process_id
+    );
+    let picked = toml::to_string(&table).map_err(|e| format!("{named}: {e}"))?;
+    DeviceConfig::from_toml(&picked)
+        .map(|c| (c, SlotFrom::Picked))
+        .map_err(|e| format!("{named}: {e}"))
 }
 
 #[cfg(test)]
@@ -218,10 +223,25 @@ mod tests {
     }
 
     #[test]
-    fn an_address_is_taken_as_given() {
-        let ip = Ipv4Addr::new(192, 0, 2, 1);
-        assert_eq!(address_in(&Place::Ip(ip), &[]), Ok(ip));
-        assert_eq!(address(&Place::Ip(ip)), Ok(ip));
+    fn an_address_must_be_one_an_interface_holds() {
+        let ip = Ipv4Addr::new(10, 77, 7, 232);
+        assert_eq!(address_in(&Place::Ip(ip), &addrs()), Ok(ip));
+        let e = address_in(&Place::Ip(Ipv4Addr::new(10, 77, 7, 9)), &addrs()).unwrap_err();
+        assert!(e.starts_with("10.77.7.9: "), "{e}");
+        // No interface of this box holds a documentation address.
+        assert!(address(&Place::Ip(Ipv4Addr::new(192, 0, 2, 1))).is_err());
+    }
+
+    #[test]
+    fn a_loopback_or_unspecified_address_is_refused() {
+        let lo = vec![IfAddr {
+            name: "lo".into(),
+            ip: Ipv4Addr::LOCALHOST,
+            netmask: Ipv4Addr::new(255, 0, 0, 0),
+        }];
+        assert!(address_in(&Place::Ip(Ipv4Addr::LOCALHOST), &lo).is_err());
+        assert!(address_in(&Place::Iface("lo".into()), &lo).is_err());
+        assert!(address_in(&Place::Ip(Ipv4Addr::UNSPECIFIED), &addrs()).is_err());
     }
 
     const SLOT_1: Slot = Slot {
@@ -288,11 +308,18 @@ mod tests {
         assert!(DeviceConfig::from_toml(&text).is_ok());
         let e = device_config(&text, || Some(SLOT_1)).unwrap_err();
         assert!(e.contains("rx_port_base"), "{e}");
+        let named = "the free slot picked for it \
+                     (arc_port 4441, cmc_port 8801, flows_port 4456, process_id 1): ";
+        assert!(e.starts_with(named), "{e}");
     }
 
     #[test]
     fn a_broken_config_is_refused_without_a_pick() {
         let e = device_config("name = ", || panic!("picked")).unwrap_err();
+        assert!(e.starts_with("device config: "), "{e}");
+        // TOML, but not a device config as written: refused before a pick.
+        let text = format!("timing = \"fast\"\n{DEVICE}");
+        let e = device_config(&text, || panic!("picked")).unwrap_err();
         assert!(e.starts_with("device config: "), "{e}");
     }
 }
