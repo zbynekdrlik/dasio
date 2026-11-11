@@ -18,3 +18,4 @@ Design: `docs/design/2026-10-29-dante-asio-design.md`; MVP plan: `docs/plans/202
 - switching a DAW onto an instance → `.claude/rules/daw-device-switch.md` (auto-loads on its `paths:`)
 - the NDIS filter, kernel TX, reinstalling it → `.claude/rules/ndis-pacer.md` (auto-loads on its `paths:`)
 - the PC profile (FOH Windows settings, Lasso) → `.claude/rules/pc-profile.md` (auto-loads on its `paths:`)
+- the driver's host tests (packed ABI fields, instance numbers) → `.claude/rules/asio-driver-tests.md` (auto-loads on its `paths:`)
