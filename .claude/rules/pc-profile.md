@@ -42,8 +42,11 @@ paths:
   Add it to a PC's profile only after that PC runs a dasio that knows it
   (0.1.46+): an older one refuses the whole profile. FOH's
   `GigabyteUpdateService` has been gone since the 10.11.2026 reboot.
-- Not covered yet: BCD settings (`disabledynamictick Yes`, `testsigning
-  Yes`), checked by hand with `bcdedit /enum {current}`.
+- `[[bcd]]` entries (`name = "disabledynamictick"`, `value = "Yes"`) check
+  one setting of the running boot entry (`bcdedit /enum {current}`, name
+  and value without case). Checked only, never applied: a BCD change takes
+  a reboot. Add one to a PC's profile only after that PC runs a dasio that
+  knows `[[bcd]]` (0.1.54+): an older one refuses the whole profile.
 
 ## After a reboot
 
