@@ -190,8 +190,14 @@ if (-not (Test-Path $expected)) { throw "no expected-device file $expected" }
 Wait-Until { (& $dtrayCli --print 2>$null | Out-String) -match "(no DAW|DAW attached) .+ @ \d+ kHz .+ in [\d.]+ / out [\d.]+ ms .+ late \d+/min" } 30 "dtray's dasio line for the instance"
 $trayOut = & $dtrayCli --print 2>$null | Out-String
 if ($LASTEXITCODE -ne 0) { throw "dtray-cli --print exit $LASTEXITCODE" }
-& $dtrayCli --switch nosuch band 2>$null | Out-Null
-if ($LASTEXITCODE -ne 1) { throw "dtray-cli --switch to an unknown switch: exit $LASTEXITCODE, not 1" }
+# Windows PowerShell 5.1 turns a native program's stderr into an error
+# record, which "Stop" throws on: this call's refusal is expected.
+$ErrorActionPreference = "Continue"
+$refused = & $dtrayCli --switch nosuch band 2>&1 | Out-String
+$code = $LASTEXITCODE
+$ErrorActionPreference = "Stop"
+if ($code -ne 1) { throw "dtray-cli --switch to an unknown switch: exit $code, not 1" }
+if ($refused -notmatch "no switch nosuch") { throw "dtray-cli's refusal does not say why: $refused" }
 Write-Output "dtray:`n$trayOut"
 if ($trayOut -notmatch "test-device") { throw "dtray does not name the device" }
 $svc = Get-CimInstance Win32_Service -Filter "Name='$service'"
