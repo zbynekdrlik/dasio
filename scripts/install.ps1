@@ -29,9 +29,9 @@
 # - registers the driver for the instance (HKLM: its COM class and its ASIO entry),
 # - puts the device config at C:\ProgramData\dasio\instance-<n>\device.toml,
 #   and moves aside a state file another config left at its state path,
-# - copies dtray.exe (dstack's tray: every local dstack device, with dasio's
+# - copies dtray.exe and dtray-cli.exe (dstack's tray: every local dstack device, with dasio's
 #   line per instance) and starts it at the installing user's logon
-#   (`dtray --autostart on`); removes the former dasio-tray; writes the
+#   (`dtray-cli --autostart on`); removes the former dasio-tray; writes the
 #   instance's expected-device file %ProgramData%\dstack\devices\<device>.device,
 # - makes the service "dasio-<n>" (LocalSystem, started at boot before any
 #   logon; the SCM restarts it after 2 s, 5 s, then 30 s, also after an error
@@ -414,18 +414,24 @@ try {
 # instance comes from its device's status). A running one holds its binary,
 # which Windows lets move but not overwrite; moved-aside copies go once
 # nothing runs them. It starts at the installing user's logon.
-$dtray = Join-Path $bin "dtray.exe"
+$dtrayCli = Join-Path $bin "dtray-cli.exe"
 Get-ChildItem $bin -Filter "*.exe.old-*" -ErrorAction SilentlyContinue | ForEach-Object {
     Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
 }
-if (-not (Test-Path $dtray) -or (Get-FileHash $dtray).Hash -ne (Get-FileHash (Join-Path $here "dtray.exe")).Hash) {
-    if (Test-Path $dtray) { Move-Item $dtray "$dtray.old-$(Get-Date -Format yyyyMMddHHmmss)" -Force }
-    Copy-Item (Join-Path $here "dtray.exe") $dtray -Force
-    Write-Output "installed dtray (it starts at the next logon)"
+# dtray-cli (dstack#218) has dtray's command-line modes as a console
+# program, so `&` waits for it and sets $LASTEXITCODE; scripts call it.
+foreach ($exe in "dtray.exe", "dtray-cli.exe") {
+    $to = Join-Path $bin $exe
+    $from = Join-Path $here $exe
+    if (-not (Test-Path $to) -or (Get-FileHash $to).Hash -ne (Get-FileHash $from).Hash) {
+        if (Test-Path $to) { Move-Item $to "$to.old-$(Get-Date -Format yyyyMMddHHmmss)" -Force }
+        Copy-Item $from $to -Force
+        Write-Output "installed $exe"
+    }
 }
-# dtray is a GUI program: `&` would not wait for it nor set its exit code.
-$set = Start-Process $dtray -ArgumentList "--autostart", "on" -Wait -PassThru -WindowStyle Hidden
-if ($set.ExitCode -ne 0) { throw "dtray --autostart on failed ($($set.ExitCode))" }
+# dtray itself starts at the next logon.
+& $dtrayCli --autostart on
+if ($LASTEXITCODE -ne 0) { throw "dtray-cli --autostart on failed ($LASTEXITCODE)" }
 # The former dasio-tray: dtray shows its lines now.
 $run = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
 if (Get-ItemProperty $run -Name "dasio-tray" -ErrorAction SilentlyContinue) { Remove-ItemProperty $run -Name "dasio-tray" }
