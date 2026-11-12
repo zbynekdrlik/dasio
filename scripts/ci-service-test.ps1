@@ -179,13 +179,19 @@ Write-Output "a foreign state file was moved aside: $($aside[0].Name)"
 # expected, and its line read from the running device's status.
 $dtray = Join-Path $env:ProgramFiles "dasio\dtray.exe"
 if (-not (Test-Path $dtray)) { throw "no dtray installed" }
+# dtray-cli: the console twin scripts call; its output and exit code reach us.
+$dtrayCli = Join-Path $env:ProgramFiles "dasio\dtray-cli.exe"
+if (-not (Test-Path $dtrayCli)) { throw "no dtray-cli installed" }
 $runKey = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
 if (-not (Get-ItemProperty $runKey -Name "dtray" -ErrorAction SilentlyContinue)) { throw "dtray does not start at logon" }
 if (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name "dasio-tray" -ErrorAction SilentlyContinue) { throw "the former dasio-tray still starts at logon" }
 $expected = Join-Path $env:ProgramData "dstack\devices\test-device.device"
 if (-not (Test-Path $expected)) { throw "no expected-device file $expected" }
-Wait-Until { (& $dtray --print 2>$null | Out-String) -match "(no DAW|DAW attached) .+ @ \d+ kHz .+ in [\d.]+ / out [\d.]+ ms .+ late \d+/min" } 30 "dtray's dasio line for the instance"
-$trayOut = & $dtray --print 2>$null | Out-String
+Wait-Until { (& $dtrayCli --print 2>$null | Out-String) -match "(no DAW|DAW attached) .+ @ \d+ kHz .+ in [\d.]+ / out [\d.]+ ms .+ late \d+/min" } 30 "dtray's dasio line for the instance"
+$trayOut = & $dtrayCli --print 2>$null | Out-String
+if ($LASTEXITCODE -ne 0) { throw "dtray-cli --print exit $LASTEXITCODE" }
+& $dtrayCli --switch nosuch band 2>$null | Out-Null
+if ($LASTEXITCODE -ne 1) { throw "dtray-cli --switch to an unknown switch: exit $LASTEXITCODE, not 1" }
 Write-Output "dtray:`n$trayOut"
 if ($trayOut -notmatch "test-device") { throw "dtray does not name the device" }
 $svc = Get-CimInstance Win32_Service -Filter "Name='$service'"
