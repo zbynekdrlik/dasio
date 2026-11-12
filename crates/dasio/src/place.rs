@@ -1,6 +1,8 @@
 //! Where an instance's Dante device serves: its address, given as
 //! `--ip <address>` or `--iface <name>` (dasio#29: the interface's one
-//! IPv4 address, the rule dstack's devices use), and its control ports and
+//! IPv4 address, the rule dstack's devices use) or as `iface = "<name>"` in
+//! the device config, which wins (dtray's settings page writes it,
+//! dstack#246), and its control ports and
 //! process id, which a config that names none takes from the first free
 //! slot, as dsend and dlisten do (dasio#89: beside Audinate's ConMon, which
 //! holds 0.0.0.0:8700 and 8800 on a PC with Dante Controller, dstack#200).
@@ -14,6 +16,55 @@ use dstack::device::DeviceConfig;
 
 /// The refusal when the command line gives neither or both of the flags.
 pub const ONE_PLACE: &str = "give exactly one of --ip <address> and --iface <interface name>";
+
+/// The refusal when neither the config nor the command line names a place.
+pub const NO_PLACE: &str = "give `iface = \"<interface name>\"` in the device config, \
+     or exactly one of --ip <address> and --iface <interface name>";
+
+/// The device config's key for the interface the device serves on: dasio's
+/// own, not dstack's (dstack's `DeviceConfig` refuses unknown keys, so
+/// [`device_config`] takes it out before dstack reads the config).
+pub const CONFIG_IFACE: &str = "iface";
+
+/// Where the device's place came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaceFrom {
+    /// `iface` in the device config; the command line names none.
+    Config,
+    /// `iface` in the device config, which wins over the command line's
+    /// `--ip` / `--iface` (a service installed with a flag, its interface
+    /// later set in the config).
+    ConfigOverFlag,
+    /// The command line's `--ip` or `--iface`.
+    Flag,
+}
+
+/// The `iface` the device config in `text` names, if any: a non-empty
+/// string.
+pub fn config_iface(text: &str) -> Result<Option<String>, String> {
+    let table: toml::Table = text
+        .parse()
+        .map_err(|e| format!("the config as a TOML table: {e}"))?;
+    match table.get(CONFIG_IFACE) {
+        None => Ok(None),
+        Some(toml::Value::String(name)) if !name.is_empty() => Ok(Some(name.clone())),
+        Some(_) => Err(format!(
+            "`{CONFIG_IFACE}` in the device config must be a non-empty interface name"
+        )),
+    }
+}
+
+/// The device's place: the config's `iface` (in `config_text`) when it
+/// names one, else the command line's (`--ip` or `--iface`, [`parse`]).
+pub fn resolve(args: &[String], config_text: &str) -> Result<(Place, PlaceFrom), String> {
+    let flagged = args.iter().any(|a| a == "--ip" || a == "--iface");
+    match config_iface(config_text)? {
+        Some(name) if flagged => Ok((Place::Iface(name), PlaceFrom::ConfigOverFlag)),
+        Some(name) => Ok((Place::Iface(name), PlaceFrom::Config)),
+        None if flagged => parse(args).map(|p| (p, PlaceFrom::Flag)),
+        None => Err(NO_PLACE.into()),
+    }
+}
 
 /// The device's place from `--ip <address>` or `--iface <name>` in `args`:
 /// exactly one of the two, once.
@@ -100,11 +151,20 @@ pub fn device_config(
     text: &str,
     pick: impl FnOnce() -> Option<Slot>,
 ) -> Result<(DeviceConfig, SlotFrom), String> {
-    // As written first: its errors name the file's own lines.
-    let written = DeviceConfig::from_toml(text).map_err(|e| e.to_string())?;
     let mut table: toml::Table = text
         .parse()
         .map_err(|e| format!("the config as a TOML table: {e}"))?;
+    // dasio's own `iface` out: dstack refuses keys it does not know.
+    let own = table.remove(CONFIG_IFACE).is_some();
+    let without_own;
+    let text = if own {
+        without_own = toml::to_string(&table).map_err(|e| format!("the config: {e}"))?;
+        without_own.as_str()
+    } else {
+        text
+    };
+    // As written first: its errors name the file's own lines.
+    let written = DeviceConfig::from_toml(text).map_err(|e| e.to_string())?;
     if SLOT_KEYS.iter().any(|k| table.contains_key(*k)) {
         return Ok((written, SlotFrom::Config));
     }
@@ -321,5 +381,71 @@ mod tests {
         let text = format!("timing = \"fast\"\n{DEVICE}");
         let e = device_config(&text, || panic!("picked")).unwrap_err();
         assert!(e.starts_with("device config: "), "{e}");
+    }
+
+    #[test]
+    fn the_config_s_iface_wins_over_the_command_line() {
+        let text = format!("iface = \"Ethernet 3\"\n{DEVICE}");
+        assert_eq!(
+            resolve(&args(&["service", "--instance", "1"]), &text),
+            Ok((Place::Iface("Ethernet 3".into()), PlaceFrom::Config))
+        );
+        assert_eq!(
+            resolve(&args(&["service", "--ip", "10.77.7.232"]), &text),
+            Ok((Place::Iface("Ethernet 3".into()), PlaceFrom::ConfigOverFlag))
+        );
+        assert_eq!(
+            resolve(&args(&["service", "--iface", "Ethernet 2"]), &text),
+            Ok((Place::Iface("Ethernet 3".into()), PlaceFrom::ConfigOverFlag))
+        );
+    }
+
+    #[test]
+    fn without_the_config_s_iface_the_flags_decide() {
+        assert_eq!(
+            resolve(&args(&["run", "--iface", "Ethernet 2"]), DEVICE),
+            Ok((Place::Iface("Ethernet 2".into()), PlaceFrom::Flag))
+        );
+        assert_eq!(
+            resolve(&args(&["run", "--instance", "1"]), DEVICE),
+            Err(NO_PLACE.into())
+        );
+        assert_eq!(
+            resolve(
+                &args(&["run", "--ip", "10.0.0.1", "--iface", "eth0"]),
+                DEVICE
+            ),
+            Err(ONE_PLACE.into())
+        );
+    }
+
+    #[test]
+    fn a_bad_config_iface_is_refused() {
+        for bad in ["iface = \"\"", "iface = 3", "iface = [\"a\"]"] {
+            let text = format!("{bad}\n{DEVICE}");
+            let e = resolve(&args(&["run", "--iface", "eth0"]), &text).unwrap_err();
+            assert!(e.contains("non-empty interface name"), "{bad}: {e}");
+        }
+        assert!(config_iface("name = ").is_err());
+    }
+
+    #[test]
+    fn dstack_reads_the_config_without_dasio_s_iface() {
+        let text = format!("iface = \"Ethernet 3\"\n{DEVICE}");
+        // dstack alone refuses the key it does not know ...
+        assert!(DeviceConfig::from_toml(&text).is_err());
+        // ... device_config takes it out and keeps everything else.
+        let (cfg, from) = device_config(&text, || Some(SLOT_1)).unwrap();
+        assert_eq!(from, SlotFrom::Picked);
+        let written = DeviceConfig::from_toml(DEVICE).unwrap();
+        assert_eq!(cfg.name, written.name);
+        assert_eq!(cfg.rx, written.rx);
+        assert_eq!(cfg.tx, written.tx);
+        assert_eq!(slot_of(&cfg), SLOT_1);
+        // With explicit ports too.
+        let text = format!("iface = \"Ethernet 3\"\narc_port = 7\n{DEVICE}");
+        let (cfg, from) = device_config(&text, || panic!("picked")).unwrap();
+        assert_eq!(from, SlotFrom::Config);
+        assert_eq!(cfg.arc_port, 7);
     }
 }

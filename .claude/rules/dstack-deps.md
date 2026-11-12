@@ -19,6 +19,7 @@ paths:
 - Any one of those four keys in a PC's config turns the slot pick off for
   that instance. To let a PC pick (mbc beside ConMon), remove all four
   lines from its config at deploy.
+- `iface = "<alias>"` in a device.toml (dasio's own key, dtray's settings page writes it, dstack#246) wins over `--ip`/`--iface`; `place::device_config` removes it before dstack's `DeviceConfig` (deny_unknown_fields) reads the file.
 - `--iface` names the Windows interface alias (if-addrs' FriendlyName),
   compared exactly. `install.ps1` matches it with `-ceq`, never
   `-InterfaceAlias`, which takes wildcards and ignores case.

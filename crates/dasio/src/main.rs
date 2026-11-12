@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `dasio run --instance <n> --config <device.toml> --ip <address>|--iface <name>`:
+//! `dasio run --instance <n> --config <device.toml> [--ip <address>|--iface <name>]`
+//! (the config's `iface = "<name>"` wins over both, dstack#246):
 //! one instance's Dante device and its shared memory for the driver;
 //! `dasio service ...` (same flags): the same, as the SCM starts it.
 //! `dasio register --instance <n> --dll <path> [--name <shown to DAWs>]` and
@@ -11,8 +12,8 @@ use std::process::ExitCode;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: dasio run --instance <n> --config <device.toml> (--ip <address> | --iface <interface name>) [--log <file>] [--clock linked|dsync|system] [--spare-blocks <n>] [--kernel-tx]\n       \
-         dasio service --instance <n> --config <device.toml> (--ip <address> | --iface <interface name>) --log <file> [--clock linked|dsync|system] [--spare-blocks <n>] [--kernel-tx]\n       \
+        "usage: dasio run --instance <n> --config <device.toml> [--ip <address> | --iface <interface name>] [--log <file>] [--clock linked|dsync|system] [--spare-blocks <n>] [--kernel-tx]\n       \
+         dasio service --instance <n> --config <device.toml> [--ip <address> | --iface <interface name>] --log <file> [--clock linked|dsync|system] [--spare-blocks <n>] [--kernel-tx]\n       \
          dasio register --instance <n> --dll <path> [--name <shown to DAWs>]\n       \
          dasio stop --instance <n>\n       \
          dasio probe --instance <n> [--seconds <s>] [--affinity <hex mask>]\n       \
@@ -118,12 +119,23 @@ fn main() -> ExitCode {
             let Some(config) = flag(&args, "--config") else {
                 return usage();
             };
-            // `--ip <address>` or `--iface <interface name>` (dasio#29):
-            // exactly one, once.
-            let place = match dasio::place::parse(&args) {
-                Ok(place) => place,
+            // The device's place: `iface = "<name>"` in the config (dtray's
+            // settings page, dstack#246), else `--ip <address>` or
+            // `--iface <interface name>` (dasio#29): exactly one, once.
+            let text = match std::fs::read_to_string(&config) {
+                Ok(text) => text,
                 Err(e) => {
-                    eprintln!("dasio: {e}");
+                    eprintln!("dasio: {config}: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let place = match dasio::place::resolve(&args, &text) {
+                Ok((place, from)) => {
+                    eprintln!("dasio: the device's place {place:?} ({from:?})");
+                    place
+                }
+                Err(e) => {
+                    eprintln!("dasio: {config}: {e}");
                     return usage();
                 }
             };
