@@ -151,9 +151,14 @@ pub fn device_config(
     text: &str,
     pick: impl FnOnce() -> Option<Slot>,
 ) -> Result<(DeviceConfig, SlotFrom), String> {
-    let mut table: toml::Table = text
-        .parse()
-        .map_err(|e| format!("the config as a TOML table: {e}"))?;
+    let mut table: toml::Table = match text.parse() {
+        Ok(table) => table,
+        // Not TOML: dstack's own error names the file's line.
+        Err(e) => {
+            DeviceConfig::from_toml(text).map_err(|e| e.to_string())?;
+            return Err(format!("the config as a TOML table: {e}"));
+        }
+    };
     // dasio's own `iface` out: dstack refuses keys it does not know.
     let own = table.remove(CONFIG_IFACE).is_some();
     let without_own;
