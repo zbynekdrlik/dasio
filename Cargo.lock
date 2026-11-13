@@ -41,7 +41,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "asio-driver"
-version = "0.1.79"
+version = "0.1.80"
 dependencies = [
  "shm",
  "windows-sys 0.61.2",
@@ -187,7 +187,7 @@ dependencies = [
 
 [[package]]
 name = "dasio"
-version = "0.1.79"
+version = "0.1.80"
 dependencies = [
  "asio-driver",
  "assert_no_alloc",
@@ -221,8 +221,8 @@ dependencies = [
 
 [[package]]
 name = "dlink"
-version = "0.6.110"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.110#1c177287de7faf1bb7ca9c46bf73a868c21f3ee2"
+version = "0.6.120"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.120#2e35b054f1eeb3907cd00b853af882f408feeb24"
 dependencies = [
  "dstack",
  "dstack-audio-io",
@@ -233,8 +233,8 @@ dependencies = [
 
 [[package]]
 name = "dstack"
-version = "0.6.110"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.110#1c177287de7faf1bb7ca9c46bf73a868c21f3ee2"
+version = "0.6.120"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.120#2e35b054f1eeb3907cd00b853af882f408feeb24"
 dependencies = [
  "dstack-audio-io",
  "dsync-ptp",
@@ -256,13 +256,13 @@ dependencies = [
 
 [[package]]
 name = "dstack-audio-io"
-version = "0.6.110"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.110#1c177287de7faf1bb7ca9c46bf73a868c21f3ee2"
+version = "0.6.120"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.120#2e35b054f1eeb3907cd00b853af882f408feeb24"
 
 [[package]]
 name = "dstack-endpoint"
-version = "0.6.110"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.110#1c177287de7faf1bb7ca9c46bf73a868c21f3ee2"
+version = "0.6.120"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.120#2e35b054f1eeb3907cd00b853af882f408feeb24"
 dependencies = [
  "cpal",
  "dlink",
@@ -275,8 +275,8 @@ dependencies = [
 
 [[package]]
 name = "dstack-resample"
-version = "0.6.110"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.110#1c177287de7faf1bb7ca9c46bf73a868c21f3ee2"
+version = "0.6.120"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.120#2e35b054f1eeb3907cd00b853af882f408feeb24"
 dependencies = [
  "rubato",
 ]
@@ -508,7 +508,7 @@ dependencies = [
 [[package]]
 name = "mdns-sd"
 version = "0.21.6"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.110#1c177287de7faf1bb7ca9c46bf73a868c21f3ee2"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.120#2e35b054f1eeb3907cd00b853af882f408feeb24"
 dependencies = [
  "fastrand",
  "flume",
@@ -913,7 +913,7 @@ dependencies = [
 
 [[package]]
 name = "shm"
-version = "0.1.79"
+version = "0.1.80"
 dependencies = [
  "windows-sys 0.61.2",
 ]
