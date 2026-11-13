@@ -221,8 +221,8 @@ dependencies = [
 
 [[package]]
 name = "dlink"
-version = "0.6.120"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.120#2e35b054f1eeb3907cd00b853af882f408feeb24"
+version = "0.6.125"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.125#db8c348370e77412b645e79bcde719eddc96e01b"
 dependencies = [
  "dstack",
  "dstack-audio-io",
@@ -233,8 +233,8 @@ dependencies = [
 
 [[package]]
 name = "dstack"
-version = "0.6.120"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.120#2e35b054f1eeb3907cd00b853af882f408feeb24"
+version = "0.6.125"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.125#db8c348370e77412b645e79bcde719eddc96e01b"
 dependencies = [
  "dstack-audio-io",
  "dsync-ptp",
@@ -256,13 +256,13 @@ dependencies = [
 
 [[package]]
 name = "dstack-audio-io"
-version = "0.6.120"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.120#2e35b054f1eeb3907cd00b853af882f408feeb24"
+version = "0.6.125"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.125#db8c348370e77412b645e79bcde719eddc96e01b"
 
 [[package]]
 name = "dstack-endpoint"
-version = "0.6.120"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.120#2e35b054f1eeb3907cd00b853af882f408feeb24"
+version = "0.6.125"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.125#db8c348370e77412b645e79bcde719eddc96e01b"
 dependencies = [
  "cpal",
  "dlink",
@@ -275,8 +275,8 @@ dependencies = [
 
 [[package]]
 name = "dstack-resample"
-version = "0.6.120"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.120#2e35b054f1eeb3907cd00b853af882f408feeb24"
+version = "0.6.125"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.125#db8c348370e77412b645e79bcde719eddc96e01b"
 dependencies = [
  "rubato",
 ]
@@ -508,7 +508,7 @@ dependencies = [
 [[package]]
 name = "mdns-sd"
 version = "0.21.6"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.120#2e35b054f1eeb3907cd00b853af882f408feeb24"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.125#db8c348370e77412b645e79bcde719eddc96e01b"
 dependencies = [
  "fastrand",
  "flume",
