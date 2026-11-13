@@ -164,7 +164,8 @@ fn an_older_record_reads_its_own_size_and_zero_for_the_newer_fields() {
         (s[0].version, s[0].if_index, s[0].failed, s[0].tx_no_slot),
         (2, 4, 6, 8)
     );
-    assert_eq!((s[0].fail_events, s[0].max_out), (0, 0));
+    // TxMaxOut (field 20) is past a v2 record: 0, not the next record's Version.
+    assert_eq!((s[0].fail_events, s[0].max_out, s[0].tx_max_out), (0, 0, 0));
     assert_eq!((s[1].if_index, s[1].fail_events), (5, 2));
 }
 
@@ -255,4 +256,32 @@ fn a_reply_reads_at_most_its_buffer_s_records() {
         s[MAX_STATUS_RECORDS - 1].if_index,
         MAX_STATUS_RECORDS as u32
     );
+}
+
+#[test]
+fn a_window_with_only_failed_frames_is_bad_and_an_idle_one_still_reports() {
+    let mut w = StatusWatch::default();
+    w.step(&[status(7, 100, 2, 1, 1)], 7);
+    // No frames sent (idle): a report all the same, clean.
+    let r = w.step(&[status(7, 100, 2, 1, 1)], 7).unwrap();
+    assert_eq!((r.frames, r.no_slot, r.failed), (0, 0, 0));
+    assert!(!r.bad());
+    // Only a refused frame, nothing to the socket: bad.
+    let r = w.step(&[status(7, 200, 2, 2, 1)], 7).unwrap();
+    assert_eq!((r.no_slot, r.failed), (0, 1));
+    assert!(r.bad());
+}
+
+#[test]
+fn any_counter_going_back_alone_starts_a_new_baseline() {
+    for back in [
+        status(7, 100, 5, 4, 3),
+        status(7, 200, 1, 4, 3),
+        status(7, 200, 5, 1, 3),
+        status(7, 200, 5, 4, 1),
+    ] {
+        let mut w = StatusWatch::default();
+        w.step(&[status(7, 150, 5, 4, 3)], 7);
+        assert_eq!(w.step(&[back], 7), None, "{back:?}");
+    }
 }
