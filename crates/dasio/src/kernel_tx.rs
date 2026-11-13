@@ -34,6 +34,130 @@ pub const fn ctl_code(device: u32, function: u32, method: u32, access: u32) -> u
 /// function 21, METHOD_BUFFERED, FILE_WRITE_ACCESS.
 pub const IOCTL_DASIO_TX_SEND: u32 = ctl_code(0x17, 21, 0, 2);
 
+/// `IOCTL_DASIO_KTX_STATUS` (filteruser.h): `_NDIS_CONTROL_CODE(18,
+/// METHOD_BUFFERED)`, FILE_ANY_ACCESS. One `DASIO_KTX_STATUS` per bound
+/// adapter.
+pub const IOCTL_DASIO_KTX_STATUS: u32 = ctl_code(0x17, 18, 0, 0);
+
+/// The u64 fields of a `DASIO_KTX_STATUS` record, by its Version.
+fn status_fields(version: u64) -> Option<usize> {
+    match version {
+        1 => Some(16),
+        2 => Some(20),
+        3 => Some(25),
+        _ => None,
+    }
+}
+
+/// What dasio reads of one adapter's `DASIO_KTX_STATUS`. Fields a
+/// record's version does not carry read 0.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KtxStatus {
+    pub version: u64,
+    pub if_index: u32,
+    /// Frames of the slots completed with an error (the miniport refused
+    /// them: lost at the receivers).
+    pub failed: u64,
+    /// Frames not completed yet.
+    pub out: u64,
+    pub tx_frames: u64,
+    /// Media frames the filter did not take (every slot out, or the bound
+    /// on frames out): they went to the UDP socket.
+    pub tx_no_slot: u64,
+    pub tx_max_out: u64,
+    pub max_out: u64,
+    pub fail_events: u64,
+    pub last_fail_status: u64,
+}
+
+/// The records of an `IOCTL_DASIO_KTX_STATUS` reply, in order. A record
+/// of an unknown version, or one cut short, ends the walk.
+pub fn parse_status(reply: &[u8]) -> Vec<KtxStatus> {
+    let word = |at: usize| u64::from_le_bytes(reply[at..at + 8].try_into().unwrap());
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at + 8 <= reply.len() {
+        let version = word(at);
+        let Some(fields) = status_fields(version) else {
+            break;
+        };
+        if at + fields * 8 > reply.len() {
+            break;
+        }
+        let f = |i: usize| if i < fields { word(at + i * 8) } else { 0 };
+        out.push(KtxStatus {
+            version,
+            if_index: f(1) as u32,
+            failed: f(10),
+            out: f(11),
+            tx_frames: f(17),
+            tx_no_slot: f(18),
+            tx_max_out: f(20),
+            max_out: f(21),
+            fail_events: f(22),
+            last_fail_status: f(23),
+        });
+        at += fields * 8;
+    }
+    out
+}
+
+/// One window between two readings of the instance's adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KtxReport {
+    pub frames: u64,
+    pub no_slot: u64,
+    pub failed: u64,
+    pub fail_events: u64,
+    pub max_out: u64,
+    pub tx_max_out: u64,
+    pub out: u64,
+    pub last_fail_status: u64,
+}
+
+impl KtxReport {
+    /// Frames went to the socket or were lost in this window.
+    pub fn bad(&self) -> bool {
+        self.no_slot > 0 || self.failed > 0
+    }
+}
+
+/// Turns successive readings into per-window reports for one adapter.
+#[derive(Debug, Default)]
+pub struct StatusWatch {
+    last: Option<KtxStatus>,
+}
+
+impl StatusWatch {
+    /// Takes a reading; the report covers the time since the previous one.
+    /// The first reading, a missing adapter, or counters that went back
+    /// (the filter restarted) give none and start a new baseline.
+    pub fn step(&mut self, reply: &[KtxStatus], if_index: u32) -> Option<KtxReport> {
+        let Some(now) = reply.iter().find(|s| s.if_index == if_index).copied() else {
+            self.last = None;
+            return None;
+        };
+        let prev = self.last.replace(now)?;
+        if now.tx_frames < prev.tx_frames
+            || now.tx_no_slot < prev.tx_no_slot
+            || now.failed < prev.failed
+            || now.fail_events < prev.fail_events
+        {
+            return None;
+        }
+        Some(KtxReport {
+            frames: now.tx_frames - prev.tx_frames,
+            no_slot: now.tx_no_slot - prev.tx_no_slot,
+            failed: now.failed - prev.failed,
+            fail_events: now.fail_events - prev.fail_events,
+            max_out: now.max_out,
+            tx_max_out: now.tx_max_out,
+            out: now.out,
+            last_fail_status: now.last_fail_status,
+        })
+    }
+}
+
 /// Why a batch could not be packed (it then goes through the sockets).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackError {
