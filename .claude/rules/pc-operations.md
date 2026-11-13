@@ -60,6 +60,13 @@ Owner rules from dasio#1. They hold for every change on a PC running dasio.
     Then put the bundle and the instance's config in `$b` (download, or
     copy from the user-side download), check `SHA256SUMS` there, and run
     `$b\install.ps1 -Config $b\device-<n>.toml ...`.
+  - The bundle is the main run's `dasio-<sha>` artifact. Get its signed
+    blob URL on dev1 with
+    `curl -s -o /dev/null -w '%{redirect_url}' -H "Authorization: Bearer $(gh auth token)" https://api.github.com/repos/zbynekdrlik/dasio/actions/artifacts/<id>/zip`
+    (`gh api -i` follows the redirect and shows none). On the PC, run
+    `curl.exe -o $b\artifact.zip '<url>'` (FOH: `--limit-rate 1M`), then
+    `Expand-Archive`. The URL expires about 10 minutes after it is made,
+    so make a new one for each PC.
   - `install.ps1` keeps `C:\ProgramData\dasio` admin-only, with Users
     allowed to read. It refuses a link in that folder, or an item there
     that someone else owns or may change, and names it. Check it by hand
