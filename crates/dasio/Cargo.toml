@@ -7,8 +7,8 @@ publish = false
 description = "dasio's device process: one Dante device per instance, its audio through the shared memory to the ASIO driver"
 
 [dependencies]
-dstack-audio-io = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.102" }
-dstack = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.102" }
+dstack-audio-io = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.108" }
+dstack = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.108" }
 shm = { path = "../shm" }
 asio-driver = { path = "../asio-driver" }
 serde = { version = "1.0", features = ["derive"] }
@@ -36,7 +36,7 @@ windows-service = "0.8.1"
 # The device's control-port slot (`slots::pick`, the rule dsend and dlisten
 # use, dasio#89). Windows only: it brings cpal, which on Linux needs ALSA's
 # headers, and only the device start (run.rs, Windows) calls it.
-dstack-endpoint = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.102" }
+dstack-endpoint = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.108" }
 
 [dev-dependencies]
 # The bridge's real-time proof (tests/rt_bridge.rs, dasio#28 E13): counts
