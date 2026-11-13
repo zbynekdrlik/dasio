@@ -351,6 +351,7 @@ fn the_report_carries_the_window_s_fallback_bursts_and_how_long_ago_the_last_eve
         version: 4,
         if_index: 6,
         tx_frames: 100,
+        no_slot_events: 1,
         now: 100_000_000,
         ..KtxStatus::default()
     };
@@ -361,7 +362,7 @@ fn the_report_carries_the_window_s_fallback_bursts_and_how_long_ago_the_last_eve
         tx_no_slot: 7,
         failed: 1,
         fail_events: 1,
-        no_slot_events: 2,
+        no_slot_events: 3,
         now: 200_000_000,
         last_fail_time: 150_000_000,
         last_no_slot_time: 190_000_000,
@@ -375,7 +376,7 @@ fn the_report_carries_the_window_s_fallback_bursts_and_how_long_ago_the_last_eve
     );
     // Fewer fallback bursts than before: the filter restarted.
     let back = KtxStatus {
-        no_slot_events: 1,
+        no_slot_events: 2,
         tx_frames: 300,
         now: 300_000_000,
         ..later
