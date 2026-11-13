@@ -56,3 +56,12 @@ paths:
 - Never turn interrupt moderation off on a USB NIC. An AX88179 lost the
   PC's network that way (dasio#1, 5.11.2026). Middle is the known-good
   setting.
+
+## Parsing the filter's replies
+
+- A walk over a reply must end even when a size is wrong. A mutant that
+  stopped `parse_status` advancing grew its Vec until the mutation runner
+  ran out of memory; CI showed only "The runner has received a shutdown
+  signal" ~80 s into `cargo mutants` (three times, 13.11.2026). Bound the
+  walk by a count a test can check (`MAX_STATUS_RECORDS`), not by an
+  iteration cap equal for valid input (that is an equivalent mutant).

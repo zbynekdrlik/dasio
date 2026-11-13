@@ -392,6 +392,8 @@ FilterDeviceIoControl(
                 Out->FailEvents = pFilter->KtxFailEvents;
                 Out->LastFailStatus = pFilter->KtxLastFailStatus;
                 Out->LastFailTime = pFilter->KtxLastFailTime;
+                Out->NoSlotEvents = pFilter->TxNoSlotEvents;
+                Out->LastNoSlotTime = pFilter->TxLastNoSlotTime;
                 FILTER_RELEASE_LOCK(&pFilter->Lock, bTrue);
                 InfoLength += (ULONG)sizeof(DASIO_KTX_STATUS);
             }

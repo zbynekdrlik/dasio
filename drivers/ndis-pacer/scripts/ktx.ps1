@@ -83,11 +83,11 @@ switch ($Action) {
         Write-Output "media TX bound: $MaxOut frames out (0 = every slot)"
     }
     "status" {
-        # The fields of DASIO_KTX_STATUS (filteruser.h, version 3), in order;
+        # The fields of DASIO_KTX_STATUS (filteruser.h, version 4), in order;
         # from TxBatches on they are media TX's (IOCTL_DASIO_TX_SEND).
         $names = "Version", "IfIndex", "Active", "Ready", "Start", "End", "Now", "IntervalUs", "Sent", "Completed",
             "Failed", "Out", "NoSlot", "Fires", "MaxBatch", "MaxLate", "TxBatches", "TxFrames", "TxNoSlot", "TxMaxBatch",
-            "TxMaxOut", "MaxOut", "FailEvents", "LastFailStatus", "LastFailTime"
+            "TxMaxOut", "MaxOut", "FailEvents", "LastFailStatus", "LastFailTime", "NoSlotEvents", "LastNoSlotTime"
         $raw = [DasioKtx]::Call([DasioKtx]::STATUS, $null, 8 * $names.Count * 16)
         $v = New-Object UInt64[] ($raw.Length / 8)
         [Buffer]::BlockCopy($raw, 0, $v, 0, $raw.Length)
