@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use windows_sys::Win32::Foundation::{
     CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
@@ -24,7 +24,10 @@ use windows_sys::Win32::System::IO::DeviceIoControl;
 
 use dstack::media::bypass::FrameSender;
 
-use super::{DEVICE_PATH, HEADER, IOCTL_DASIO_TX_SEND, MAX_FRAME, Relookup, mark, pack};
+use super::{
+    DEVICE_PATH, HEADER, IOCTL_DASIO_KTX_STATUS, IOCTL_DASIO_TX_SEND, MAX_FRAME,
+    MAX_STATUS_RECORDS, Relookup, StatusWatch, mark, pack, parse_status,
+};
 
 /// Win32 `ERROR_NOT_FOUND`: the filter's STATUS_NOT_FOUND, no bound
 /// adapter with the input's IfIndex.
@@ -34,10 +37,20 @@ const STATE_BOUND: u8 = 0;
 const STATE_UNBOUND: u8 = 1;
 const STATE_NO_ADAPTER: u8 = 2;
 
+/// How often the adapter thread reads the filter's media-TX counters.
+const STATUS_EVERY: Duration = Duration::from_secs(10);
+/// A clean window is logged once a minute; a window with frames on the
+/// socket or lost logs at once.
+const STATUS_QUIET_EVERY: u32 = 6;
+
 /// The adapter kernel TX sends on. The TX thread only reads the IfIndex
 /// and flags a miss; the `kernel-tx-adapter` thread looks the adapter up
-/// again and logs each change of state once.
+/// again, logs each change of state once, and reads the filter's counters
+/// for it (dasio#27 A124).
 struct Adapter {
+    /// The device handle (`KernelTx` closes it only after this thread
+    /// ended).
+    handle: usize,
     ip: Ipv4Addr,
     if_index: AtomicU32,
     lost: AtomicBool,
@@ -49,8 +62,15 @@ impl Adapter {
     fn watch(&self) {
         let since = Instant::now();
         let mut gate = Relookup::default();
+        let mut counters = StatusWatch::default();
+        let mut next_status = Instant::now() + STATUS_EVERY;
+        let mut quiet: u32 = 0;
         while !self.stop.load(Ordering::Relaxed) {
             std::thread::sleep(Duration::from_millis(100));
+            if Instant::now() >= next_status {
+                next_status += STATUS_EVERY;
+                self.counters(&mut counters, &mut quiet);
+            }
             if !self.lost.load(Ordering::Relaxed) {
                 continue;
             }
@@ -84,6 +104,63 @@ impl Adapter {
             }
         }
     }
+
+    /// Reads the filter's status and logs this adapter's media-TX window.
+    fn counters(&self, watch: &mut StatusWatch, quiet: &mut u32) {
+        let mut reply = vec![0u8; MAX_STATUS_RECORDS * 25 * 8];
+        let mut returned: u32 = 0;
+        // SAFETY: the handle stays open while this thread runs (Drop joins
+        // it first); the output buffer outlives the synchronous call.
+        let ok = unsafe {
+            DeviceIoControl(
+                self.handle as HANDLE,
+                IOCTL_DASIO_KTX_STATUS,
+                std::ptr::null(),
+                0,
+                reply.as_mut_ptr().cast(),
+                reply.len() as u32,
+                &mut returned,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            let e = io::Error::last_os_error();
+            debug!(error = %e, "kernel TX: the filter's status could not be read");
+            return;
+        }
+        reply.truncate(returned as usize);
+        let if_index = self.if_index.load(Ordering::Relaxed);
+        let Some(r) = watch.step(&parse_status(&reply), if_index) else {
+            return;
+        };
+        if r.bad() {
+            *quiet = 0;
+            warn!(
+                if_index,
+                frames = r.frames,
+                no_slot = r.no_slot,
+                failed = r.failed,
+                fail_events = r.fail_events,
+                max_out = r.max_out,
+                tx_max_out = r.tx_max_out,
+                last_fail_status = format_args!("{:#x}", r.last_fail_status),
+                "kernel TX: frames went to the socket (no_slot) or the NIC refused them (failed) in the last 10 s"
+            );
+            return;
+        }
+        *quiet += 1;
+        if *quiet >= STATUS_QUIET_EVERY {
+            *quiet = 0;
+            info!(
+                if_index,
+                frames = r.frames,
+                max_out = r.max_out,
+                tx_max_out = r.tx_max_out,
+                out = r.out,
+                "kernel TX: the filter took every frame, none failed (last 10 s)"
+            );
+        }
+    }
 }
 
 /// Frames one batch carries at most: a TX tick sends one packet per slot.
@@ -93,6 +170,8 @@ pub const MAX_BATCH: usize = 64;
 pub struct KernelTx {
     handle: HANDLE,
     adapter: Arc<Adapter>,
+    /// The adapter thread, joined before the handle closes.
+    thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     /// The batch's input, sized once ([`MAX_BATCH`] full frames); only
     /// the TX thread sends, so the lock is never contended.
     buf: Mutex<Vec<u8>>,
@@ -124,6 +203,7 @@ impl KernelTx {
             return Err(io::Error::last_os_error());
         }
         let adapter = Arc::new(Adapter {
+            handle: handle as usize,
             ip,
             if_index: AtomicU32::new(if_index),
             lost: AtomicBool::new(false),
@@ -131,17 +211,21 @@ impl KernelTx {
             state: AtomicU8::new(STATE_BOUND),
         });
         let watcher = Arc::clone(&adapter);
-        if let Err(e) = std::thread::Builder::new()
+        let thread = match std::thread::Builder::new()
             .name("kernel-tx-adapter".into())
             .spawn(move || watcher.watch())
         {
-            // SAFETY: opened just above, closed once.
-            unsafe { CloseHandle(handle) };
-            return Err(e);
-        }
+            Ok(t) => t,
+            Err(e) => {
+                // SAFETY: opened just above, closed once.
+                unsafe { CloseHandle(handle) };
+                return Err(e);
+            }
+        };
         Ok(KernelTx {
             handle,
             adapter,
+            thread: Mutex::new(Some(thread)),
             buf: Mutex::new(Vec::with_capacity(HEADER + MAX_BATCH * (2 + MAX_FRAME))),
         })
     }
@@ -202,6 +286,11 @@ impl FrameSender for KernelTx {
 impl Drop for KernelTx {
     fn drop(&mut self) {
         self.adapter.stop.store(true, Ordering::Relaxed);
+        // The thread reads the status on this handle: let it end first
+        // (it checks `stop` every 100 ms).
+        if let Some(t) = self.thread.get_mut().ok().and_then(Option::take) {
+            let _ = t.join();
+        }
         // SAFETY: the handle was opened by `open` and is closed once.
         unsafe { CloseHandle(self.handle) };
     }
