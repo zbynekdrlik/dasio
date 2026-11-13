@@ -243,3 +243,16 @@ fn a_version_1_record_is_16_fields_with_no_media_tx() {
     );
     assert_eq!((s[1].if_index, s[1].tx_frames), (8, 4));
 }
+
+#[test]
+fn a_reply_reads_at_most_its_buffer_s_records() {
+    let reply: Vec<u8> = (0..MAX_STATUS_RECORDS as u64 + 1)
+        .flat_map(|i| record(i + 1, &[]))
+        .collect();
+    let s = parse_status(&reply);
+    assert_eq!(s.len(), MAX_STATUS_RECORDS);
+    assert_eq!(
+        s[MAX_STATUS_RECORDS - 1].if_index,
+        MAX_STATUS_RECORDS as u32
+    );
+}

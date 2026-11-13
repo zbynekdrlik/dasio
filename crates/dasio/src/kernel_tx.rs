@@ -70,13 +70,17 @@ pub struct KtxStatus {
     pub last_fail_status: u64,
 }
 
+/// Bound adapters dasio reads at most (the reply buffer's size).
+pub const MAX_STATUS_RECORDS: usize = 16;
+
 /// The records of an `IOCTL_DASIO_KTX_STATUS` reply, in order. A record
-/// of an unknown version, or one cut short, ends the walk.
+/// of an unknown version, or one cut short, ends the walk. At most
+/// [`MAX_STATUS_RECORDS`] are read.
 pub fn parse_status(reply: &[u8]) -> Vec<KtxStatus> {
     let word = |at: usize| u64::from_le_bytes(reply[at..at + 8].try_into().unwrap());
     let mut out = Vec::new();
     let mut at = 0;
-    while at + 8 <= reply.len() {
+    while at + 8 <= reply.len() && out.len() < MAX_STATUS_RECORDS {
         let version = word(at);
         let Some(fields) = status_fields(version) else {
             break;

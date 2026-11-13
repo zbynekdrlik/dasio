@@ -25,8 +25,8 @@ use windows_sys::Win32::System::IO::DeviceIoControl;
 use dstack::media::bypass::FrameSender;
 
 use super::{
-    DEVICE_PATH, HEADER, IOCTL_DASIO_KTX_STATUS, IOCTL_DASIO_TX_SEND, MAX_FRAME, Relookup,
-    StatusWatch, mark, pack, parse_status,
+    DEVICE_PATH, HEADER, IOCTL_DASIO_KTX_STATUS, IOCTL_DASIO_TX_SEND, MAX_FRAME,
+    MAX_STATUS_RECORDS, Relookup, StatusWatch, mark, pack, parse_status,
 };
 
 /// Win32 `ERROR_NOT_FOUND`: the filter's STATUS_NOT_FOUND, no bound
@@ -42,8 +42,6 @@ const STATUS_EVERY: Duration = Duration::from_secs(10);
 /// A clean window is logged once a minute; a window with frames on the
 /// socket or lost logs at once.
 const STATUS_QUIET_EVERY: u32 = 6;
-/// Bound adapters one status reply has room for.
-const STATUS_RECORDS: usize = 16;
 
 /// The adapter kernel TX sends on. The TX thread only reads the IfIndex
 /// and flags a miss; the `kernel-tx-adapter` thread looks the adapter up
@@ -109,7 +107,7 @@ impl Adapter {
 
     /// Reads the filter's status and logs this adapter's media-TX window.
     fn counters(&self, watch: &mut StatusWatch, quiet: &mut u32) {
-        let mut reply = vec![0u8; STATUS_RECORDS * 25 * 8];
+        let mut reply = vec![0u8; MAX_STATUS_RECORDS * 25 * 8];
         let mut returned: u32 = 0;
         // SAFETY: the handle stays open while this thread runs (Drop joins
         // it first); the output buffer outlives the synchronous call.
