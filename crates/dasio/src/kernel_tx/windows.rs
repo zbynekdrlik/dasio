@@ -107,7 +107,7 @@ impl Adapter {
 
     /// Reads the filter's status and logs this adapter's media-TX window.
     fn counters(&self, watch: &mut StatusWatch, quiet: &mut u32) {
-        let mut reply = vec![0u8; MAX_STATUS_RECORDS * 25 * 8];
+        let mut reply = vec![0u8; MAX_STATUS_RECORDS * 27 * 8];
         let mut returned: u32 = 0;
         // SAFETY: the handle stays open while this thread runs (Drop joins
         // it first); the output buffer outlives the synchronous call.
@@ -141,6 +141,9 @@ impl Adapter {
                 no_slot = r.no_slot,
                 failed = r.failed,
                 fail_events = r.fail_events,
+                no_slot_events = r.no_slot_events,
+                last_no_slot_ms_ago = ?r.last_no_slot_ago_ms,
+                last_fail_ms_ago = ?r.last_fail_ago_ms,
                 max_out = r.max_out,
                 tx_max_out = r.tx_max_out,
                 last_fail_status = format_args!("{:#x}", r.last_fail_status),

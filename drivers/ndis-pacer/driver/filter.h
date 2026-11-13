@@ -434,6 +434,10 @@ typedef struct _MS_FILTER
     ULONG64                         KtxFailEvents;
     ULONG64                         KtxLastFailStatus;
     ULONG64                         KtxLastFailTime;
+    // Media frames handed back to the caller's socket (TxNoSlot): bursts
+    // more than 1 s apart, and the interrupt time of the last one.
+    ULONG64                         TxNoSlotEvents;
+    ULONG64                         TxLastNoSlotTime;
 
     // dasio deferred receive (rxd, dasio#1): received NBLs queued in
     // order (under Lock) and indicated up by RxdDpc.

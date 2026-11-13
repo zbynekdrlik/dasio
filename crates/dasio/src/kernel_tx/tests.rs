@@ -142,6 +142,7 @@ fn a_status_reply_reads_each_adapter_s_record_in_order() {
             max_out: 150,
             fail_events: 1,
             last_fail_status: 0xC000_009A,
+            ..KtxStatus::default()
         }
     );
     assert_eq!(s[1].if_index, 12);
@@ -193,6 +194,7 @@ fn status(if_index: u32, frames: u64, no_slot: u64, failed: u64, events: u64) ->
         tx_max_out: 200,
         out: 1,
         last_fail_status: 0,
+        ..KtxStatus::default()
     }
 }
 
@@ -284,4 +286,99 @@ fn any_counter_going_back_alone_starts_a_new_baseline() {
         w.step(&[status(7, 150, 5, 4, 3)], 7);
         assert_eq!(w.step(&[back], 7), None, "{back:?}");
     }
+}
+
+/// A v4 record: 27 little-endian u64s.
+fn record4(if_index: u64, set: &[(usize, u64)]) -> Vec<u8> {
+    let mut w = [0u64; 27];
+    w[0] = 4;
+    w[1] = if_index;
+    for &(i, v) in set {
+        w[i] = v;
+    }
+    w.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+#[test]
+fn a_version_4_record_reads_the_times_and_the_fallback_bursts() {
+    let mut reply = record4(
+        6,
+        &[
+            (6, 900_000_000),
+            (18, 12),
+            (24, 880_000_000),
+            (25, 3),
+            (26, 899_000_000),
+        ],
+    );
+    reply.extend(record(2, &[(17, 5)]));
+    let s = parse_status(&reply);
+    assert_eq!(s.len(), 2);
+    assert_eq!(
+        (
+            s[0].version,
+            s[0].now,
+            s[0].tx_no_slot,
+            s[0].last_fail_time,
+            s[0].no_slot_events,
+            s[0].last_no_slot_time
+        ),
+        (4, 900_000_000, 12, 880_000_000, 3, 899_000_000)
+    );
+    // A v3 record has no fallback fields.
+    assert_eq!(
+        (
+            s[1].if_index,
+            s[1].tx_frames,
+            s[1].no_slot_events,
+            s[1].last_no_slot_time
+        ),
+        (2, 5, 0, 0)
+    );
+}
+
+#[test]
+fn ago_is_milliseconds_before_the_reading_and_none_for_never_or_the_future() {
+    assert_eq!(ago_ms(900_000_000, 899_000_000), Some(100));
+    assert_eq!(ago_ms(900_000_000, 900_000_000), Some(0));
+    assert_eq!(ago_ms(900_000_000, 0), None);
+    assert_eq!(ago_ms(900_000_000, 900_000_001), None);
+}
+
+#[test]
+fn the_report_carries_the_window_s_fallback_bursts_and_how_long_ago_the_last_events_were() {
+    let base = KtxStatus {
+        version: 4,
+        if_index: 6,
+        tx_frames: 100,
+        now: 100_000_000,
+        ..KtxStatus::default()
+    };
+    let mut w = StatusWatch::default();
+    w.step(&[base], 6);
+    let later = KtxStatus {
+        tx_frames: 200,
+        tx_no_slot: 7,
+        failed: 1,
+        fail_events: 1,
+        no_slot_events: 2,
+        now: 200_000_000,
+        last_fail_time: 150_000_000,
+        last_no_slot_time: 190_000_000,
+        ..base
+    };
+    let r = w.step(&[later], 6).unwrap();
+    assert_eq!((r.no_slot, r.no_slot_events), (7, 2));
+    assert_eq!(
+        (r.last_fail_ago_ms, r.last_no_slot_ago_ms),
+        (Some(5000), Some(1000))
+    );
+    // Fewer fallback bursts than before: the filter restarted.
+    let back = KtxStatus {
+        no_slot_events: 1,
+        tx_frames: 300,
+        now: 300_000_000,
+        ..later
+    };
+    assert_eq!(w.step(&[back], 6), None);
 }

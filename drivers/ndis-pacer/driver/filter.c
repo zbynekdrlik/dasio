@@ -2937,6 +2937,15 @@ txSendAtDispatch(
     }
     Filter->TxFrames += Batch;
     Filter->TxNoSlot += Total - Batch;
+    if (Total > Batch)
+    {
+        ULONG64 Now = KeQueryInterruptTime();
+        if (Filter->TxLastNoSlotTime == 0 || Now - Filter->TxLastNoSlotTime > 10000000)
+        {
+            Filter->TxNoSlotEvents++;
+        }
+        Filter->TxLastNoSlotTime = Now;
+    }
     if (Batch > 0)
     {
         Filter->TxBatches++;

@@ -45,6 +45,7 @@ fn status_fields(version: u64) -> Option<usize> {
         1 => Some(16),
         2 => Some(20),
         3 => Some(25),
+        4 => Some(27),
         _ => None,
     }
 }
@@ -68,6 +69,14 @@ pub struct KtxStatus {
     pub max_out: u64,
     pub fail_events: u64,
     pub last_fail_status: u64,
+    /// The filter's interrupt time at the reading (100 ns).
+    pub now: u64,
+    /// Interrupt time of the last failure (0: none yet).
+    pub last_fail_time: u64,
+    /// Version 4: socket fallbacks more than 1 s apart, and the last one's
+    /// interrupt time (0: none yet).
+    pub no_slot_events: u64,
+    pub last_no_slot_time: u64,
 }
 
 /// Bound adapters dasio reads at most (the reply buffer's size).
@@ -100,6 +109,10 @@ pub fn parse_status(reply: &[u8]) -> Vec<KtxStatus> {
             max_out: f(21),
             fail_events: f(22),
             last_fail_status: f(23),
+            now: f(6),
+            last_fail_time: f(24),
+            no_slot_events: f(25),
+            last_no_slot_time: f(26),
         });
         at += fields * 8;
     }
@@ -117,6 +130,21 @@ pub struct KtxReport {
     pub tx_max_out: u64,
     pub out: u64,
     pub last_fail_status: u64,
+    /// Socket-fallback bursts in the window (version 4; 0 before).
+    pub no_slot_events: u64,
+    /// How long before the reading the last failure / fallback was, in ms
+    /// (None: none yet, or the filter does not say).
+    pub last_fail_ago_ms: Option<u64>,
+    pub last_no_slot_ago_ms: Option<u64>,
+}
+
+/// Milliseconds from an interrupt time `at` to `now` (both 100 ns);
+/// None when `at` is 0 (never) or later than `now`.
+pub fn ago_ms(now: u64, at: u64) -> Option<u64> {
+    if at == 0 || at > now {
+        return None;
+    }
+    Some((now - at) / 10_000)
 }
 
 impl KtxReport {
@@ -146,6 +174,7 @@ impl StatusWatch {
             || now.tx_no_slot < prev.tx_no_slot
             || now.failed < prev.failed
             || now.fail_events < prev.fail_events
+            || now.no_slot_events < prev.no_slot_events
         {
             return None;
         }
@@ -158,6 +187,9 @@ impl StatusWatch {
             tx_max_out: now.tx_max_out,
             out: now.out,
             last_fail_status: now.last_fail_status,
+            no_slot_events: now.no_slot_events - prev.no_slot_events,
+            last_fail_ago_ms: ago_ms(now.now, now.last_fail_time),
+            last_no_slot_ago_ms: ago_ms(now.now, now.last_no_slot_time),
         })
     }
 }
