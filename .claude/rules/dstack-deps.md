@@ -31,3 +31,4 @@ paths:
 - Subscribe 2 channels at most. A 16-channel test receiver ran band-asio-dante out of TX flows ("No more flows (Tx)").
 - Two channels on separate flows separate the cases: a sender stall breaks both, a receiver's own lateness only one (dev1 runs at normal priority).
 - Live's Preferences Test Tone switches off when the Settings window closes.
+- `install.ps1` swaps `dtray.exe`, but the dtray already running in the user's session stays the old version until it restarts. After a deploy, end that dtray process and start the new one with the MCP App tool (a window program never starts from the Shell). `dtray --settings` opens the per-instance settings window (dstack#246). Its Apply writes device.toml through an elevated helper, restarts `dasio-N` and leaves `dtray-apply.result` in the instance folder.
