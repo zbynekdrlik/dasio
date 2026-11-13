@@ -225,3 +225,21 @@ fn a_lost_adapter_or_a_restarted_filter_starts_a_new_baseline() {
     assert_eq!((r.frames, r.no_slot), (20, 1));
     assert!(r.bad());
 }
+
+#[test]
+fn a_version_1_record_is_16_fields_with_no_media_tx() {
+    // Version 1: the test stream only (16 fields); a v3 record follows.
+    let mut w = [0u64; 16];
+    w[0] = 1;
+    w[1] = 3;
+    w[10] = 7;
+    let mut reply: Vec<u8> = w.iter().flat_map(|v| v.to_le_bytes()).collect();
+    reply.extend(record(8, &[(17, 4)]));
+    let s = parse_status(&reply);
+    assert_eq!(s.len(), 2);
+    assert_eq!(
+        (s[0].version, s[0].if_index, s[0].failed, s[0].tx_frames),
+        (1, 3, 7, 0)
+    );
+    assert_eq!((s[1].if_index, s[1].tx_frames), (8, 4));
+}
