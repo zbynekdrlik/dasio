@@ -18,6 +18,7 @@ pub mod health;
 #[cfg(windows)]
 pub mod jitter;
 pub mod kernel_tx;
+pub mod kind;
 pub mod logfile;
 pub mod minutes;
 pub mod pc_profile;
@@ -27,6 +28,8 @@ pub mod probe;
 pub mod register;
 #[cfg(windows)]
 pub mod run;
+#[cfg(windows)]
+pub mod run_bridge;
 pub mod service;
 pub mod turnaround;
 

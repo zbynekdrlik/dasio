@@ -128,3 +128,121 @@ fn a_pc_profile_problem_shows_in_the_line_and_warns() {
     assert!(line(&three).ends_with(" · PC profile: 3 problems"));
     assert!(json(&three).contains("\"pc_profile_problems\":3"));
 }
+
+fn bridge_running() -> BridgeFacts {
+    BridgeFacts {
+        driver: "Test \"ASIO\"".into(),
+        running: true,
+        reason: None,
+        reason_code: None,
+        retry_in_s: None,
+        rate: 96_000,
+        buffer_frames: 256,
+        to_asio_underruns: 2,
+        from_asio_underruns: 5,
+        resets: 1,
+    }
+}
+
+#[test]
+fn the_bridge_facts_come_from_the_runner_s_status() {
+    let waiting = dstack_asio::Status {
+        state: dstack_asio::RunState::Waiting,
+        reason: Some(dstack_asio::Reason::NoClock),
+        retry_in_s: Some(2.0),
+        rate: 48_000,
+        buffer_frames: 128,
+        resets: 4,
+        ..Default::default()
+    };
+    let f = BridgeFacts::of("Test ASIO", &waiting, 7, 9);
+    assert_eq!(
+        f,
+        BridgeFacts {
+            driver: "Test ASIO".into(),
+            running: false,
+            reason: Some(dstack_asio::Reason::NoClock.to_string()),
+            reason_code: Some(dstack_asio::Reason::NoClock.code()),
+            retry_in_s: Some(2.0),
+            rate: 48_000,
+            buffer_frames: 128,
+            to_asio_underruns: 7,
+            from_asio_underruns: 9,
+            resets: 4,
+        }
+    );
+    let running = dstack_asio::Status {
+        state: dstack_asio::RunState::Running,
+        ..Default::default()
+    };
+    let f = BridgeFacts::of("Test ASIO", &running, 0, 0);
+    assert!(f.running);
+    assert_eq!((f.reason, f.reason_code), (None, None));
+}
+
+#[test]
+fn a_running_bridge_says_its_rate_buffer_and_underruns() {
+    let f = bridge_running();
+    assert_eq!(
+        bridge_line(&f),
+        "bridge to \"Test \"ASIO\"\": running 96000 Hz / 256 · underruns to ASIO 2 / from ASIO 5 · resets 1"
+    );
+    assert_eq!(bridge_state(&f), "ok");
+}
+
+#[test]
+fn a_waiting_bridge_says_why_and_when_it_tries_again() {
+    let f = BridgeFacts {
+        running: false,
+        reason: Some("the driver gives no clock".into()),
+        reason_code: Some("no_clock"),
+        retry_in_s: Some(9.6),
+        ..bridge_running()
+    };
+    assert!(
+        bridge_line(&f).contains(": waiting (the driver gives no clock), again in 10 s · "),
+        "{}",
+        bridge_line(&f)
+    );
+    assert_eq!(bridge_state(&f), "warn");
+    let opening = BridgeFacts {
+        running: false,
+        ..bridge_running()
+    };
+    assert!(
+        bridge_line(&opening).contains(": waiting (opening) · "),
+        "{}",
+        bridge_line(&opening)
+    );
+}
+
+#[test]
+fn the_bridge_json_is_one_object_with_every_field_escaped() {
+    let j = bridge_json(&BridgeFacts {
+        reason_code: Some("reset"),
+        ..bridge_running()
+    });
+    assert!(j.starts_with('{') && j.ends_with('}'), "{j}");
+    for key in [
+        "\"line\":\"bridge to \\\"Test \\\"ASIO\\\"\\\": running",
+        "\"state\":\"ok\"",
+        "\"kind\":\"bridge\"",
+        "\"daw_attached\":false",
+        "\"driver\":\"Test \\\"ASIO\\\"\"",
+        "\"running\":true",
+        "\"reason\":\"reset\"",
+        "\"rate\":96000",
+        "\"buffer_frames\":256",
+        "\"to_asio_underruns\":2",
+        "\"from_asio_underruns\":5",
+        "\"resets\":1",
+    ] {
+        assert!(j.contains(key), "{key} missing in {j}");
+    }
+    assert!(bridge_json(&bridge_running()).contains("\"reason\":\"\""));
+    let slash = bridge_json(&BridgeFacts {
+        driver: "a\\b".into(),
+        ..bridge_running()
+    });
+    assert!(slash.contains("\"driver\":\"a\\\\b\""), "{slash}");
+}

@@ -117,5 +117,103 @@ pub fn json(f: &Facts) -> String {
     )
 }
 
+/// What a bridge instance shows at one moment (dasio#106): its runner's
+/// state and both players' counts.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct BridgeFacts {
+    /// The ASIO driver's name.
+    pub driver: String,
+    /// The driver runs the bridge's side.
+    pub running: bool,
+    /// Why it does not (the runner's reason), and its stable code.
+    pub reason: Option<String>,
+    pub reason_code: Option<&'static str>,
+    /// When the runner opens the driver again, s.
+    pub retry_in_s: Option<f64>,
+    /// The last open's rate (Hz) and buffer (frames).
+    pub rate: u32,
+    pub buffer_frames: u32,
+    /// Blocks played as silence, Dante -> ASIO and ASIO -> Dante.
+    pub to_asio_underruns: u64,
+    pub from_asio_underruns: u64,
+    /// Runs the runner closed (a reset, a rate change, a stall, a fault).
+    pub resets: u64,
+}
+
+impl BridgeFacts {
+    /// The facts of a bridge to `driver` from its runner's `status` and the
+    /// two players' underruns.
+    pub fn of(
+        driver: &str,
+        status: &dstack_asio::Status,
+        to_asio_underruns: u64,
+        from_asio_underruns: u64,
+    ) -> Self {
+        BridgeFacts {
+            driver: driver.to_string(),
+            running: status.state == dstack_asio::RunState::Running,
+            reason: status.reason.as_ref().map(ToString::to_string),
+            reason_code: status.reason.as_ref().map(dstack_asio::Reason::code),
+            retry_in_s: status.retry_in_s,
+            rate: status.rate,
+            buffer_frames: status.buffer_frames,
+            to_asio_underruns,
+            from_asio_underruns,
+            resets: status.resets,
+        }
+    }
+}
+
+/// The menu line dtray shows for a bridge instance.
+pub fn bridge_line(f: &BridgeFacts) -> String {
+    let now = if f.running {
+        format!("running {} Hz / {}", f.rate, f.buffer_frames)
+    } else {
+        let why = f.reason.as_deref().unwrap_or("opening");
+        match f.retry_in_s {
+            Some(s) => format!("waiting ({why}), again in {s:.0} s"),
+            None => format!("waiting ({why})"),
+        }
+    };
+    format!(
+        "bridge to \"{}\": {now} · underruns to ASIO {} / from ASIO {} · resets {}",
+        f.driver, f.to_asio_underruns, f.from_asio_underruns, f.resets
+    )
+}
+
+/// The icon's state of a bridge instance: `ok` while the driver runs the
+/// bridge, `warn` otherwise.
+pub fn bridge_state(f: &BridgeFacts) -> &'static str {
+    if f.running { "ok" } else { "warn" }
+}
+
+/// `t` inside a JSON string.
+fn escaped(t: &str) -> String {
+    t.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// The JSON object for a bridge instance's `set_app_status`: `line`,
+/// `state`, `kind` and every number (no DAW: `daw_attached` false).
+pub fn bridge_json(f: &BridgeFacts) -> String {
+    format!(
+        concat!(
+            "{{\"line\":\"{}\",\"state\":\"{}\",\"kind\":\"bridge\",\"daw_attached\":false,",
+            "\"driver\":\"{}\",\"running\":{},\"reason\":\"{}\",\"rate\":{},",
+            "\"buffer_frames\":{},\"to_asio_underruns\":{},\"from_asio_underruns\":{},",
+            "\"resets\":{}}}"
+        ),
+        escaped(&bridge_line(f)),
+        bridge_state(f),
+        escaped(&f.driver),
+        f.running,
+        f.reason_code.unwrap_or(""),
+        f.rate,
+        f.buffer_frames,
+        f.to_asio_underruns,
+        f.from_asio_underruns,
+        f.resets,
+    )
+}
+
 #[cfg(test)]
 mod tests;

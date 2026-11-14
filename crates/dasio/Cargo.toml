@@ -9,6 +9,12 @@ description = "dasio's device process: one Dante device per instance, its audio 
 [dependencies]
 dstack-audio-io = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.128" }
 dstack = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.128" }
+# The bridge instance kind (dasio#106): the ASIO host, its lifecycle and
+# the two sides of a Dante <-> ASIO bridge (dstack#243); dlink for the
+# bridge FIFO target's check (`AppBuffer`, dstack#247). azo, the host's
+# Windows layer, comes only on Windows.
+dstack-asio = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.128" }
+dlink = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.128" }
 shm = { path = "../shm" }
 asio-driver = { path = "../asio-driver" }
 serde = { version = "1.0", features = ["derive"] }
