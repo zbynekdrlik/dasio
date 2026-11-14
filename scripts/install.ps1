@@ -26,7 +26,8 @@
 #   process_id; a config naming none takes the first free set at its start,
 #   dasio#89); a config that clashes with another installed instance's is
 #   refused before anything changes,
-# - registers the driver for the instance (HKLM: its COM class and its ASIO entry),
+# - registers the driver for the instance (HKLM: its COM class and its ASIO entry;
+#   not for a bridge instance, whose config has a [bridge] table),
 # - puts the device config at C:\ProgramData\dasio\instance-<n>\device.toml,
 #   and moves aside a state file another config left at its state path,
 # - copies dtray.exe and dtray-cli.exe (dstack's tray: every local dstack device, with dasio's
@@ -470,10 +471,18 @@ if ($stateFile -and (Test-Path $stateFile)) {
 }
 
 $exe = Join-Path $bin "dasio.exe"
-$named = @()
-if ($Name) { $named = @("--name", $Name) }
-& $exe register --instance $Instance --dll (Join-Path $bin "dasio_driver.dll") @named
-if ($LASTEXITCODE -ne 0) { throw "register failed ($LASTEXITCODE)" }
+# A bridge instance (`[bridge]` in its config, dasio#106) carries Dante to a
+# local ASIO driver itself and has no DAW side: registering dasio's own ASIO
+# driver for it would list a driver no DAW can attach to.
+$bridge = Select-String -LiteralPath $cfg -Pattern '^\s*\[bridge\]\s*(#.*)?$' -Quiet
+if ($bridge) {
+    Write-Output "instance $Instance is a bridge ([bridge] in its config): no dasio ASIO driver registered"
+} else {
+    $named = @()
+    if ($Name) { $named = @("--name", $Name) }
+    & $exe register --instance $Instance --dll (Join-Path $bin "dasio_driver.dll") @named
+    if ($LASTEXITCODE -ne 0) { throw "register failed ($LASTEXITCODE)" }
+}
 
 $log = Join-Path $data "dasio.log"
 $bin_path = "`"$instExe`" service --instance $Instance --config `"$cfg`" $place --log `"$log`""
