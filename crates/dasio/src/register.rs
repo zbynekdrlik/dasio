@@ -49,6 +49,17 @@ pub fn keys(n: u32, name: Option<&str>) -> Option<[String; 2]> {
     ])
 }
 
+/// The keys `unregister` removes for instance `n` listed as `name`, given
+/// the ASIO entries on the PC (`listed`: each entry's name and CLSID).
+pub fn unregister_keys(
+    n: u32,
+    name: Option<&str>,
+    listed: &[(String, String)],
+) -> Option<Vec<String>> {
+    let _ = listed;
+    keys(n, name).map(|k| k.to_vec())
+}
+
 #[cfg(windows)]
 pub use win::{apply, remove};
 
@@ -155,6 +166,57 @@ mod tests {
         assert_eq!(
             keys(1, Some("master-asio-dante")).unwrap()[1],
             "SOFTWARE\\ASIO\\master-asio-dante"
+        );
+    }
+
+    const G1: &str = "{5D4A7C21-9B3E-4F6A-8C11-2E475A90D101}";
+    const CLASS1: &str = "SOFTWARE\\Classes\\CLSID\\{5D4A7C21-9B3E-4F6A-8C11-2E475A90D101}";
+
+    fn listed(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(n, g)| (n.to_string(), g.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn unregistering_an_old_name_keeps_the_class_another_name_uses() {
+        // mbc, 14.11.2026 (#112): "dasio 1" and "mbc-snv" both name
+        // instance 1's CLSID; dropping "dasio 1" removed the class too.
+        let on_pc = listed(&[
+            ("dasio 1", G1),
+            ("mbc-snv", &G1.to_lowercase()),
+            ("UMC ASIO Driver", "{0351302F-B1F1-4A5D-8613-787F77C20EA4}"),
+        ]);
+        assert_eq!(
+            unregister_keys(1, Some("dasio 1"), &on_pc).unwrap(),
+            vec!["SOFTWARE\\ASIO\\dasio 1".to_string()]
+        );
+    }
+
+    #[test]
+    fn unregistering_the_last_name_removes_the_class_too() {
+        let on_pc = listed(&[
+            ("mbc-snv", G1),
+            ("Other", "{0351302F-B1F1-4A5D-8613-787F77C20EA4}"),
+        ]);
+        assert_eq!(
+            unregister_keys(1, Some("mbc-snv"), &on_pc).unwrap(),
+            vec![CLASS1.to_string(), "SOFTWARE\\ASIO\\mbc-snv".to_string()]
+        );
+        // Nothing listed at all (an entry already gone): the class goes.
+        assert_eq!(unregister_keys(1, Some("mbc-snv"), &[]).unwrap().len(), 2);
+        assert_eq!(unregister_keys(0, None, &[]), None);
+    }
+
+    #[test]
+    fn a_name_is_matched_without_case_like_the_registry() {
+        // Windows key names are case-insensitive: "MBC-SNV" is the same
+        // entry as "mbc-snv", not another user of the class.
+        let on_pc = listed(&[("MBC-SNV", G1)]);
+        assert_eq!(
+            unregister_keys(1, Some("mbc-snv"), &on_pc).unwrap().len(),
+            2
         );
     }
 }
