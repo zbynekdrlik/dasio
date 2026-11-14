@@ -18,6 +18,9 @@ use crate::bridge::{Bridge, SharedLink};
 use crate::logfile::{COUNTS_EVERY, Every, STATUS_EVERY};
 use crate::turnaround::{Stamps, Turnaround, free_at, split};
 
+mod profile;
+use profile::ProfileWatch;
+
 /// Runs instance `instance` from the device config at `config` on `ip`
 /// with the media clock from `clock` (dantesync in production; the system
 /// clock only for a test machine without one) until Ctrl+C, the instance's
@@ -31,7 +34,11 @@ pub fn run(
     stop_asked: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let spare = tuning.spare;
-    let cfg = device_config(&config, ip)?;
+    let (cfg, kind) = device_config(&config, ip)?;
+    // A bridge to a local ASIO driver (dasio#106) runs its own loop.
+    if let crate::kind::Kind::Bridge(bridge) = kind {
+        return crate::run_bridge::run(instance, bridge, cfg, ip, clock, tuning, stop_asked);
+    }
     // The per-minute counters go next to the instance's config and log
     // (dasio#28 A36).
     let minutes_dir = std::path::absolute(&config)
@@ -39,48 +46,11 @@ pub fn run(
         .parent()
         .map(std::path::Path::to_path_buf)
         .unwrap_or_default();
-    // The process on its own cores first: it starts with its parent's set
-    // (on the FOH PC Process Lasso moves it later), and a thread cannot be
-    // pinned outside its process's set (error 87 there).
     let own = crate::own_cpus(&cfg);
-    if own != 0 {
-        // The media threads pin to `own`; the process holds the whole L3
-        // groups (CCDs) of those CPUs, for its other threads (the device's
-        // runtime, mDNS, the log): confined to `own` they could not run
-        // beside two spinning priority-31 threads, and a lock one of them
-        // held kept the TX thread waiting 2.5 to 15 ms (FOH PC,
-        // 2026-10-29); on every CPU, Process Lasso took the process for
-        // its own rule and moved the media threads off their CPUs
-        // (2026-11-03). Within the CCD they stay on the media threads'
-        // chiplet.
-        let mask = crate::process_cpus(own, &l3_groups(), started_cpus());
-        crate::probe::set_affinity(mask)?;
-        info!(mask = format!("{mask:#x}"), "the process's CPUs");
-        // Its threads alone on those CPUs: the process at REALTIME, so its
-        // media threads run at 31 (dstack's ask_realtime on Windows).
-        realtime_class()?;
-    }
     let shape = Shape::new(cfg.rx.len() as u32, cfg.tx.len() as u32, cfg.block as u32)
         .ok_or("the channels (at most 64 each way) or the block do not fit the driver")?;
-    let engine_tx: Vec<usize> = (0..cfg.tx.len()).collect();
-    if clock == host::ClockSource::System {
-        warn!(
-            ?clock,
-            "test clock: PTP time is this machine's clock, not the network's"
-        );
-    }
-    // The config as read above, its slot included (Windows has no control
-    // socket: none).
-    let prepared = host::prepare_config(cfg, &Place::Ip(ip), None, &engine_tx, clock)
-        .map_err(|e| e.to_string())?;
+    let (prepared, media, engine_tx) = start_device(cfg, ip, clock, tuning)?;
     let cfg = prepared.config().clone();
-    let media = prepared.media();
-    if tuning.kernel_tx {
-        kernel_tx(&media, ip);
-    }
-    for &tx in &engine_tx {
-        media.tx.set_source(tx, Source::Engine);
-    }
     let timing = crate::timing(&cfg);
     let latency = crate::latencies(&cfg, spare);
     let shared = Arc::new(
@@ -384,16 +354,78 @@ pub fn run(
     }
 }
 
+/// The device's start both kinds share: the process on its own cores at
+/// REALTIME when the config pins media threads, the config prepared on `ip`
+/// with the media clock from `clock`, kernel TX when asked, and every TX
+/// channel fed by the pump. Returns the prepared config, its media and the
+/// pump's TX channels.
+pub(crate) fn start_device(
+    cfg: dstack::device::DeviceConfig,
+    ip: std::net::Ipv4Addr,
+    clock: host::ClockSource,
+    tuning: crate::Tuning,
+) -> Result<
+    (
+        host::Prepared,
+        Arc<dstack::daemon::media::Media>,
+        Vec<usize>,
+    ),
+    String,
+> {
+    // The process on its own cores first: it starts with its parent's set
+    // (on the FOH PC Process Lasso moves it later), and a thread cannot be
+    // pinned outside its process's set (error 87 there).
+    let own = crate::own_cpus(&cfg);
+    if own != 0 {
+        // The media threads pin to `own`; the process holds the whole L3
+        // groups (CCDs) of those CPUs, for its other threads (the device's
+        // runtime, mDNS, the log): confined to `own` they could not run
+        // beside two spinning priority-31 threads, and a lock one of them
+        // held kept the TX thread waiting 2.5 to 15 ms (FOH PC,
+        // 2026-10-29); on every CPU, Process Lasso took the process for
+        // its own rule and moved the media threads off their CPUs
+        // (2026-11-03). Within the CCD they stay on the media threads'
+        // chiplet.
+        let mask = crate::process_cpus(own, &l3_groups(), started_cpus());
+        crate::probe::set_affinity(mask)?;
+        info!(mask = format!("{mask:#x}"), "the process's CPUs");
+        // Its threads alone on those CPUs: the process at REALTIME, so its
+        // media threads run at 31 (dstack's ask_realtime on Windows).
+        realtime_class()?;
+    }
+    let engine_tx: Vec<usize> = (0..cfg.tx.len()).collect();
+    if clock == host::ClockSource::System {
+        warn!(
+            ?clock,
+            "test clock: PTP time is this machine's clock, not the network's"
+        );
+    }
+    // The config as read above, its slot included (Windows has no control
+    // socket: none).
+    let prepared = host::prepare_config(cfg, &Place::Ip(ip), None, &engine_tx, clock)
+        .map_err(|e| e.to_string())?;
+    let media = prepared.media();
+    if tuning.kernel_tx {
+        kernel_tx(&media, ip);
+    }
+    for &tx in &engine_tx {
+        media.tx.set_source(tx, Source::Engine);
+    }
+    Ok((prepared, media, engine_tx))
+}
+
 /// The device config at `path`, its control ports and process id from the
 /// first free slot on `ip` when it names none ([`crate::place::device_config`]
-/// with dstack's `slots::pick`, the rule dsend and dlisten use, dasio#89).
+/// with dstack's `slots::pick`, the rule dsend and dlisten use, dasio#89),
+/// and the instance's kind ([`crate::kind`], dasio#106).
 fn device_config(
     path: &std::path::Path,
     ip: std::net::Ipv4Addr,
-) -> Result<dstack::device::DeviceConfig, String> {
+) -> Result<(dstack::device::DeviceConfig, crate::kind::Kind), String> {
     use crate::place::{Slot, SlotFrom};
     let shown = path.display();
     let text = std::fs::read_to_string(path).map_err(|e| format!("{shown}: {e}"))?;
+    let kind = crate::kind::kind(&text).map_err(|e| format!("{shown}: {e}"))?;
     let (cfg, from) = crate::place::device_config(&text, || {
         match dstack_endpoint::slots::pick(&Place::Ip(ip), None, None) {
             (Some(p), Some(k)) => Some(Slot {
@@ -428,7 +460,7 @@ fn device_config(
             "the device's control ports: no slot free on its address, the stack's defaults"
         ),
     }
-    Ok(cfg)
+    Ok((cfg, kind))
 }
 
 /// Seconds since the Unix epoch (0 before it).
@@ -566,7 +598,7 @@ impl StopEvent {
         Ok(StopEvent(h))
     }
 
-    fn is_set(&self) -> bool {
+    pub(crate) fn is_set(&self) -> bool {
         use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
         use windows_sys::Win32::System::Threading::WaitForSingleObject;
         // SAFETY: a valid event handle.
@@ -706,7 +738,7 @@ fn kernel_tx(media: &dstack::daemon::media::Media, ip: std::net::Ipv4Addr) {
 /// resets thread pins when it sets the process's affinity, and threads
 /// start later (the runtime, mDNS). The thread moves itself first, so its
 /// own work never runs on a media CPU.
-fn place_helpers(own: usize) {
+pub(crate) fn place_helpers(own: usize) {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
@@ -840,156 +872,6 @@ fn default_cpu_sets(helpers: usize) {
     } else {
         info!(cpus = format!("{helpers:#x}"), ids = ?ids, "new threads start on the helper CPUs (default CPU sets)");
     }
-}
-
-/// The PC profile's checks (dasio#5): each problem is logged when it
-/// appears and when it goes; the count is the tray's. The check runs in a
-/// `dasio pc-profile check` child at normal priority on the CPUs outside
-/// the media threads': on this process's own thread it held a CPU a media
-/// thread's spin tail yielded, for a whole quantum (16 ms gaps at the
-/// receivers every 10 min, FOH, dasio#1, 4.11.2026).
-struct ProfileWatch {
-    /// The media threads' CPUs, kept free of the child.
-    own: usize,
-    busy: Arc<AtomicBool>,
-    last: Arc<Mutex<Option<Vec<String>>>>,
-}
-
-impl ProfileWatch {
-    fn new(own: usize) -> Self {
-        Self {
-            own,
-            busy: Arc::new(AtomicBool::new(false)),
-            last: Arc::new(Mutex::new(None)),
-        }
-    }
-
-    /// Starts a check (none while one runs); the count lands in `problems`
-    /// (u32::MAX without a profile).
-    fn start(&self, problems: &Arc<std::sync::atomic::AtomicU32>) {
-        if self.busy.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        let (own, busy, last, problems) = (
-            self.own,
-            Arc::clone(&self.busy),
-            Arc::clone(&self.last),
-            Arc::clone(problems),
-        );
-        let spawned = std::thread::Builder::new()
-            .name("pc-profile".into())
-            .spawn(move || {
-                // No profile on this PC: no child to start.
-                let path = std::path::Path::new(crate::pc_profile::DEFAULT_PATH);
-                let found = if path.exists() {
-                    child_check(own)
-                } else {
-                    Ok(crate::pc_profile::ChildCheck::NoProfile(
-                        "the file does not exist".into(),
-                    ))
-                };
-                let n = match found {
-                    Ok(found) => record(&last, found),
-                    Err(e) => {
-                        warn!(%e, "the PC profile check did not run");
-                        u32::MAX
-                    }
-                };
-                problems.store(n, Ordering::Relaxed);
-                busy.store(false, Ordering::Release);
-            });
-        if let Err(e) = spawned {
-            warn!(%e, "the PC profile check's thread did not start");
-            self.busy.store(false, Ordering::Release);
-        }
-    }
-}
-
-/// Logs what appeared and what went since the last check; the count.
-fn record(last: &Mutex<Option<Vec<String>>>, found: crate::pc_profile::ChildCheck) -> u32 {
-    use crate::pc_profile::ChildCheck;
-    let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
-    let now = match found {
-        ChildCheck::NoProfile(why) => {
-            if last.is_none() {
-                info!(path = crate::pc_profile::DEFAULT_PATH, %why, "no PC profile: its checks are off");
-                *last = Some(Vec::new());
-            }
-            return u32::MAX;
-        }
-        ChildCheck::Problems(now) => now,
-    };
-    let before = last.take().unwrap_or_default();
-    for t in now.iter().filter(|t| !before.contains(t)) {
-        warn!("PC profile: {t}");
-    }
-    for t in before.iter().filter(|t| !now.contains(t)) {
-        info!("PC profile: fixed: {t}");
-    }
-    if now.is_empty() {
-        info!("PC profile checked: as it should be");
-    }
-    let n = now.len() as u32;
-    *last = Some(now);
-    n
-}
-
-/// Runs `dasio pc-profile check` (this exe) at normal priority, without a
-/// window, moved to the helper CPUs ([`crate::child_cpus`]) before it runs,
-/// and reads its output.
-fn child_check(own: usize) -> Result<crate::pc_profile::ChildCheck, String> {
-    use std::os::windows::io::AsRawHandle;
-    use std::os::windows::process::CommandExt;
-    use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, GetProcessAffinityMask, SetProcessAffinityMask,
-    };
-    #[link(name = "ntdll")]
-    unsafe extern "system" {
-        /// Resumes every thread of a process (ntdll; no Win32 wrapper).
-        fn NtResumeProcess(process: windows_sys::Win32::Foundation::HANDLE) -> i32;
-    }
-    // The plain `dasio.exe` beside this instance's copy: Process Lasso's rule
-    // for the instance's exe name would put the child back on the media
-    // CPUs; `dasio.exe` falls under its catch-all.
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let plain = exe.with_file_name("dasio.exe");
-    let exe = if plain.exists() { plain } else { exe };
-    let child = std::process::Command::new(exe)
-        .args(["pc-profile", "check"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .creation_flags(crate::child_creation_flags(own))
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    if own != 0 {
-        // Started suspended: moved off the media CPUs first, then resumed.
-        let (mut mine, mut system) = (0usize, 0usize);
-        // SAFETY: this process's pseudo handle and two writable masks.
-        unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut mine, &mut system) };
-        let off = crate::child_cpus(mine, system, own);
-        if off != 0 {
-            info!(cpus = %format!("{off:#x}"), "the PC profile check runs on the helper CPUs");
-            // SAFETY: the child's process handle, open while `child` lives.
-            if unsafe { SetProcessAffinityMask(child.as_raw_handle(), off) } == 0 {
-                warn!(err = %std::io::Error::last_os_error(), "the PC profile check stays on the media CPUs");
-            }
-        }
-        // SAFETY: the child's process handle, suspended at its creation.
-        let r = unsafe { NtResumeProcess(child.as_raw_handle()) };
-        if r < 0 {
-            let mut child = child;
-            let _ = child.kill();
-            return Err(format!(
-                "the PC profile check did not resume (status {r:#x})"
-            ));
-        }
-    }
-    let out = child.wait_with_output().map_err(|e| e.to_string())?;
-    Ok(crate::pc_profile::read_child_check(
-        &String::from_utf8_lossy(&out.stdout),
-        &String::from_utf8_lossy(&out.stderr),
-    ))
 }
 
 /// The device process crashes quietly (dasio#28): no Windows error box and

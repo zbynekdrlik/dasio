@@ -98,7 +98,12 @@ Owner rules from dasio#1. They hold for every change on a PC running dasio.
 - **A device's service restart re-makes every receiver's flows from it.**
   On band that is iem-mixer's return channels and more; on mbc it is
   stream-obs. Before a band restart, tell camera-box and fohmixer; before
-  an mbc restart, tell camera-box. Give a UTC time and keep to it.
+  an mbc restart, tell camera-box and fohmixer. Give a UTC time and keep to it.
+  fohmixer works on mbc too (Live installs and updates, sets): announce every
+  mbc change to it first (reboot, service restart, Live start or stop, CPU
+  affinity, NIC) and ask what it is doing there. On 14.11.2026 mbc Live was
+  closed for a Live setup while dasio worked on the PC, and the stream went
+  silent with neither side knowing why.
   iemmixer wants no notice of a routine band service restart (~5 s gap,
   11.11.2026): it asks for the times when its gate sees a gap. Tell it
   about a FOH PC restart and about any change on dasio's Dante side

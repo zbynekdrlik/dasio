@@ -16,6 +16,8 @@ exclude_globs = [
   "crates/dasio/src/main.rs",
   "crates/dasio/src/probe.rs",
   "crates/dasio/src/run.rs",
+  "crates/dasio/src/run/profile.rs",
+  "crates/dasio/src/run_bridge.rs",
   "crates/dasio/src/service/windows.rs",
 ]
 # The `win` modules of register.rs and bridge.rs: Windows-only too.

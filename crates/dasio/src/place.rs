@@ -159,8 +159,11 @@ pub fn device_config(
             return Err(format!("the config as a TOML table: {e}"));
         }
     };
-    // dasio's own `iface` out: dstack refuses keys it does not know.
-    let own = table.remove(CONFIG_IFACE).is_some();
+    // dasio's own `iface` and `[bridge]` (dasio#106, crate::kind) out:
+    // dstack refuses keys it does not know.
+    let iface = table.remove(CONFIG_IFACE).is_some();
+    let bridge = table.remove(crate::kind::CONFIG_BRIDGE).is_some();
+    let own = iface || bridge;
     let without_own;
     let text = if own {
         without_own = toml::to_string(&table).map_err(|e| format!("the config: {e}"))?;
@@ -452,5 +455,24 @@ mod tests {
         let (cfg, from) = device_config(&text, || panic!("picked")).unwrap();
         assert_eq!(from, SlotFrom::Config);
         assert_eq!(cfg.arc_port, 7);
+    }
+
+    #[test]
+    fn dstack_reads_the_config_without_dasio_s_bridge_table() {
+        let bridge = "[bridge]\ndriver = \"Test ASIO\"\nto_asio = [1, 2]\n";
+        let written = DeviceConfig::from_toml(DEVICE).unwrap();
+        // The table alone, then beside `iface` (dasio#106).
+        for text in [
+            format!("{DEVICE}\n{bridge}"),
+            format!("iface = \"Ethernet 3\"\n{DEVICE}\n{bridge}"),
+        ] {
+            assert!(DeviceConfig::from_toml(&text).is_err());
+            let (cfg, from) = device_config(&text, || Some(SLOT_1)).unwrap();
+            assert_eq!(from, SlotFrom::Picked);
+            assert_eq!(cfg.name, written.name);
+            assert_eq!(cfg.rx, written.rx);
+            assert_eq!(cfg.tx, written.tx);
+            assert_eq!(slot_of(&cfg), SLOT_1);
+        }
     }
 }
