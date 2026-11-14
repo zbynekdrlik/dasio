@@ -90,9 +90,13 @@ fn bridge(t: &toml::Table) -> Result<BridgeConfig, String> {
     let app_buffer_ns = match t.get("app_buffer_ns") {
         None => None,
         Some(toml::Value::Integer(n)) => {
-            // A negative value is out of range like 0; dlink's own check and
-            // text (the range the bridge's FIFO accepts, dstack#247).
-            let n = u64::try_from(*n).unwrap_or(0);
+            let Ok(n) = u64::try_from(*n) else {
+                return Err(format!(
+                    "[{CONFIG_BRIDGE}] `app_buffer_ns` = {n}: a negative time"
+                ));
+            };
+            // dlink's own check and text (the range the bridge's FIFO
+            // accepts, dstack#247).
             if let Some(problem) = AppBuffer::new(0, 0).set(Some(n)).problem() {
                 return Err(format!("[{CONFIG_BRIDGE}] {problem}"));
             }

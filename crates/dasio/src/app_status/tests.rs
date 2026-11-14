@@ -246,3 +246,12 @@ fn the_bridge_json_is_one_object_with_every_field_escaped() {
     });
     assert!(slash.contains("\"driver\":\"a\\\\b\""), "{slash}");
 }
+
+#[test]
+fn control_characters_are_escaped_in_the_json() {
+    assert_eq!(
+        escaped("a\nb\rc\td\u{1}e\u{1f}f \u{7f}"),
+        "a\\nb\\rc\\td\\u0001e\\u001ff \u{7f}"
+    );
+    assert_eq!(escaped("\"\\"), "\\\"\\\\");
+}

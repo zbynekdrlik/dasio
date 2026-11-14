@@ -29,7 +29,7 @@ use dstack::host::{self, Signals, Stopped};
 use dstack::stream::{self, Map, Pump, PumpStats};
 use dstack_asio::bridge::Bridge;
 use dstack_asio::win::WinDevice;
-use dstack_asio::{Channels, MakeProcess, Opened, Process, Runner, Status};
+use dstack_asio::{Channels, MakeProcess, Opened, Process, Reason, Runner, Status};
 use tracing::{error, info, warn};
 
 use crate::app_status::BridgeFacts;
@@ -66,6 +66,9 @@ pub fn run(
         "a bridge instance: no DAW, no shared memory, and no child process while the driver is loaded (no PC profile check)"
     );
     let own = crate::own_cpus(&cfg);
+    // What can fail without a running device first: past the device's
+    // start every error path stops the runner, the pump and the device.
+    let stop_event = StopEvent::create(instance).map_err(|e| format!("the stop event: {e}"))?;
     let (prepared, media, engine_tx) = start_device(cfg, ip, clock, tuning)?;
     let cfg = prepared.config().clone();
     let timing = crate::timing(&cfg);
@@ -101,12 +104,18 @@ pub fn run(
     // The driver after the pump runs: the from-ASIO player's handover
     // needs the pump to take it.
     let runner_stop = Arc::new(AtomicBool::new(false));
-    let (runner, status) = spawn_runner(
+    let (runner, status) = match spawn_runner(
         bridge.driver.clone(),
         channels,
         Arc::clone(&shared),
         Arc::clone(&runner_stop),
-    )?;
+    ) {
+        Ok(started) => started,
+        Err(e) => {
+            stop_device(&stop, pump, device);
+            return Err(e);
+        }
+    };
     {
         let (status, to_stats, from_stats, driver) = (
             Arc::clone(&status),
@@ -132,12 +141,16 @@ pub fn run(
         driver = %bridge.driver,
         "dasio bridge instance serving"
     );
-    let stop_event = StopEvent::create(instance).map_err(|e| format!("the stop event: {e}"))?;
-    if own != 0 {
-        std::thread::Builder::new()
+    // The helper CPUs for every thread but the media threads: the
+    // driver's own threads too (its buffer switch, e.g. SoundGrid's), as
+    // the DAW's are in the DAW kind. Without the placer the threads stay
+    // where they are: a warning, not the device's end.
+    if own != 0
+        && let Err(e) = std::thread::Builder::new()
             .name("helper-placer".into())
             .spawn(move || place_helpers(own))
-            .map_err(|e| format!("the helper placer: {e}"))?;
+    {
+        warn!(%e, "the helper placer did not start: the helper threads stay where they are");
     }
     let start = Instant::now();
     let mut counts = Every::new(COUNTS_EVERY, start, false);
@@ -197,6 +210,11 @@ pub fn run(
         }
         // The runner loops until it is told to stop: a thread that ended
         // panicked, and the driver is no longer served.
+        if lock(&status).reason == Some(Reason::Parked) {
+            let e = "the ASIO driver is parked (a callback never returned; no open succeeds in this process): the device ends for the SCM to restart it".to_string();
+            error!(why = %e, "the device ends");
+            break Some(e);
+        }
         if runner.is_finished() {
             let e = "the ASIO driver's runner thread ended (panicked): the device ends for the SCM to restart it".to_string();
             error!(why = %e, "the device ends");
@@ -210,15 +228,22 @@ pub fn run(
     if runner.join().is_err() {
         warn!("the ASIO driver's runner thread panicked");
     }
-    stop.store(true, Ordering::Release);
-    let _ = pump.join();
-    match device.stop(Duration::from_secs(7)) {
-        Stopped::Done => {}
-        other => warn!(?other, "the device's stop"),
-    }
+    stop_device(&stop, pump, device);
     match why {
         None => Ok(()),
         Some(e) => Err(e),
+    }
+}
+
+/// Stops the pump (`stop`, then its thread) and the device.
+fn stop_device(stop: &AtomicBool, pump: JoinHandle<()>, device: host::Host) {
+    stop.store(true, Ordering::Release);
+    if pump.join().is_err() {
+        warn!("the pump's thread panicked");
+    }
+    match device.stop(Duration::from_secs(7)) {
+        Stopped::Done => {}
+        other => warn!(?other, "the device's stop"),
     }
 }
 
@@ -233,6 +258,7 @@ fn spawn_runner(
     stop: Arc<AtomicBool>,
 ) -> Result<(JoinHandle<()>, Arc<Mutex<Status>>), String> {
     let (tx, rx) = mpsc::channel();
+    let thread_stop = Arc::clone(&stop);
     let thread = std::thread::Builder::new()
         .name("asio-bridge".into())
         .spawn(move || {
@@ -241,14 +267,20 @@ fn spawn_runner(
                 Ok(Box::new(side) as Box<dyn Process>)
             });
             let runner = Runner::new(WinDevice::new(), &driver, channels, make);
+            // The start gave up waiting: no runner (rx is gone).
             if tx.send(runner.status()).is_err() {
                 return;
             }
-            runner.run(&stop);
+            runner.run(&thread_stop);
         })
         .map_err(|e| format!("the ASIO driver's runner thread: {e}"))?;
-    let status = rx
-        .recv_timeout(RUNNER_START)
-        .map_err(|e| format!("the ASIO driver's runner did not start: {e}"))?;
-    Ok((thread, status))
+    match rx.recv_timeout(RUNNER_START) {
+        Ok(status) => Ok((thread, status)),
+        Err(e) => {
+            // A runner that comes late stops at once: it holds no driver
+            // before its first step.
+            stop.store(true, Ordering::Release);
+            Err(format!("the ASIO driver's runner did not start: {e}"))
+        }
+    }
 }

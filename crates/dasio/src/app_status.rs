@@ -91,7 +91,7 @@ pub fn state(f: &Facts) -> &'static str {
 
 /// The JSON object for `set_app_status`: every number, `line` and `state`.
 pub fn json(f: &Facts) -> String {
-    let line = line(f).replace('\\', "\\\\").replace('"', "\\\"");
+    let line = escaped(&line(f));
     format!(
         concat!(
             "{{\"line\":\"{}\",\"state\":\"{}\",\"daw_attached\":{},\"block\":{},",
@@ -187,9 +187,22 @@ pub fn bridge_state(f: &BridgeFacts) -> &'static str {
     if f.running { "ok" } else { "warn" }
 }
 
-/// `t` inside a JSON string.
+/// `t` inside a JSON string (a driver name from the config may hold a
+/// quote, a backslash or a control character).
 fn escaped(t: &str) -> String {
-    t.replace('\\', "\\\\").replace('"', "\\\"")
+    let mut out = String::with_capacity(t.len());
+    for c in t.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// The JSON object for a bridge instance's `set_app_status`: `line`,

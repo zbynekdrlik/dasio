@@ -210,11 +210,13 @@ fn app_buffer_ns_is_held_to_dlinks_range() {
         let b = bridge_of(&format!("driver = \"Test ASIO\"\napp_buffer_ns = {ok}"));
         assert_eq!(b.app_buffer_ns, Some(ok));
     }
-    for bad in ["999999", "150000001", "-1", "0"] {
+    for bad in ["999999", "150000001", "0"] {
         let e = refusal(&format!("driver = \"Test ASIO\"\napp_buffer_ns = {bad}"));
         assert!(e.starts_with("[bridge] app_buffer_ns: "), "{bad}: {e}");
         assert!(e.contains("1 to 150 ms"), "{bad}: {e}");
     }
+    let e = refusal("driver = \"Test ASIO\"\napp_buffer_ns = -5000000");
+    assert_eq!(e, "[bridge] `app_buffer_ns` = -5000000: a negative time");
     let e = refusal("driver = \"Test ASIO\"\napp_buffer_ns = \"5ms\"");
     assert!(e.contains("must be a whole number of ns"), "{e}");
 }
