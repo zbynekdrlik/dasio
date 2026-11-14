@@ -81,3 +81,16 @@ paths:
   its local memory (`foh-reboot-ableton-start`), not in the repo. Then it
   checks that the band Ableton is attached to its dasio instance
   (`attached=1` in the instance log) and that Lasso's affinities hold.
+
+## CPU sets on a PC with a timer-waiting device (mbc)
+
+- mbc's dasio runs `timing = "normal"`: no spin, timers for the whole wait.
+  On 14.11.2026, `pump_cpu = 2` and `rx_cpu = 3` inside a Lasso set of
+  CPUs 2-3 made its pump wake ~31 ms late about 300 times an hour. Each
+  late wake re-bootstrapped the engine and dropped ~12 blocks
+  (`cause=late`, `missed=12`). Removing the two keys, so the threads float
+  on the process's CPUs, brought it to 0 in 30 min (dasio#24).
+- So on such a PC, give the process its CPUs with Lasso and pin no thread.
+  FOH's thread pins (pump/rx/io) belong to its spinning real-time profile.
+- After any CPU change, count `engine pump lost` lines per hour by
+  `cause=` before and after, not only network loss.
