@@ -56,21 +56,35 @@ pub fn unregister_keys(
     name: Option<&str>,
     listed: &[(String, String)],
 ) -> Option<Vec<String>> {
-    let _ = listed;
-    keys(n, name).map(|k| k.to_vec())
+    let guid = braced(&clsid(n)?);
+    let name = name.map_or_else(|| driver_name(n), str::to_string);
+    let [class, asio] = keys(n, Some(&name))?;
+    // Another ASIO entry naming the same class still needs it (#112).
+    // Registry key names and GUIDs compare without case.
+    let shared = listed
+        .iter()
+        .any(|(other, g)| !other.eq_ignore_ascii_case(&name) && g.eq_ignore_ascii_case(&guid));
+    Some(if shared {
+        vec![asio]
+    } else {
+        vec![class, asio]
+    })
 }
 
 #[cfg(windows)]
-pub use win::{apply, remove};
+pub use win::{apply, listed, remove};
 
 #[cfg(windows)]
 mod win {
     use std::io;
 
-    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
+    use windows_sys::Win32::Foundation::{
+        ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS,
+    };
     use windows_sys::Win32::System::Registry::{
-        HKEY, HKEY_LOCAL_MACHINE, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey,
-        RegCreateKeyExW, RegDeleteTreeW, RegSetValueExW,
+        HKEY, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ,
+        RRF_RT_REG_SZ, RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegEnumKeyExW, RegGetValueW,
+        RegOpenKeyExW, RegSetValueExW,
     };
 
     use super::Entry;
@@ -124,6 +138,77 @@ mod win {
             }
         }
         Ok(())
+    }
+
+    /// The ASIO entries under `HKLM\\SOFTWARE\\ASIO`: each subkey's name and
+    /// its `CLSID` value (an entry without one is skipped). No key: none.
+    pub fn listed() -> io::Result<Vec<(String, String)>> {
+        let mut root: HKEY = std::ptr::null_mut();
+        // SAFETY: a valid NUL-terminated subkey and out pointer.
+        let r = unsafe {
+            RegOpenKeyExW(
+                HKEY_LOCAL_MACHINE,
+                wide("SOFTWARE\\ASIO").as_ptr(),
+                0,
+                KEY_READ,
+                &mut root,
+            )
+        };
+        if r == ERROR_FILE_NOT_FOUND {
+            return Ok(Vec::new());
+        }
+        if r != ERROR_SUCCESS {
+            return Err(io::Error::from_raw_os_error(r as i32));
+        }
+        let mut out = Vec::new();
+        for i in 0.. {
+            let mut buf = [0u16; 256];
+            let mut len = buf.len() as u32;
+            // SAFETY: an open key; `buf` holds `len` UTF-16 units.
+            let r = unsafe {
+                RegEnumKeyExW(
+                    root,
+                    i,
+                    buf.as_mut_ptr(),
+                    &mut len,
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            };
+            if r == ERROR_NO_MORE_ITEMS {
+                break;
+            }
+            if r != ERROR_SUCCESS {
+                // SAFETY: the key opened above.
+                unsafe { RegCloseKey(root) };
+                return Err(io::Error::from_raw_os_error(r as i32));
+            }
+            let name = String::from_utf16_lossy(&buf[..len as usize]);
+            let mut data = [0u16; 64];
+            let mut size = (data.len() * 2) as u32;
+            // SAFETY: an open key, a NUL-terminated subkey and value name,
+            // and `data` of `size` bytes.
+            let r = unsafe {
+                RegGetValueW(
+                    root,
+                    wide(&name).as_ptr(),
+                    wide("CLSID").as_ptr(),
+                    RRF_RT_REG_SZ,
+                    std::ptr::null_mut(),
+                    data.as_mut_ptr().cast(),
+                    &mut size,
+                )
+            };
+            if r == ERROR_SUCCESS {
+                let units = (size as usize / 2).saturating_sub(1);
+                out.push((name, String::from_utf16_lossy(&data[..units])));
+            }
+        }
+        // SAFETY: the key opened above.
+        unsafe { RegCloseKey(root) };
+        Ok(out)
     }
 
     /// Removes the trees `keys` under HKLM; one already gone is fine.

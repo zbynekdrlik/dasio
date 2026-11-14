@@ -108,9 +108,12 @@ fn main() -> ExitCode {
                 .and_then(|m| usize::from_str_radix(m.trim_start_matches("0x"), 16).ok());
             probe(instance, seconds, affinity)
         }
-        "unregister" => match dasio::register::keys(instance, flag(&args, "--name").as_deref()) {
-            Some(keys) => remove(&keys),
-            None => return usage(),
+        "unregister" => match listed().map(|on_pc| {
+            dasio::register::unregister_keys(instance, flag(&args, "--name").as_deref(), &on_pc)
+        }) {
+            Ok(Some(keys)) => remove(&keys),
+            Ok(None) => return usage(),
+            Err(e) => Err(e),
         },
         "run" | "service" => {
             quiet_crashes();
@@ -197,7 +200,16 @@ fn apply(entries: &[dasio::register::Entry]) -> Result<(), String> {
 
 #[cfg(windows)]
 fn remove(keys: &[String]) -> Result<(), String> {
+    for k in keys {
+        println!("removing HKLM\\{k}");
+    }
     dasio::register::remove(keys).map_err(|e| e.to_string())
+}
+
+/// The ASIO entries on this PC, for `unregister` (#112).
+#[cfg(windows)]
+fn listed() -> Result<Vec<(String, String)>, String> {
+    dasio::register::listed().map_err(|e| e.to_string())
 }
 
 #[cfg(windows)]
@@ -302,6 +314,11 @@ fn apply(_entries: &[dasio::register::Entry]) -> Result<(), String> {
 
 #[cfg(not(windows))]
 fn remove(_keys: &[String]) -> Result<(), String> {
+    Err("Windows only".into())
+}
+
+#[cfg(not(windows))]
+fn listed() -> Result<Vec<(String, String)>, String> {
     Err("Windows only".into())
 }
 
