@@ -109,3 +109,12 @@ Owner rules from dasio#1. They hold for every change on a PC running dasio.
   compare them with the count before; there must be no `older than the
   latency` lines. Flow requests logged as "held: our TX clock is not ready
   yet" in the first seconds are normal.
+- **After the Dante address is removed and set again, restart dasio-N and
+  dlisten**, even if they look healthy. On mbc (14.11.2026, dstack#282) a
+  rollback re-set the address with netsh. dasio kept running and its ARC
+  still answered direct queries, but its mDNS socket had lost its multicast
+  membership. mbc-snv vanished from mDNS, stream-obs could not ask for its
+  flow again, and the stream had no program audio for 17 minutes. The same
+  fault showed in dtray as "expected, not running" for devices that were
+  running. This holds until dstack#282 ships a rejoin. Check the receivers
+  (stream-obs) after the restart, not only dasio's log.
