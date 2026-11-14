@@ -20,3 +20,4 @@ Design: `docs/design/2026-10-29-dante-asio-design.md`; MVP plan: `docs/plans/202
 - the PC profile (FOH Windows settings, Lasso) → `.claude/rules/pc-profile.md` (auto-loads on its `paths:`)
 - dstack deps, the device's address and port slot → `.claude/rules/dstack-deps.md` (auto-loads on its `paths:`)
 - the driver's host tests (packed ABI fields, instance numbers) → `.claude/rules/asio-driver-tests.md` (auto-loads on its `paths:`)
+- the bridge instance kind (`[bridge]`, a local ASIO driver) → `.claude/rules/bridge-kind.md` (auto-loads on its `paths:`)

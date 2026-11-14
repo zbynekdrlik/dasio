@@ -49,17 +49,42 @@ pub fn keys(n: u32, name: Option<&str>) -> Option<[String; 2]> {
     ])
 }
 
+/// The keys `unregister` removes for instance `n` listed as `name`, given
+/// the ASIO entries on the PC (`listed`: each entry's name and CLSID).
+pub fn unregister_keys(
+    n: u32,
+    name: Option<&str>,
+    listed: &[(String, String)],
+) -> Option<Vec<String>> {
+    let guid = braced(&clsid(n)?);
+    let name = name.map_or_else(|| driver_name(n), str::to_string);
+    let [class, asio] = keys(n, Some(&name))?;
+    // Another ASIO entry naming the same class still needs it (#112).
+    // Registry key names and GUIDs compare without case.
+    let shared = listed
+        .iter()
+        .any(|(other, g)| !other.eq_ignore_ascii_case(&name) && g.eq_ignore_ascii_case(&guid));
+    Some(if shared {
+        vec![asio]
+    } else {
+        vec![class, asio]
+    })
+}
+
 #[cfg(windows)]
-pub use win::{apply, remove};
+pub use win::{apply, listed, remove};
 
 #[cfg(windows)]
 mod win {
     use std::io;
 
-    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
+    use windows_sys::Win32::Foundation::{
+        ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS,
+    };
     use windows_sys::Win32::System::Registry::{
-        HKEY, HKEY_LOCAL_MACHINE, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey,
-        RegCreateKeyExW, RegDeleteTreeW, RegSetValueExW,
+        HKEY, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ,
+        RRF_RT_REG_SZ, RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegEnumKeyExW, RegGetValueW,
+        RegOpenKeyExW, RegSetValueExW,
     };
 
     use super::Entry;
@@ -115,6 +140,77 @@ mod win {
         Ok(())
     }
 
+    /// The ASIO entries under `HKLM\\SOFTWARE\\ASIO`: each subkey's name and
+    /// its `CLSID` value (an entry without one is skipped). No key: none.
+    pub fn listed() -> io::Result<Vec<(String, String)>> {
+        let mut root: HKEY = std::ptr::null_mut();
+        // SAFETY: a valid NUL-terminated subkey and out pointer.
+        let r = unsafe {
+            RegOpenKeyExW(
+                HKEY_LOCAL_MACHINE,
+                wide("SOFTWARE\\ASIO").as_ptr(),
+                0,
+                KEY_READ,
+                &mut root,
+            )
+        };
+        if r == ERROR_FILE_NOT_FOUND {
+            return Ok(Vec::new());
+        }
+        if r != ERROR_SUCCESS {
+            return Err(io::Error::from_raw_os_error(r as i32));
+        }
+        let mut out = Vec::new();
+        for i in 0.. {
+            let mut buf = [0u16; 256];
+            let mut len = buf.len() as u32;
+            // SAFETY: an open key; `buf` holds `len` UTF-16 units.
+            let r = unsafe {
+                RegEnumKeyExW(
+                    root,
+                    i,
+                    buf.as_mut_ptr(),
+                    &mut len,
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            };
+            if r == ERROR_NO_MORE_ITEMS {
+                break;
+            }
+            if r != ERROR_SUCCESS {
+                // SAFETY: the key opened above.
+                unsafe { RegCloseKey(root) };
+                return Err(io::Error::from_raw_os_error(r as i32));
+            }
+            let name = String::from_utf16_lossy(&buf[..len as usize]);
+            let mut data = [0u16; 64];
+            let mut size = (data.len() * 2) as u32;
+            // SAFETY: an open key, a NUL-terminated subkey and value name,
+            // and `data` of `size` bytes.
+            let r = unsafe {
+                RegGetValueW(
+                    root,
+                    wide(&name).as_ptr(),
+                    wide("CLSID").as_ptr(),
+                    RRF_RT_REG_SZ,
+                    std::ptr::null_mut(),
+                    data.as_mut_ptr().cast(),
+                    &mut size,
+                )
+            };
+            if r == ERROR_SUCCESS {
+                let units = (size as usize / 2).saturating_sub(1);
+                out.push((name, String::from_utf16_lossy(&data[..units])));
+            }
+        }
+        // SAFETY: the key opened above.
+        unsafe { RegCloseKey(root) };
+        Ok(out)
+    }
+
     /// Removes the trees `keys` under HKLM; one already gone is fine.
     pub fn remove(keys: &[String]) -> io::Result<()> {
         for k in keys {
@@ -155,6 +251,57 @@ mod tests {
         assert_eq!(
             keys(1, Some("master-asio-dante")).unwrap()[1],
             "SOFTWARE\\ASIO\\master-asio-dante"
+        );
+    }
+
+    const G1: &str = "{5D4A7C21-9B3E-4F6A-8C11-2E475A90D101}";
+    const CLASS1: &str = "SOFTWARE\\Classes\\CLSID\\{5D4A7C21-9B3E-4F6A-8C11-2E475A90D101}";
+
+    fn listed(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(n, g)| (n.to_string(), g.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn unregistering_an_old_name_keeps_the_class_another_name_uses() {
+        // mbc, 14.11.2026 (#112): "dasio 1" and "mbc-snv" both name
+        // instance 1's CLSID; dropping "dasio 1" removed the class too.
+        let on_pc = listed(&[
+            ("dasio 1", G1),
+            ("mbc-snv", &G1.to_lowercase()),
+            ("UMC ASIO Driver", "{0351302F-B1F1-4A5D-8613-787F77C20EA4}"),
+        ]);
+        assert_eq!(
+            unregister_keys(1, Some("dasio 1"), &on_pc).unwrap(),
+            vec!["SOFTWARE\\ASIO\\dasio 1".to_string()]
+        );
+    }
+
+    #[test]
+    fn unregistering_the_last_name_removes_the_class_too() {
+        let on_pc = listed(&[
+            ("mbc-snv", G1),
+            ("Other", "{0351302F-B1F1-4A5D-8613-787F77C20EA4}"),
+        ]);
+        assert_eq!(
+            unregister_keys(1, Some("mbc-snv"), &on_pc).unwrap(),
+            vec![CLASS1.to_string(), "SOFTWARE\\ASIO\\mbc-snv".to_string()]
+        );
+        // Nothing listed at all (an entry already gone): the class goes.
+        assert_eq!(unregister_keys(1, Some("mbc-snv"), &[]).unwrap().len(), 2);
+        assert_eq!(unregister_keys(0, None, &[]), None);
+    }
+
+    #[test]
+    fn a_name_is_matched_without_case_like_the_registry() {
+        // Windows key names are case-insensitive: "MBC-SNV" is the same
+        // entry as "mbc-snv", not another user of the class.
+        let on_pc = listed(&[("MBC-SNV", G1)]);
+        assert_eq!(
+            unregister_keys(1, Some("mbc-snv"), &on_pc).unwrap().len(),
+            2
         );
     }
 }
