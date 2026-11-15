@@ -422,6 +422,14 @@ name = "ThrottleRate"
 qword = 25000
 why = "dstack#288: caps this PC's own outgoing mDNS at 200 kbit/s (a QoS policy; ms_pacer stays bound on the Dante adapter); FOH 20:22, mbc 21:32 CET 15.11.2026"
 
+[[registry]]
+key = '{nic_class}'
+name = "DriverVersion"
+string = "10.79.20.1003"
+nic_service = "rtcx21"
+check_only = true
+why = "the Dante NIC runs Microsoft's inbox Realtek driver (rtcx21): install Realtek's rt640x64 10.79 as on FOH (dsg 15.11.2026 measured ~550 us later arrival than iem-mixer on the same flow, dasio#128)"
+
 [[bcd]]
 name = "disabledynamictick"
 value = "Yes"
