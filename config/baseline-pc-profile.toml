@@ -1,0 +1,383 @@
+# dasio's baseline PC setup (dasio#128): every Windows setting proven on the
+# FOH PC, mbc and dsg, applied and checked on every dasio PC. Built into
+# dasio.exe; each PC's own profile (C:\ProgramData\dasio\pc-profile.toml)
+# adds or overrides site data (adapter GUID, CPU layout, its own services).
+# No site data here: no addresses, no device names, no GUIDs of one PC.
+# Check: dasio pc-profile check; set: dasio pc-profile apply [--plan].
+name = "dasio baseline"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile'
+name = "SystemResponsiveness"
+dword = 10
+why = "FOH measured 10; 0 was not honoured (20 % demotion), dasio#1"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile'
+name = "NetworkThrottlingIndex"
+dword = 4294967295
+why = "no network throttling under multimedia load, dasio#1"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\MMCSS'
+name = "Start"
+dword = 4
+why = "owner 4.11.2026: MMCSS off; with it on the DAWs and the driver thread ran demoted to pri 3 for 8-19 %, dasio#1"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager'
+name = "DisableWpbtExecution"
+dword = 1
+why = "no firmware-installed vendor services (FOH Gigabyte, dsg Acer), dasio#1"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\Maintenance'
+name = "MaintenanceDisabled"
+dword = 1
+why = "no automatic maintenance on a dasio PC, dasio#120"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+name = "AllowTelemetry"
+dword = 0
+why = "no telemetry work, dasio#120"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+name = "NoAutoUpdate"
+dword = 1
+why = "owner: Windows updates are dasio's job, never automatic (dasio#109, #120)"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+name = "ExcludeWUDriversInQualityUpdate"
+dword = 1
+why = "Windows Update never replaces the tuned NIC driver, dasio#1"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\wuauserv'
+name = "Start"
+dword = 3
+why = "Windows Update manual only; dasio runs it on purpose"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\UsoSvc'
+name = "Start"
+dword = 4
+absent_ok = true
+why = "owner: Windows updates are dasio's job, never automatic (dasio#109, #120)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\SysMain'
+name = "Start"
+dword = 4
+absent_ok = true
+why = "not needed on a dasio PC (FOH 4.11, dsg 15.11.2026, dasio#120)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\WSearch'
+name = "Start"
+dword = 4
+absent_ok = true
+why = "not needed on a dasio PC (FOH 4.11, dsg 15.11.2026, dasio#120)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\DiagTrack'
+name = "Start"
+dword = 4
+absent_ok = true
+why = "not needed on a dasio PC (FOH 4.11, dsg 15.11.2026, dasio#120)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\DoSvc'
+name = "Start"
+dword = 4
+absent_ok = true
+why = "not needed on a dasio PC (FOH 4.11, dsg 15.11.2026, dasio#120)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\Spooler'
+name = "Start"
+dword = 4
+absent_ok = true
+why = "not needed on a dasio PC (FOH 4.11, dsg 15.11.2026, dasio#120)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\MapsBroker'
+name = "Start"
+dword = 4
+absent_ok = true
+why = "not needed on a dasio PC (FOH 4.11, dsg 15.11.2026, dasio#120)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\RetailDemo'
+name = "Start"
+dword = 4
+absent_ok = true
+why = "not needed on a dasio PC (FOH 4.11, dsg 15.11.2026, dasio#120)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\WerSvc'
+name = "Start"
+dword = 4
+absent_ok = true
+why = "not needed on a dasio PC (FOH 4.11, dsg 15.11.2026, dasio#120)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\lfsvc'
+name = "Start"
+dword = 4
+absent_ok = true
+why = "not needed on a dasio PC (FOH 4.11, dsg 15.11.2026, dasio#120)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\TrkWks'
+name = "Start"
+dword = 4
+absent_ok = true
+why = "not needed on a dasio PC (FOH 4.11, dsg 15.11.2026, dasio#120)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\PcaSvc'
+name = "Start"
+dword = 4
+absent_ok = true
+why = "not needed on a dasio PC (FOH 4.11, dsg 15.11.2026, dasio#120)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\DPS'
+name = "Start"
+dword = 4
+absent_ok = true
+why = "not needed on a dasio PC (FOH 4.11, dsg 15.11.2026, dasio#120)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\InventorySvc'
+name = "Start"
+dword = 4
+absent_ok = true
+why = "not needed on a dasio PC (FOH 4.11, dsg 15.11.2026, dasio#120)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\WSAIFabricSvc'
+name = "Start"
+dword = 4
+absent_ok = true
+why = "not needed on a dasio PC (FOH 4.11, dsg 15.11.2026, dasio#120)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\whesvc'
+name = "Start"
+dword = 4
+absent_ok = true
+why = "not needed on a dasio PC (FOH 4.11, dsg 15.11.2026, dasio#120)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\{active_scheme}\54533251-82be-4824-96c1-47b60b740d00\893dee8e-2bef-41e0-89c6-b55d0929964c'
+name = "ACSettingIndex"
+dword = 100
+why = "processor minimum state 100 % (the active power plan, dasio#120)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\{active_scheme}\54533251-82be-4824-96c1-47b60b740d00\bc5038f7-23e0-4960-96da-33abaf5935ec'
+name = "ACSettingIndex"
+dword = 100
+why = "processor maximum state 100 % (the active power plan, dasio#120)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\{active_scheme}\54533251-82be-4824-96c1-47b60b740d00\0cc5b647-c1df-4637-891a-dec35c318583'
+name = "ACSettingIndex"
+dword = 100
+why = "core parking off (minimum cores 100 %) (the active power plan, dasio#120)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\{active_scheme}\501a4d13-42af-4429-9fd1-a8218c268e20\ee12f906-d277-404b-b6da-e5fa1a576df5'
+name = "ACSettingIndex"
+dword = 0
+why = "PCIe link state power management off (the active power plan, dasio#120)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\{active_scheme}\2a737441-1930-4402-8d77-b2bebba308a3\48e6b7a6-50f5-4782-a5d4-53bb8f07e226'
+name = "ACSettingIndex"
+dword = 0
+why = "USB selective suspend off (USB NICs and audio interfaces) (the active power plan, dasio#120)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\{active_scheme}\238c9fa8-0aad-41ed-83f4-97be242c8f20\29f6c1db-86da-48c5-9fdb-f2b67b1f44da'
+name = "ACSettingIndex"
+dword = 0
+why = "never sleep (the active power plan, dasio#120)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\{active_scheme}\238c9fa8-0aad-41ed-83f4-97be242c8f20\9d7815a6-7ee4-497e-8888-515a05f02364'
+name = "ACSettingIndex"
+dword = 0
+why = "never hibernate (the active power plan, dasio#120)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\Power'
+name = "HibernateEnabled"
+dword = 0
+why = "no hibernation, FOH dasio#1"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\dasiopacer\Parameters'
+name = "TxMaxOut"
+dword = 200
+absent_ok = true
+why = "media TX's bound on frames out at the miniport, FOH's measured value (ndis-pacer rule)"
+
+[[registry]]
+key = '{nic_class}'
+name = "DriverVersion"
+string = "10.79.20.1003"
+nic_service = "rt640x64"
+why = "Realtek 10.79 measured best with rxd + kernel TX; the inbox and 10.39 drivers were worse, dasio#1"
+
+[[registry]]
+key = '{nic_class}'
+name = "*EEE"
+string = "0"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "*FlowControl"
+string = "0"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "*InterruptModeration"
+string = "0"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "*JumboPacket"
+string = "1514"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "*LsoV2IPv4"
+string = "0"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "*LsoV2IPv6"
+string = "0"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "*ModernStandbyWoLMagicPacket"
+string = "0"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "*ReceiveBuffers"
+string = "4096"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "*TransmitBuffers"
+string = "4096"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "*RSS"
+string = "1"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "*SpeedDuplex"
+string = "0"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "*WakeOnMagicPacket"
+string = "0"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "*WakeOnPattern"
+string = "0"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "AdvancedEEE"
+string = "0"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "EnableGreenEthernet"
+string = "0"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "GigaLite"
+string = "0"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "PowerSavingMode"
+string = "0"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "S5WakeOnLan"
+string = "0"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "WolShutdownLinkSpeed"
+string = "0"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[bcd]]
+name = "disabledynamictick"
+value = "Yes"
+why = "idle CPUs keep the timer tick (FOH 11.11.2026, dasio#26)"
+
+[[bcd]]
+name = "testsigning"
+value = "Yes"
+why = "dasio_pacer, the NDIS filter, is test-signed; dasio does not run without it (owner 15.11.2026, dasio#125)"
+
+[[disk]]
+drive = "C:"
+min_free_gb = 20
+why = "a full C: hurts the DAWs, Windows updates and the logs (FOH 9.11.2026)"

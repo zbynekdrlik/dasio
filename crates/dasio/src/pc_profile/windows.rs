@@ -39,22 +39,32 @@ fn from_wide(w: &[u16]) -> String {
 pub struct Pc {
     nic_class: Option<String>,
     nic_device: Option<String>,
+    /// The Dante NIC's driver service (its Enum key's `Service`).
+    nic_service: Option<String>,
 }
 
 impl Pc {
     pub fn new(p: &Profile) -> Pc {
         let nic_class = p.nic_guid.as_deref().and_then(find_nic_class);
-        let nic_device = nic_class
+        let instance = nic_class
             .as_deref()
             .and_then(|k| match read(k, "DeviceInstanceID") {
-                Ok(Some(Value::String(id))) => Some(format!(
-                    r"SYSTEM\CurrentControlSet\Enum\{id}\Device Parameters"
-                )),
+                Ok(Some(Value::String(id))) => Some(id),
                 _ => None,
             });
+        let nic_device = instance
+            .as_deref()
+            .map(|id| format!(r"SYSTEM\CurrentControlSet\Enum\{id}\Device Parameters"));
+        let nic_service = instance.as_deref().and_then(|id| {
+            match read(&format!(r"SYSTEM\CurrentControlSet\Enum\{id}"), "Service") {
+                Ok(Some(Value::String(s))) => Some(s),
+                _ => None,
+            }
+        });
         Pc {
             nic_class,
             nic_device,
+            nic_service,
         }
     }
 
@@ -67,6 +77,19 @@ impl Pc {
                     .as_deref()
                     .ok_or("the Dante NIC's class key was not found")?
             )
+        } else if let Some(rest) = key.strip_prefix(
+            r"HKLM\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\{active_scheme}",
+        ) {
+            // The active power plan's own key (dasio#128): the baseline
+            // sets its processor and power values, whichever plan it is.
+            let scheme = match read(
+                r"SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes",
+                "ActivePowerScheme",
+            ) {
+                Ok(Some(Value::String(g))) => g,
+                _ => return Err("the active power plan was not found".into()),
+            };
+            format!(r"SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\{scheme}{rest}")
         } else if let Some(rest) = key.strip_prefix("{nic_device}") {
             format!(
                 "{}{rest}",
@@ -99,6 +122,10 @@ impl Pc {
 }
 
 impl Reader for Pc {
+    fn nic_service(&self) -> Option<String> {
+        self.nic_service.clone()
+    }
+
     fn reg(&self, key: &str, name: &str) -> Result<Option<Value>, String> {
         read(&self.resolve(key)?, name)
     }

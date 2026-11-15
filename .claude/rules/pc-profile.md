@@ -8,6 +8,15 @@ paths:
 
 # The PC profile (dasio#5)
 
+- **The baseline first (dasio#128, owner 15.11.2026).** Every proven
+  setting lives in `config/baseline-pc-profile.toml`, built into dasio and
+  merged with each PC's own profile (`pc_profile::load`). A new finding on
+  any PC goes into the baseline (with its why and ticket), not into one
+  PC's file; a PC's file holds only site data (adapter GUID, CPU layout,
+  its own services, overrides). NIC-family settings carry `nic_service`
+  (the Dante NIC's driver service, e.g. `rt640x64`); power-plan values use
+  `{active_scheme}`. Never set up a new PC by redoing findings one by one.
+
 - Every Windows, NIC, driver-parameter or Process Lasso change on a dasio
   PC goes into that PC's profile in the same step. A change that lives only
   on the PC is lost with the next Windows upgrade or reinstall.

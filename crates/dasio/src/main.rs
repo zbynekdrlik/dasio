@@ -340,11 +340,9 @@ fn run(
 /// (unless `plan_only`) and checks again. Exit 1 on any problem left.
 #[cfg(windows)]
 fn pc_profile(path: &str, apply: bool, plan_only: bool) -> ExitCode {
-    use dasio::pc_profile::{Action, check, parse, plan, takes_effect, windows::Pc};
-    let p = match std::fs::read_to_string(path)
-        .map_err(|e| e.to_string())
-        .and_then(|t| parse(&t))
-    {
+    use dasio::pc_profile::{Action, check, load, plan, takes_effect, windows::Pc};
+    // The built-in baseline (dasio#128) with this PC's own profile.
+    let p = match load(std::path::Path::new(path)) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("dasio: the profile {path}: {e}");
