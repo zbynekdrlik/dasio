@@ -254,11 +254,16 @@ fn round_trip_stalled(instance: u32, seconds: u64, stall_ms: u64) -> dasio::prob
         r.emitted,
         r.skipped
     );
+    // An impulse lost while the host itself lost its CPU on the way is
+    // the runner's (CI 43579913777: the probe's host stalled 16 ms and the
+    // real-time pump 13 ms at once, the VM stopping the whole guest; 2 of 4
+    // back, dasio#114). Every other lost impulse fails, as before.
     assert!(
-        r.round_trips.len() as u64 >= r.emitted - 1,
-        "instance {instance}: impulses back: {} of {}",
+        r.round_trips.len() as u64 + r.lost_in_host_gap >= r.emitted - 1,
+        "instance {instance}: impulses back: {} of {} ({} lost while the host had a gap)",
         r.round_trips.len(),
-        r.emitted
+        r.emitted,
+        r.lost_in_host_gap
     );
     let (min, max) = (
         *r.round_trips.iter().min().unwrap(),

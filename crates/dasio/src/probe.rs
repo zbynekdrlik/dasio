@@ -44,6 +44,11 @@ pub struct Report {
     /// RX 1's largest magnitude in each second, and the sample of it within
     /// the second (the impulses' arrivals, whatever their level).
     pub rx_peaks: Vec<(i32, u64)>,
+    /// Impulses that never came back while the host itself lost its CPU
+    /// on their way (a switch over 1 ms late between their emit and the
+    /// next): a shared runner's VM stopping the whole guest, not the
+    /// device (dasio#114). Any other lost impulse is the device's.
+    pub lost_in_host_gap: u64,
 }
 
 /// The onset of an arrival: a quarter of the impulse.
@@ -64,6 +69,9 @@ struct State {
     stalled: bool,
     next_emit: u64,
     last_emit: Option<u64>,
+    /// `GAPS_OVER_1MS` when `last_emit` left.
+    gaps_at_emit: u64,
+    lost_in_host_gap: u64,
     round_trips: Vec<u64>,
     emitted: u64,
     skipped: u64,
@@ -180,6 +188,13 @@ unsafe fn switch_body(half: i32, _direct: ASIOBool, pos: Option<u64>) {
         }
     }
     if s.next_emit >= s.position && s.next_emit < s.position + n as u64 {
+        // The impulse before never came back: the host's, when the host
+        // lost its CPU on its way.
+        let gaps = GAPS_OVER_1MS.load(Ordering::Relaxed);
+        if s.last_emit.is_some() && gaps > s.gaps_at_emit {
+            s.lost_in_host_gap += 1;
+        }
+        s.gaps_at_emit = gaps;
         s.last_emit = Some(s.next_emit);
         s.emitted += 1;
         s.next_emit += 96_000;
@@ -301,6 +316,8 @@ pub fn probe_stalled(instance: u32, seconds: u64, stall_ms: u64) -> Result<Repor
             stalled: false,
             next_emit: 96_000,
             last_emit: None,
+            gaps_at_emit: 0,
+            lost_in_host_gap: 0,
             round_trips: Vec::new(),
             emitted: 0,
             skipped: 0,
@@ -342,6 +359,7 @@ pub fn probe_stalled(instance: u32, seconds: u64, stall_ms: u64) -> Result<Repor
     report.emitted = s.emitted;
     report.skipped = s.skipped;
     report.round_trips = s.round_trips;
+    report.lost_in_host_gap = s.lost_in_host_gap;
     report.rx_peaks = s.peaks;
     Ok(report)
 }
