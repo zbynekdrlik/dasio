@@ -1105,3 +1105,56 @@ fn a_qword_value_is_its_own_kind() {
             .any(|e| e.name == "ThrottleRate" && e.qword == Some(25000))
     );
 }
+
+#[test]
+fn a_check_only_entry_is_reported_and_never_set() {
+    // dasio#128 review: apply must not write a driver's DriverVersion.
+    let p = parse_with(
+        "name = \"b\"\n[[registry]]\nkey = 'HKLM\\N'\nname = \"DriverVersion\"\nstring = \"10.79\"\ncheck_only = true\n",
+        false,
+    )
+    .unwrap();
+    let pc = Pc::default();
+    assert_eq!(check(&p, &pc).len(), 1);
+    assert!(plan(&p, &pc).is_empty());
+}
+
+#[test]
+fn a_missing_dante_nic_is_a_problem_when_nic_entries_need_it() {
+    let p = parse(
+        "name = \"pc\"\nnic_guid = \"{X}\"\n[[registry]]\nkey = '{nic_class}'\nname = \"*EEE\"\nstring = \"0\"\nnic_service = \"rt640x64\"\n",
+    )
+    .unwrap();
+    let gone = check(&p, &Pc::default());
+    assert_eq!(gone.len(), 1);
+    assert!(gone[0].what.contains("{X}"), "{gone:?}");
+    let there = Pc {
+        nic_service: Some("rtux64w10".into()),
+        ..Pc::default()
+    };
+    assert!(
+        check(&p, &there).is_empty(),
+        "another family: nothing to check, no problem"
+    );
+}
+
+#[test]
+fn power_plan_and_qos_values_name_how_they_take_effect() {
+    let a = |key: &str| Action::Reg {
+        key: key.into(),
+        name: "X".into(),
+        value: Value::Dword(1),
+    };
+    assert!(
+        takes_effect(&a(
+            r"HKLM\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\{active_scheme}\a\b"
+        ))
+        .contains("powercfg")
+    );
+    assert!(
+        takes_effect(&a(
+            r"HKLM\SOFTWARE\Policies\Microsoft\Windows\QoS\dstack Dante leg mDNS cap"
+        ))
+        .contains("gpupdate")
+    );
+}
