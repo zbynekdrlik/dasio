@@ -803,6 +803,35 @@ pub enum ChildCheck {
     NoProfile(String),
 }
 
+/// The part of `p` a check reads without starting a process: a bridge
+/// instance checks in its own process, since a child started while an
+/// ASIO driver is loaded makes SoundGrid resync (dasio#106, dasio#120).
+/// `[[bcd]]` and `[[task]]` need `bcdedit` / `schtasks`: they are left to
+/// `dasio pc-profile check` and the boot-time `pc-profile apply`.
+pub fn in_process(p: &Profile) -> Profile {
+    Profile {
+        bcd: Vec::new(),
+        task: Vec::new(),
+        ..p.clone()
+    }
+}
+
+/// The problems of `now` not in `before` (they appeared) and of `before`
+/// not in `now` (they were fixed), each in its list's order.
+pub fn changes<'a>(before: &'a [String], now: &'a [String]) -> (Vec<&'a str>, Vec<&'a str>) {
+    let appeared = now
+        .iter()
+        .filter(|t| !before.contains(t))
+        .map(String::as_str)
+        .collect();
+    let fixed = before
+        .iter()
+        .filter(|t| !now.contains(t))
+        .map(String::as_str)
+        .collect();
+    (appeared, fixed)
+}
+
 /// The child's output: `PROBLEM <text>` lines and a `PC profile ...`
 /// summary when the profile was read; otherwise only an error on stderr.
 pub fn read_child_check(stdout: &str, stderr: &str) -> ChildCheck {

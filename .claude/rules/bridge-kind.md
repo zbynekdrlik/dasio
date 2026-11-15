@@ -17,7 +17,12 @@ paths:
   `Fields::read` (dstack) must learn it, or the settings window refuses the
   file.
 - A bridge instance spawns no child process (SoundGrid resyncs on a spawn):
-  never call `run::profile` or `Command::new` from `run_bridge.rs`.
+  never call `Command::new` from `run_bridge.rs`, nor `ProfileWatch::start`
+  (the DAW kind's `dasio pc-profile check` child). The bridge checks the PC
+  profile with `ProfileWatch::start_in_process` (dasio#120): its own thread
+  at the lowest priority, `pc_profile::in_process` drops `[[bcd]]` and
+  `[[task]]` (bcdedit / schtasks are child processes); the boot task's
+  `pc-profile apply` covers those.
 - The runner thread makes `WinDevice::new()` itself: the device is `!Send`
   (its COM STA lives on that thread). `Bridge` is shared as
   `Arc<Mutex<Bridge>>`: `MakeProcess` calls `asio_side` there, the main
