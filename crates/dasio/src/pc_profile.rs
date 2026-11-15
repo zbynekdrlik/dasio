@@ -409,7 +409,7 @@ fn parse_with(text: &str, need_nic_guid: bool) -> Result<Profile, String> {
     for r in &p.registry {
         if want_reg(r).is_none() {
             return Err(format!(
-                "registry {}\\{}: give exactly one of dword, qword, string, binary (binary as hex), multi_sz",
+                "registry {}\\{}: give exactly one of dword, string, binary (binary as hex), multi_sz, qword",
                 r.key, r.name
             ));
         }
