@@ -61,15 +61,9 @@ impl ProfileWatch {
         let spawned = std::thread::Builder::new()
             .name("pc-profile".into())
             .spawn(move || {
-                // No profile on this PC: no child to start.
-                let path = std::path::Path::new(crate::pc_profile::DEFAULT_PATH);
-                let found = if path.exists() {
-                    check(own)
-                } else {
-                    Ok(crate::pc_profile::ChildCheck::NoProfile(
-                        "the file does not exist".into(),
-                    ))
-                };
+                // The built-in baseline applies on every PC, a site profile
+                // or not (dasio#128).
+                let found = check(own);
                 let n = match found {
                     Ok(found) => record(&last, found),
                     Err(e) => {
@@ -121,7 +115,7 @@ fn record(last: &Mutex<Option<Vec<String>>>, found: crate::pc_profile::ChildChec
 /// the entries whose reading starts a process
 /// ([`crate::pc_profile::in_process`]).
 fn in_process_check(_own: usize) -> Result<crate::pc_profile::ChildCheck, String> {
-    use crate::pc_profile::{ChildCheck, check, in_process, parse, windows::Pc};
+    use crate::pc_profile::{ChildCheck, check, in_process, load, windows::Pc};
     use windows_sys::Win32::System::Threading::{
         GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_LOWEST,
     };
@@ -129,11 +123,8 @@ fn in_process_check(_own: usize) -> Result<crate::pc_profile::ChildCheck, String
     if unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST) } == 0 {
         warn!(err = %std::io::Error::last_os_error(), "the PC profile check runs at normal priority");
     }
-    let path = crate::pc_profile::DEFAULT_PATH;
-    let p = match std::fs::read_to_string(path)
-        .map_err(|e| e.to_string())
-        .and_then(|t| parse(&t))
-    {
+    let path = std::path::Path::new(crate::pc_profile::DEFAULT_PATH);
+    let p = match load(path) {
         Ok(p) => in_process(&p),
         Err(e) => return Ok(ChildCheck::NoProfile(e)),
     };

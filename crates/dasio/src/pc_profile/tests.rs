@@ -18,9 +18,13 @@ struct Pc {
     tasks: HashMap<String, TaskState>,
     /// `task()` fails for these names.
     task_err: Vec<String>,
+    nic_service: Option<String>,
 }
 
 impl Reader for Pc {
+    fn nic_service(&self) -> Option<String> {
+        self.nic_service.clone()
+    }
     fn reg(&self, key: &str, name: &str) -> Result<Option<Value>, String> {
         if self.unreadable.iter().any(|k| k == key) {
             return Err("access denied".into());
@@ -898,4 +902,104 @@ fn changes_name_what_appeared_and_what_was_fixed() {
     assert_eq!(fixed, ["a"]);
     let (appeared, fixed) = changes(&now, &now);
     assert!(appeared.is_empty() && fixed.is_empty());
+}
+
+#[test]
+fn the_shipped_baseline_parses_and_holds_the_must_haves() {
+    // dasio#128: a broken baseline fails here, not on a PC.
+    let b = baseline().unwrap();
+    assert!(b.nic_guid.is_none(), "no site data in the baseline");
+    assert!(
+        b.bcd
+            .iter()
+            .any(|e| e.name == "testsigning" && e.value == "Yes")
+    );
+    assert!(b.bcd.iter().any(|e| e.name == "disabledynamictick"));
+    assert!(b.registry.iter().any(|e| e.key == "{nic_class}"
+        && e.name == "*InterruptModeration"
+        && e.nic_service.as_deref() == Some("rt640x64")));
+    assert!(b.registry.iter().any(|e| e.key.contains("{active_scheme}")));
+}
+
+fn site(text: &str) -> Profile {
+    parse(&format!("name = \"pc\"\n{text}")).unwrap()
+}
+
+#[test]
+fn a_site_entry_wins_over_the_baseline_and_the_rest_is_added() {
+    let base = parse_with(
+        "name = \"b\"\n[[registry]]\nkey = 'HKLM\\A'\nname = \"X\"\ndword = 1\n[[registry]]\nkey = 'HKLM\\A'\nname = \"Y\"\ndword = 2\n[[bcd]]\nname = \"testsigning\"\nvalue = \"Yes\"\n",
+        false,
+    )
+    .unwrap();
+    let pc = site(
+        "[[registry]]\nkey = 'HKLM\\a'\nname = \"x\"\ndword = 9\n[[registry]]\nkey = 'HKLM\\B'\nname = \"Z\"\ndword = 3\n",
+    );
+    let m = merge(&base, &pc);
+    assert_eq!(m.name, "pc");
+    let x: Vec<_> = m
+        .registry
+        .iter()
+        .filter(|e| e.name.eq_ignore_ascii_case("x"))
+        .collect();
+    assert_eq!(
+        x.len(),
+        1,
+        "one X, the site's (same key and name, case aside)"
+    );
+    assert_eq!(x[0].dword, Some(9));
+    assert!(
+        m.registry
+            .iter()
+            .any(|e| e.name == "Y" && e.dword == Some(2))
+    );
+    assert!(m.registry.iter().any(|e| e.name == "Z"));
+    assert_eq!(m.bcd.len(), 1);
+}
+
+#[test]
+fn the_baseline_s_nic_entries_need_the_site_s_nic_guid() {
+    let base = parse_with(
+        "name = \"b\"\n[[registry]]\nkey = '{nic_class}'\nname = \"*EEE\"\nstring = \"0\"\n[[registry]]\nkey = 'HKLM\\A'\nname = \"X\"\ndword = 1\n",
+        false,
+    )
+    .unwrap();
+    let without = merge(&base, &site(""));
+    assert_eq!(
+        without.registry.len(),
+        1,
+        "no NIC to read: its entries are left out"
+    );
+    assert_eq!(baseline_only(&base).registry.len(), 1);
+    let with = merge(&base, &site("nic_guid = \"{X}\"\n"));
+    assert_eq!(with.registry.len(), 2);
+}
+
+#[test]
+fn a_nic_family_entry_counts_only_on_that_driver() {
+    let p = parse_with(
+        "name = \"b\"\n[[registry]]\nkey = 'HKLM\\N'\nname = \"*EEE\"\nstring = \"0\"\nnic_service = \"rt640x64\"\n",
+        false,
+    )
+    .unwrap();
+    let realtek = Pc {
+        nic_service: Some("RT640x64".into()),
+        ..Pc::default()
+    };
+    assert_eq!(
+        check(&p, &realtek).len(),
+        1,
+        "absent value on that driver: a problem"
+    );
+    assert_eq!(plan(&p, &realtek).len(), 1);
+    let other = Pc {
+        nic_service: Some("rtux64w10".into()),
+        ..Pc::default()
+    };
+    assert!(check(&p, &other).is_empty());
+    assert!(plan(&p, &other).is_empty());
+    assert!(
+        check(&p, &Pc::default()).is_empty(),
+        "no NIC found: not checked"
+    );
 }

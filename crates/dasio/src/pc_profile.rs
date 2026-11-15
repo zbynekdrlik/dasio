@@ -99,6 +99,11 @@ pub struct RegEntry {
     /// a problem, and nothing is created for an absent one.
     #[serde(default)]
     pub absent_ok: bool,
+    /// Only when the Dante NIC's driver service is this one (its Enum
+    /// key's `Service`, e.g. `rt640x64`, case ignored): a NIC family's
+    /// own settings in the baseline (dasio#128). Unset: always.
+    #[serde(default)]
+    pub nic_service: Option<String>,
     /// Why (the evidence): shown with a mismatch.
     #[serde(default)]
     pub why: String,
@@ -221,6 +226,20 @@ pub trait Reader {
     /// The scheduled task `name` ([`parse_task_xml`] of its XML); `Ok(None)`
     /// when there is no such task.
     fn task(&self, name: &str) -> Result<Option<TaskState>, String>;
+    /// The Dante NIC's driver service (e.g. `rt640x64`); `None` when the
+    /// NIC or its service was not found.
+    fn nic_service(&self) -> Option<String>;
+}
+
+/// Whether `e` applies on the PC `r` reads: an entry for one NIC driver
+/// family only where the Dante NIC runs that driver.
+fn applies(e: &RegEntry, r: &dyn Reader) -> bool {
+    match &e.nic_service {
+        None => true,
+        Some(want) => r
+            .nic_service()
+            .is_some_and(|have| have.eq_ignore_ascii_case(want)),
+    }
 }
 
 /// One setting that is not as the profile says.
@@ -246,8 +265,141 @@ impl std::fmt::Display for Problem {
     }
 }
 
-/// Reads a profile; the error names what is wrong in it.
+/// Reads a PC's profile; the error names what is wrong in it.
 pub fn parse(text: &str) -> Result<Profile, String> {
+    parse_with(text, true)
+}
+
+/// The baseline every dasio PC gets (dasio#128): `config/baseline-pc-profile.toml`,
+/// built into dasio. Its Dante NIC entries take the PC's `nic_guid`.
+pub fn baseline() -> Result<Profile, String> {
+    parse_with(BASELINE, false).map_err(|e| format!("the built-in baseline: {e}"))
+}
+
+/// The baseline's text, as shipped.
+pub const BASELINE: &str = include_str!("../../../config/baseline-pc-profile.toml");
+
+/// What a PC is held to: the baseline and its own `site` profile. The
+/// site's entry wins over the baseline's same entry (registry key and name,
+/// ini file and key, process, drive, bcd element, task); the rest is added.
+/// Without the site's `nic_guid`, the baseline's Dante NIC entries are
+/// left out (no NIC to read).
+pub fn merge(base: &Profile, site: &Profile) -> Profile {
+    let nic = |k: &str| k.contains("{nic_class}") || k.contains("{nic_device}");
+    let mut out = site.clone();
+    let mut registry: Vec<RegEntry> =
+        base.registry
+            .iter()
+            .filter(|b| site.nic_guid.is_some() || !nic(&b.key))
+            .filter(|b| {
+                !site.registry.iter().any(|s| {
+                    s.key.eq_ignore_ascii_case(&b.key) && s.name.eq_ignore_ascii_case(&b.name)
+                })
+            })
+            .cloned()
+            .collect();
+    registry.extend(site.registry.iter().cloned());
+    out.registry = registry;
+    let mut ini: Vec<IniEntry> = base
+        .ini
+        .iter()
+        .filter(|b| {
+            !site
+                .ini
+                .iter()
+                .any(|s| s.file.eq_ignore_ascii_case(&b.file) && s.key == b.key)
+        })
+        .cloned()
+        .collect();
+    ini.extend(site.ini.iter().cloned());
+    out.ini = ini;
+    let mut process: Vec<ProcEntry> = base
+        .process
+        .iter()
+        .filter(|b| {
+            !site
+                .process
+                .iter()
+                .any(|s| s.exe.eq_ignore_ascii_case(&b.exe))
+        })
+        .cloned()
+        .collect();
+    process.extend(site.process.iter().cloned());
+    out.process = process;
+    let mut disk: Vec<DiskEntry> = base
+        .disk
+        .iter()
+        .filter(|b| {
+            !site
+                .disk
+                .iter()
+                .any(|s| s.drive.eq_ignore_ascii_case(&b.drive))
+        })
+        .cloned()
+        .collect();
+    disk.extend(site.disk.iter().cloned());
+    out.disk = disk;
+    let mut bcd: Vec<BcdEntry> = base
+        .bcd
+        .iter()
+        .filter(|b| {
+            !site
+                .bcd
+                .iter()
+                .any(|s| s.name.eq_ignore_ascii_case(&b.name))
+        })
+        .cloned()
+        .collect();
+    bcd.extend(site.bcd.iter().cloned());
+    out.bcd = bcd;
+    let mut task: Vec<TaskEntry> = base
+        .task
+        .iter()
+        .filter(|b| {
+            !site
+                .task
+                .iter()
+                .any(|s| s.name.eq_ignore_ascii_case(&b.name))
+        })
+        .cloned()
+        .collect();
+    task.extend(site.task.iter().cloned());
+    out.task = task;
+    out
+}
+
+/// What a PC is held to when it has no site profile: the baseline alone,
+/// without its Dante NIC entries.
+pub fn baseline_only(base: &Profile) -> Profile {
+    let empty = Profile {
+        name: "baseline only".into(),
+        nic_guid: None,
+        registry: Vec::new(),
+        ini: Vec::new(),
+        process: Vec::new(),
+        disk: Vec::new(),
+        bcd: Vec::new(),
+        task: Vec::new(),
+    };
+    merge(base, &empty)
+}
+
+/// What the PC at `path`'s profile is held to: the baseline merged with
+/// the site profile at `path`, or the baseline alone when there is no
+/// file there (dasio#128).
+pub fn load(path: &std::path::Path) -> Result<Profile, String> {
+    let base = baseline()?;
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(merge(
+            &base,
+            &parse(&text).map_err(|e| format!("{}: {e}", path.display()))?,
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(baseline_only(&base)),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+fn parse_with(text: &str, need_nic_guid: bool) -> Result<Profile, String> {
     let p: Profile = toml::from_str(text).map_err(|e| e.to_string())?;
     for r in &p.registry {
         if want_reg(r).is_none() {
@@ -256,7 +408,9 @@ pub fn parse(text: &str) -> Result<Profile, String> {
                 r.key, r.name
             ));
         }
-        if (r.key.contains("{nic_class}") || r.key.contains("{nic_device}")) && p.nic_guid.is_none()
+        if need_nic_guid
+            && (r.key.contains("{nic_class}") || r.key.contains("{nic_device}"))
+            && p.nic_guid.is_none()
         {
             return Err(format!("registry {}: needs nic_guid", r.key));
         }
@@ -393,6 +547,9 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
     let mut out = Vec::new();
     for e in &p.registry {
         let Some(want) = want_reg(e) else { continue };
+        if !applies(e, r) {
+            continue;
+        }
         let found = r.reg(&e.key, &e.name);
         let found_text = match &found {
             Ok(Some(v)) if *v == want => continue,
@@ -685,6 +842,9 @@ pub fn plan(p: &Profile, r: &dyn Reader) -> Vec<Action> {
     let mut out = Vec::new();
     for e in &p.registry {
         let Some(want) = want_reg(e) else { continue };
+        if !applies(e, r) {
+            continue;
+        }
         let fine = match r.reg(&e.key, &e.name) {
             Ok(Some(v)) => v == want,
             Ok(None) => e.absent_ok,
