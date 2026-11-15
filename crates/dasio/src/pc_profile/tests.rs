@@ -1051,9 +1051,13 @@ fn every_kind_merges_site_over_baseline_by_its_own_key() {
     let bcd: Vec<_> = m.bcd.iter().map(|e| e.value.as_str()).collect();
     assert_eq!(bcd.len(), 2);
     assert!(bcd.contains(&"No") && bcd.contains(&"Yes"));
-    let tasks: Vec<_> = m.task.iter().map(|e| e.enabled).collect();
-    assert_eq!(tasks.len(), 2);
-    assert!(tasks.contains(&Some(false)) && tasks.contains(&Some(true)));
+    let mut tasks: Vec<_> = m
+        .task
+        .iter()
+        .map(|e| (e.name.as_str(), e.enabled))
+        .collect();
+    tasks.sort();
+    assert_eq!(tasks, [("\\X", Some(false)), ("\\y", Some(true))]);
     // A different ini key in the same file is not the same entry.
     let other = site("[[ini]]\nfile = 'C:\\\\L.ini'\nkey = \"Z\"\nvalue = \"z\"\n");
     assert_eq!(merge(&base, &other).ini.len(), 3);
