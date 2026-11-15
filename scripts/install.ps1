@@ -201,6 +201,12 @@ if ($Iface) {
 # (drivers/ndis-pacer/scripts/install.ps1 -Adapter <it>, test signing on).
 # Only the test clock (CI) runs without it.
 if (-not $TestClock) {
+    # The filter is test-signed: with Secure Boot on, Windows never loads it.
+    $secure = $false
+    try { $secure = Confirm-SecureBootUEFI } catch { $secure = $false }
+    if ($secure) {
+        throw "Secure Boot is on: dasio's test-signed NDIS filter cannot load; switch Secure Boot off in the firmware setup (on site), then bcdedit /set testsigning on and reboot; nothing changed"
+    }
     # The config's `iface = "<alias>"` wins over -Ip/-Iface at the start
     # (place.rs): its adapter is the one that must carry the filter.
     $configIface = (Select-String -LiteralPath $Config -Pattern '^\s*iface\s*=\s*"([^"]*)"' | Select-Object -First 1)
@@ -483,6 +489,15 @@ if ($stateFile -and (Test-Path $stateFile)) {
 }
 
 $exe = Join-Path $bin "dasio.exe"
+# The built-in baseline (dasio#128) with this PC's own profile: set what
+# differs before the instance starts; what needs a reboot says so. The
+# service checks it again at start and every 10 min.
+if (-not $TestClock) {
+    # Exit 1 = problems left (a reboot pending, a NIC driver to install):
+    # they are listed above and in the instance log, the install goes on.
+    & $exe pc-profile apply
+    if ($LASTEXITCODE -ne 0) { Write-Output "the PC profile still has problems (listed above): see dasio#128" }
+}
 # A bridge instance (`[bridge]` in its config, dasio#106) carries Dante to a
 # local ASIO driver itself and has no DAW side: registering dasio's own ASIO
 # driver for it would list a driver no DAW can attach to.

@@ -1084,3 +1084,24 @@ fn load_takes_the_baseline_alone_without_a_file_and_refuses_an_unreadable_one() 
     assert!(load(&dir).is_err());
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn a_qword_value_is_its_own_kind() {
+    // dasio#128: the mDNS cap's ThrottleRate is a REG_QWORD.
+    let p = parse("name = \"x\"\n[[registry]]\nkey = 'HKLM\\Q'\nname = \"T\"\nqword = 25000\n")
+        .unwrap();
+    assert_eq!(want_reg(&p.registry[0]), Some(Value::Qword(25000)));
+    let pc = Pc::default();
+    let problems = check(&p, &pc);
+    assert_eq!(problems.len(), 1);
+    assert!(problems[0].want.contains("qword"), "{}", problems[0].want);
+    let two = "name = \"x\"\n[[registry]]\nkey = 'HKLM\\Q'\nname = \"T\"\nqword = 1\ndword = 1\n";
+    assert!(parse(two).is_err(), "one kind per entry");
+    assert!(
+        baseline()
+            .unwrap()
+            .registry
+            .iter()
+            .any(|e| e.name == "ThrottleRate" && e.qword == Some(25000))
+    );
+}

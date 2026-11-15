@@ -94,6 +94,9 @@ pub struct RegEntry {
     /// Hex bytes, e.g. `"0f00000000000000"`.
     #[serde(default)]
     pub binary: Option<String>,
+    /// A REG_QWORD.
+    #[serde(default)]
+    pub qword: Option<u64>,
     /// An absent value (or key) is fine too: e.g. the `Start` of a service
     /// that may be uninstalled. A value other than the wanted one is still
     /// a problem, and nothing is created for an absent one.
@@ -196,6 +199,8 @@ const GB: u64 = 1 << 30;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     Dword(u32),
+    /// A REG_QWORD (e.g. a QoS policy's ThrottleRate, dasio#128).
+    Qword(u64),
     String(String),
     MultiSz(Vec<String>),
     Binary(Vec<u8>),
@@ -404,7 +409,7 @@ fn parse_with(text: &str, need_nic_guid: bool) -> Result<Profile, String> {
     for r in &p.registry {
         if want_reg(r).is_none() {
             return Err(format!(
-                "registry {}\\{}: give exactly one of dword, string, binary (binary as hex), multi_sz",
+                "registry {}\\{}: give exactly one of dword, string, binary (binary as hex), multi_sz, qword",
                 r.key, r.name
             ));
         }
@@ -480,11 +485,12 @@ pub const PRIORITIES: [&str; 6] = [
 /// The value a registry entry wants; `None` unless exactly one of
 /// `dword`, `string`, `multi_sz`, `binary` (valid hex) is given.
 pub fn want_reg(r: &RegEntry) -> Option<Value> {
-    match (&r.dword, &r.string, &r.multi_sz, &r.binary) {
-        (Some(d), None, None, None) => Some(Value::Dword(*d)),
-        (None, Some(s), None, None) => Some(Value::String(s.clone())),
-        (None, None, Some(m), None) => Some(Value::MultiSz(m.clone())),
-        (None, None, None, Some(b)) => hex(b).map(Value::Binary),
+    match (&r.dword, &r.string, &r.multi_sz, &r.binary, &r.qword) {
+        (Some(d), None, None, None, None) => Some(Value::Dword(*d)),
+        (None, Some(s), None, None, None) => Some(Value::String(s.clone())),
+        (None, None, Some(m), None, None) => Some(Value::MultiSz(m.clone())),
+        (None, None, None, Some(b), None) => hex(b).map(Value::Binary),
+        (None, None, None, None, Some(q)) => Some(Value::Qword(*q)),
         _ => None,
     }
 }
@@ -536,6 +542,7 @@ pub fn parse_mask(s: &str) -> Option<u64> {
 fn show(v: &Value) -> String {
     match v {
         Value::Dword(d) => format!("{d} (0x{d:X})"),
+        Value::Qword(q) => format!("{q} (0x{q:X}, qword)"),
         Value::String(s) => format!("\"{s}\""),
         Value::MultiSz(m) => format!("{m:?}"),
         Value::Binary(b) => b.iter().map(|x| format!("{x:02x}")).collect(),
