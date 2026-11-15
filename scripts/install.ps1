@@ -496,7 +496,12 @@ if (-not $TestClock) {
     # Exit 1 = problems left (a reboot pending, a NIC driver to install):
     # they are listed above and in the instance log, the install goes on.
     & $exe pc-profile apply
-    if ($LASTEXITCODE -ne 0) { Write-Output "the PC profile still has problems (listed above): see dasio#128" }
+    $applied = $LASTEXITCODE
+    # Power plan values are read when the plan is made active, QoS policies
+    # at a Group Policy refresh: make both current now.
+    & powercfg.exe /setactive SCHEME_CURRENT
+    & gpupdate.exe /target:computer /force | Out-Null
+    if ($applied -ne 0) { Write-Output "the PC profile still has problems (listed above): see dasio#128" }
 }
 # A bridge instance (`[bridge]` in its config, dasio#106) carries Dante to a
 # local ASIO driver itself and has no DAW side: registering dasio's own ASIO

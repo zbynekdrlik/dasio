@@ -107,6 +107,10 @@ pub struct RegEntry {
     /// own settings in the baseline (dasio#128). Unset: always.
     #[serde(default)]
     pub nic_service: Option<String>,
+    /// Checked, never set by `apply`: a value that reports a state (e.g.
+    /// a driver's `DriverVersion`), which only installing the thing fixes.
+    #[serde(default)]
+    pub check_only: bool,
     /// Why (the evidence): shown with a mismatch.
     #[serde(default)]
     pub why: String,
@@ -552,6 +556,19 @@ fn show(v: &Value) -> String {
 /// Every setting of `p` the PC does not have.
 pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
     let mut out = Vec::new();
+    // NIC-family entries need the NIC: a profile naming one the PC does not
+    // have (a wrong GUID, a swapped NIC) says so instead of skipping them.
+    if let Some(guid) = &p.nic_guid
+        && r.nic_service().is_none()
+        && p.registry.iter().any(|e| e.nic_service.is_some())
+    {
+        out.push(Problem {
+            what: format!("the Dante NIC {guid}"),
+            found: "not found (or its driver service unreadable)".into(),
+            want: "the adapter with that NetCfgInstanceId".into(),
+            why: "the baseline's NIC settings need it (dasio#128)".into(),
+        });
+    }
     for e in &p.registry {
         let Some(want) = want_reg(e) else { continue };
         if !applies(e, r) {
@@ -849,7 +866,7 @@ pub fn plan(p: &Profile, r: &dyn Reader) -> Vec<Action> {
     let mut out = Vec::new();
     for e in &p.registry {
         let Some(want) = want_reg(e) else { continue };
-        if !applies(e, r) {
+        if !applies(e, r) || e.check_only {
             continue;
         }
         let fine = match r.reg(&e.key, &e.name) {
@@ -881,6 +898,16 @@ pub fn plan(p: &Profile, r: &dyn Reader) -> Vec<Action> {
 pub fn takes_effect(a: &Action) -> &'static str {
     match a {
         Action::Reg { key, .. } if key.starts_with("{nic_") => "a restart of the Dante NIC",
+        Action::Reg { key, .. } if key.contains("{active_scheme}") => {
+            "powercfg /setactive of the active plan (install.ps1 runs it) or a reboot"
+        }
+        Action::Reg { key, .. }
+            if key
+                .to_ascii_lowercase()
+                .contains(r"\policies\microsoft\windows\qos") =>
+        {
+            "gpupdate /target:computer (install.ps1 runs it) or a reboot"
+        }
         Action::Reg { key, name, .. }
             if name == "Start" && key.to_ascii_lowercase().contains(r"\services\") =>
         {

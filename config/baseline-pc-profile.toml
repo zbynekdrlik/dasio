@@ -232,6 +232,7 @@ key = '{nic_class}'
 name = "DriverVersion"
 string = "10.79.20.1003"
 nic_service = "rt640x64"
+check_only = true
 why = "Realtek 10.79 measured best with rxd + kernel TX; the inbox and 10.39 drivers were worse, dasio#1"
 
 [[registry]]
