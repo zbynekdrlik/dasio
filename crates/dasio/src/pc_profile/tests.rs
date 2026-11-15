@@ -919,6 +919,12 @@ fn the_shipped_baseline_parses_and_holds_the_must_haves() {
         && e.name == "*InterruptModeration"
         && e.nic_service.as_deref() == Some("rt640x64")));
     assert!(b.registry.iter().any(|e| e.key.contains("{active_scheme}")));
+    // The inbox Realtek driver is reported, never silently skipped.
+    assert!(
+        b.registry
+            .iter()
+            .any(|e| e.nic_service.as_deref() == Some("rtcx21") && e.check_only)
+    );
 }
 
 fn site(text: &str) -> Profile {
