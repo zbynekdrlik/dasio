@@ -164,7 +164,8 @@ fn main() -> ExitCode {
                 // The service looks the address up once the box holds it.
                 service(instance, config.into(), place, clock, tuning)
             } else {
-                dasio::place::address(&place)
+                // Run by hand: the interface's address as it is now.
+                dasio::place::address(&place, true)
                     .and_then(|ip| run(instance, config.into(), ip, clock, tuning))
             }
         }

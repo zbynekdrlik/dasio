@@ -124,7 +124,11 @@ fn service_main(_args: Vec<OsString>) {
     // when it changes.
     let mut found = None;
     let mut said: Option<String> = None;
-    let held = || match crate::place::address(&args.place) {
+    let waiting_since = std::time::Instant::now();
+    let held = || match crate::place::address(
+        &args.place,
+        waiting_since.elapsed() >= crate::place::LINK_LOCAL_AFTER,
+    ) {
         Ok(ip) => {
             found = Some(ip);
             address_held(std::net::IpAddr::V4(ip))
@@ -154,6 +158,9 @@ fn service_main(_args: Vec<OsString>) {
         return;
     };
     info!(%ip, place = ?args.place, "the device's address");
+    if ip.is_link_local() {
+        warn!(%ip, "the device runs on a link-local address: no DHCP lease came (a network without DHCP, or a DHCP server down)");
+    }
     let result = crate::run::run(
         args.instance,
         args.config.clone(),

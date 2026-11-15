@@ -43,6 +43,9 @@ use crate::run::{StopEvent, place_helpers, start_device};
 /// status (it only makes the COM apartment and the runner first).
 const RUNNER_START: Duration = Duration::from_secs(5);
 
+/// The PC profile's first in-process check, after the start (dasio#120).
+const PROFILE_FIRST: Duration = Duration::from_secs(60);
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -165,15 +168,16 @@ pub fn run(
     let mut counts = Every::new(COUNTS_EVERY, start, false);
     let mut status_due = Every::new(STATUS_EVERY, start, true);
     let profile = ProfileWatch::new(own);
-    let mut profile_at: Option<Instant> = None;
+    // The first check a minute in: after the helper placer has moved this
+    // process's threads off the media CPUs (a thread on a media CPU takes
+    // the quantum a spin tail yields, dasio#1).
+    let mut profile_due = start + PROFILE_FIRST;
     let why = loop {
         // The players the pump gave back, freed here, off its thread.
         lock(&shared).collect();
         let now = Instant::now();
-        if profile_at.is_none_or(|t| {
-            now.duration_since(t) >= Duration::from_secs(crate::pc_profile::CHECK_EVERY_S)
-        }) {
-            profile_at = Some(now);
+        if now >= profile_due {
+            profile_due = now + Duration::from_secs(crate::pc_profile::CHECK_EVERY_S);
             profile.start_in_process(&pc_problems);
         }
         if counts.due(now) {
