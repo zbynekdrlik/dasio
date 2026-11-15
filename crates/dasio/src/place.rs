@@ -101,10 +101,17 @@ pub fn parse(args: &[String]) -> Result<Place, String> {
 /// (loopback, unspecified) is refused.
 ///
 /// A named interface whose address is link-local (169.254.0.0/16) has none
-/// yet: Windows puts one on a DHCP NIC until the lease comes, and a device
-/// started on it stays unreachable (dsg, 15.11.2026, dasio#121). An address
-/// the operator named (`--ip`) is kept, link-local or not.
-pub fn address_in(place: &Place, addrs: &[IfAddr]) -> Result<Ipv4Addr, String> {
+/// yet unless `link_local_ok`: Windows puts one on a DHCP NIC until the
+/// lease comes, and a device started on it stays unreachable (dsg,
+/// 15.11.2026, dasio#121). The service passes `link_local_ok` once it has
+/// waited [`LINK_LOCAL_AFTER`]: a Dante network without DHCP runs on
+/// link-local addresses. An address the operator named (`--ip`) is kept,
+/// link-local or not.
+pub fn address_in(
+    place: &Place,
+    addrs: &[IfAddr],
+    link_local_ok: bool,
+) -> Result<Ipv4Addr, String> {
     let ip = pick_interface(place, addrs)
         .map(|a| a.ip)
         .map_err(|e| match place {
@@ -112,20 +119,25 @@ pub fn address_in(place: &Place, addrs: &[IfAddr]) -> Result<Ipv4Addr, String> {
             Place::Ip(ip) => format!("{ip}: {e}"),
         })?;
     match place {
-        Place::Iface(name) if ip.is_link_local() => Err(format!(
+        Place::Iface(name) if ip.is_link_local() && !link_local_ok => Err(format!(
             "the interface {name:?}: only its link-local address {ip} \
-             (DHCP has not answered yet)"
+             (DHCP has not answered yet; taken after {} s without a lease)",
+            LINK_LOCAL_AFTER.as_secs()
         )),
         _ => Ok(ip),
     }
 }
 
+/// How long the service waits for a DHCP lease before it takes a named
+/// interface's link-local address (a Dante network without DHCP).
+pub const LINK_LOCAL_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// [`address_in`] on this box's interfaces now (an interface at boot may
 /// have no address yet: the service asks again).
-pub fn address(place: &Place) -> Result<Ipv4Addr, String> {
+pub fn address(place: &Place, link_local_ok: bool) -> Result<Ipv4Addr, String> {
     let addrs = dstack::host::interfaces()
         .map_err(|e| format!("the box's interfaces could not be read: {e}"))?;
-    address_in(place, &addrs)
+    address_in(place, &addrs, link_local_ok)
 }
 
 /// The device config's keys that set its control ports and process id.
@@ -287,29 +299,29 @@ mod tests {
     #[test]
     fn an_interface_name_gives_its_address() {
         assert_eq!(
-            address_in(&Place::Iface("Ethernet 2".into()), &addrs()),
+            address_in(&Place::Iface("Ethernet 2".into()), &addrs(), false),
             Ok(Ipv4Addr::new(10, 77, 7, 232))
         );
         assert_eq!(
-            address_in(&Place::Iface("Wi-Fi".into()), &addrs()),
+            address_in(&Place::Iface("Wi-Fi".into()), &addrs(), false),
             Ok(Ipv4Addr::new(192, 168, 1, 5))
         );
     }
 
     #[test]
     fn an_unknown_interface_is_refused_and_named() {
-        let e = address_in(&Place::Iface("Ethernet 9".into()), &addrs()).unwrap_err();
+        let e = address_in(&Place::Iface("Ethernet 9".into()), &addrs(), false).unwrap_err();
         assert!(e.starts_with("the interface \"Ethernet 9\": "), "{e}");
     }
 
     #[test]
     fn an_address_must_be_one_an_interface_holds() {
         let ip = Ipv4Addr::new(10, 77, 7, 232);
-        assert_eq!(address_in(&Place::Ip(ip), &addrs()), Ok(ip));
-        let e = address_in(&Place::Ip(Ipv4Addr::new(10, 77, 7, 9)), &addrs()).unwrap_err();
+        assert_eq!(address_in(&Place::Ip(ip), &addrs(), false), Ok(ip));
+        let e = address_in(&Place::Ip(Ipv4Addr::new(10, 77, 7, 9)), &addrs(), false).unwrap_err();
         assert!(e.starts_with("10.77.7.9: "), "{e}");
         // No interface of this box holds a documentation address.
-        assert!(address(&Place::Ip(Ipv4Addr::new(192, 0, 2, 1))).is_err());
+        assert!(address(&Place::Ip(Ipv4Addr::new(192, 0, 2, 1)), false).is_err());
     }
 
     #[test]
@@ -322,11 +334,17 @@ mod tests {
             ip: apipa,
             netmask: Ipv4Addr::new(255, 255, 0, 0),
         }];
-        let e = address_in(&Place::Iface("Ethernet".into()), &boot).unwrap_err();
+        let e = address_in(&Place::Iface("Ethernet".into()), &boot, false).unwrap_err();
         assert!(e.starts_with("the interface \"Ethernet\": "), "{e}");
         assert!(e.contains("link-local"), "{e}");
         // An address the operator named is theirs to choose.
-        assert_eq!(address_in(&Place::Ip(apipa), &boot), Ok(apipa));
+        assert_eq!(address_in(&Place::Ip(apipa), &boot, false), Ok(apipa));
+        // A network without DHCP: after the wait, the link-local address
+        // is the device's (the service's call once LINK_LOCAL_AFTER passed).
+        assert_eq!(
+            address_in(&Place::Iface("Ethernet".into()), &boot, true),
+            Ok(apipa)
+        );
         // Once DHCP answers, the interface's address is the device's.
         let leased = vec![IfAddr {
             name: "Ethernet".into(),
@@ -334,7 +352,7 @@ mod tests {
             netmask: Ipv4Addr::new(255, 255, 255, 0),
         }];
         assert_eq!(
-            address_in(&Place::Iface("Ethernet".into()), &leased),
+            address_in(&Place::Iface("Ethernet".into()), &leased, false),
             Ok(Ipv4Addr::new(10, 77, 7, 108))
         );
     }
@@ -346,9 +364,9 @@ mod tests {
             ip: Ipv4Addr::LOCALHOST,
             netmask: Ipv4Addr::new(255, 0, 0, 0),
         }];
-        assert!(address_in(&Place::Ip(Ipv4Addr::LOCALHOST), &lo).is_err());
-        assert!(address_in(&Place::Iface("lo".into()), &lo).is_err());
-        assert!(address_in(&Place::Ip(Ipv4Addr::UNSPECIFIED), &addrs()).is_err());
+        assert!(address_in(&Place::Ip(Ipv4Addr::LOCALHOST), &lo, false).is_err());
+        assert!(address_in(&Place::Iface("lo".into()), &lo, false).is_err());
+        assert!(address_in(&Place::Ip(Ipv4Addr::UNSPECIFIED), &addrs(), false).is_err());
     }
 
     const SLOT_1: Slot = Slot {
