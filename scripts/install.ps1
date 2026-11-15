@@ -500,7 +500,9 @@ if (-not $TestClock) {
     # Power plan values are read when the plan is made active, QoS policies
     # at a Group Policy refresh: make both current now.
     & powercfg.exe /setactive SCHEME_CURRENT
+    if ($LASTEXITCODE -ne 0) { Write-Output "WARNING: powercfg /setactive failed ($LASTEXITCODE): the power plan values take effect at the next reboot" }
     & gpupdate.exe /target:computer /force | Out-Null
+    if ($LASTEXITCODE -ne 0) { Write-Output "WARNING: gpupdate failed ($LASTEXITCODE): the QoS policies (mDNS cap) take effect at the next reboot" }
     if ($applied -ne 0) { Write-Output "the PC profile still has problems (listed above): see dasio#128" }
 }
 # A bridge instance (`[bridge]` in its config, dasio#106) carries Dante to a
