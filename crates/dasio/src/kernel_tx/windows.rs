@@ -25,9 +25,44 @@ use windows_sys::Win32::System::IO::DeviceIoControl;
 use dstack::media::bypass::FrameSender;
 
 use super::{
-    DEVICE_PATH, HEADER, IOCTL_DASIO_KTX_STATUS, IOCTL_DASIO_TX_SEND, MAX_FRAME,
-    MAX_STATUS_RECORDS, Relookup, StatusWatch, mark, pack, parse_status,
+    DEVICE_PATH, HEADER, IOCTL_DASIO_KTX_STATUS, IOCTL_DASIO_TX_SEND, KtxStatus, MAX_FRAME,
+    MAX_STATUS_RECORDS, Relookup, StatusWatch, bound_to, mark, pack, parse_status,
 };
+
+/// Set while the filter is found unbound from the device's adapter after
+/// the start: the run loop ends the device (dasio#125, never a silent UDP
+/// fallback); the SCM restarts it, and its start checks the binding.
+static UNBOUND: AtomicBool = AtomicBool::new(false);
+
+/// Whether the filter was found unbound from the device's adapter.
+pub fn unbound() -> bool {
+    UNBOUND.load(Ordering::Relaxed)
+}
+
+/// The filter's status records (one per bound adapter).
+fn read_status(handle: HANDLE) -> io::Result<Vec<KtxStatus>> {
+    let mut reply = vec![0u8; MAX_STATUS_RECORDS * 27 * 8];
+    let mut returned: u32 = 0;
+    // SAFETY: a handle the caller keeps open; the output buffer outlives
+    // the synchronous call.
+    let ok = unsafe {
+        DeviceIoControl(
+            handle,
+            IOCTL_DASIO_KTX_STATUS,
+            std::ptr::null(),
+            0,
+            reply.as_mut_ptr().cast(),
+            reply.len() as u32,
+            &mut returned,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    reply.truncate(returned as usize);
+    Ok(parse_status(&reply))
+}
 
 /// Win32 `ERROR_NOT_FOUND`: the filter's STATUS_NOT_FOUND, no bound
 /// adapter with the input's IfIndex.
@@ -88,12 +123,13 @@ impl Adapter {
                 Ok(_) => STATE_UNBOUND,
                 Err(_) => STATE_NO_ADAPTER,
             };
+            UNBOUND.store(state == STATE_UNBOUND, Ordering::Relaxed);
             if self.state.swap(state, Ordering::Relaxed) != state {
                 match state {
                     STATE_UNBOUND => warn!(
                         if_index = old,
                         ip = %self.ip,
-                        "kernel TX: the filter is not bound to the adapter: audio TX is on the UDP sockets"
+                        "kernel TX: the filter is not bound to the adapter: the device ends (dasio#125)"
                     ),
                     STATE_NO_ADAPTER => warn!(
                         ip = %self.ip,
@@ -107,30 +143,15 @@ impl Adapter {
 
     /// Reads the filter's status and logs this adapter's media-TX window.
     fn counters(&self, watch: &mut StatusWatch, quiet: &mut u32) {
-        let mut reply = vec![0u8; MAX_STATUS_RECORDS * 27 * 8];
-        let mut returned: u32 = 0;
-        // SAFETY: the handle stays open while this thread runs (Drop joins
-        // it first); the output buffer outlives the synchronous call.
-        let ok = unsafe {
-            DeviceIoControl(
-                self.handle as HANDLE,
-                IOCTL_DASIO_KTX_STATUS,
-                std::ptr::null(),
-                0,
-                reply.as_mut_ptr().cast(),
-                reply.len() as u32,
-                &mut returned,
-                std::ptr::null_mut(),
-            )
+        let reply = match read_status(self.handle as HANDLE) {
+            Ok(r) => r,
+            Err(e) => {
+                debug!(error = %e, "kernel TX: the filter's status could not be read");
+                return;
+            }
         };
-        if ok == 0 {
-            let e = io::Error::last_os_error();
-            debug!(error = %e, "kernel TX: the filter's status could not be read");
-            return;
-        }
-        reply.truncate(returned as usize);
         let if_index = self.if_index.load(Ordering::Relaxed);
-        let Some(r) = watch.step(&parse_status(&reply), if_index) else {
+        let Some(r) = watch.step(&reply, if_index) else {
             return;
         };
         if r.bad() {
@@ -205,6 +226,27 @@ impl KernelTx {
         if handle == INVALID_HANDLE_VALUE {
             return Err(io::Error::last_os_error());
         }
+        // The filter must be bound to this adapter, not only installed.
+        let bound = read_status(handle).map(|r| (bound_to(&r, if_index), r));
+        match bound {
+            Ok((true, _)) => {}
+            Ok((false, r)) => {
+                // SAFETY: opened just above, closed once.
+                unsafe { CloseHandle(handle) };
+                let others: Vec<u32> = r.iter().map(|s| s.if_index).collect();
+                return Err(io::Error::other(format!(
+                    "dasio_pacer is not bound to the adapter holding {ip} (IfIndex {if_index}; bound to {others:?})"
+                )));
+            }
+            Err(e) => {
+                // SAFETY: opened just above, closed once.
+                unsafe { CloseHandle(handle) };
+                return Err(io::Error::other(format!(
+                    "the filter's status could not be read: {e}"
+                )));
+            }
+        }
+        UNBOUND.store(false, Ordering::Relaxed);
         let adapter = Arc::new(Adapter {
             handle: handle as usize,
             ip,

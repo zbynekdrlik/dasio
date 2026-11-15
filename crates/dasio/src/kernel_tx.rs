@@ -119,6 +119,13 @@ pub fn parse_status(reply: &[u8]) -> Vec<KtxStatus> {
     out
 }
 
+/// Whether the filter is bound to the adapter `if_index`: its status
+/// reply carries one record per bound adapter. A device whose adapter has
+/// no record would send nothing through the filter (dasio#125).
+pub fn bound_to(reply: &[KtxStatus], if_index: u32) -> bool {
+    reply.iter().any(|s| s.if_index == if_index)
+}
+
 /// One window between two readings of the instance's adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KtxReport {

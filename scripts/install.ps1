@@ -201,7 +201,10 @@ if ($Iface) {
 # (drivers/ndis-pacer/scripts/install.ps1 -Adapter <it>, test signing on).
 # Only the test clock (CI) runs without it.
 if (-not $TestClock) {
-    $alias = if ($Iface) { $Iface } else { (Get-NetIPAddress -IPAddress $Ip -AddressFamily IPv4).InterfaceAlias }
+    # The config's `iface = "<alias>"` wins over -Ip/-Iface at the start
+    # (place.rs): its adapter is the one that must carry the filter.
+    $configIface = (Select-String -LiteralPath $Config -Pattern '^\s*iface\s*=\s*"([^"]*)"' | Select-Object -First 1)
+    $alias = if ($configIface) { $configIface.Matches[0].Groups[1].Value } elseif ($Iface) { $Iface } else { (Get-NetIPAddress -IPAddress $Ip -AddressFamily IPv4).InterfaceAlias }
     $binding = Get-NetAdapterBinding -Name $alias -ComponentID dasio_pacer -ErrorAction SilentlyContinue
     if (-not $binding -or -not $binding.Enabled) {
         throw "dasio's NDIS filter (dasio_pacer) is not bound to '$alias': install it first (bcdedit /set testsigning on + reboot, then drivers/ndis-pacer/scripts/install.ps1 -Adapter '$alias'); dasio does not run without it; nothing changed"

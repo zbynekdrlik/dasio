@@ -316,6 +316,14 @@ pub fn run(
         if let Some(e) = device.ended() {
             break Some(e);
         }
+        // dasio's NDIS filter came unbound from the adapter: no silent
+        // UDP fallback (dasio#125); the SCM restarts the device, whose
+        // start checks the binding again.
+        if tuning.kernel_tx && crate::kernel_tx::windows::unbound() {
+            let e = "dasio's NDIS filter is no longer bound to the device's adapter: the device ends (dasio does not run without it)".to_string();
+            error!(why = %e, "the device ends");
+            break Some(e);
+        }
         // A pump that no longer runs the bridge leaves the device silent
         // while it lives: it ends, and the SCM restarts it (dasio#28 E17).
         if let Some(e) = crate::health::pump_failure(&stats.stream_stats(), pump.is_finished()) {
