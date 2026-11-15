@@ -23,6 +23,7 @@ paths:
 - `--iface` names the Windows interface alias (if-addrs' FriendlyName),
   compared exactly. `install.ps1` matches it with `-ceq`, never
   `-InterfaceAlias`, which takes wildcards and ignores case.
+- `--iface` takes the interface's address only when it is not link-local: at boot Windows puts APIPA (169.254.x.y) on a DHCP NIC until the lease comes, and a device started on it was unreachable until a manual restart (dsg, 15.11.2026, dasio#121). The service keeps waiting and logs "only its link-local address". `--ip 169.254.x.y` stays allowed.
 
 ## Checking a device's audio from outside (sine checker)
 
@@ -32,4 +33,3 @@ paths:
 - Two channels on separate flows separate the cases: a sender stall breaks both, a receiver's own lateness only one (dev1 runs at normal priority).
 - Live's Preferences Test Tone switches off when the Settings window closes.
 - `install.ps1` swaps `dtray.exe`, but the dtray already running in the user's session stays the old version until it restarts. After a deploy, end that dtray process and start the new one with the MCP App tool (a window program never starts from the Shell). `dtray --settings` opens the per-instance settings window (dstack#246). Its Apply writes device.toml through an elevated helper, restarts `dasio-N` and leaves `dtray-apply.result` in the instance folder.
-- `--iface` takes the interface's address only when it is not link-local: at boot Windows puts APIPA (169.254.x.y) on a DHCP NIC until the lease comes, and a device started on it was unreachable until a manual restart (dsg, 15.11.2026, dasio#121). The service keeps waiting and logs "only its link-local address". `--ip 169.254.x.y` stays allowed.
