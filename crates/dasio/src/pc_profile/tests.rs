@@ -862,3 +862,40 @@ fn a_task_entry_needs_a_path_and_something_to_check() {
     assert!(parse("name = \"x\"\n[[task]]\nname = '\\fb'\nenabled = true\nrun = 1\n").is_err());
     assert!(parse("name = \"x\"\n[[task]]\nname = '\\fb'\ntriggers = []\n").is_ok());
 }
+
+#[test]
+fn the_in_process_check_reads_no_entry_that_starts_a_process() {
+    // A bridge instance checks in its own process (dasio#120): bcdedit and
+    // schtasks would be child processes, which make SoundGrid resync.
+    let p = bcd_profile(concat!(
+        "[[registry]]\nkey = 'HKLM\\SOFTWARE\\X'\nname = \"A\"\ndword = 1\n",
+        "[[bcd]]\nname = \"disabledynamictick\"\nvalue = \"Yes\"\n",
+        "[[task]]\nname = '\\x'\nenabled = true\n",
+    ));
+    let pc = Pc {
+        task_err: vec!["\\x".into()],
+        ..Pc::default()
+    };
+    let inside = in_process(&p);
+    assert!(inside.bcd.is_empty() && inside.task.is_empty());
+    assert_eq!(inside.registry, p.registry);
+    let problems = check(&inside, &pc);
+    assert_eq!(pc.bcd_reads.get(), 0, "no bcdedit in process");
+    assert_eq!(problems.len(), 1, "only the registry entry: {problems:?}");
+    assert!(problems[0].what.starts_with("registry "), "{problems:?}");
+    // The full profile still reads them (the boot task, a check by hand).
+    assert_eq!(check(&p, &pc).len(), 3);
+    assert_eq!(pc.bcd_reads.get(), 1);
+}
+
+#[test]
+fn changes_name_what_appeared_and_what_was_fixed() {
+    let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    let before = s(&["a", "b"]);
+    let now = s(&["b", "c", "d"]);
+    let (appeared, fixed) = changes(&before, &now);
+    assert_eq!(appeared, ["c", "d"]);
+    assert_eq!(fixed, ["a"]);
+    let (appeared, fixed) = changes(&now, &now);
+    assert!(appeared.is_empty() && fixed.is_empty());
+}

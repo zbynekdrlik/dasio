@@ -54,17 +54,23 @@ impl LateWindow {
     }
 }
 
+/// The tray line's PC profile part: nothing when it is as it should be or
+/// unchecked.
+fn pc_suffix(problems: Option<u32>) -> String {
+    match problems {
+        Some(0) | None => String::new(),
+        Some(1) => " · PC profile: 1 problem".to_string(),
+        Some(n) => format!(" · PC profile: {n} problems"),
+    }
+}
+
 fn ms(samples: u32, rate: u32) -> f64 {
     f64::from(samples) * 1000.0 / f64::from(rate.max(1))
 }
 
 /// The menu line dtray shows after the device's own.
 pub fn line(f: &Facts) -> String {
-    let pc = match f.pc_problems {
-        Some(0) | None => String::new(),
-        Some(1) => " · PC profile: 1 problem".to_string(),
-        Some(n) => format!(" · PC profile: {n} problems"),
-    };
+    let pc = pc_suffix(f.pc_problems);
     format!(
         "{} · {} @ {} kHz{} · in {:.2} / out {:.2} ms · late {}/min ({} total){pc}",
         if f.attached { "DAW attached" } else { "no DAW" },
@@ -138,6 +144,9 @@ pub struct BridgeFacts {
     pub from_asio_underruns: u64,
     /// Runs the runner closed (a reset, a rate change, a stall, a fault).
     pub resets: u64,
+    /// The PC profile's problems, checked in process (dasio#120); `None`
+    /// without a profile or before the first check.
+    pub pc_problems: Option<u32>,
 }
 
 impl BridgeFacts {
@@ -148,6 +157,7 @@ impl BridgeFacts {
         status: &dstack_asio::Status,
         to_asio_underruns: u64,
         from_asio_underruns: u64,
+        pc_problems: Option<u32>,
     ) -> Self {
         BridgeFacts {
             driver: driver.to_string(),
@@ -160,6 +170,7 @@ impl BridgeFacts {
             to_asio_underruns,
             from_asio_underruns,
             resets: status.resets,
+            pc_problems,
         }
     }
 }
@@ -176,15 +187,23 @@ pub fn bridge_line(f: &BridgeFacts) -> String {
         }
     };
     format!(
-        "bridge to \"{}\": {now} · underruns to ASIO {} / from ASIO {} · resets {}",
-        f.driver, f.to_asio_underruns, f.from_asio_underruns, f.resets
+        "bridge to \"{}\": {now} · underruns to ASIO {} / from ASIO {} · resets {}{}",
+        f.driver,
+        f.to_asio_underruns,
+        f.from_asio_underruns,
+        f.resets,
+        pc_suffix(f.pc_problems)
     )
 }
 
 /// The icon's state of a bridge instance: `ok` while the driver runs the
 /// bridge, `warn` otherwise.
 pub fn bridge_state(f: &BridgeFacts) -> &'static str {
-    if f.running { "ok" } else { "warn" }
+    if f.running && !f.pc_problems.is_some_and(|n| n > 0) {
+        "ok"
+    } else {
+        "warn"
+    }
 }
 
 /// `t` inside a JSON string (a driver name from the config may hold a
@@ -213,7 +232,7 @@ pub fn bridge_json(f: &BridgeFacts) -> String {
             "{{\"line\":\"{}\",\"state\":\"{}\",\"kind\":\"bridge\",\"daw_attached\":false,",
             "\"driver\":\"{}\",\"running\":{},\"reason\":\"{}\",\"rate\":{},",
             "\"buffer_frames\":{},\"to_asio_underruns\":{},\"from_asio_underruns\":{},",
-            "\"resets\":{}}}"
+            "\"resets\":{},\"pc_profile_problems\":{}}}"
         ),
         escaped(&bridge_line(f)),
         bridge_state(f),
@@ -225,6 +244,7 @@ pub fn bridge_json(f: &BridgeFacts) -> String {
         f.to_asio_underruns,
         f.from_asio_underruns,
         f.resets,
+        f.pc_problems.map_or(-1, i64::from),
     )
 }
 

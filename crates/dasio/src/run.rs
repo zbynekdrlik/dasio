@@ -18,7 +18,7 @@ use crate::bridge::{Bridge, SharedLink};
 use crate::logfile::{COUNTS_EVERY, Every, STATUS_EVERY};
 use crate::turnaround::{Stamps, Turnaround, free_at, split};
 
-mod profile;
+pub(crate) mod profile;
 use profile::ProfileWatch;
 
 /// Runs instance `instance` from the device config at `config` on `ip`

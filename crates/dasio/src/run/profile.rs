@@ -1,6 +1,7 @@
-//! The PC profile's check for the DAW kind (dasio#5), in a child process
-//! (moved out of run.rs; a bridge instance never starts it, dasio#106: a
-//! child spawned while an ASIO driver is loaded makes SoundGrid resync).
+//! The PC profile's check (dasio#5): the DAW kind's in a child process
+//! (moved out of run.rs); a bridge instance's in its own process without
+//! the entries that start a process (dasio#120), since a child spawned
+//! while an ASIO driver is loaded makes SoundGrid resync (dasio#106).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -13,7 +14,7 @@ use tracing::{info, warn};
 /// the media threads': on this process's own thread it held a CPU a media
 /// thread's spin tail yielded, for a whole quantum (16 ms gaps at the
 /// receivers every 10 min, FOH, dasio#1, 4.11.2026).
-pub(super) struct ProfileWatch {
+pub(crate) struct ProfileWatch {
     /// The media threads' CPUs, kept free of the child.
     own: usize,
     busy: Arc<AtomicBool>,
@@ -21,7 +22,7 @@ pub(super) struct ProfileWatch {
 }
 
 impl ProfileWatch {
-    pub(super) fn new(own: usize) -> Self {
+    pub(crate) fn new(own: usize) -> Self {
         Self {
             own,
             busy: Arc::new(AtomicBool::new(false)),
@@ -32,6 +33,22 @@ impl ProfileWatch {
     /// Starts a check (none while one runs); the count lands in `problems`
     /// (u32::MAX without a profile).
     pub(super) fn start(&self, problems: &Arc<std::sync::atomic::AtomicU32>) {
+        self.spawn(problems, child_check);
+    }
+
+    /// The bridge kind's check (dasio#120): in this process, on a thread at
+    /// the lowest priority, without `[[bcd]]` and `[[task]]` (reading them
+    /// starts bcdedit / schtasks, and a child process makes SoundGrid
+    /// resync); `dasio pc-profile check` and the boot-time apply read those.
+    pub(crate) fn start_in_process(&self, problems: &Arc<std::sync::atomic::AtomicU32>) {
+        self.spawn(problems, in_process_check);
+    }
+
+    fn spawn(
+        &self,
+        problems: &Arc<std::sync::atomic::AtomicU32>,
+        check: fn(usize) -> Result<crate::pc_profile::ChildCheck, String>,
+    ) {
         if self.busy.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -47,7 +64,7 @@ impl ProfileWatch {
                 // No profile on this PC: no child to start.
                 let path = std::path::Path::new(crate::pc_profile::DEFAULT_PATH);
                 let found = if path.exists() {
-                    child_check(own)
+                    check(own)
                 } else {
                     Ok(crate::pc_profile::ChildCheck::NoProfile(
                         "the file does not exist".into(),
@@ -85,10 +102,11 @@ fn record(last: &Mutex<Option<Vec<String>>>, found: crate::pc_profile::ChildChec
         ChildCheck::Problems(now) => now,
     };
     let before = last.take().unwrap_or_default();
-    for t in now.iter().filter(|t| !before.contains(t)) {
+    let (appeared, fixed) = crate::pc_profile::changes(&before, &now);
+    for t in appeared {
         warn!("PC profile: {t}");
     }
-    for t in before.iter().filter(|t| !now.contains(t)) {
+    for t in fixed {
         info!("PC profile: fixed: {t}");
     }
     if now.is_empty() {
@@ -97,6 +115,32 @@ fn record(last: &Mutex<Option<Vec<String>>>, found: crate::pc_profile::ChildChec
     let n = now.len() as u32;
     *last = Some(now);
     n
+}
+
+/// The check in this thread, at the lowest priority: the profile without
+/// the entries whose reading starts a process
+/// ([`crate::pc_profile::in_process`]).
+fn in_process_check(_own: usize) -> Result<crate::pc_profile::ChildCheck, String> {
+    use crate::pc_profile::{ChildCheck, check, in_process, parse, windows::Pc};
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_LOWEST,
+    };
+    // SAFETY: this thread's pseudo handle.
+    if unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST) } == 0 {
+        warn!(err = %std::io::Error::last_os_error(), "the PC profile check runs at normal priority");
+    }
+    let path = crate::pc_profile::DEFAULT_PATH;
+    let p = match std::fs::read_to_string(path)
+        .map_err(|e| e.to_string())
+        .and_then(|t| parse(&t))
+    {
+        Ok(p) => in_process(&p),
+        Err(e) => return Ok(ChildCheck::NoProfile(e)),
+    };
+    let pc = Pc::new(&p);
+    Ok(ChildCheck::Problems(
+        check(&p, &pc).iter().map(ToString::to_string).collect(),
+    ))
 }
 
 /// Runs `dasio pc-profile check` (this exe) at normal priority, without a

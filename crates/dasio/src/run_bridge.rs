@@ -13,8 +13,9 @@
 //!
 //! **No child process while the driver is loaded:** a child spawned from a
 //! process holding the SoundGrid driver makes it resync (songplayer #233),
-//! so a bridge instance never starts the PC profile check (the DAW kind's
-//! `dasio pc-profile check` child).
+//! so a bridge instance checks the PC profile in its own process, without
+//! the entries whose reading starts a process (dasio#120), never through
+//! the DAW kind's `dasio pc-profile check` child.
 //!
 //! [`DanteSide`]: dstack_asio::bridge::DanteSide
 //! [`AsioSide`]: dstack_asio::bridge::AsioSide
@@ -35,6 +36,7 @@ use tracing::{error, info, warn};
 use crate::app_status::BridgeFacts;
 use crate::kind::BridgeConfig;
 use crate::logfile::{COUNTS_EVERY, Every, STATUS_EVERY};
+use crate::run::profile::ProfileWatch;
 use crate::run::{StopEvent, place_helpers, start_device};
 
 /// How long the start waits for the runner's thread to hand over its
@@ -63,7 +65,7 @@ pub fn run(
     info!(
         instance,
         bridge = %bridge.describe(),
-        "a bridge instance: no DAW, no shared memory, and no child process while the driver is loaded (no PC profile check)"
+        "a bridge instance: no DAW, no shared memory, and no child process while the driver is loaded (the PC profile is checked in process, without bcd/task entries)"
     );
     let own = crate::own_cpus(&cfg);
     // What can fail without a running device first: past the device's
@@ -116,12 +118,15 @@ pub fn run(
             return Err(e);
         }
     };
+    // The PC profile's problems (dasio#5, #120); u32::MAX while there is none.
+    let pc_problems = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
     {
-        let (status, to_stats, from_stats, driver) = (
+        let (status, to_stats, from_stats, driver, pc_problems) = (
             Arc::clone(&status),
             Arc::clone(&to_stats),
             Arc::clone(&from_stats),
             bridge.driver.clone(),
+            Arc::clone(&pc_problems),
         );
         media.set_app_status(move || {
             let s = lock(&status).clone();
@@ -130,6 +135,10 @@ pub fn run(
                 &s,
                 to_stats.underruns(),
                 from_stats.underruns(),
+                match pc_problems.load(Ordering::Relaxed) {
+                    u32::MAX => None,
+                    n => Some(n),
+                },
             ))
         });
     }
@@ -155,10 +164,18 @@ pub fn run(
     let start = Instant::now();
     let mut counts = Every::new(COUNTS_EVERY, start, false);
     let mut status_due = Every::new(STATUS_EVERY, start, true);
+    let profile = ProfileWatch::new(own);
+    let mut profile_at: Option<Instant> = None;
     let why = loop {
         // The players the pump gave back, freed here, off its thread.
         lock(&shared).collect();
         let now = Instant::now();
+        if profile_at.is_none_or(|t| {
+            now.duration_since(t) >= Duration::from_secs(crate::pc_profile::CHECK_EVERY_S)
+        }) {
+            profile_at = Some(now);
+            profile.start_in_process(&pc_problems);
+        }
         if counts.due(now) {
             let s = lock(&status).clone();
             let v = stats.view();

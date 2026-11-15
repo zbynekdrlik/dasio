@@ -141,6 +141,7 @@ fn bridge_running() -> BridgeFacts {
         to_asio_underruns: 2,
         from_asio_underruns: 5,
         resets: 1,
+        pc_problems: Some(0),
     }
 }
 
@@ -155,7 +156,7 @@ fn the_bridge_facts_come_from_the_runner_s_status() {
         resets: 4,
         ..Default::default()
     };
-    let f = BridgeFacts::of("Test ASIO", &waiting, 7, 9);
+    let f = BridgeFacts::of("Test ASIO", &waiting, 7, 9, Some(2));
     assert_eq!(
         f,
         BridgeFacts {
@@ -169,13 +170,14 @@ fn the_bridge_facts_come_from_the_runner_s_status() {
             to_asio_underruns: 7,
             from_asio_underruns: 9,
             resets: 4,
+            pc_problems: Some(2),
         }
     );
     let running = dstack_asio::Status {
         state: dstack_asio::RunState::Running,
         ..Default::default()
     };
-    let f = BridgeFacts::of("Test ASIO", &running, 0, 0);
+    let f = BridgeFacts::of("Test ASIO", &running, 0, 0, None);
     assert!(f.running);
     assert_eq!((f.reason, f.reason_code), (None, None));
 }
@@ -236,6 +238,7 @@ fn the_bridge_json_is_one_object_with_every_field_escaped() {
         "\"to_asio_underruns\":2",
         "\"from_asio_underruns\":5",
         "\"resets\":1",
+        "\"pc_profile_problems\":0",
     ] {
         assert!(j.contains(key), "{key} missing in {j}");
     }
@@ -254,4 +257,33 @@ fn control_characters_are_escaped_in_the_json() {
         "a\\nb\\rc\\td\\u0001e\\u001ff \u{7f}"
     );
     assert_eq!(escaped("\"\\"), "\\\"\\\\");
+}
+
+#[test]
+fn a_bridge_with_pc_profile_problems_says_so_and_warns() {
+    // dasio#120: the bridge checks the profile in process; its tray line and
+    // state show the problems as the DAW kind's do.
+    let two = BridgeFacts {
+        pc_problems: Some(2),
+        ..bridge_running()
+    };
+    assert!(
+        bridge_line(&two).ends_with(" · resets 1 · PC profile: 2 problems"),
+        "{}",
+        bridge_line(&two)
+    );
+    assert_eq!(bridge_state(&two), "warn");
+    assert!(bridge_json(&two).contains("\"pc_profile_problems\":2"));
+    let one = BridgeFacts {
+        pc_problems: Some(1),
+        ..bridge_running()
+    };
+    assert!(bridge_line(&one).ends_with(" · PC profile: 1 problem"));
+    let unchecked = BridgeFacts {
+        pc_problems: None,
+        ..bridge_running()
+    };
+    assert!(bridge_line(&unchecked).ends_with(" · resets 1"));
+    assert_eq!(bridge_state(&unchecked), "ok");
+    assert!(bridge_json(&unchecked).contains("\"pc_profile_problems\":-1"));
 }
