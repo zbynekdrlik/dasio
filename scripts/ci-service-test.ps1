@@ -81,6 +81,8 @@ Remove-Item -Recurse -Force $other
 Assert-Refused { & (Join-Path $Bundle "install.ps1") -Instance $instance -Ip $ip -Iface $iface -Config $cfg -Name "ci-asio-dante" -TestClock } "exactly one of -Ip <address> and -Iface"
 Assert-Refused { & (Join-Path $Bundle "install.ps1") -Instance $instance -Config $cfg -Name "ci-asio-dante" -TestClock } "exactly one of -Ip <address> and -Iface"
 Assert-Refused { & (Join-Path $Bundle "install.ps1") -Instance $instance -Iface "dasio-no-such-interface" -Config $cfg -Name "ci-asio-dante" -TestClock } "has 0 IPv4 addresses"
+# A real clock needs dasio's NDIS filter bound to the adapter (dasio#125); the runner has none.
+Assert-Refused { & (Join-Path $Bundle "install.ps1") -Instance $instance -Ip $ip -Config $cfg -Name "ci-asio-dante" } "dasio_pacer\) is not bound to"
 
 # Elevated, the install runs only what non-administrators cannot change
 # (dasio#28 E19). Refused before anything changes: a bundle in a folder

@@ -38,8 +38,9 @@ pub mod turnaround;
 pub struct Tuning {
     /// Block periods the DAW gets beyond the first (`--spare-blocks`).
     pub spare: u32,
-    /// Audio TX through dasio's NDIS filter (`--kernel-tx`, dasio#1),
-    /// the UDP sockets where it cannot be opened.
+    /// Audio TX through dasio's NDIS filter (dasio#1); when set, a device
+    /// whose filter cannot be opened does not start (dasio#125). See
+    /// [`kernel_tx_required`].
     pub kernel_tx: bool,
 }
 
@@ -56,6 +57,14 @@ pub enum Clock {
     Dsync,
     /// TEST ONLY (`--clock system`): this machine's own clock (CI).
     System,
+}
+
+/// Whether an instance on `clock` must send its audio through dasio's NDIS
+/// filter (dasio_pacer): always on a real Dante network (owner,
+/// 15.11.2026: "dasio by ani nemal sa spustit bez nasho driveru", dasio#125);
+/// only the test clock (CI runners, no filter installed) runs without it.
+pub fn kernel_tx_required(clock: Clock) -> bool {
+    clock != Clock::System
 }
 
 impl Clock {
@@ -199,6 +208,16 @@ pub fn process_cpus(own: usize, l3: &[usize], fallback: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn every_real_clock_needs_the_ndis_filter_only_the_test_clock_does_not() {
+        // dasio#125: no dasio on a Dante network without its filter.
+        use super::{Clock, kernel_tx_required};
+        assert!(kernel_tx_required(Clock::Linked));
+        assert!(kernel_tx_required(Clock::Dsync));
+        assert!(!kernel_tx_required(Clock::System));
+        assert!(kernel_tx_required(Clock::default()));
+    }
 
     #[test]
     fn new_threads_get_the_cpu_set_ids_of_the_helper_cpus_only() {

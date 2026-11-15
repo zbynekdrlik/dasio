@@ -406,7 +406,9 @@ pub(crate) fn start_device(
         .map_err(|e| e.to_string())?;
     let media = prepared.media();
     if tuning.kernel_tx {
-        kernel_tx(&media, ip);
+        kernel_tx(&media, ip)?;
+    } else {
+        warn!("test clock: audio TX on the UDP sockets, without dasio's NDIS filter");
     }
     for &tx in &engine_tx {
         media.tx.set_source(tx, Source::Engine);
@@ -709,28 +711,32 @@ fn started_cpus() -> usize {
     process
 }
 
-/// Hands dstack dasio's NDIS filter as the audio TX path (dasio#1); the
-/// UDP sockets stay when the filter cannot be opened or dstack refuses.
-fn kernel_tx(media: &dstack::daemon::media::Media, ip: std::net::Ipv4Addr) {
-    match crate::kernel_tx::windows::KernelTx::open(ip) {
-        Ok(k) => {
-            let if_index = k.if_index();
-            if media.set_frame_sender(Arc::new(k)) {
-                info!(
-                    if_index,
-                    "audio TX goes through dasio's NDIS filter (kernel TX)"
-                );
-            } else {
-                warn!(
-                    if_index,
-                    "audio TX stays on the UDP sockets: dstack refused the filter's frame sender"
-                );
-            }
-        }
-        Err(e) => {
-            warn!(%e, "audio TX stays on the UDP sockets: dasio's NDIS filter could not be opened (is dasio_pacer installed?)")
-        }
+/// Hands dstack dasio's NDIS filter as the audio TX path (dasio#1). The
+/// device does not start without it (owner 15.11.2026, dasio#125): the
+/// error names what is missing, and the SCM restarts the service.
+fn kernel_tx(media: &dstack::daemon::media::Media, ip: std::net::Ipv4Addr) -> Result<(), String> {
+    let k = crate::kernel_tx::windows::KernelTx::open(ip).map_err(|e| {
+        let e = format!(
+            "dasio's NDIS filter could not be opened ({e}): install dasio_pacer \
+             (test signing on, drivers/ndis-pacer/scripts/install.ps1 -Adapter <the Dante NIC>) \
+             and bind it to the adapter holding {ip}; dasio does not run without it"
+        );
+        error!(%e, "the device does not start");
+        e
+    })?;
+    let if_index = k.if_index();
+    if !media.set_frame_sender(Arc::new(k)) {
+        let e =
+            "dstack refused dasio's NDIS filter as the frame sender: dasio does not run without it"
+                .to_string();
+        error!(if_index, %e, "the device does not start");
+        return Err(e);
     }
+    info!(
+        if_index,
+        "audio TX goes through dasio's NDIS filter (kernel TX)"
+    );
+    Ok(())
 }
 
 /// Keeps every thread of this process but the media threads on the CPUs

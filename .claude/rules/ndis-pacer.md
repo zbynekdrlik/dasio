@@ -7,9 +7,20 @@ paths:
 
 # dasio's NDIS filter (dasio_pacer)
 
+## dasio never runs without it (dasio#125, owner 15.11.2026)
+
+- Every instance on a real clock sends audio through the filter: no
+  `--kernel-tx` / `-KernelTx` any more. The device refuses to start when
+  `\\.\dasiopacer` cannot be opened, and `install.ps1` refuses an
+  instance whose adapter has no `dasio_pacer` binding. Only `-TestClock`
+  (CI) runs without it.
+- A new PC: Secure Boot off, `bcdedit /set testsigning on` + reboot, the
+  filter (`drivers/ndis-pacer/scripts/install.ps1 -Adapter <Dante NIC>`),
+  then dasio. mbc and dsg ran without it until 15.11.2026.
+
 ## Reinstalling it on a PC where dasio runs
 
-- With `--kernel-tx`, each dasio instance holds `\\.\dasiopacer` open. A
+- Each dasio instance holds `\\.\dasiopacer` open. A
   filter whose device is open cannot unload. Stop the dasio services
   first, then `netcfg -u dasio_pacer`, then `install.ps1 -Adapter <NIC>
   -RxdCpu <n>`, then start the services again.
