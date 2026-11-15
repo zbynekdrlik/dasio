@@ -367,6 +367,60 @@ string = "0"
 nic_service = "rt640x64"
 why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
 
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\QoS\dstack Dante leg mDNS cap'
+name = "Version"
+string = "2.0"
+why = "dstack#288: caps this PC's own outgoing mDNS at 200 kbit/s (a QoS policy; ms_pacer stays bound on the Dante adapter); FOH 20:22, mbc 21:32 CET 15.11.2026"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\QoS\dstack Dante leg mDNS cap'
+name = "NetProfile"
+dword = 7
+why = "dstack#288: caps this PC's own outgoing mDNS at 200 kbit/s (a QoS policy; ms_pacer stays bound on the Dante adapter); FOH 20:22, mbc 21:32 CET 15.11.2026"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\QoS\dstack Dante leg mDNS cap'
+name = "Precedence"
+dword = 127
+why = "dstack#288: caps this PC's own outgoing mDNS at 200 kbit/s (a QoS policy; ms_pacer stays bound on the Dante adapter); FOH 20:22, mbc 21:32 CET 15.11.2026"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\QoS\dstack Dante leg mDNS cap'
+name = "Protocol"
+dword = 2
+why = "dstack#288: caps this PC's own outgoing mDNS at 200 kbit/s (a QoS policy; ms_pacer stays bound on the Dante adapter); FOH 20:22, mbc 21:32 CET 15.11.2026"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\QoS\dstack Dante leg mDNS cap'
+name = "DstIP"
+string = "224.0.0.251"
+why = "dstack#288: caps this PC's own outgoing mDNS at 200 kbit/s (a QoS policy; ms_pacer stays bound on the Dante adapter); FOH 20:22, mbc 21:32 CET 15.11.2026"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\QoS\dstack Dante leg mDNS cap'
+name = "DstIPPrefix"
+dword = 32
+why = "dstack#288: caps this PC's own outgoing mDNS at 200 kbit/s (a QoS policy; ms_pacer stays bound on the Dante adapter); FOH 20:22, mbc 21:32 CET 15.11.2026"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\QoS\dstack Dante leg mDNS cap'
+name = "DstPortLow"
+dword = 5353
+why = "dstack#288: caps this PC's own outgoing mDNS at 200 kbit/s (a QoS policy; ms_pacer stays bound on the Dante adapter); FOH 20:22, mbc 21:32 CET 15.11.2026"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\QoS\dstack Dante leg mDNS cap'
+name = "DstPortHigh"
+dword = 5353
+why = "dstack#288: caps this PC's own outgoing mDNS at 200 kbit/s (a QoS policy; ms_pacer stays bound on the Dante adapter); FOH 20:22, mbc 21:32 CET 15.11.2026"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\QoS\dstack Dante leg mDNS cap'
+name = "ThrottleRate"
+qword = 25000
+why = "dstack#288: caps this PC's own outgoing mDNS at 200 kbit/s (a QoS policy; ms_pacer stays bound on the Dante adapter); FOH 20:22, mbc 21:32 CET 15.11.2026"
+
 [[bcd]]
 name = "disabledynamictick"
 value = "Yes"
