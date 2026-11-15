@@ -301,6 +301,33 @@ mod tests {
     }
 
     #[test]
+    fn an_interface_with_only_its_link_local_address_has_none_yet() {
+        // dsg, 15.11.2026 (dasio#121): at boot, before DHCP answered,
+        // Windows put APIPA on the NIC and the device ran on it.
+        let apipa = Ipv4Addr::new(169, 254, 39, 11);
+        let boot = vec![IfAddr {
+            name: "Ethernet".into(),
+            ip: apipa,
+            netmask: Ipv4Addr::new(255, 255, 0, 0),
+        }];
+        let e = address_in(&Place::Iface("Ethernet".into()), &boot).unwrap_err();
+        assert!(e.starts_with("the interface \"Ethernet\": "), "{e}");
+        assert!(e.contains("link-local"), "{e}");
+        // An address the operator named is theirs to choose.
+        assert_eq!(address_in(&Place::Ip(apipa), &boot), Ok(apipa));
+        // Once DHCP answers, the interface's address is the device's.
+        let leased = vec![IfAddr {
+            name: "Ethernet".into(),
+            ip: Ipv4Addr::new(10, 77, 7, 108),
+            netmask: Ipv4Addr::new(255, 255, 255, 0),
+        }];
+        assert_eq!(
+            address_in(&Place::Iface("Ethernet".into()), &leased),
+            Ok(Ipv4Addr::new(10, 77, 7, 108))
+        );
+    }
+
+    #[test]
     fn a_loopback_or_unspecified_address_is_refused() {
         let lo = vec![IfAddr {
             name: "lo".into(),
