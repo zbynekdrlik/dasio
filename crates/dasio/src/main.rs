@@ -12,8 +12,8 @@ use std::process::ExitCode;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: dasio run --instance <n> --config <device.toml> [--ip <address> | --iface <interface name>] [--log <file>] [--clock linked|dsync|system] [--spare-blocks <n>] [--kernel-tx]\n       \
-         dasio service --instance <n> --config <device.toml> [--ip <address> | --iface <interface name>] --log <file> [--clock linked|dsync|system] [--spare-blocks <n>] [--kernel-tx]\n       \
+        "usage: dasio run --instance <n> --config <device.toml> [--ip <address> | --iface <interface name>] [--log <file>] [--clock linked|dsync|system] [--spare-blocks <n>]\n       \
+         dasio service --instance <n> --config <device.toml> [--ip <address> | --iface <interface name>] --log <file> [--clock linked|dsync|system] [--spare-blocks <n>]\n       \
          dasio register --instance <n> --dll <path> [--name <shown to DAWs>]\n       \
          dasio stop --instance <n>\n       \
          dasio probe --instance <n> [--seconds <s>] [--affinity <hex mask>]\n       \
@@ -155,10 +155,12 @@ fn main() -> ExitCode {
                 Some(Ok(n)) if n <= 1 => n,
                 Some(_) => return usage(),
             };
-            // `--kernel-tx`: audio TX through dasio's NDIS filter.
+            // Audio TX through dasio's NDIS filter on every real clock: a
+            // device without it does not start (dasio#125). An old service
+            // path's `--kernel-tx` is ignored.
             let tuning = dasio::Tuning {
                 spare,
-                kernel_tx: args.iter().any(|a| a == "--kernel-tx"),
+                kernel_tx: dasio::kernel_tx_required(clock),
             };
             if cmd == "service" {
                 // The service looks the address up once the box holds it.

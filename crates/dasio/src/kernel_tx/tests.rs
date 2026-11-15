@@ -383,3 +383,19 @@ fn the_report_carries_the_window_s_fallback_bursts_and_how_long_ago_the_last_eve
     };
     assert_eq!(w.step(&[back], 6), None);
 }
+
+#[test]
+fn the_filter_is_bound_to_an_adapter_only_when_it_has_a_record_for_it() {
+    // dasio#125: the filter installed but bound to another NIC is no filter.
+    let one = KtxStatus {
+        if_index: 6,
+        ..KtxStatus::default()
+    };
+    let other = KtxStatus {
+        if_index: 9,
+        ..KtxStatus::default()
+    };
+    assert!(bound_to(&[other, one], 6));
+    assert!(!bound_to(&[other], 6));
+    assert!(!bound_to(&[], 6));
+}

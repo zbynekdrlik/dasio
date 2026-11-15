@@ -60,10 +60,6 @@ param(
     # Block periods the DAW gets beyond the first (0 or 1): a heavy set's
     # late blocks still play, its outputs that many blocks later.
     [ValidateRange(0, 1)][int]$SpareBlocks = 0,
-    # Audio TX through dasio's NDIS filter (dasio_pacer, drivers/ndis-pacer):
-    # past Winsock, tcpip and WFP. Without the filter the UDP sockets carry
-    # it, as without this switch.
-    [switch]$KernelTx,
     # The dsync service as the only PTP time (`--clock dsync`). Without it
     # the device follows Dante PTP in process (needs Npcap) and falls back
     # to the service.
@@ -198,6 +194,22 @@ if ($Iface) {
         throw "$Ip is not one of this PC's addresses; nothing changed"
     }
     $place = "--ip $Ip"
+}
+
+# dasio never runs without its NDIS filter on a Dante network (owner
+# 15.11.2026, dasio#125): the device's adapter must have dasio_pacer bound
+# (drivers/ndis-pacer/scripts/install.ps1 -Adapter <it>, test signing on).
+# Only the test clock (CI) runs without it.
+if (-not $TestClock) {
+    # The config's `iface = "<alias>"` wins over -Ip/-Iface at the start
+    # (place.rs): its adapter is the one that must carry the filter.
+    $configIface = (Select-String -LiteralPath $Config -Pattern '^\s*iface\s*=\s*"([^"]*)"' | Select-Object -First 1)
+    $alias = if ($configIface) { $configIface.Matches[0].Groups[1].Value } elseif ($Iface) { $Iface } else { (Get-NetIPAddress -IPAddress $Ip -AddressFamily IPv4).InterfaceAlias }
+    $binding = Get-NetAdapterBinding -Name $alias -ComponentID dasio_pacer -ErrorAction SilentlyContinue
+    if (-not $binding -or -not $binding.Enabled) {
+        throw "dasio's NDIS filter (dasio_pacer) is not bound to '$alias': install it first (bcdedit /set testsigning on + reboot, then drivers/ndis-pacer/scripts/install.ps1 -Adapter '$alias'); dasio does not run without it; nothing changed"
+    }
+    Write-Output "dasio_pacer is bound to '$alias': audio TX goes through dasio's NDIS filter"
 }
 
 # The ports and process id each device takes on the shared address (the
@@ -489,7 +501,6 @@ $bin_path = "`"$instExe`" service --instance $Instance --config `"$cfg`" $place 
 if ($TestClock) { $bin_path += " --clock system" }
 if ($DsyncClock) { $bin_path += " --clock dsync" }
 if ($SpareBlocks -gt 0) { $bin_path += " --spare-blocks $SpareBlocks" }
-if ($KernelTx) { $bin_path += " --kernel-tx" }
 $existing = Get-CimInstance Win32_Service -Filter "Name='$service'"
 if ($existing) {
     # Through CIM: the path's quotes reach the SCM unchanged (sc.exe's
