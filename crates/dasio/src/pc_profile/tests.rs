@@ -1003,3 +1003,80 @@ fn a_nic_family_entry_counts_only_on_that_driver() {
         "no NIC found: not checked"
     );
 }
+
+#[test]
+fn every_kind_merges_site_over_baseline_by_its_own_key() {
+    let base = parse_with(
+        concat!(
+            "name = \"b\"\n",
+            "[[ini]]\nfile = 'C:\\\\L.ini'\nkey = \"K\"\nvalue = \"base\"\n",
+            "[[ini]]\nfile = 'C:\\\\L.ini'\nkey = \"J\"\nvalue = \"keep\"\n",
+            "[[process]]\nexe = \"a.exe\"\naffinity = \"0x1\"\n",
+            "[[process]]\nexe = \"b.exe\"\naffinity = \"0x2\"\n",
+            "[[disk]]\ndrive = \"C:\"\nmin_free_gb = 20\n",
+            "[[disk]]\ndrive = \"D:\"\nmin_free_gb = 5\n",
+            "[[bcd]]\nname = \"testsigning\"\nvalue = \"Yes\"\n",
+            "[[bcd]]\nname = \"disabledynamictick\"\nvalue = \"Yes\"\n",
+            "[[task]]\nname = '\\x'\nenabled = true\n",
+            "[[task]]\nname = '\\y'\nenabled = true\n",
+        ),
+        false,
+    )
+    .unwrap();
+    let pc = site(concat!(
+        "[[ini]]\nfile = 'c:\\\\l.INI'\nkey = \"K\"\nvalue = \"site\"\n",
+        "[[process]]\nexe = \"A.EXE\"\naffinity = \"0xF\"\n",
+        "[[disk]]\ndrive = \"c:\"\nmin_free_gb = 50\n",
+        "[[bcd]]\nname = \"TESTSIGNING\"\nvalue = \"No\"\n",
+        "[[task]]\nname = '\\X'\nenabled = false\n",
+    ));
+    let m = merge(&base, &pc);
+    let ini: Vec<_> = m
+        .ini
+        .iter()
+        .map(|e| (e.key.as_str(), e.value.as_str()))
+        .collect();
+    assert_eq!(ini.len(), 2);
+    assert!(ini.contains(&("K", "site")) && ini.contains(&("J", "keep")));
+    let procs: Vec<_> = m
+        .process
+        .iter()
+        .map(|e| e.affinity.clone().unwrap())
+        .collect();
+    assert_eq!(procs.len(), 2);
+    assert!(procs.contains(&"0xF".to_string()) && procs.contains(&"0x2".to_string()));
+    let disks: Vec<_> = m.disk.iter().map(|e| e.min_free_gb).collect();
+    assert_eq!(disks.len(), 2);
+    assert!(disks.contains(&50) && disks.contains(&5));
+    let bcd: Vec<_> = m.bcd.iter().map(|e| e.value.as_str()).collect();
+    assert_eq!(bcd.len(), 2);
+    assert!(bcd.contains(&"No") && bcd.contains(&"Yes"));
+    let tasks: Vec<_> = m.task.iter().map(|e| e.enabled).collect();
+    assert_eq!(tasks.len(), 2);
+    assert!(tasks.contains(&Some(false)) && tasks.contains(&Some(true)));
+    // A different ini key in the same file is not the same entry.
+    let other = site("[[ini]]\nfile = 'C:\\\\L.ini'\nkey = \"Z\"\nvalue = \"z\"\n");
+    assert_eq!(merge(&base, &other).ini.len(), 3);
+}
+
+#[test]
+fn load_takes_the_baseline_alone_without_a_file_and_refuses_an_unreadable_one() {
+    let dir = std::env::temp_dir().join(format!("dasio-load-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let base = baseline().unwrap();
+    let missing = load(&dir.join("none.toml")).unwrap();
+    assert_eq!(missing, baseline_only(&base));
+    let file = dir.join("pc.toml");
+    std::fs::write(
+        &file,
+        "name = \"pc\"\n[[registry]]\nkey = 'HKLM\\Q'\nname = \"R\"\ndword = 7\n",
+    )
+    .unwrap();
+    let m = load(&file).unwrap();
+    assert_eq!(m.name, "pc");
+    assert!(m.registry.iter().any(|e| e.name == "R"));
+    assert!(m.registry.len() > 1, "the baseline's entries are in too");
+    // A directory where the file should be: an error, not the baseline.
+    assert!(load(&dir).is_err());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
