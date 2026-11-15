@@ -99,13 +99,25 @@ pub fn parse(args: &[String]) -> Result<Place, String> {
 /// interface's one IPv4 address, or the given address when an interface
 /// holds it; none, several, or one the Dante network cannot reach
 /// (loopback, unspecified) is refused.
+///
+/// A named interface whose address is link-local (169.254.0.0/16) has none
+/// yet: Windows puts one on a DHCP NIC until the lease comes, and a device
+/// started on it stays unreachable (dsg, 15.11.2026, dasio#121). An address
+/// the operator named (`--ip`) is kept, link-local or not.
 pub fn address_in(place: &Place, addrs: &[IfAddr]) -> Result<Ipv4Addr, String> {
-    pick_interface(place, addrs)
+    let ip = pick_interface(place, addrs)
         .map(|a| a.ip)
         .map_err(|e| match place {
             Place::Iface(name) => format!("the interface {name:?}: {e}"),
             Place::Ip(ip) => format!("{ip}: {e}"),
-        })
+        })?;
+    match place {
+        Place::Iface(name) if ip.is_link_local() => Err(format!(
+            "the interface {name:?}: only its link-local address {ip} \
+             (DHCP has not answered yet)"
+        )),
+        _ => Ok(ip),
+    }
 }
 
 /// [`address_in`] on this box's interfaces now (an interface at boot may
@@ -298,6 +310,33 @@ mod tests {
         assert!(e.starts_with("10.77.7.9: "), "{e}");
         // No interface of this box holds a documentation address.
         assert!(address(&Place::Ip(Ipv4Addr::new(192, 0, 2, 1))).is_err());
+    }
+
+    #[test]
+    fn an_interface_with_only_its_link_local_address_has_none_yet() {
+        // dsg, 15.11.2026 (dasio#121): at boot, before DHCP answered,
+        // Windows put APIPA on the NIC and the device ran on it.
+        let apipa = Ipv4Addr::new(169, 254, 39, 11);
+        let boot = vec![IfAddr {
+            name: "Ethernet".into(),
+            ip: apipa,
+            netmask: Ipv4Addr::new(255, 255, 0, 0),
+        }];
+        let e = address_in(&Place::Iface("Ethernet".into()), &boot).unwrap_err();
+        assert!(e.starts_with("the interface \"Ethernet\": "), "{e}");
+        assert!(e.contains("link-local"), "{e}");
+        // An address the operator named is theirs to choose.
+        assert_eq!(address_in(&Place::Ip(apipa), &boot), Ok(apipa));
+        // Once DHCP answers, the interface's address is the device's.
+        let leased = vec![IfAddr {
+            name: "Ethernet".into(),
+            ip: Ipv4Addr::new(10, 77, 7, 108),
+            netmask: Ipv4Addr::new(255, 255, 255, 0),
+        }];
+        assert_eq!(
+            address_in(&Place::Iface("Ethernet".into()), &leased),
+            Ok(Ipv4Addr::new(10, 77, 7, 108))
+        );
     }
 
     #[test]

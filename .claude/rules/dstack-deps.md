@@ -23,6 +23,7 @@ paths:
 - `--iface` names the Windows interface alias (if-addrs' FriendlyName),
   compared exactly. `install.ps1` matches it with `-ceq`, never
   `-InterfaceAlias`, which takes wildcards and ignores case.
+- `--iface` takes the interface's address only when it is not link-local: at boot Windows puts APIPA (169.254.x.y) on a DHCP NIC until the lease comes, and a device started on it was unreachable until a manual restart (dsg, 15.11.2026, dasio#121). The service keeps waiting and logs "only its link-local address". `--ip 169.254.x.y` stays allowed.
 
 ## Checking a device's audio from outside (sine checker)
 
