@@ -253,12 +253,11 @@ $text2 += "arc_port = 4441", "cmc_port = 8801", "flows_port = 4456", "process_id
 $cfg2 = Join-Path $work2 "device.toml"
 Set-Content -Path $cfg2 -Value $text2
 $first = Get-ServicePid
-& (Join-Path $Bundle "install.ps1") -Instance $second -Ip $ip -Config $cfg2 -Name "ci-asio-dante-2" -TestClock -SpareBlocks 1 -KernelTx
+& (Join-Path $Bundle "install.ps1") -Instance $second -Ip $ip -Config $cfg2 -Name "ci-asio-dante-2" -TestClock -SpareBlocks 1
 if ((Get-Service "dasio-$second").Status -ne "Running") { throw "the second instance is not running" }
-if ((Get-CimInstance Win32_Service -Filter "Name='dasio-$second'").PathName -notmatch '--kernel-tx') { throw "the second instance runs without --kernel-tx" }
-# The runner has no dasio_pacer: kernel TX falls back to the UDP sockets
-# and says so, and the instance serves on.
-Wait-Until { (Get-Content (Join-Path $env:ProgramData "dasio\instance-$second\dasio.log") -ErrorAction SilentlyContinue) -match "audio TX stays on the UDP sockets: dasio's NDIS filter could not be opened" } 20 "the second instance's kernel TX fallback"
+# The test clock is the only one that runs without dasio_pacer (dasio#125);
+# it says so in its log.
+Wait-Until { (Get-Content (Join-Path $env:ProgramData "dasio\instance-$second\dasio.log") -ErrorAction SilentlyContinue) -match "test clock: audio TX on the UDP sockets, without dasio's NDIS filter" } 20 "the second instance's test-clock UDP TX"
 if ((Get-CimInstance Win32_Service -Filter "Name='dasio-$second'").PathName -notmatch '--spare-blocks 1') { throw "the second instance runs without its spare block" }
 Wait-Until { (Get-Content (Join-Path $env:ProgramData "dasio\instance-$second\dasio.log") -ErrorAction SilentlyContinue) -match 'spare_blocks=1' } 20 "the second instance serving with a spare block"
 Wait-Until { (Get-Content (Join-Path $env:ProgramData "dasio\instance-$second\dasio.log") -ErrorAction SilentlyContinue) -match "the device's control ports: from its config arc=4441 cmc=8801 flows=4456 process_id=1" } 20 "the second instance on its config's ports"
