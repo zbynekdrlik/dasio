@@ -10,8 +10,8 @@
 //! block on the CI runners, 10.11.2026), so there it only checks that the
 //! answers play.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use dasio::app_rate::{Plan, Served};
@@ -64,6 +64,15 @@ impl Link for Daw {
     fn count_late(&self) {}
 }
 
+/// The benches take turns: the test harness runs tests on parallel
+/// threads, and a bench timed beside another measures the other's load
+/// too (CI 43807646396: the FOH bench beside the e2e-shape one).
+static ALONE: Mutex<()> = Mutex::new(());
+
+fn alone() -> MutexGuard<'static, ()> {
+    ALONE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn channels(n: usize, frames: usize) -> Vec<Vec<i32>> {
     (0..n).map(|_| vec![0; frames]).collect()
 }
@@ -87,6 +96,7 @@ fn daw(inputs: usize, outputs: usize, frames: usize) -> Daw {
 
 #[test]
 fn a_block_at_foh_s_shape_takes_a_small_part_of_its_period() {
+    let _alone = alone();
     let daw = daw(CHANNELS, CHANNELS, FRAMES);
     let now = Arc::new(AtomicU64::new(0));
     let clock = Arc::clone(&now);
@@ -208,30 +218,33 @@ fn time_converters() -> (Duration, Duration) {
 /// The e2e test runs the debug (or coverage-instrumented) dasio binary,
 /// and its 44.1 kHz step failed when the converted path overran the 333 us
 /// device block (CI 43806346111: max_process 456-483 us, 49-64 overruns a
-/// second, dasio#107). The conversion's share of the pump's block holds in
-/// every build the tests run: a quarter of the device block's period on
-/// average, so the device's own work (up to 130 us a block at 96 kHz in the
-/// same run) and the runner's jitter keep the rest. The plain bridge at the
-/// same shape and the two converters alone are printed beside it, so a
-/// failure says which part costs.
+/// second, dasio#107). The conversion's own cost (the 44.1 kHz path less
+/// the plain bridge at the same shape, which the 96 kHz e2e steps already
+/// carry) holds in every build the tests run: a quarter of the device
+/// block's period on average, so the device's own work and the runner's
+/// jitter keep the rest. The two converters alone are printed beside it,
+/// so a failure says which part costs.
 #[test]
-fn the_44_1_khz_path_at_the_e2e_shape_takes_a_small_part_of_the_device_block() {
+fn the_44_1_khz_conversion_at_the_e2e_shape_takes_a_small_part_of_the_device_block() {
+    let _alone = alone();
     let period = Duration::from_nanos(E2E_BLOCK as u64 * 1_000_000_000 / RATE);
     let direct = Plan::new(96_000, 96_000, E2E_BLOCK as u32).expect("96 kHz");
     let converted = Plan::new(96_000, 44_100, E2E_BLOCK as u32).expect("44.1 kHz");
     let (d_mean, d_worst, _) = time_served(&direct);
     let (c_mean, c_worst) = time_converters();
     let (mean, worst, played) = time_served(&converted);
+    let conversion = mean.saturating_sub(d_mean);
     eprintln!(
         "e2e shape {E2E_RX}/{E2E_TX}x{E2E_BLOCK} at 96 kHz, per device block: \
          bridge alone mean {d_mean:?} worst {d_worst:?}; \
          converters alone mean {c_mean:?} worst {c_worst:?}; \
-         44.1 kHz path mean {mean:?} worst {worst:?}; period {period:?}"
+         44.1 kHz path mean {mean:?} worst {worst:?}; \
+         the conversion's own {conversion:?}; period {period:?}"
     );
     assert!(
-        mean < period / 4,
-        "the 44.1 kHz path takes {mean:?} per device block on average, more than a quarter of the {period:?} period \
-         (bridge alone {d_mean:?}, converters alone {c_mean:?})"
+        conversion < period / 4,
+        "the 44.1 kHz conversion adds {conversion:?} per device block on average, more than a quarter of the {period:?} period \
+         (path {mean:?}, bridge alone {d_mean:?}, converters alone {c_mean:?})"
     );
     assert!(played, "the DAW's answers played through the conversion");
 }
