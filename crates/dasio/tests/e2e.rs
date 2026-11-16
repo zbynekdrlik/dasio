@@ -210,26 +210,34 @@ fn exe() -> &'static str {
 /// impulse comes back once over Dante, at one fixed round trip within the
 /// latencies the driver reports. Returns the report for the timing checks.
 fn round_trip(instance: u32, seconds: u64) -> dasio::probe::Report {
-    round_trip_stalled(instance, seconds, 0)
+    round_trip_at(instance, seconds, 0, 96_000)
 }
 
 /// [`round_trip`] with the host stalling once for `stall_ms` while an
 /// impulse is on its way.
 fn round_trip_stalled(instance: u32, seconds: u64, stall_ms: u64) -> dasio::probe::Report {
-    let r = dasio::probe::probe_stalled(instance, seconds, stall_ms).expect("the probe");
+    round_trip_at(instance, seconds, stall_ms, 96_000)
+}
+
+/// [`round_trip_stalled`] with the host at `rate` Hz (dasio#107: the device
+/// stays at 96 kHz and converts): every count is at the host's rate.
+fn round_trip_at(instance: u32, seconds: u64, stall_ms: u64, rate: u32) -> dasio::probe::Report {
+    let r = dasio::probe::probe_at(instance, seconds, stall_ms, rate).expect("the probe");
     eprintln!("instance {instance}: {r:?}");
+    assert_eq!(r.rate, rate, "instance {instance}: the host's rate");
+    let rate = u64::from(rate);
     let block = u64::from(r.block);
     // This probe's own switches only, not an earlier probe's in this
     // process too.
     assert!(
-        r.switches <= seconds * 96_000 / block * 11 / 10,
+        r.switches <= seconds * rate / block * 11 / 10,
         "instance {instance}: {} switches in {seconds} s at block {block}: more than the device drove",
         r.switches
     );
     // The device drives the host. The probe's watchdog figures say whether
     // the whole guest stopped meanwhile (dasio#114).
     assert!(
-        r.switches >= seconds * 96_000 / block * 9 / 10,
+        r.switches >= seconds * rate / block * 9 / 10,
         "instance {instance}: the device drives the host: {} switches in {seconds} s at block {block} ({} blocks in {} VM stalls, longest {} us)",
         r.switches,
         r.vm_stall_blocks,
@@ -243,7 +251,7 @@ fn round_trip_stalled(instance: u32, seconds: u64, stall_ms: u64) -> dasio::prob
     // missed its block, or the device's pump skipped it, which the
     // timeline keeps since it runs on media time (CI 41415967913: 3 sent
     // in 385120 samples, no block missed, one second jumped).
-    let whole_seconds = r.samples.saturating_sub(1) / 96_000;
+    let whole_seconds = r.samples.saturating_sub(1) / rate;
     assert_eq!(
         r.emitted + r.skipped,
         whole_seconds,
@@ -346,6 +354,23 @@ fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_a
         "the 5 ms host stall missed no block (max gap {} us)",
         r.max_gap_us
     );
+
+    // A host at 48 kHz on the same 96 kHz device (dasio#107): the device
+    // serves a section at 48 kHz (half the block, the same period), and
+    // each impulse still comes back once, at one fixed round trip within
+    // the latencies the driver reports at that rate.
+    let device_block = r.block;
+    let r = round_trip_at(FIRST, 4, 0, 48_000);
+    assert_eq!(r.block * 2, device_block, "48 kHz: half the device's block");
+    assert!(
+        r.late <= r.gap_blocks,
+        "48 kHz: {} late blocks, {} explained by the host's gaps",
+        r.late,
+        r.gap_blocks
+    );
+    // And back at 96 kHz: the device serves its own rate again.
+    let r = round_trip(FIRST, 3);
+    assert_eq!(r.block, device_block, "96 kHz again: the device's block");
 
     // The second device on the same address, beside the running first:
     // on its own ports (ARC, CMC and flow control, each held by one of

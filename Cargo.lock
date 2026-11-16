@@ -219,6 +219,7 @@ dependencies = [
  "dstack-asio",
  "dstack-audio-io",
  "dstack-endpoint",
+ "dstack-resample",
  "serde",
  "shm",
  "toml",

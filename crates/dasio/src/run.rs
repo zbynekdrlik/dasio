@@ -1,6 +1,8 @@
 //! `dasio run` on Windows: the instance's Dante device on its own
 //! address, its pump on the bridge, the shared memory for the driver, and a
-//! heartbeat in the shared header until Ctrl+C or the device ends.
+//! heartbeat in the shared header until Ctrl+C or the device ends. The
+//! shared memory is served at the rate the DAW asks ([`serve`], dasio#107):
+//! a new rate serves a new section on the running device.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,16 +12,17 @@ use std::time::{Duration, Instant};
 use dstack::daemon::Place;
 use dstack::host::{self, Signals, Stopped};
 use dstack::media::source::Source;
-use dstack::stream::{self, Map, Pump, PumpStats};
+use dstack::stream::PumpStats;
 use shm::{HostUse, Shape, Shared};
 use tracing::{error, info, warn};
 
-use crate::bridge::{Bridge, SharedLink};
 use crate::logfile::{COUNTS_EVERY, Every, STATUS_EVERY};
 use crate::turnaround::{Stamps, Turnaround, free_at, split};
 
 pub(crate) mod profile;
 use profile::ProfileWatch;
+mod serve;
+use serve::Base;
 
 /// Runs instance `instance` from the device config at `config` on `ip`
 /// with the media clock from `clock` (dantesync in production; the system
@@ -52,67 +55,60 @@ pub fn run(
     let (prepared, media, engine_tx) = start_device(cfg, ip, clock, tuning)?;
     let cfg = prepared.config().clone();
     let timing = crate::timing(&cfg);
-    let latency = crate::latencies(&cfg, spare);
-    let shared = Arc::new(
-        Shared::create(instance, shape, cfg.sample_rate, latency)
-            .map_err(|e| format!("the shared memory: {e}"))?,
-    );
     let stats = Arc::new(PumpStats::new(timing, cfg.sample_rate));
     media.attach_engine(Arc::clone(&stats));
-    let stamps = Arc::new(Stamps::default());
-    let bridge = Bridge::with_spare(
-        SharedLink {
-            shared: Arc::clone(&shared),
-            stamps: Arc::clone(&stamps),
-        },
-        u64::from(spare),
-    )
-    .with_deadline(crate::wait_offset(&timing, cfg.sample_rate), {
-        // The pump's media clock, in samples (as the pump reads it).
-        let clock = Arc::clone(&media.clock);
-        let rate = cfg.sample_rate;
-        move || clock.now_ns().map(|ns| dstack::clock::to_samples(ns, rate))
-    })
-    // A late block fades out and back in instead of cutting to silence
-    // (dasio#1, the 8.11.2026 service clicks).
-    .with_concealment(engine_tx.len(), shape.block as usize);
-    // The pump's blocks must have this shape, or a late block is plain
-    // silence again (the bridge never allocates to fit another).
-    info!(
-        outputs = engine_tx.len(),
-        frames = shape.block,
-        "late blocks are concealed (a fade out and back in) for blocks of this shape"
-    );
-    let stale = bridge.stale_counter();
-    let waited = bridge.waited_counter();
     // dtray's line for this instance (dstack's app status): the header's
     // numbers, the bridge's counters, the late blocks of the last minute
     // (kept by the loop below).
     let late_per_min = Arc::new(std::sync::atomic::AtomicU64::new(0));
     // The PC profile's problems (dasio#5); u32::MAX while there is none.
     let pc_problems = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
+    let turnaround = Arc::new(Mutex::new(Turnaround::default()));
+    let base = Base {
+        instance,
+        shape,
+        cfg: &cfg,
+        timing,
+        spare,
+        media: &media,
+        engine_tx: &engine_tx,
+        stats: &stats,
+        turnaround: &turnaround,
+    };
+    // The rate a DAW asked before (the instance's directory outlives a
+    // device restart under a DAW, dasio#107), else the device's own.
+    let asked_before = shm::requested_rate(instance).unwrap_or_else(|e| {
+        warn!(err = %e, "the instance's directory could not be read: the device's own rate");
+        0
+    });
+    let plan = crate::app_rate::first_plan(cfg.sample_rate, shape.block, asked_before)
+        .ok_or_else(|| format!("the device's block {} cannot serve the driver", shape.block))?;
+    let mut serving = base.serve(plan)?;
+    // What dtray's line and the CPU sampler read: the serving now (a rate
+    // the DAW asks serves a new section).
+    let current = Arc::new(Mutex::new(serving.current.clone()));
     {
-        let (shared, stale, waited, late_per_min, pc_problems) = (
-            Arc::clone(&shared),
-            Arc::clone(&stale),
-            Arc::clone(&waited),
+        let (current, late_per_min, pc_problems) = (
+            Arc::clone(&current),
             Arc::clone(&late_per_min),
             Arc::clone(&pc_problems),
         );
-        let (block, rate) = (shape.block, cfg.sample_rate);
         media.set_app_status(move || {
-            let h = shared.header();
+            let Ok(c) = current.lock() else {
+                return String::new();
+            };
+            let h = c.shared.header();
             crate::app_status::json(&crate::app_status::Facts {
                 attached: h.host_attached.load(Ordering::Relaxed) != 0,
-                block,
-                sample_rate: rate,
-                latency_in: latency.0,
-                latency_out: latency.1,
+                block: c.plan.app_block,
+                sample_rate: c.plan.app_rate,
+                latency_in: c.latency.0,
+                latency_out: c.latency.1,
                 spare_blocks: spare,
                 late_blocks: h.late.load(Ordering::Relaxed),
                 driver_missed: h.missed.load(Ordering::Relaxed),
-                stale: stale.load(Ordering::Relaxed),
-                waited: waited.load(Ordering::Relaxed),
+                stale: c.stale.load(Ordering::Relaxed),
+                waited: c.waited.load(Ordering::Relaxed),
                 heartbeat_ms: h.heartbeat_ms.load(Ordering::Relaxed),
                 late_per_min: late_per_min.load(Ordering::Relaxed),
                 pc_problems: match pc_problems.load(Ordering::Relaxed) {
@@ -123,47 +119,10 @@ pub fn run(
             })
         });
     }
-    let map = Map {
-        rx: (0..cfg.rx.len()).collect(),
-        tx: engine_tx,
-    };
-    let pump = Pump::new(
-        bridge,
-        map,
-        timing,
-        cfg.encoding,
-        Arc::clone(&media.rx),
-        Arc::clone(&media.tx),
-        Arc::clone(&stats),
-    );
-    let stop = Arc::new(AtomicBool::new(false));
-    let turnaround = Arc::new(Mutex::new(Turnaround::default()));
-    let period_ns = u64::from(shape.block) * 1_000_000_000 / u64::from(cfg.sample_rate);
-    let watcher = watch_turnaround(
-        Arc::clone(&shared),
-        stamps,
-        period_ns,
-        Arc::clone(&turnaround),
-        Arc::clone(&stop),
-    )
-    .map_err(|e| format!("the turnaround watcher: {e}"))?;
-    let pump = stream::spawn(Arc::clone(&media.clock), pump, Arc::clone(&stop))
-        .map_err(|e| format!("the pump: {e}"))?;
     let asked = Arc::new(AtomicBool::new(false));
     let device = prepared
         .start(Signals::Report(Arc::clone(&asked)))
         .map_err(|e| e.to_string())?;
-    info!(
-        instance,
-        rx = shape.rx,
-        tx = shape.tx,
-        block = shape.block,
-        latency_in = latency.0,
-        latency_out = latency.1,
-        spare_blocks = spare,
-        wait_offset = crate::wait_offset(&timing, cfg.sample_rate),
-        "dasio instance serving"
-    );
     let stop_event = StopEvent::create(instance).map_err(|e| format!("the stop event: {e}"))?;
     let start = Instant::now();
     let mut counts = Every::new(COUNTS_EVERY, start, false);
@@ -184,13 +143,21 @@ pub fn run(
     // Who held the CPU when the DAW missed blocks (dasio#22).
     // The thread ends when `cpu_snap` drops at the end of the run.
     let (cpu_snap, _cpu_snap_thread) = crate::cpu_snap::windows::spawn(start, {
-        let s = Arc::clone(&shared);
-        move || s.host_pid()
+        let current = Arc::clone(&current);
+        move || current.lock().map_or(0, |c| c.shared.host_pid())
     })
     .map_err(|e| format!("the CPU sampler: {e}"))?;
     let mut cpu_snap_lost = false;
     let mut profile_at: Option<Instant> = None;
+    // A rate asked that cannot be served, warned once each.
+    let mut refused_rate = 0u32;
     let why = loop {
+        // The serving now: a new one after a rate the DAW asked.
+        let (shared, stale, waited) = (
+            Arc::clone(&serving.current.shared),
+            Arc::clone(&serving.current.stale),
+            Arc::clone(&serving.current.waited),
+        );
         let h = shared.header();
         h.heartbeat_ms
             .store(start.elapsed().as_millis() as u64, Ordering::Release);
@@ -256,6 +223,12 @@ pub fn run(
                 output_ready = u8::from(h.uses(HostUse::OutputReady)),
                 time_info = u8::from(h.uses(HostUse::TimeInfo)),
                 latency_reads = h.latency_reads.load(Ordering::Relaxed),
+                // The app's rate and its conversion (dasio#107): frames
+                // played as silence by a dry FIFO, and reblock restarts.
+                app_rate = serving.current.plan.app_rate,
+                converter_dry = serving.counters.read().0,
+                reblock_dry = serving.counters.read().1,
+                reblock_restarts = serving.counters.read().2,
                 "counts"
             );
             // The DAW's turnaround since the last counts (see turnaround).
@@ -327,14 +300,57 @@ pub fn run(
         }
         // A pump that no longer runs the bridge leaves the device silent
         // while it lives: it ends, and the SCM restarts it (dasio#28 E17).
-        if let Some(e) = crate::health::pump_failure(&stats.stream_stats(), pump.is_finished()) {
+        if let Some(e) = crate::health::pump_failure(&stats.stream_stats(), serving.pump_finished())
+        {
             error!(why = %e, "the device ends");
             break Some(e);
+        }
+        // The DAW asked another rate (the driver's setSampleRate waits for
+        // a section at it): the shared memory is served again at it, the
+        // Dante device runs on (dasio#107).
+        let asked_rate = shared.requested_rate();
+        match crate::app_rate::switch_to(asked_rate, &serving.current.plan) {
+            Some(next) => {
+                info!(
+                    from = serving.current.plan.app_rate,
+                    to = next.app_rate,
+                    app_block = next.app_block,
+                    "the DAW asked another sample rate: the shared memory is served again at it"
+                );
+                serving.end();
+                match base.serve(next) {
+                    Ok(s) => serving = s,
+                    Err(e) => {
+                        error!(why = %e, "the device ends");
+                        break Some(e);
+                    }
+                }
+                if let Ok(mut c) = current.lock() {
+                    *c = serving.current.clone();
+                }
+            }
+            None if asked_rate != 0
+                && asked_rate != serving.current.plan.app_rate
+                && asked_rate != refused_rate =>
+            {
+                refused_rate = asked_rate;
+                warn!(
+                    asked = asked_rate,
+                    serving = serving.current.plan.app_rate,
+                    "the DAW asked a sample rate the device cannot serve: it keeps its rate"
+                );
+            }
+            None => {}
         }
         std::thread::sleep(Duration::from_millis(100));
     };
     // The minute in progress, before anything stops: a stall just before a
     // restart is the minute to keep (dasio#28).
+    let (shared, stale, waited) = (
+        Arc::clone(&serving.current.shared),
+        Arc::clone(&serving.current.stale),
+        Arc::clone(&serving.current.waited),
+    );
     let h = shared.header();
     let t = turnaround.lock().map(|mut t| t.take()).unwrap_or_default();
     for row in minutes.finish(
@@ -350,9 +366,7 @@ pub fn run(
     ) {
         write_minute(&mut minute_log, &row, &mut minute_log_failed, &minutes_dir);
     }
-    stop.store(true, Ordering::Release);
-    let _ = pump.join();
-    let _ = watcher.join();
+    serving.end();
     match device.stop(Duration::from_secs(7)) {
         Stopped::Done => {}
         other => warn!(?other, "the device's stop"),

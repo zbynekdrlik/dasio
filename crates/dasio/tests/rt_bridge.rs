@@ -80,6 +80,11 @@ struct Knobs {
 /// A bridge as the service builds it (spare blocks, concealment, a
 /// deadline on the media clock) around a stand-in DAW.
 fn bridge(spare: u64) -> (Bridge<Daw>, Knobs) {
+    bridge_of(spare, FRAMES)
+}
+
+/// [`bridge`] on blocks of `frames` (an app's block at its own rate).
+fn bridge_of(spare: u64, frames: usize) -> (Bridge<Daw>, Knobs) {
     let knobs = Knobs {
         attached: Arc::new(AtomicBool::new(true)),
         answers: Arc::new(AtomicBool::new(true)),
@@ -90,16 +95,16 @@ fn bridge(spare: u64) -> (Bridge<Daw>, Knobs) {
     let daw = Daw {
         attached: Arc::clone(&knobs.attached),
         answers: Arc::clone(&knobs.answers),
-        inputs: [vec![0; FRAMES], vec![0; FRAMES]],
-        outputs: Mutex::new([vec![0; FRAMES], vec![0; FRAMES]]),
+        inputs: [vec![0; frames], vec![0; frames]],
+        outputs: Mutex::new([vec![0; frames], vec![0; frames]]),
         ack: AtomicU64::new(0),
         late: Arc::clone(&knobs.late),
         published: Arc::clone(&knobs.published),
     };
     let now = Arc::clone(&knobs.now);
     let b = Bridge::with_spare(daw, spare)
-        .with_deadline(FRAMES as u64, move || Some(now.load(Ordering::Relaxed)))
-        .with_concealment(CHANNELS, FRAMES);
+        .with_deadline(frames as u64, move || Some(now.load(Ordering::Relaxed)))
+        .with_concealment(CHANNELS, frames);
     (b, knobs)
 }
 
@@ -155,5 +160,47 @@ fn the_bridge_never_allocates_in_its_block_paths() {
             stale.load(Ordering::Relaxed) > 0,
             "stale answers (spare {spare})"
         );
+    }
+}
+
+#[test]
+fn an_app_at_its_own_rate_never_allocates_either() {
+    use dasio::app_rate::{Plan, Served};
+    let input: Vec<f64> = (0..CHANNELS * FRAMES)
+        .map(|i| (i as f64 / 100.0).sin() * 0.5)
+        .collect();
+    let mut output = vec![0.0; CHANNELS * FRAMES];
+    for rate in [48_000, 44_100] {
+        let plan = Plan::new(96_000, rate, FRAMES as u32).unwrap();
+        let (b, k) = bridge_of(0, plan.app_block as usize);
+        // Every buffer of the converters and the reblock is made here.
+        let (mut served, counters) = Served::new(b, &plan, CHANNELS, CHANNELS).unwrap();
+        reset_violation_count();
+        assert_no_alloc(|| {
+            let mut start = 0u64;
+            for n in 1..=300u64 {
+                k.answers.store(!(100..110).contains(&n), Ordering::Relaxed);
+                if n == 200 {
+                    served.discontinuity();
+                }
+                // A pump that re-bootstrapped: the reblock starts again.
+                let step: u64 = if n == 250 { 10 } else { 1 };
+                start += step * FRAMES as u64;
+                k.now.store(u64::MAX / 4, Ordering::Relaxed);
+                let mut block = Block::new(FRAMES, &input, &mut output).at(start);
+                served.process(&mut block);
+            }
+        });
+        assert_eq!(
+            violation_count(),
+            0,
+            "the converted path allocated ({rate} Hz)"
+        );
+        assert!(k.published.load(Ordering::Relaxed) > 200, "{rate} Hz");
+        assert!(
+            k.late.load(Ordering::Relaxed) > 0,
+            "late blocks ({rate} Hz)"
+        );
+        assert!(counters.read().2 > 0, "the reblock restarted ({rate} Hz)");
     }
 }

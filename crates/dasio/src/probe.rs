@@ -4,7 +4,9 @@
 //! own TX 1 for the test) is scanned for it; each arrival's distance from
 //! its emit is a round trip in samples. Inputs 2.. are passed to outputs
 //! 2.. unchanged. The driver is reached as a DAW reaches it (its COM entry,
-//! the CLSID as the interface), in this process.
+//! the CLSID as the interface), in this process. It runs at the rate it
+//! asks the driver for ([`probe_at`]; 96 kHz unless asked, dasio#107): the
+//! impulses are a second apart at that rate.
 
 use core::ffi::c_void;
 use std::sync::Mutex;
@@ -32,6 +34,8 @@ pub struct Report {
     pub round_trips: Vec<u64>,
     pub late: u64,
     pub block: u32,
+    /// The rate the host ran at (`getSampleRate` after its `setSampleRate`).
+    pub rate: u32,
     pub latency_in: i32,
     pub latency_out: i32,
     /// The longest gap between two switches and the longest switch, µs.
@@ -67,6 +71,8 @@ const ONSET: i32 = 1 << 28;
 const IMPULSE: i32 = 1 << 30;
 
 struct State {
+    /// Samples a second at the host's rate: the impulses' spacing.
+    rate: u64,
     bufs: Vec<[usize; 2]>,
     rx: usize,
     block: usize,
@@ -185,7 +191,7 @@ unsafe fn switch_body(half: i32, _direct: ASIOBool, pos: Option<u64>) {
     }
     // An impulse second the timeline skipped is not sent.
     while s.next_emit < s.position {
-        s.next_emit += 96_000;
+        s.next_emit += s.rate;
         s.skipped += 1;
     }
     if s.stall_ms > 0
@@ -229,7 +235,7 @@ unsafe fn switch_body(half: i32, _direct: ASIOBool, pos: Option<u64>) {
         s.last_emit_us = now;
         s.last_emit = Some(s.next_emit);
         s.emitted += 1;
-        s.next_emit += 96_000;
+        s.next_emit += s.rate;
     }
     if s.rx > 0 {
         let inp = s.bufs[0][h] as *const i32;
@@ -237,12 +243,12 @@ unsafe fn switch_body(half: i32, _direct: ASIOBool, pos: Option<u64>) {
             // SAFETY: the driver's buffer of `n` samples.
             let v = unsafe { inp.add(k).read() };
             let at = s.position + k as u64;
-            let second = (at / 96_000) as usize;
+            let second = (at / s.rate) as usize;
             if s.peaks.len() <= second {
                 s.peaks.resize(second + 1, (0, 0));
             }
             if v.unsigned_abs() > s.peaks[second].0.unsigned_abs() {
-                s.peaks[second] = (v, at % 96_000);
+                s.peaks[second] = (v, at % s.rate);
             }
             if v.unsigned_abs() >= ONSET as u32
                 && let Some(e) = s.last_emit.take()
@@ -267,15 +273,22 @@ unsafe extern "C" fn message(sel: i32, val: i32, _m: *mut c_void, _o: *mut f64) 
     }
 }
 
-/// Runs the probe on instance `instance` for `seconds`.
+/// Runs the probe on instance `instance` for `seconds` at 96 kHz.
 pub fn probe(instance: u32, seconds: u64) -> Result<Report, String> {
-    probe_stalled(instance, seconds, 0)
+    probe_at(instance, seconds, 0, 96_000)
 }
 
 /// [`probe`] with the host stalling once for `stall_ms` while the first
 /// impulse is on its way (a DAW that lost its CPU): the round trip on the
 /// host's timeline must not change.
 pub fn probe_stalled(instance: u32, seconds: u64, stall_ms: u64) -> Result<Report, String> {
+    probe_at(instance, seconds, stall_ms, 96_000)
+}
+
+/// [`probe_stalled`] with the host at `rate` Hz, set as a DAW sets its
+/// project's rate (`canSampleRate`, `setSampleRate`) before it asks the
+/// buffer size and the latencies (dasio#107: the device converts).
+pub fn probe_at(instance: u32, seconds: u64, stall_ms: u64, rate: u32) -> Result<Report, String> {
     let id = clsid(instance).ok_or("no such instance")?;
     let mut factory: *mut c_void = core::ptr::null_mut();
     // SAFETY: valid pointers, as COM passes them.
@@ -300,8 +313,30 @@ pub fn probe_stalled(instance: u32, seconds: u64, stall_ms: u64) -> Result<Repor
     // SAFETY: the driver's methods as a host calls them.
     unsafe {
         if (v.init)(d, core::ptr::null_mut()) != ASIO_TRUE {
+            (v.Release)(d);
             return Err("init refused".into());
         }
+        let asked = f64::from(rate);
+        let e = (v.canSampleRate)(d, asked);
+        let e = if e == ASE_OK {
+            (v.setSampleRate)(d, asked)
+        } else {
+            e
+        };
+        let mut got = 0.0f64;
+        (v.getSampleRate)(d, &mut got);
+        if e != ASE_OK || got != asked {
+            let mut text: [core::ffi::c_char; 128] = [0; 128];
+            (v.getErrorMessage)(d, text.as_mut_ptr());
+            let text = core::ffi::CStr::from_ptr(text.as_ptr())
+                .to_string_lossy()
+                .into_owned();
+            (v.Release)(d);
+            return Err(format!(
+                "the driver did not take {rate} Hz (ASIOError {e}, getSampleRate {got}): {text}"
+            ));
+        }
+        report.rate = rate;
         let (mut ins, mut outs) = (0, 0);
         (v.getChannels)(d, &mut ins, &mut outs);
         let (mut min, mut max, mut pref, mut gran) = (0, 0, 0, 0);
@@ -333,12 +368,13 @@ pub fn probe_stalled(instance: u32, seconds: u64, stall_ms: u64) -> Result<Repor
         MAX_SWITCH_US.store(0, Ordering::Relaxed);
         GAPS_OVER_1MS.store(0, Ordering::Relaxed);
         GAP_BLOCKS.store(0, Ordering::Relaxed);
-        BLOCK_US.store(pref as u64 * 1_000_000 / 96_000, Ordering::Relaxed);
+        BLOCK_US.store(pref as u64 * 1_000_000 / u64::from(rate), Ordering::Relaxed);
         *LAST_SWITCH.lock().unwrap() = None;
         *GAPS.lock().unwrap() = Vec::with_capacity(4096);
         *OVER_1MS_ENDS.lock().unwrap() = Vec::with_capacity(4096);
         *T0.lock().unwrap() = Some(Instant::now());
         *STATE.lock().unwrap() = Some(State {
+            rate: u64::from(rate),
             bufs: infos
                 .iter()
                 .map(|i| [i.buffers[0] as usize, i.buffers[1] as usize])
@@ -349,7 +385,7 @@ pub fn probe_stalled(instance: u32, seconds: u64, stall_ms: u64) -> Result<Repor
             position: 0,
             stall_ms,
             stalled: false,
-            next_emit: 96_000,
+            next_emit: u64::from(rate),
             last_emit: None,
             last_emit_us: 0,
             lost: Vec::with_capacity(64),
