@@ -333,3 +333,13 @@ fn two_sets_on_one_cpu_keep_it_reserved() {
     assert_eq!(reserved_mask(&sets), 0x6);
     assert_eq!(ids_for(0x4, &sets), [0x102, 0x110]);
 }
+
+#[test]
+fn a_cut_entry_after_a_whole_one_is_named() {
+    let mut buf = entry(0x100, 0, 0, 0);
+    buf.extend([32, 0, 0, 0, 0]);
+    assert_eq!(
+        parse(&buf).unwrap_err(),
+        "a CPU set entry at byte 32 is cut short"
+    );
+}
