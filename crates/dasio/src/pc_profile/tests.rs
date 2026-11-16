@@ -4,6 +4,7 @@ use super::*;
 
 mod layout;
 mod must;
+mod power;
 
 /// A PC as a test sets it up: the reader the check sees.
 #[derive(Default)]
