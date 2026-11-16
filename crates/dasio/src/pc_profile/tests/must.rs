@@ -222,3 +222,35 @@ fn the_service_stops_on_a_must_have_item() {
     let watch = src("src/run/profile.rs");
     assert!(watch.contains("crate::pc_profile::must_have_failure(p)"));
 }
+
+/// install.ps1 (PowerShell, run on the PCs only): the baseline step runs
+/// from the bundle before the instance's service is stopped, refuses a
+/// must-have item left unset (exit 2) and a site nic_guid that is not the
+/// device's adapter.
+#[test]
+fn install_ps1_refuses_before_it_touches_the_instance() {
+    let s = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/install.ps1"),
+    )
+    .unwrap()
+    // A Windows checkout has CRLF line ends.
+    .replace("\r\n", "\n");
+    let at = |needle: &str| {
+        s.find(needle)
+            .unwrap_or_else(|| panic!("install.ps1 has no {needle}"))
+    };
+    let guid = at("if ($profileGuid -ne $adapterGuid) {");
+    let apply = at("& (Join-Path $here \"dasio.exe\") pc-profile apply");
+    let refuse = at("if ($applied -eq 2) {");
+    let stop = at("Stop-Service -Name $service");
+    let protect = at("Protect-DataFolder $root\n");
+    assert!(protect < guid, "the profile it reads is admin-only first");
+    assert!(guid < apply && apply < refuse && refuse < stop);
+    assert!(s[refuse..stop].contains("throw \"the baseline step:"));
+    assert!(s[guid..apply].contains("throw \"the baseline step:"));
+    assert_eq!(
+        s.matches(" pc-profile apply\n").count(),
+        1,
+        "applied once, before the stop"
+    );
+}

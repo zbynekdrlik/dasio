@@ -247,3 +247,55 @@ fn load_resolves_the_layout_for_the_pc_s_cpu_count() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A PC profile written before the layout (FOH's and dsg's until 0.1.107):
+/// its own RxdCpu, NIC interrupt mask and hex affinities, no `instances`.
+const OLDER: &str = r#"
+name = "older"
+nic_guid = "{G}"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\dasiopacer\Parameters'
+name = "RxdCpu"
+dword = 2
+
+[[registry]]
+key = '{nic_device}\Interrupt Management\Affinity Policy'
+name = "AssignmentSetOverride"
+binary = "0300000000000000"
+
+[[process]]
+exe = "Live.exe"
+affinity = "0xFFFFF000"
+"#;
+
+#[test]
+fn an_older_profile_s_own_values_win_over_the_computed_ones() {
+    let dir = std::env::temp_dir().join(format!("dasio-older-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("pc.toml");
+    std::fs::write(&file, OLDER).unwrap();
+    let p = load(&file, 32).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(p.instances, None);
+    let one = |name: &str| {
+        let all: Vec<_> = p.registry.iter().filter(|e| e.name == name).collect();
+        assert_eq!(
+            all.len(),
+            1,
+            "{name}: the site's entry replaces the baseline's"
+        );
+        all[0]
+    };
+    // The site's values, not the layout's (rxd 3, mask 0xF on 32 CPUs).
+    assert_eq!(want_reg(one("RxdCpu")), Some(Value::Dword(2)));
+    assert_eq!(
+        want_reg(one("AssignmentSetOverride")),
+        Some(Value::Binary(vec![3, 0, 0, 0, 0, 0, 0, 0]))
+    );
+    // The baseline's other computed-free entries still come in.
+    assert_eq!(want_reg(one("DevicePolicy")), Some(Value::Dword(4)));
+    let live = p.process.iter().find(|e| e.exe == "Live.exe").unwrap();
+    assert_eq!(live.affinity.as_deref(), Some("0xFFFFF000"));
+    assert!(p.registry.iter().all(|e| e.computed.is_none()));
+}
