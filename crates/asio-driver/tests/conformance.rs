@@ -108,14 +108,22 @@ fn the_driver_answers_an_asio_test_host_s_call_sequence_as_the_sdk_says() {
         assert_eq!((vt(d).getLatencies)(d, &mut lat_in, &mut lat_out), ASE_OK);
         assert_eq!((lat_in, lat_out), (88, 40), "the device's latencies");
 
-        // Sample rates: 96 kHz only; any other has no clock.
+        // Sample rates: 96 kHz, and 44.1 and 48 kHz converted by the device
+        // (dasio#107); any other has no clock.
         assert_eq!((vt(d).canSampleRate)(d, 96_000.0), ASE_OK);
-        assert_eq!((vt(d).canSampleRate)(d, 44_100.0), ASE_NO_CLOCK);
+        assert_eq!((vt(d).canSampleRate)(d, 48_000.0), ASE_OK);
+        assert_eq!((vt(d).canSampleRate)(d, 44_100.0), ASE_OK);
+        assert_eq!((vt(d).canSampleRate)(d, 22_050.0), ASE_NO_CLOCK);
         let mut rate = 0.0;
         assert_eq!((vt(d).getSampleRate)(d, &mut rate), ASE_OK);
         assert_eq!(rate, 96_000.0);
         assert_eq!((vt(d).setSampleRate)(d, 96_000.0), ASE_OK);
-        assert_eq!((vt(d).setSampleRate)(d, 48_000.0), ASE_NO_CLOCK);
+        assert_eq!(
+            (vt(d).setSampleRate)(d, 0.0),
+            ASE_OK,
+            "an external clock keeps it"
+        );
+        assert_eq!((vt(d).setSampleRate)(d, 192_000.0), ASE_NO_CLOCK);
 
         // Clock sources: one, the current one; only index 0 is settable.
         let mut clocks: [ASIOClockSource; 4] = core::array::from_fn(|_| ASIOClockSource {

@@ -178,7 +178,7 @@ fn a_utf16_name_ends_at_its_first_nul() {
 }
 
 /// The gatherer on the real Windows: a thread that spins 300 ms between
-/// two samples is this process's and its own top thread, by its name; the
+/// two samples is this process's and among its top threads, by its name; the
 /// second sample reads the handles the first opened (no refresh within
 /// 10 s).
 #[cfg(windows)]
@@ -216,17 +216,18 @@ fn a_spinning_thread_shows_in_this_process_and_by_its_name() {
         .find(|s| s.id == me)
         .expect("this process in the sample");
     assert!(mine.us >= 100_000, "this process spent {} us", mine.us);
-    let threads = top_threads(&before, &now, 1);
-    assert_eq!(
-        threads.first().map(|s| s.name.as_str()),
-        Some("cpu-snap-test"),
-        "{threads:?}"
-    );
-    assert!(threads[0].us >= 100_000, "{threads:?}");
-    let daw = top_daw_threads(&before, &now, 1);
-    assert_eq!(
-        daw.first().map(|s| s.name.as_str()),
-        Some("cpu-snap-test"),
+    // Among the top few, by its name: the tests beside it in this binary
+    // run in parallel, and a busy one can outspend the spinner (CI
+    // 43795232968: a converter test at 281 ms, dasio#107).
+    let threads = top_threads(&before, &now, 4);
+    let spinner = threads
+        .iter()
+        .find(|s| s.name == "cpu-snap-test")
+        .unwrap_or_else(|| panic!("the spinner among the top threads: {threads:?}"));
+    assert!(spinner.us >= 100_000, "{threads:?}");
+    let daw = top_daw_threads(&before, &now, 4);
+    assert!(
+        daw.iter().any(|s| s.name == "cpu-snap-test"),
         "the DAW's threads by its pid: {daw:?}"
     );
 }

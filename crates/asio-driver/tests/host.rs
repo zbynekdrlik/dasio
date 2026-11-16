@@ -113,7 +113,7 @@ fn a_block_reaches_the_host_and_back_and_the_buffer_size_is_the_instance_s() {
         assert_eq!((a, b, c, g), (64, 64, 64, 0));
         assert_eq!((vt(d).getLatencies)(d, &mut i, &mut o), ASE_OK);
         assert_eq!((i, o), (88, 40));
-        assert_eq!((vt(d).canSampleRate)(d, 48_000.0), ASE_NO_CLOCK);
+        assert_eq!((vt(d).canSampleRate)(d, 22_050.0), ASE_NO_CLOCK);
         assert_eq!((vt(d).canSampleRate)(d, 96_000.0), ASE_OK);
     }
     // dasio#28 E4: the device sees each read of the latencies.
@@ -1006,6 +1006,53 @@ fn a_device_that_dies_while_the_daw_plays_leaves_it_running_and_comes_back() {
     // SAFETY: as a host ends.
     unsafe {
         assert_eq!((vt(d).stop)(d), ASE_OK);
+        assert_eq!((vt(d).disposeBuffers)(d), ASE_OK);
+        (vt(d).Release)(d);
+    }
+}
+
+/// dasio#107: a rate the host sets reaches the device through the
+/// instance's directory; `setSampleRate` returns once the device's next
+/// section serves it, and the driver then holds that section (its block,
+/// its rate, its latencies). The device's side is played here: it serves
+/// the asked rate on a new section, as `dasio run` does.
+#[test]
+fn a_rate_the_host_sets_is_served_by_the_device_s_next_section() {
+    let device = Shared::create(2, Shape::new(1, 1, 32).unwrap(), 96_000, (56, 40)).unwrap();
+    device.header().heartbeat_ms.store(1, Ordering::Release);
+    let d = driver(2);
+    // SAFETY: the driver's methods as a host calls them.
+    unsafe {
+        assert_eq!((vt(d).init)(d, core::ptr::null_mut()), ASIO_TRUE);
+        assert_eq!((vt(d).setSampleRate)(d, 22_050.0), ASE_NO_CLOCK);
+        assert_eq!(device.requested_rate(), 0, "a refused rate is not asked");
+        let serving = std::thread::spawn(move || {
+            let t = Instant::now();
+            while device.requested_rate() != 48_000 {
+                assert!(t.elapsed() < Duration::from_secs(5), "no rate asked");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let next = Shared::create(2, Shape::app(1, 1, 16).unwrap(), 48_000, (40, 60)).unwrap();
+            (device, next)
+        });
+        assert_eq!((vt(d).setSampleRate)(d, 48_000.0), ASE_OK);
+        let (_old, next) = serving.join().unwrap();
+        let mut rate = 0.0;
+        assert_eq!((vt(d).getSampleRate)(d, &mut rate), ASE_OK);
+        assert_eq!(rate, 48_000.0);
+        let (mut a, mut b, mut c, mut g) = (0, 0, 0, 0);
+        assert_eq!(
+            (vt(d).getBufferSize)(d, &mut a, &mut b, &mut c, &mut g),
+            ASE_OK
+        );
+        assert_eq!((a, b, c), (16, 16, 16), "the app's block");
+        let (mut i, mut o) = (0, 0);
+        assert_eq!((vt(d).getLatencies)(d, &mut i, &mut o), ASE_OK);
+        assert_eq!((i, o), (40, 60));
+        assert_eq!(next.header().latency_reads.load(Ordering::Acquire), 1);
+        // The rate served now: kept, nothing asked again.
+        assert_eq!((vt(d).setSampleRate)(d, 48_000.0), ASE_OK);
+        assert_eq!(create(d, 16), ASE_OK);
         assert_eq!((vt(d).disposeBuffers)(d), ASE_OK);
         (vt(d).Release)(d);
     }

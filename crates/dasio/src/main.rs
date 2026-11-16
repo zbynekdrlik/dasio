@@ -16,7 +16,7 @@ fn usage() -> ExitCode {
          dasio service --instance <n> --config <device.toml> [--ip <address> | --iface <interface name>] --log <file> [--clock linked|dsync|system] [--spare-blocks <n>]\n       \
          dasio register --instance <n> --dll <path> [--name <shown to DAWs>]\n       \
          dasio stop --instance <n>\n       \
-         dasio probe --instance <n> [--seconds <s>] [--affinity <hex mask>]\n       \
+         dasio probe --instance <n> [--seconds <s>] [--affinity <hex mask>] [--rate <Hz>]\n       \
          dasio jitter --cpus <n,n,..> --seconds <s>\n       \
          dasio pc-profile check|apply [--profile <file>] [--plan]\n       \
          dasio unregister --instance <n> [--name <shown to DAWs>]"
@@ -106,7 +106,14 @@ fn main() -> ExitCode {
             // runs in the DAW's set, not on the device's cores).
             let affinity = flag(&args, "--affinity")
                 .and_then(|m| usize::from_str_radix(m.trim_start_matches("0x"), 16).ok());
-            probe(instance, seconds, affinity)
+            // `--rate <Hz>`: the host's rate, as a DAW's project sets it
+            // (dasio#107: the device converts); 96 kHz unless given.
+            let rate = match flag(&args, "--rate").map(|r| r.parse::<u32>()) {
+                None => 96_000,
+                Some(Ok(r)) => r,
+                Some(Err(_)) => return usage(),
+            };
+            probe(instance, seconds, affinity, rate)
         }
         "unregister" => match listed().map(|on_pc| {
             dasio::register::unregister_keys(instance, flag(&args, "--name").as_deref(), &on_pc)
@@ -225,16 +232,17 @@ fn stop(instance: u32) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn probe(instance: u32, seconds: u64, affinity: Option<usize>) -> Result<(), String> {
+fn probe(instance: u32, seconds: u64, affinity: Option<usize>, rate: u32) -> Result<(), String> {
     if let Some(mask) = affinity {
         dasio::probe::set_affinity(mask)?;
     }
     dasio::probe::high_priority()?;
-    let r = dasio::probe::probe(instance, seconds)?;
+    let r = dasio::probe::probe_at(instance, seconds, 0, rate)?;
     let min = r.round_trips.iter().min();
     let max = r.round_trips.iter().max();
     println!(
-        "probe instance {instance}: block {} latency_in {} latency_out {} switches {} emitted {} arrived {} round_trip_min {:?} round_trip_max {:?} late {} missed {} samples {} max_gap_us {} gaps_over_1ms {} gap_blocks {} max_switch_us {} vm_stalls {} vm_stall_max_us {} vm_gap_blocks {}",
+        "probe instance {instance}: rate {} block {} latency_in {} latency_out {} switches {} emitted {} arrived {} round_trip_min {:?} round_trip_max {:?} late {} missed {} samples {} max_gap_us {} gaps_over_1ms {} gap_blocks {} max_switch_us {} vm_stalls {} vm_stall_max_us {} vm_gap_blocks {}",
+        r.rate,
         r.block,
         r.latency_in,
         r.latency_out,
@@ -261,7 +269,12 @@ fn probe(instance: u32, seconds: u64, affinity: Option<usize>) -> Result<(), Str
 }
 
 #[cfg(not(windows))]
-fn probe(_instance: u32, _seconds: u64, _affinity: Option<usize>) -> Result<(), String> {
+fn probe(
+    _instance: u32,
+    _seconds: u64,
+    _affinity: Option<usize>,
+    _rate: u32,
+) -> Result<(), String> {
     Err("Windows only".into())
 }
 

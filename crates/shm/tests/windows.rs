@@ -176,3 +176,52 @@ fn any_signed_in_user_reaches_the_objects() {
         assert!(sddl.contains(";;;AU)"), "{what}: {sddl}");
     }
 }
+
+#[test]
+fn a_rate_the_driver_asks_reaches_the_device_through_the_directory() {
+    // No directory yet: no rate asked.
+    assert_eq!(shm::requested_rate(97).unwrap(), 0);
+    let device = Shared::create(97, Shape::new(1, 1, 32).unwrap(), 96_000, (56, 40)).unwrap();
+    let driver = Shared::open(97).unwrap();
+    assert_eq!(device.requested_rate(), 0);
+    driver.request_rate(48_000);
+    assert_eq!(device.requested_rate(), 48_000);
+    assert_eq!(shm::requested_rate(97).unwrap(), 48_000);
+    // The next session (another shape: the app's block) keeps the
+    // directory, and with it the asked rate.
+    drop(device);
+    let next = Shared::create(97, Shape::app(1, 1, 16).unwrap(), 48_000, (40, 60)).unwrap();
+    assert_eq!(next.requested_rate(), 48_000);
+    assert_eq!(next.header().rate.load(Ordering::Relaxed), 48_000);
+    assert_ne!(next.session(), driver.session());
+    assert_eq!(driver.published_session(), next.session());
+    let reopened = Shared::open(97).unwrap();
+    assert_eq!(reopened.shape().block, 16);
+}
+
+#[test]
+fn another_rate_at_the_same_block_makes_a_fresh_section() {
+    // 44.1 and 48 kHz on a 16-sample device block are both 8 app frames:
+    // the shape alone cannot tell them apart, the rate does.
+    let shape = Shape::app(1, 1, 8).unwrap();
+    let first = Shared::create(98, shape, 48_000, (40, 60)).unwrap();
+    let held = Shared::open(98).unwrap();
+    drop(first);
+    let next = Shared::create(98, shape, 44_100, (40, 60)).unwrap();
+    assert_ne!(next.session(), held.session());
+    assert_eq!(held.published_session(), next.session());
+    // The same shape and rate again (a driver holds this section too):
+    // taken over, no new session.
+    let held2 = Shared::open(98).unwrap();
+    drop(next);
+    let again = Shared::create(98, shape, 44_100, (40, 60)).unwrap();
+    assert_eq!(again.session(), held2.session());
+    // Without a device's section the driver's ask still reaches the
+    // directory while one exists.
+    shm::request_rate(98, 48_000).unwrap();
+    assert_eq!(again.requested_rate(), 48_000);
+    assert_eq!(
+        shm::request_rate(99, 48_000).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+}

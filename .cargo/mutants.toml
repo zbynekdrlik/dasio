@@ -17,6 +17,7 @@ exclude_globs = [
   "crates/dasio/src/probe.rs",
   "crates/dasio/src/run.rs",
   "crates/dasio/src/run/profile.rs",
+  "crates/dasio/src/run/serve.rs",
   "crates/dasio/src/run_bridge.rs",
   "crates/dasio/src/service/windows.rs",
 ]

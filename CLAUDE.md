@@ -21,3 +21,4 @@ Design: `docs/design/2026-10-29-dante-asio-design.md`; MVP plan: `docs/plans/202
 - dstack deps, the device's address and port slot → `.claude/rules/dstack-deps.md` (auto-loads on its `paths:`)
 - the driver's host tests (packed ABI fields, instance numbers) → `.claude/rules/asio-driver-tests.md` (auto-loads on its `paths:`)
 - the bridge instance kind (`[bridge]`, a local ASIO driver) → `.claude/rules/bridge-kind.md` (auto-loads on its `paths:`)
+- an ASIO app at its own sample rate (conversion, re-serve, latencies) → `.claude/rules/app-rate.md` (auto-loads on its `paths:`)

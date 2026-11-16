@@ -10,6 +10,7 @@
 // block as a real-time context (dasio#28 E13, tests/rtsan.rs).
 #![cfg_attr(dasio_rtsan, feature(sanitize))]
 
+pub mod app_rate;
 pub mod app_status;
 pub mod bridge;
 pub mod bursts;
