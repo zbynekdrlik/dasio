@@ -9,6 +9,10 @@
 //! rest. A debug build costs several times more per sample (562–701 us a
 //! block on the CI runners, 10.11.2026), so there it only checks that the
 //! answers play.
+//!
+//! The e2e-shape bench (dasio#107) times the 44.1 kHz conversion at the
+//! e2e test's instance shape and holds it in every build, since the e2e
+//! test runs the debug (and coverage-instrumented) binary.
 
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -73,6 +77,11 @@ fn alone() -> MutexGuard<'static, ()> {
     ALONE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// `n` samples of a sawtooth-like test signal, ±0.5 full scale.
+fn signal(n: usize) -> Vec<f64> {
+    (0..n).map(|i| ((i % 997) as f64 / 997.0) - 0.5).collect()
+}
+
 fn channels(n: usize, frames: usize) -> Vec<Vec<i32>> {
     (0..n).map(|_| vec![0; frames]).collect()
 }
@@ -103,9 +112,7 @@ fn a_block_at_foh_s_shape_takes_a_small_part_of_its_period() {
     let mut b = Bridge::with_spare(daw, 1)
         .with_deadline(FRAMES as u64, move || Some(clock.load(Ordering::Relaxed)))
         .with_concealment(CHANNELS, FRAMES);
-    let input: Vec<f64> = (0..CHANNELS * FRAMES)
-        .map(|i| ((i % 997) as f64 / 997.0) - 0.5)
-        .collect();
+    let input: Vec<f64> = signal(CHANNELS * FRAMES);
     let mut output = vec![0.0f64; CHANNELS * FRAMES];
     let (mut total, mut worst) = (Duration::ZERO, Duration::ZERO);
     let mut start = 0u64;
@@ -158,6 +165,8 @@ fn time_blocks(blocks: u64, mut f: impl FnMut(u64)) -> (Duration, Duration) {
 /// The instance's processor for `plan` at the e2e shape, as `run::serve`
 /// builds it: the bridge (one spare block, a deadline, concealment) on a
 /// stand-in DAW that answers at once, behind the conversion at another rate.
+/// The DAW never makes the bridge wait, so the deadline's offset (a block
+/// here, `Plan::wait_offset` in the service) never binds.
 fn served(plan: &Plan) -> (Served<Bridge<Daw>>, Arc<AtomicU64>) {
     let now = Arc::new(AtomicU64::new(0));
     let clock = Arc::clone(&now);
@@ -177,9 +186,7 @@ fn served(plan: &Plan) -> (Served<Bridge<Daw>>, Arc<AtomicU64>) {
 /// and whether its outputs played the DAW's answers.
 fn time_served(plan: &Plan) -> (Duration, Duration, bool) {
     let (mut p, now) = served(plan);
-    let input: Vec<f64> = (0..E2E_RX * E2E_BLOCK)
-        .map(|i| ((i % 997) as f64 / 997.0) - 0.5)
-        .collect();
+    let input: Vec<f64> = signal(E2E_RX * E2E_BLOCK);
     let mut output = vec![0.0f64; E2E_TX * E2E_BLOCK];
     let mut played = false;
     let ratio = f64::from(plan.app_rate) / f64::from(plan.device_rate);
@@ -200,9 +207,7 @@ fn time_converters() -> (Duration, Duration) {
     let mut tx = Converter::low_delay(44_100, 96_000, E2E_TX, E2E_BLOCK, Fixed::Output)
         .expect("the TX converter");
     let room = rx.output_frames_max();
-    let rx_in: Vec<f64> = (0..E2E_RX * E2E_BLOCK)
-        .map(|i| ((i % 997) as f64 / 997.0) - 0.5)
-        .collect();
+    let rx_in: Vec<f64> = signal(E2E_RX * E2E_BLOCK);
     let mut rx_out = vec![0.0f64; E2E_RX * room];
     let tx_in = vec![0.25f64; E2E_TX * tx.input_frames_max()];
     let mut tx_out = vec![0.0f64; E2E_TX * E2E_BLOCK];
@@ -222,8 +227,10 @@ fn time_converters() -> (Duration, Duration) {
 /// the plain bridge at the same shape, which the 96 kHz e2e steps already
 /// carry) holds in every build the tests run: a quarter of the device
 /// block's period on average, so the device's own work and the runner's
-/// jitter keep the rest. The two converters alone are printed beside it,
-/// so a failure says which part costs.
+/// jitter keep the rest. The subtraction removes a bridge of 32 frames a
+/// block where the converted path runs about 14.7, so it overstates the
+/// bridge's share by a few us. The two converters alone are printed beside
+/// it, so a failure says which part costs.
 #[test]
 fn the_44_1_khz_conversion_at_the_e2e_shape_takes_a_small_part_of_the_device_block() {
     let _alone = alone();

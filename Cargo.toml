@@ -24,7 +24,9 @@ debug = "none"
 # preconditions are checked too (`-Z ub-checks` follows them), a bounds
 # check on every load of rubato's AVX sinc loop: the two converters took
 # 111-183 us of each 333 us block at the e2e shape (CI 43807646396), and
-# the coverage job's 44.1 kHz step overran (CI 43806346111).
+# the coverage job's 44.1 kHz step overran (CI 43806346111). dlink is
+# here for Rated's non-generic helpers (its FIFO drain runs per channel
+# per block); its other code keeps these checks in dstack's own CI.
 [profile.dev.package.rubato]
 opt-level = 3
 debug-assertions = false
