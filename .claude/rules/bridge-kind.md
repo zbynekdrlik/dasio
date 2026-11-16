@@ -38,7 +38,8 @@ paths:
   stamps over the last minute) and `from_asio_min_receiver_latency_us`
   (packet age + the network p99, or 200 us while none is measured: always
   on Windows) only while that value is Some. dsg's field read (16.11.2026)
-  had the model at 2222 us against real packet ages of 1003-1397 us: judge a
+  had the modelled receiver figure at 2222 us (block age max 1888 us + a
+  pump block) against real packet ages of 1003-1397 us: judge a
   receiver by the packet keys, never the block keys.
 - `app_status::from_asio_age_tick(&age, &media.tx.take_app_view(),
   media.rx.network_p99_ns())` runs once in `run_bridge.rs` inside the

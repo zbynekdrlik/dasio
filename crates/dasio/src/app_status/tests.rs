@@ -408,7 +408,13 @@ fn the_bridge_json_carries_the_from_asio_figures_while_it_has_them() {
     // No report (no block taken, no TX packet, or both gone 1-2 min ago):
     // the keys are left out, never a 0 that reads as a fast driver.
     let none = bridge_json(&bridge_running());
-    assert!(!none.contains("from_asio"), "{none}");
+    for key in [
+        "from_asio_block_age",
+        "from_asio_packet_age",
+        "from_asio_min_receiver_latency",
+    ] {
+        assert!(!none.contains(key), "{key}: {none}");
+    }
     assert!(
         none.contains("\"pc_profile_problems\":0,\"kernel_tx\":true,"),
         "{none}"
@@ -569,6 +575,8 @@ fn the_bridge_s_status_loop_checks_the_receivers_once_a_counts_tick() {
         calls[0] < callback,
         "the call is in run(), not in the driver's side"
     );
+    // Never gated on the age's report: only a look records the packet
+    // age, so a gated look would never start.
     // The TX view is read there and nowhere else: the device's only
     // reader (a second one would take its peak), and dstack 0.6.151's
     // removed calls are gone.
