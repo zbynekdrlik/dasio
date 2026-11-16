@@ -31,9 +31,9 @@ pub struct Facts {
     pub pc_problems: Option<u32>,
     /// How audio TX goes out (dasio#125).
     pub tx: TxPath,
-    /// The configured RX latency against the measured arrival (dasio#128);
-    /// `None` before a packet was placed.
-    pub rx: Option<crate::rx_latency::Report>,
+    /// The measured RX packet age at placement (dasio#128): information,
+    /// never advice; `None` before a packet was placed.
+    pub rx: Option<crate::rx_arrival::Report>,
 }
 
 /// How the instance's audio TX goes out (dasio#125).
@@ -133,7 +133,7 @@ fn ms(samples: u32, rate: u32) -> f64 {
 pub fn line(f: &Facts) -> String {
     let pc = pc_suffix(f.pc_problems);
     let tx = f.tx.suffix();
-    let rx = crate::rx_latency::suffix(f.rx);
+    let rx = crate::rx_arrival::suffix(f.rx);
     format!(
         "{} · {} @ {} kHz{} · in {:.2} / out {:.2} ms · late {}/min ({} total){rx}{tx}{pc}",
         if f.attached { "DAW attached" } else { "no DAW" },
@@ -148,31 +148,19 @@ pub fn line(f: &Facts) -> String {
 }
 
 /// The icon's state: `warn` without a DAW, with a late block in the
-/// last minute, with frames that missed the filter in its last window,
-/// with a PC profile problem or with an RX latency below the measured
-/// arrival's recommendation (dasio#128), else `ok`. (A device that stopped answers no status at
+/// last minute, with frames that missed the filter in its last window or
+/// with a PC profile problem, else `ok`. (A device that stopped answers no status at
 /// all: dtray shows that as an expected device not running.)
 pub fn state(f: &Facts) -> &'static str {
-    if !f.attached
-        || f.late_per_min > 0
-        || f.tx.bad()
-        || f.pc_problems.is_some_and(|n| n > 0)
-        || rx_below(f.rx)
-    {
+    if !f.attached || f.late_per_min > 0 || f.tx.bad() || f.pc_problems.is_some_and(|n| n > 0) {
         "warn"
     } else {
         "ok"
     }
 }
 
-/// The configured RX latency is below the measured arrival's
-/// recommendation (dasio#128).
-fn rx_below(rx: Option<crate::rx_latency::Report>) -> bool {
-    rx.is_some_and(|r| r.below())
-}
-
 /// The JSON object for `set_app_status`: every number, `line` and `state`;
-/// the RX latency keys only once measured (dasio#128).
+/// the RX arrival keys only once measured (dasio#128).
 pub fn json(f: &Facts) -> String {
     let line = escaped(&line(f));
     format!(
@@ -197,7 +185,7 @@ pub fn json(f: &Facts) -> String {
         f.waited,
         f.heartbeat_ms,
         f.pc_problems.map_or(-1, i64::from),
-        crate::rx_latency::json(f.rx),
+        crate::rx_arrival::json(f.rx),
         f.tx.json(),
     )
 }
@@ -231,9 +219,9 @@ pub struct BridgeFacts {
     /// The from-ASIO figures (dstack #325, dasio#120); `None` while neither
     /// a block was taken nor a TX packet seen for 1-2 minutes.
     pub from_asio_age: Option<AgeReport>,
-    /// The configured RX latency against the measured arrival (dasio#128);
-    /// `None` before a packet was placed.
-    pub rx: Option<crate::rx_latency::Report>,
+    /// The measured RX packet age at placement (dasio#128): information,
+    /// never advice; `None` before a packet was placed.
+    pub rx: Option<crate::rx_arrival::Report>,
 }
 
 impl BridgeFacts {
@@ -324,18 +312,17 @@ pub fn bridge_line(f: &BridgeFacts) -> String {
         f.to_asio_underruns,
         f.from_asio_underruns,
         f.resets,
-        crate::rx_latency::suffix(f.rx),
+        crate::rx_arrival::suffix(f.rx),
         f.tx.suffix(),
         pc_suffix(f.pc_problems)
     )
 }
 
 /// The icon's state of a bridge instance: `ok` while the driver runs the
-/// bridge (every frame through the filter, no PC profile problem, the RX
-/// latency at least the measured arrival's recommendation), `warn`
+/// bridge (every frame through the filter, no PC profile problem), `warn`
 /// otherwise.
 pub fn bridge_state(f: &BridgeFacts) -> &'static str {
-    if f.running && !f.tx.bad() && !f.pc_problems.is_some_and(|n| n > 0) && !rx_below(f.rx) {
+    if f.running && !f.tx.bad() && !f.pc_problems.is_some_and(|n| n > 0) {
         "ok"
     } else {
         "warn"
@@ -382,7 +369,7 @@ pub fn bridge_json(f: &BridgeFacts) -> String {
         f.resets,
         f.pc_problems.map_or(-1, i64::from),
         age_json(f.from_asio_age),
-        crate::rx_latency::json(f.rx),
+        crate::rx_arrival::json(f.rx),
         f.tx.json(),
     )
 }

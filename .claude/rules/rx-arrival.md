@@ -1,18 +1,19 @@
 ---
 paths:
-  - "crates/dasio/src/rx_latency.rs"
-  - "crates/dasio/src/rx_latency/**"
+  - "crates/dasio/src/rx_arrival.rs"
+  - "crates/dasio/src/rx_arrival/**"
   - "crates/dasio/src/app_status.rs"
   - "crates/dasio/src/run.rs"
   - "crates/dasio/src/run_bridge.rs"
 ---
 
-# The recommended RX latency (dasio#128)
+# The measured RX arrival (dasio#128)
 
-- dasio only REPORTS the receiver latency the measured arrival asks for; it never changes `latency_ns` while it runs. The session (or the owner) sets it in device.toml at the next restart (owner ROZHODNUTÉ 16.11.2026). Do not add a runtime change: `latency_ns` is also what our TX advertises, a change re-sets every subscription's playout, and a device that tunes itself down learns its peak from clicks.
-- The figure: dstack's `RxShared::lane(slot).lateness_peak` (samples at the DEVICE rate, the largest packet age at placement since the device started) over the slots with `packets > 0`; an idle slot's 0 is no measurement. `rx_latency::Peak` keeps dasio's own max since start, so a slot dstack re-plans never lowers it. Recommended = peak + 0.25 ms margin, rounded up to 0.25 ms. Peak since start, never a window (dsg 15.11: bursts every ~96 s a short window misses).
-- Where: the run loops (`run.rs`, `run_bridge.rs`) feed `Watch::observe` once a counts tick (10 s) and log only when the recommendation changes; the PC profile check (10 min) logs the current report again. INFO when it holds, WARN when the configured `latency_ns` is below it. The status closures read the shared `Peak`.
-- Status JSON keys (`rx_latency_ns`, `rx_arrival_peak_ns`, `rx_latency_recommended_ns`, `rx_latency_below`) appear only once measured, never a 0 that reads as a measured age. dtray's line: ` · RX 1.00 ms (rec. 0.75)` or ` · RX 1.00 ms < rec. 1.25 ms`; below = icon `warn`.
+- Owner ruling 16.11.2026: a Dante device's latency is NEVER set automatically, at runtime or at restart, and dasio never computes or proposes a value. Every latency change is a deliberate, owner-approved change decided from dcontroller's long-term per-device graph. So no "recommended latency_ns", no margin or rounding to a step, no WARN "configured below", no icon state from it. (0.1.111 shipped such a recommendation for a few hours; 0.1.112 replaced it.)
+- What dasio shows is plain measurement: the RX packets' age at placement (our PTP now less the packet's stamp: transit, the RX pass's wake and our clock's offset), per device over the slots that received: the peak since start (dstack `RxCounts::lateness_peak`, samples at the DEVICE rate) and the last second's least..largest (`RxShared::last_min_lateness_ns` / `last_lateness`, what dstack's heartbeat took). An idle slot's 0 is no measurement; `Arrival` keeps the peak since start so a slot dstack re-plans never lowers it.
+- Never call `take_max_lateness`: dstack's heartbeat owns it, a second reader would steal its second.
+- dstack v0.6.151 exposes no MEAN age (no per-slot sum + count). A mean needs a dstack accessor; never fake one from sampled maxima.
+- Where: the run loops (`run.rs`, `run_bridge.rs`) call `Watch::observe` once a counts tick (10 s) and log INFO when the peak since start rose; the PC profile check (10 min) logs the figures again. The status closures read the shared `Arrival`.
+- Status JSON keys `rx_arrival_peak_ns`, `rx_arrival_last_min_ns`, `rx_arrival_last_max_ns` appear only once measured (the last two only for a second with a packet), never a 0 that reads as a measured age. dtray's line: ` · RX arrival 0.10-0.35 ms, peak 0.72 ms`.
 - Name the method `observe`, not `look`: `app_status/tests.rs` guards `run_bridge.rs` against any `.look(` call (dstack 0.6.151's removed age look).
-- Known limit: dstack judges a packet late against its FLOW's playout (`RxPlan.latency` = P_flow, at least the device latency P), and v0.6.151 exposes no per-slot plan. A flow read later than the device latency (P_flow > P) can lift the peak above `latency_ns` with no late packet, so the report then over-recommends and WARNs. Subtracting each slot's `P_flow - P` needs a dstack accessor (a dstack ticket), never a guess in dasio.
-- `flows` is tested against a real `RxShared` on the loopback (the mutation gate runs `--in-diff`).
+- dstack judges a packet late against its FLOW's playout (`RxPlan.latency`, at least the device latency), so a peak above `latency_ns` is not by itself a late packet: read it next to the late counts.

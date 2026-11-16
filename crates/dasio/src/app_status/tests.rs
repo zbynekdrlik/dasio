@@ -602,55 +602,52 @@ fn the_bridge_s_status_loop_checks_the_receivers_once_a_counts_tick() {
 }
 
 #[test]
-fn the_rx_latency_shows_once_measured_and_warns_when_below_the_recommendation() {
-    use crate::rx_latency::Report;
+fn the_rx_arrival_shows_once_measured_and_never_changes_the_icon() {
+    use crate::rx_arrival::Report;
     // dasio#128: nothing before a packet was placed.
     assert!(!line(&master()).contains("RX "));
-    assert!(!json(&master()).contains("rx_latency"));
-    let holds = Facts {
-        rx: Some(Report::of(1_000_000, 410_000)),
+    assert!(!json(&master()).contains("rx_arrival"));
+    let measured = Facts {
+        rx: Some(Report {
+            peak_ns: 7_000_000,
+            last: Some((100_000, 350_000)),
+        }),
         ..master()
     };
     assert_eq!(
-        line(&holds),
-        "DAW attached · 64 @ 96 kHz · in 1.67 / out 5.67 ms · late 0/min (95 total) · RX 1.00 ms (rec. 0.75) · kernel TX"
+        line(&measured),
+        "DAW attached · 64 @ 96 kHz · in 1.67 / out 5.67 ms · late 0/min (95 total) · RX arrival 0.10-0.35 ms, peak 7.00 ms · kernel TX"
     );
-    assert_eq!(state(&holds), "ok");
-    let j = json(&holds);
+    // A measurement, never a judgement: a high peak leaves the icon alone.
+    assert_eq!(state(&measured), "ok");
+    let j = json(&measured);
     assert!(
-        j.contains("\"rx_latency_ns\":1000000,\"rx_arrival_peak_ns\":410000,\"rx_latency_recommended_ns\":750000,\"rx_latency_below\":false,\"kernel_tx\":true"),
+        j.contains("\"pc_profile_problems\":-1,\"rx_arrival_peak_ns\":7000000,\"rx_arrival_last_min_ns\":100000,\"rx_arrival_last_max_ns\":350000,\"kernel_tx\":true"),
         "{j}"
     );
     assert!(j.ends_with('}'));
-    let below = Facts {
-        rx: Some(Report::of(1_000_000, 980_000)),
-        ..master()
-    };
-    assert!(line(&below).contains(" · RX 1.00 ms < rec. 1.25 ms · kernel TX"));
-    assert_eq!(state(&below), "warn");
-    assert!(json(&below).contains("\"rx_latency_below\":true"));
 }
 
 #[test]
-fn a_bridge_shows_its_rx_latency_and_warns_when_below_the_recommendation() {
-    use crate::rx_latency::Report;
-    assert!(!bridge_json(&bridge_running()).contains("rx_latency"));
-    let holds = BridgeFacts {
-        rx: Some(Report::of(2_000_000, 720_000)),
+fn a_bridge_shows_its_rx_arrival_and_never_changes_the_icon() {
+    use crate::rx_arrival::Report;
+    assert!(!bridge_json(&bridge_running()).contains("rx_arrival"));
+    let measured = BridgeFacts {
+        rx: Some(Report {
+            peak_ns: 3_600_000,
+            last: None,
+        }),
         ..bridge_running()
     };
-    assert!(bridge_line(&holds).contains(" · resets 1 · RX 2.00 ms (rec. 1.00) · kernel TX"));
-    assert_eq!(bridge_state(&holds), "ok");
-    assert!(bridge_json(&holds).contains("\"rx_latency_recommended_ns\":1000000,"));
-    let below = BridgeFacts {
-        rx: Some(Report::of(1_000_000, 3_600_000)),
-        ..bridge_running()
-    };
-    assert!(bridge_line(&below).contains(" · RX 1.00 ms < rec. 4.00 ms"));
-    assert_eq!(bridge_state(&below), "warn");
-    let j = bridge_json(&below);
     assert!(
-        j.contains("\"rx_latency_below\":true,\"kernel_tx\":true"),
+        bridge_line(&measured).contains(" · resets 1 · RX arrival peak 3.60 ms · kernel TX"),
+        "{}",
+        bridge_line(&measured)
+    );
+    assert_eq!(bridge_state(&measured), "ok");
+    let j = bridge_json(&measured);
+    assert!(
+        j.contains("\"rx_arrival_peak_ns\":3600000,\"kernel_tx\":true"),
         "{j}"
     );
 }

@@ -32,7 +32,7 @@ pub mod register;
 pub mod run;
 #[cfg(windows)]
 pub mod run_bridge;
-pub mod rx_latency;
+pub mod rx_arrival;
 pub mod service;
 pub mod turnaround;
 pub mod vm_stall;
