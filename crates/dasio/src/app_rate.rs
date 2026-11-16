@@ -334,7 +334,9 @@ impl<P: Process> Process for Reblock<P> {
             }
         }
         self.held += k;
-        while self.held >= self.block {
+        // The whole blocks gathered, counted first: the loop is bounded by
+        // the frames in, whatever an inner block does.
+        for _ in 0..self.held / self.block {
             self.inner_block();
         }
         // Every channel's FIFO holds the same frames: channel 0 counts.
