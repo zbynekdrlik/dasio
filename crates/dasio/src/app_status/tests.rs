@@ -611,6 +611,7 @@ fn the_rx_arrival_shows_once_measured_and_never_changes_the_icon() {
         rx: Some(Report {
             peak_ns: 7_000_000,
             last: Some((100_000, 350_000)),
+            ..Default::default()
         }),
         ..master()
     };
@@ -636,6 +637,7 @@ fn a_bridge_shows_its_rx_arrival_and_never_changes_the_icon() {
         rx: Some(Report {
             peak_ns: 3_600_000,
             last: None,
+            ..Default::default()
         }),
         ..bridge_running()
     };
@@ -650,4 +652,53 @@ fn a_bridge_shows_its_rx_arrival_and_never_changes_the_icon() {
         j.contains("\"rx_arrival_peak_ns\":3600000,\"kernel_tx\":true"),
         "{j}"
     );
+}
+
+#[test]
+fn the_rx_arrival_mean_shows_and_only_a_bridge_names_its_asio_pull_wait() {
+    use crate::rx_arrival::{Report, Wait};
+    let rx = Some(Report {
+        peak_ns: 720_000,
+        last: Some((100_000, 350_000)),
+        mean_ns: Some(210_000),
+        wait: Some(Wait {
+            mean_ns: Some(1_250_000),
+            peak_us: 2_670,
+        }),
+    });
+    // dasio#128: the DAW kind's line and JSON carry the mean; its read
+    // wait is no ASIO pull, so no pull wait keys.
+    let daw = Facts { rx, ..master() };
+    assert!(
+        line(&daw).contains(" · RX arrival 0.10-0.35 ms, mean 0.21 ms, peak 0.72 ms · kernel TX"),
+        "{}",
+        line(&daw)
+    );
+    let j = json(&daw);
+    assert!(
+        j.contains("\"rx_arrival_mean_ns\":210000,\"kernel_tx\":true"),
+        "{j}"
+    );
+    assert!(!j.contains("pull_wait"), "{j}");
+    assert_eq!(state(&daw), "ok");
+    // A bridge's RX writer is the ASIO driver's buffer switch: its wait is
+    // the ASIO pull wait, its own keys beside the arrival's.
+    let bridge = BridgeFacts {
+        rx,
+        ..bridge_running()
+    };
+    assert!(
+        bridge_line(&bridge).contains(" · RX arrival 0.10-0.35 ms, mean 0.21 ms, peak 0.72 ms"),
+        "{}",
+        bridge_line(&bridge)
+    );
+    let j = bridge_json(&bridge);
+    assert!(
+        j.contains("\"rx_arrival_mean_ns\":210000,\"rx_asio_pull_wait_mean_ns\":1250000,\"rx_asio_pull_wait_peak_us\":2670,\"kernel_tx\":true"),
+        "{j}"
+    );
+    assert!(j.ends_with('}'));
+    assert_eq!(bridge_state(&bridge), "ok");
+    // Before a measurement: none of the keys.
+    assert!(!bridge_json(&bridge_running()).contains("pull_wait"));
 }
