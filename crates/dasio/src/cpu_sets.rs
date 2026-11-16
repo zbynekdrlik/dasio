@@ -98,6 +98,28 @@ pub fn ids_for(mask: u64, sets: &[CpuSet]) -> Vec<u32> {
     crate::cpu_set_ids(mask as usize, &tuples)
 }
 
+/// The CPUs the start gave the process as its default CPU sets (0: none),
+/// for the helper placer, which narrows its own to them. Process-wide, as
+/// the default CPU sets are.
+static ASSIGNED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The CPUs [`windows::assign_at_start`] gave the process; 0 when none.
+pub fn assigned() -> u64 {
+    ASSIGNED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The helper threads' CPUs within the process's reserved ones
+/// (`assigned`): the helper placer otherwise gives them every CPU the
+/// media threads leave, which without a Lasso affinity includes another
+/// instance's reserved CPUs (review of dasio#120). When the assigned CPUs
+/// are all media CPUs (or none were assigned), `helpers` as before.
+pub fn helpers_within(helpers: u64, assigned: u64) -> u64 {
+    match helpers & assigned {
+        0 => helpers,
+        both => both,
+    }
+}
+
 /// What the service does with its CPU sets at start.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
@@ -158,7 +180,10 @@ pub mod windows {
             GetSystemCpuSetInformation(std::ptr::null_mut(), 0, &mut len, GetCurrentProcess(), 0)
         };
         if len == 0 {
-            return Ok(Vec::new());
+            return Err(format!(
+                "Windows gave no CPU set information: {}",
+                std::io::Error::last_os_error()
+            ));
         }
         let mut buf = vec![0u8; len as usize];
         // SAFETY: a buffer of `len` bytes; Windows writes at most that.
@@ -236,6 +261,7 @@ pub mod windows {
                     );
                     return;
                 }
+                super::ASSIGNED.store(cpus, std::sync::atomic::Ordering::Relaxed);
                 match read_back() {
                     Ok(held) => info!(
                         cpus = format!("{cpus:#x}"),

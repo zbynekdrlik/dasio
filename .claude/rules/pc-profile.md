@@ -29,10 +29,23 @@ paths:
   each dasio instance (4 CPUs on 16+, else 2), then the DAW. FOH 32/2 =
   0-3, 4-7, 8-11, 12-31; mbc 12/1 = 0-1, 2-3, 4-11; dsg 4/1 = 0, 1-2, 3.
   `dasio pc-profile layout` prints it. In a profile: `computed =
-  "system_cpus"` (binary mask) or `"rxd_cpu"` (dword) on a registry entry,
+  "system_cpus"` (binary mask), `"dasio_cpus"` (binary mask of every
+  instance's CPUs) or `"rxd_cpu"` (dword) on a registry entry,
   `{system}` / `{dasio:N}` / `{daw}` as a process affinity, `instances = N`
   (default 1) in the site profile. Never write a CPU mask by hand where the
   layout gives it.
+- **Reserved CPUs** (dasio#120): the baseline's `ReservedCpuSets`
+  (`Session Manager\kernel`, `computed = "dasio_cpus"`, read at boot) keeps
+  every thread off dasio's CPUs unless its process asks (CPU sets) or is
+  pinned there (affinity wins over CPU sets): Defender's MsMpEng, which
+  Lasso cannot pin, had run on dsg's pump CPU. At start the service takes
+  its instance's CPUs as its default CPU sets (`cpu_sets`, a bridge also
+  the reserved DAW CPUs) when all are reserved, else a WARN ("not
+  reserved ... after a reboot") and only Lasso's affinity, as before. Not
+  must-have. A site value overrides it (FOH's 4-31; dsg's bridge on 1-3
+  needs its own `0e00000000000000`). Judge it after the reboot: the start's
+  `reserved CPUs` INFO line, then `engine pump lost` by `cause=`. A site
+  profile with `dasio_cpus` needs dasio 0.1.114+.
 - **Must-have items** (`must = true`, dasio#128): the Dante NIC's timing
   settings (Realtek PCIe) and `testsigning`. A missing one: the device does
   not start / ends at the 10-min check (the SCM restarts it, the start

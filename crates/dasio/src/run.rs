@@ -48,7 +48,8 @@ pub fn run(
     }
     // dasio's reserved CPUs as the process's default CPU sets, so only
     // dasio's threads run there (dasio#120); a WARN when they are not
-    // reserved. Before any thread starts, so every thread inherits them.
+    // reserved. The process default applies to every thread without its
+    // own CPU sets, the ones started later too.
     crate::cpu_sets::windows::assign_at_start(
         instance,
         matches!(kind, crate::kind::Kind::Bridge(_)),
@@ -794,7 +795,11 @@ pub(crate) fn place_helpers(own: usize) {
         let (mut process, mut system) = (0usize, 0usize);
         // SAFETY: this process's pseudo handle and two writable masks.
         unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut process, &mut system) };
-        let helpers = crate::helper_cpus(process, own);
+        // Within the CPUs the start reserved for the process (dasio#120).
+        let helpers = crate::cpu_sets::helpers_within(
+            crate::helper_cpus(process, own) as u64,
+            crate::cpu_sets::assigned(),
+        ) as usize;
         if helpers != 0 {
             // SAFETY: this thread's pseudo handle.
             unsafe { SetThreadAffinityMask(GetCurrentThread(), helpers) };

@@ -68,7 +68,7 @@ fn parse_reads_each_entry_s_id_cpu_and_flags() {
             },
         ]
     );
-    assert_eq!(parse(&[]).unwrap(), []);
+    assert_eq!(parse(&[]).unwrap(), Vec::<CpuSet>::new());
 }
 
 #[test]
@@ -240,4 +240,26 @@ fn an_instance_the_layout_has_no_cpus_for_is_named() {
             cpus: 0xC
         }
     );
+}
+
+#[test]
+fn the_helper_threads_stay_within_the_process_s_reserved_cpus() {
+    // FOH instance 1 (4-7, media pinned on 4-5) with no Lasso affinity:
+    // the placer's helpers would be every CPU but 4-5, instance 2's
+    // reserved 8-11 included; within its own reserved CPUs, 6-7 only.
+    let foh = Layout::of(32, 2);
+    let own = 0x30u64;
+    let helpers = 0xFFFF_FFFF & !own;
+    let assigned = foh.dasio_mask(1).unwrap();
+    assert_eq!(helpers_within(helpers, assigned), 0xC0);
+    assert_eq!(
+        helpers_within(helpers, assigned) & foh.dasio_mask(2).unwrap(),
+        0
+    );
+    // Nothing assigned (CPUs not reserved): as before.
+    assert_eq!(helpers_within(helpers, 0), helpers);
+    // Every assigned CPU is a media CPU: as before, never no CPU.
+    assert_eq!(helpers_within(0xC0, 0x30), 0xC0);
+    // Nothing pinned: no helpers to place.
+    assert_eq!(helpers_within(0, assigned), 0);
 }
