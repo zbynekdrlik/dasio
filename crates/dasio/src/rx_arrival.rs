@@ -132,8 +132,8 @@ pub fn suffix(r: Option<Report>) -> String {
 }
 
 /// The figures shared with the status closure. The peak only grows, so a
-/// slot whose counts dstack starts again never lowers it (held as the peak
-/// + 1, so 0 is "none"); the last second is the latest look's, one pair
+/// slot whose counts dstack starts again never lowers it (held as the
+/// peak plus one, so 0 is "none"); the last second is the latest look's, one pair
 /// under a lock so a reader never sees one look's least with another's
 /// largest. Neither side is a media thread.
 #[derive(Debug, Clone, Default)]
