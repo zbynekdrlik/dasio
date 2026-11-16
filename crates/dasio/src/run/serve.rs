@@ -237,12 +237,14 @@ impl Base<'_> {
 /// dtray's line for the instance (dstack's app status) from the serving
 /// now (`current`): the header's numbers, the bridge's counters, the late
 /// blocks of the last minute and the PC profile's problems
-/// (`u32::MAX`: none).
+/// (`u32::MAX`: none), and the configured RX latency against the measured
+/// arrival's peak (dasio#128).
 pub(super) fn app_status(
     media: &dstack::daemon::media::Media,
     current: Arc<Mutex<Current>>,
     late_per_min: Arc<AtomicU64>,
     pc_problems: Arc<std::sync::atomic::AtomicU32>,
+    (rx_peak, rx_latency_ns): (crate::rx_latency::Peak, u64),
     spare: u32,
     kernel_tx: bool,
 ) {
@@ -269,6 +271,7 @@ pub(super) fn app_status(
                 n => Some(n),
             },
             tx: super::tx_path(kernel_tx),
+            rx: rx_peak.report(rx_latency_ns),
         })
     });
 }

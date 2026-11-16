@@ -28,6 +28,7 @@ pub mod place;
 pub mod probe;
 pub mod pump_loss;
 pub mod register;
+pub mod rx_latency;
 #[cfg(windows)]
 pub mod run;
 #[cfg(windows)]
