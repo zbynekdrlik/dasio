@@ -316,7 +316,9 @@ fn served_delay(plan: &Plan) -> usize {
         0.5 * (-0.5 * x * x).exp()
     };
     let mut out = Vec::new();
-    for b in 0..200 {
+    // The pulse at block 50 and the longest path (44.1 kHz at block 32:
+    // about 9 ms, 27 blocks) are out by block 120.
+    for b in 0..120 {
         let input: Vec<f64> = (0..n).map(|i| pulse(b * n + i)).collect();
         let mut o = vec![0.0; n];
         s.process(&mut Block::new(n, &input, &mut o).at((b * n) as u64));
@@ -386,7 +388,8 @@ fn a_converted_path_counts_nothing_dry_in_steady_running() {
         let plan = Plan::new(96_000, rate, 32).unwrap();
         let (mut s, counters) = Served::new(Echo::default(), &plan, 2, 2).unwrap();
         assert!(matches!(s, Served::Converted(_)));
-        for b in 0..300u64 {
+        // 100 blocks: the filters are full after about ten.
+        for b in 0..100u64 {
             let input = [0.25; 2 * 32];
             let mut o = [0.0; 2 * 32];
             s.process(&mut Block::new(32, &input, &mut o).at(b * 32));
