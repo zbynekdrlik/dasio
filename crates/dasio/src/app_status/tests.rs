@@ -166,7 +166,7 @@ fn the_bridge_facts_come_from_the_runner_s_status() {
         9,
         Some(2),
         TxPath::Udp,
-        Some(AGE_128_96K),
+        Some(AGE_DSG),
     );
     assert_eq!(
         f,
@@ -183,7 +183,7 @@ fn the_bridge_facts_come_from_the_runner_s_status() {
             resets: 4,
             pc_problems: Some(2),
             tx: TxPath::Udp,
-            from_asio_age: Some(AGE_128_96K),
+            from_asio_age: Some(AGE_DSG),
         }
     );
     let running = dstack_asio::Status {
@@ -379,42 +379,89 @@ fn a_bridge_shows_its_tx_path_and_warns_on_missed_frames() {
     assert_eq!(bridge_state(&udp), "ok");
 }
 
-/// dsg's case (dasio#120): 128-frame calls at 96 kHz (1333 us), the pump
-/// taking 200 us after the hand-over, a pump block of 1333 us on top.
-const AGE_128_96K: AgeReport = AgeReport {
-    block_age_us: 1_533,
-    block_age_max_us: 1_600,
-    min_receiver_latency_us: 2_933,
+/// dsg's field read (dasio#120, 16.11.2026): 128-frame calls at 96 kHz,
+/// the modelled block age 1650 us (max 1888), the TX packets up to 1397 us
+/// past their stamps, + 200 us for the network (none measured on Windows).
+const AGE_DSG: AgeReport = AgeReport {
+    block_age_us: Some(1_650),
+    block_age_max_us: Some(1_888),
+    packet_age_us: Some(1_397),
+    min_receiver_latency_us: Some(1_597),
 };
 
 #[test]
-fn the_bridge_json_carries_the_from_asio_block_age_while_it_has_one() {
-    // dstack #325, dasio#120: the three keys with the report's values.
+fn the_bridge_json_carries_the_from_asio_figures_while_it_has_them() {
+    // dstack #325, dasio#120: the four keys with the report's values.
     let j = bridge_json(&BridgeFacts {
-        from_asio_age: Some(AGE_128_96K),
+        from_asio_age: Some(AGE_DSG),
         ..bridge_running()
     });
     assert!(j.starts_with('{') && j.ends_with('}'), "{j}");
     assert!(
         j.contains(concat!(
-            "\"pc_profile_problems\":0,\"from_asio_block_age_us\":1533,",
-            "\"from_asio_block_age_max_us\":1600,",
-            "\"from_asio_min_receiver_latency_us\":2933,\"kernel_tx\":true,"
+            "\"pc_profile_problems\":0,\"from_asio_block_age_us\":1650,",
+            "\"from_asio_block_age_max_us\":1888,\"from_asio_packet_age_us\":1397,",
+            "\"from_asio_min_receiver_latency_us\":1597,\"kernel_tx\":true,"
         )),
         "{j}"
     );
-    // No report (no take yet, or the driver stopped 1-2 min ago): the keys
-    // are left out, never a 0 that reads as a fast driver.
+    // No report (no block taken, no TX packet, or both gone 1-2 min ago):
+    // the keys are left out, never a 0 that reads as a fast driver.
     let none = bridge_json(&bridge_running());
-    assert!(!none.contains("from_asio_block_age"), "{none}");
-    assert!(!none.contains("from_asio_min_receiver_latency"), "{none}");
+    for key in [
+        "from_asio_block_age",
+        "from_asio_packet_age",
+        "from_asio_min_receiver_latency",
+    ] {
+        assert!(!none.contains(key), "{key}: {none}");
+    }
     assert!(
         none.contains("\"pc_profile_problems\":0,\"kernel_tx\":true,"),
         "{none}"
     );
 }
 
-/// A [`BlockAge`] for a 1333 us pump block on a clock the test sets, ns.
+#[test]
+fn each_from_asio_key_is_left_out_while_its_value_is_unknown() {
+    // TX packets but no driver's block taken (no driver, or a closed one):
+    // only the packet keys.
+    let packets = bridge_json(&BridgeFacts {
+        from_asio_age: Some(AgeReport {
+            block_age_us: None,
+            block_age_max_us: None,
+            ..AGE_DSG
+        }),
+        ..bridge_running()
+    });
+    assert!(!packets.contains("from_asio_block_age"), "{packets}");
+    assert!(
+        packets.contains(concat!(
+            "\"pc_profile_problems\":0,\"from_asio_packet_age_us\":1397,",
+            "\"from_asio_min_receiver_latency_us\":1597,\"kernel_tx\":true,"
+        )),
+        "{packets}"
+    );
+    // Blocks taken, no TX packet seen yet: only the block keys.
+    let blocks = bridge_json(&BridgeFacts {
+        from_asio_age: Some(AgeReport {
+            packet_age_us: None,
+            min_receiver_latency_us: None,
+            ..AGE_DSG
+        }),
+        ..bridge_running()
+    });
+    assert!(!blocks.contains("from_asio_packet_age"), "{blocks}");
+    assert!(!blocks.contains("from_asio_min_receiver"), "{blocks}");
+    assert!(
+        blocks.contains(concat!(
+            "\"pc_profile_problems\":0,\"from_asio_block_age_us\":1650,",
+            "\"from_asio_block_age_max_us\":1888,\"kernel_tx\":true,"
+        )),
+        "{blocks}"
+    );
+}
+
+/// A [`BlockAge`] on a clock the test sets, ns.
 fn age_on_fake_clock() -> (
     std::sync::Arc<std::sync::atomic::AtomicI64>,
     std::sync::Arc<BlockAge>,
@@ -424,77 +471,91 @@ fn age_on_fake_clock() -> (
     let t = Arc::new(AtomicI64::new(0));
     let read = Arc::clone(&t);
     let clock: dlink::bridge::Clock = Arc::new(move || read.load(Ordering::Relaxed));
-    (t, Arc::new(BlockAge::new(1_333_333, clock)))
+    (t, Arc::new(BlockAge::new(clock)))
+}
+
+/// The TX side's view: the oldest packet since the last view, ns, and one
+/// flow to `dsg` at 1 ms (slot 0) with its late count.
+fn view(age_peak_ns: u64, dsg_late: u64) -> AppView {
+    AppView {
+        age_peak_ns,
+        receivers: vec![
+            dstack::media::tx::ReceiverLateness {
+                slot: 0,
+                receiver: "dsg".into(),
+                latency_ns: 1_000_000,
+                over_latency: dsg_late,
+            },
+            dstack::media::tx::ReceiverLateness {
+                slot: 1,
+                receiver: "stage-rack".into(),
+                latency_ns: 2_000_000,
+                over_latency: 0,
+            },
+        ],
+    }
 }
 
 #[test]
-fn the_age_tick_reads_no_receivers_before_the_first_take() {
-    // No driver serving: the status loop takes no lock on the TX table.
-    let (_, age) = age_on_fake_clock();
-    let mut read = false;
-    let warned = from_asio_age_tick(&age, || {
-        read = true;
-        vec![("rx".into(), 1_000_000)]
-    });
-    assert_eq!(warned, None);
-    assert!(!read, "the receivers were read without an age report");
-}
-
-#[test]
-fn the_age_tick_warns_about_a_1_ms_receiver_once_an_hour() {
+fn the_age_tick_reports_the_tx_packets_age_plus_the_network() {
     use std::sync::atomic::Ordering;
     let (t, age) = age_on_fake_clock();
-    t.store(5_000_000, Ordering::Relaxed);
-    age.handed(128, 96_000);
-    t.store(5_200_000, Ordering::Relaxed);
-    age.taken();
-    let receivers = || {
-        vec![
-            ("stage-rack".to_string(), 1_000_000),
-            ("unknown".to_string(), 0),
-            ("foh".to_string(), 5_000_000),
-        ]
-    };
-    let text = from_asio_age_tick(&age, receivers).expect("a 1 ms receiver warns");
-    assert!(text.contains("stage-rack at 1000 us"), "{text}");
-    assert!(!text.contains("foh") && !text.contains("unknown"), "{text}");
-    // The next counts tick, 10 s later: the receivers are read, no new
-    // warning.
-    t.store(10_005_200_000, Ordering::Relaxed);
-    let mut read = false;
-    let again = from_asio_age_tick(&age, || {
-        read = true;
-        receivers()
-    });
-    assert_eq!(again, None);
-    assert!(read);
-    // An hour after the warning, with blocks still taken: it warns again.
-    let hour_later = 5_200_000 + 3_600_000_000_000;
-    t.store(hour_later - 200_000, Ordering::Relaxed);
-    age.handed(128, 96_000);
-    t.store(hour_later, Ordering::Relaxed);
-    age.taken();
-    assert!(from_asio_age_tick(&age, receivers).is_some());
-    // Receivers at or above the need (2866 us: 1533 us of age + a 1333 us
-    // pump block): nothing.
-    let (t, age) = age_on_fake_clock();
-    t.store(5_000_000, Ordering::Relaxed);
-    age.handed(128, 96_000);
-    t.store(5_200_000, Ordering::Relaxed);
-    age.taken();
+    // Before any look (no driver's block, no TX packet): no report.
+    assert_eq!(age.report(), None);
+    t.store(10_000_000_000, Ordering::Relaxed);
+    // dsg's packet peak; no network measured (Windows): 200 us.
+    assert_eq!(from_asio_age_tick(&age, &view(1_397_000, 0), None), None);
+    let r = age.report().expect("a TX packet was seen");
     assert_eq!(
-        from_asio_age_tick(&age, || vec![
-            ("at-need".into(), 2_866_000),
-            ("foh".into(), 3_000_000)
-        ]),
-        None
+        (r.packet_age_us, r.min_receiver_latency_us),
+        (Some(1_397), Some(1_597))
+    );
+    // No driver's block taken: the block keys stay unknown.
+    assert_eq!((r.block_age_us, r.block_age_max_us), (None, None));
+    // The next counts tick, 10 s on: a younger peak and a measured 300 us
+    // network p99. The minute's max stays the older packet.
+    t.store(20_000_000_000, Ordering::Relaxed);
+    from_asio_age_tick(&age, &view(1_003_000, 0), Some(300_000));
+    let r = age.report().unwrap();
+    assert_eq!(
+        (r.packet_age_us, r.min_receiver_latency_us),
+        (Some(1_397), Some(1_697))
     );
 }
 
 #[test]
+fn the_age_tick_warns_once_an_hour_when_a_receiver_counts_late_packets() {
+    use std::sync::atomic::Ordering;
+    let (t, age) = age_on_fake_clock();
+    let tick = 10_000_000_000i64;
+    t.store(tick, Ordering::Relaxed);
+    // The first look only learns the flows' counts, even a high one.
+    assert_eq!(from_asio_age_tick(&age, &view(1_100_000, 4), None), None);
+    // No rise: no warning, however young or old the packets.
+    t.store(2 * tick, Ordering::Relaxed);
+    assert_eq!(from_asio_age_tick(&age, &view(1_397_000, 4), None), None);
+    // dsg counted 9 more late packets (its 1 ms self-subscription, 16.11):
+    // a warning naming it, the latency it states and the late packets,
+    // never the clean 2 ms receiver.
+    t.store(3 * tick, Ordering::Relaxed);
+    let text = from_asio_age_tick(&age, &view(1_200_000, 13), None).expect("a rise warns");
+    assert!(text.contains("dsg at 1000 us (9 late)"), "{text}");
+    assert!(!text.contains("stage-rack"), "{text}");
+    assert!(text.contains("needs at least 1597 us"), "{text}");
+    // A further rise inside the hour: held, no second warning.
+    t.store(4 * tick, Ordering::Relaxed);
+    assert_eq!(from_asio_age_tick(&age, &view(1_200_000, 15), None), None);
+    // An hour after the warning, another rise: one warning, the held rise
+    // summed in (2 + 1).
+    t.store(3 * tick + 3_600_000_000_000, Ordering::Relaxed);
+    let text = from_asio_age_tick(&age, &view(1_200_000, 16), None).expect("an hour on");
+    assert!(text.contains("dsg at 1000 us (3 late)"), "{text}");
+}
+
+#[test]
 fn the_bridge_s_status_loop_checks_the_receivers_once_a_counts_tick() {
-    // dstack #325: the check runs in the status loop, never in the pump
-    // or the driver's callback (it locks the TX table and allocates).
+    // dstack #325: the look runs in the status loop, never in the pump
+    // or the driver's callback (the TX view locks the TX table).
     let src = include_str!("../run_bridge.rs");
     let calls: Vec<usize> = src
         .match_indices("from_asio_age_tick(")
@@ -514,9 +575,25 @@ fn the_bridge_s_status_loop_checks_the_receivers_once_a_counts_tick() {
         calls[0] < callback,
         "the call is in run(), not in the driver's side"
     );
-    assert_eq!(
-        src.matches("warn_low_receivers").count(),
-        0,
-        "only through the tick"
+    // Never gated on the age's report: only a look records the packet
+    // age, so a gated look would never start.
+    // The TX view is read there and nowhere else: the device's only
+    // reader (a second one would take its peak), and dstack 0.6.151's
+    // removed calls are gone.
+    let views: Vec<usize> = src
+        .match_indices("take_app_view(")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(views.len(), 1, "one TX view in run_bridge.rs");
+    assert!(
+        (tick..tick_end).contains(&views[0]),
+        "the TX view is not read inside the counts tick"
     );
+    for gone in ["warn_low_receivers", "receiver_latencies", ".look("] {
+        assert_eq!(
+            src.matches(gone).count(),
+            0,
+            "{gone}: only through the tick"
+        );
+    }
 }

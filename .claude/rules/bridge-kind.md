@@ -31,9 +31,22 @@ paths:
   instance ends for the SCM to restart it.
 - `run_bridge.rs` and `run/profile.rs` are Windows glue, excluded from
   mutants; keep decisions in `kind.rs` / `app_status.rs`, tested on Linux.
-- The from-ASIO block age (dstack issue 325, dasio issue 120): `bridge_json`
-  shows `from_asio_block_age_us` / `_max_us` / `from_asio_min_receiver_latency_us`
-  only while `BlockAge::report()` is Some. The receiver check is
-  `app_status::from_asio_age_tick`, called once in `run_bridge.rs` inside the
-  `counts.due(now)` branch (10 s), never the pump or the callback; a test
-  reads `run_bridge.rs` and fails if the call moves or is duplicated.
+- The from-ASIO figures (dstack issue 325, dasio issue 120, dstack
+  v0.6.151): `bridge_json` writes each of `from_asio_block_age_us`,
+  `from_asio_block_age_max_us` (the modelled block age, a diagnostic only),
+  `from_asio_packet_age_us` (the TX packets' measured peak age past their
+  stamps over the last minute) and `from_asio_min_receiver_latency_us`
+  (packet age + the network p99, or 200 us while none is measured: always
+  on Windows) only while that value is Some. dsg's field read (16.11.2026)
+  had the modelled receiver figure at 2222 us (block age max 1888 us + a
+  pump block) against real packet ages of 1003-1397 us: judge a
+  receiver by the packet keys, never the block keys.
+- `app_status::from_asio_age_tick(&age, &media.tx.take_app_view(),
+  media.rx.network_p99_ns())` runs once in `run_bridge.rs` inside the
+  `counts.due(now)` branch (10 s), never the pump or the callback (the view
+  locks the TX table), with or without a driver serving (only a look
+  records the packet age, so it is never gated on `report()`). It is the
+  device's only `take_app_view` reader: a second one takes its peak. The
+  hourly WARN ("a receiver counted our TX packets late") comes only from a
+  flow's own `over_latency` rising, not from a threshold. A test reads
+  `run_bridge.rs` and fails if the call or the view moves or is duplicated.

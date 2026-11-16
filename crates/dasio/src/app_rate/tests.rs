@@ -335,7 +335,9 @@ fn a_block_the_bridge_leaves_alone_plays_silence_on_either_path() {
     // The pump zeroes the outputs before each block, and the bridge writes
     // nothing where it has nothing to play (no DAW, a gap's later blocks).
     // Behind the converters it must be the same: never the last block
-    // again.
+    // again. dlink's Rated zeroes the app's outputs before each call
+    // (dstack 0.6.151, dstack issue 335); dasio has no zeroing of its own
+    // on this path any more, so this test holds dstack to it.
     for rate in [96_000, 48_000, 44_100] {
         let plan = Plan::new(96_000, rate, 32).unwrap();
         let (mut s, _) = Served::new(Quiet { loud: 20 }, &plan, 1, 1, WaitFrom::default()).unwrap();

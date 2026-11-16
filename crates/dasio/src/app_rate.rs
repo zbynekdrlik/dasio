@@ -205,7 +205,7 @@ pub enum Served<P> {
 /// and the bridge's [`WaitFrom`] set to each device block's start on the
 /// app's clock before Rated runs that block.
 pub struct Converted<P> {
-    rated: Rated<Zeroed<P>>,
+    rated: Rated<P>,
     plan: Plan,
     wait_from: WaitFrom,
 }
@@ -219,24 +219,6 @@ impl<P: Process> Converted<P> {
         self.wait_from
             .set(block.start().map(|s| self.plan.at_app(s)));
         self.rated.process(block);
-    }
-}
-
-/// The inner processor on a block whose outputs start at silence, as the
-/// pump gives them: dlink's Rated hands it its own app buffer again, and
-/// the bridge writes nothing where it has nothing to play (no DAW
-/// attached, a gap's later blocks), which must play silence, never the
-/// last block again.
-pub struct Zeroed<P>(P);
-
-impl<P: Process> Process for Zeroed<P> {
-    fn process(&mut self, block: &mut Block<'_>) {
-        block.zero_outputs();
-        self.0.process(block);
-    }
-
-    fn discontinuity(&mut self) {
-        self.0.discontinuity();
     }
 }
 
@@ -272,8 +254,11 @@ impl<P: Process> Served<P> {
         if !plan.converts() {
             return Ok((Served::Direct(inner), Counters::default()));
         }
+        // Rated zeroes the bridge's outputs before each call, as the pump
+        // does (dstack 0.6.151): a block the bridge leaves alone plays
+        // silence, never the last DAW block again.
         let rated = Rated::with_fixed_app_block(
-            Zeroed(inner),
+            inner,
             plan.device_rate,
             plan.app_rate,
             plan.device_block as usize,
