@@ -310,3 +310,26 @@ fn the_start_s_cpus_are_kept_for_the_helper_placer() {
     set_assigned(0);
     assert_eq!(assigned(), 0);
 }
+
+#[test]
+fn an_entry_past_the_end_is_refused_wherever_it_starts() {
+    let mut buf = entry(0x100, 0, 0, 0);
+    let mut long = entry(0x101, 0, 1, 0);
+    long[0..4].copy_from_slice(&40u32.to_le_bytes());
+    buf.extend(long);
+    assert_eq!(
+        parse(&buf).unwrap_err(),
+        "a CPU set entry at byte 32 has size 40 (32 bytes left)"
+    );
+}
+
+#[test]
+fn two_sets_on_one_cpu_keep_it_reserved() {
+    // Microsoft: "on most systems" a CPU set maps to one home processor,
+    // not on all; a CPU with two reserved sets stays in the mask.
+    let mut buf = pc(4, 0x6);
+    buf.extend(entry(0x110, 0, 2, ALLOCATED));
+    let sets = parse(&buf).unwrap();
+    assert_eq!(reserved_mask(&sets), 0x6);
+    assert_eq!(ids_for(0x4, &sets), [0x102, 0x110]);
+}
