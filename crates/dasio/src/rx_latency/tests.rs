@@ -173,3 +173,17 @@ fn a_latency_below_the_recommendation_is_logged_at_warn() {
     assert!(!holds.contains("WARN"), "{holds}");
     assert!(holds.contains("RX latency 2.00 ms holds"), "{holds}");
 }
+
+#[test]
+fn the_flows_are_every_rx_slot_s_packets_and_peak() {
+    use dstack::media::ring::Ring;
+    use dstack::media::rx::{MAX_FLOWS, RxShared};
+    let rings: std::sync::Arc<[Ring]> = (0..2).map(|_| Ring::new()).collect::<Vec<_>>().into();
+    let rx = RxShared::new(48_000, std::net::Ipv4Addr::LOCALHOST, rings).expect("the RX side");
+    let all: Vec<(u64, u64)> = flows(&rx).collect();
+    // Every slot, received or not: an idle one reads (0, 0), which
+    // `peak_ns` leaves out.
+    assert_eq!(all.len(), MAX_FLOWS);
+    assert!(all.iter().all(|&f| f == (0, 0)), "{all:?}");
+    assert_eq!(peak_ns(all, 48_000), None);
+}
