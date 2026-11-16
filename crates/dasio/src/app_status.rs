@@ -31,7 +31,7 @@ pub struct Facts {
     pub pc_problems: Option<u32>,
     /// How audio TX goes out (dasio#125).
     pub tx: TxPath,
-    /// The measured RX packet age at placement (dasio#128): information,
+    /// The measured RX packet age at arrival (dasio#128): information,
     /// never advice; `None` before a packet was placed.
     pub rx: Option<crate::rx_arrival::Report>,
 }
@@ -219,7 +219,7 @@ pub struct BridgeFacts {
     /// The from-ASIO figures (dstack #325, dasio#120); `None` while neither
     /// a block was taken nor a TX packet seen for 1-2 minutes.
     pub from_asio_age: Option<AgeReport>,
-    /// The measured RX packet age at placement (dasio#128): information,
+    /// The measured RX packet age at arrival (dasio#128): information,
     /// never advice; `None` before a packet was placed.
     pub rx: Option<crate::rx_arrival::Report>,
 }

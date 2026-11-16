@@ -237,7 +237,7 @@ impl Base<'_> {
 /// dtray's line for the instance (dstack's app status) from the serving
 /// now (`current`): the header's numbers, the bridge's counters, the late
 /// blocks of the last minute and the PC profile's problems
-/// (`u32::MAX`: none), and the measured RX packet age at placement
+/// (`u32::MAX`: none), and the measured RX packet age at arrival
 /// (dasio#128).
 pub(super) fn app_status(
     media: &dstack::daemon::media::Media,

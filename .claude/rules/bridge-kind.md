@@ -66,8 +66,11 @@ paths:
   also guard this wiring in `run_bridge.rs` as text. The counts line
   carries `to_asio_pulls`, `to_asio_pull_restarts`, `to_asio_idle_drains`.
 - Pulled, the RX packets are placed at the driver's buffer switch, not
-  every pump block, and Windows has no receive stamps: dstack's lateness
-  (dasio's `rx_arrival_*`, dtray's "RX arrival", dcontroller's latency
-  graph for a bridge device) now includes up to one driver buffer period
-  of wait. Read a bridge's arrival with that in mind (`late` is judged
-  against the drain gap, so it does not rise from this).
+  every pump block. Up to dstack v0.6.156 dstack's lateness (dasio's
+  `rx_arrival_*`, dtray's "RX arrival", dcontroller's latency graph for a
+  bridge device) included up to one driver buffer period of that wait.
+  Since v0.6.157 (dstack issue 350) it is the arrival age again (Windows,
+  no receive stamps: bracketed by the reads, a late burst just before a
+  read shows in `lateness_at_read_peak`), and the wait is the bridge's
+  `rx_asio_pull_wait_mean_ns` / `rx_asio_pull_wait_peak_us` (dasio#128).
+  `late` is judged against the drain gap either way.

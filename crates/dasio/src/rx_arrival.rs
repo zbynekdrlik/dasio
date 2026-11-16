@@ -1,6 +1,6 @@
-//! The measured age of the RX packets at placement (dasio#128): our PTP
-//! now less each packet's own stamp, so the transit, the RX pass's wake and
-//! our clock's offset (dstack's `RxCounts::lateness_peak` since the device
+//! The measured age of the RX packets at arrival (dasio#128): our PTP at
+//! the packet's arrival less its own stamp, so the transit and our clock's
+//! offset (on Windows bracketed by the writer's reads; dstack's `RxCounts::lateness_peak` since the device
 //! started, the least and largest of the heartbeat's last second as the
 //! 10 s look found it, and the mean over the last 10 s tick from two looks
 //! at the slots' running totals). Since dstack v0.6.157 (dstack issue 350)
@@ -39,10 +39,15 @@ impl Totals {
     /// The packets placed between an `earlier` look and this one. The sum
     /// is diffed modulo 2^64 (dstack's rule: it wraps only after 2^32
     /// packets at the 4.29 s cap). A count below the earlier one is a slot
-    /// whose counts started again: all of this look is new.
+    /// whose counts started again: all of this look is new (a guard: dstack
+    /// v0.6.157 makes a slot's counters once and never resets them). The
+    /// same count is no packet, whatever the sum: dstack adds a packet's
+    /// age before its count, so a look between the two sees the sum alone.
     pub fn since(self, earlier: Totals) -> Totals {
         if self.count < earlier.count {
             self
+        } else if self.count == earlier.count {
+            Totals::default()
         } else {
             Totals {
                 sum_ns: self.sum_ns.wrapping_sub(earlier.sum_ns),
@@ -66,7 +71,7 @@ pub fn mean(parts: impl IntoIterator<Item = Totals>) -> Option<u64> {
 pub struct Flow {
     /// Packets since the device started (0: the slot never received).
     pub packets: u64,
-    /// The largest age at placement since the device started, samples.
+    /// The largest age at arrival since the device started, samples.
     pub peak: u64,
     /// The largest age in the heartbeat's last second, samples.
     pub last_max: u64,
@@ -202,13 +207,13 @@ impl Report {
         });
         let base = match self.last {
             Some((least, most)) => format!(
-                "RX arrival (measured packet age at placement): peak {} ms since start, last second at the 10 s look {}-{} ms",
+                "RX arrival (measured packet age at arrival): peak {} ms since start, last second at the 10 s look {}-{} ms",
                 ms(self.peak_ns),
                 ms(least),
                 ms(most),
             ),
             None => format!(
-                "RX arrival (measured packet age at placement): peak {} ms since start, no packet in the last second at the 10 s look",
+                "RX arrival (measured packet age at arrival): peak {} ms since start, no packet in the last second at the 10 s look",
                 ms(self.peak_ns),
             ),
         };

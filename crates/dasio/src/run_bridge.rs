@@ -139,7 +139,7 @@ pub fn run(
     };
     // The PC profile's problems (dasio#5, #120); u32::MAX while there is none.
     let pc_problems = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
-    // The measured RX packet age at placement (dasio#128): information
+    // The measured RX packet age at arrival (dasio#128): information
     // only, the latency stays the owner's decision.
     let mut rx_arrival = crate::rx_arrival::Watch::default();
     {

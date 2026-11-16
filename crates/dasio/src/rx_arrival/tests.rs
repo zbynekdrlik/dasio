@@ -172,7 +172,7 @@ fn the_log_text_is_a_measurement_never_advice() {
     };
     assert_eq!(
         r.text(),
-        "RX arrival (measured packet age at placement): peak 0.72 ms since start, last second at the 10 s look 0.10-0.35 ms"
+        "RX arrival (measured packet age at arrival): peak 0.72 ms since start, last second at the 10 s look 0.10-0.35 ms"
     );
     assert_eq!(
         Report {
@@ -181,7 +181,7 @@ fn the_log_text_is_a_measurement_never_advice() {
             ..Default::default()
         }
         .text(),
-        "RX arrival (measured packet age at placement): peak 0.98 ms since start, no packet in the last second at the 10 s look"
+        "RX arrival (measured packet age at arrival): peak 0.98 ms since start, no packet in the last second at the 10 s look"
     );
     for t in [r.text(), r.suffix(), r.json()] {
         for advice in ["recommend", "latency_ns", "set ", "below"] {
@@ -312,6 +312,9 @@ fn two_looks_at_the_totals_give_the_packets_between_them() {
     );
     // The same count: no packet between the looks, never the whole total.
     assert_eq!(totals(5_000, 10).since(totals(5_000, 10)), totals(0, 0));
+    // A look between dstack's sum and count writes: the same count with a
+    // larger sum is still no packet (never a sum without its packet).
+    assert_eq!(totals(5_400, 10).since(totals(5_000, 10)), totals(0, 0));
     // The sum wrapped (modulo 2^64, dstack's rule): the diff is still right.
     assert_eq!(
         totals(100, 12).since(totals(u64::MAX - 99, 10)),
@@ -328,9 +331,9 @@ fn two_looks_at_the_totals_give_the_packets_between_them() {
 fn the_mean_weighs_every_packet_and_needs_one() {
     assert_eq!(mean(Vec::<Totals>::new()), None);
     assert_eq!(mean([totals(0, 0), totals(0, 0)]), None);
-    // One busy slot and one with a single packet: per packet, not per slot
-    // (per slot it would be (100 + 1000) / 2 = 550).
-    assert_eq!(mean([totals(900 * 100, 900), totals(1_000, 1)]), Some(101));
+    // One busy slot and one with a single packet: per packet, (90 000 +
+    // 1 000) / 901 = 100.99, not per slot ((100 + 1 000) / 2 = 550).
+    assert_eq!(mean([totals(900 * 100, 900), totals(1_000, 1)]), Some(100));
     // Rounded down.
     assert_eq!(mean([totals(10, 3)]), Some(3));
     // Sums past u64 together never overflow.
@@ -527,7 +530,7 @@ fn the_tray_part_shows_the_mean_between_the_last_second_and_the_peak() {
     );
     assert_eq!(
         r.text(),
-        "RX arrival (measured packet age at placement): peak 0.72 ms since start, last second at the 10 s look 0.10-0.35 ms, mean 0.21 ms over the last tick; read wait (arrival to the writer's read) mean 1.00 ms, peak 2.00 ms since start"
+        "RX arrival (measured packet age at arrival): peak 0.72 ms since start, last second at the 10 s look 0.10-0.35 ms, mean 0.21 ms over the last tick; read wait (arrival to the writer's read) mean 1.00 ms, peak 2.00 ms since start"
     );
     let no_wait_mean = Report {
         mean_ns: None,
@@ -539,7 +542,7 @@ fn the_tray_part_shows_the_mean_between_the_last_second_and_the_peak() {
     };
     assert_eq!(
         no_wait_mean.text(),
-        "RX arrival (measured packet age at placement): peak 0.72 ms since start, last second at the 10 s look 0.10-0.35 ms; read wait (arrival to the writer's read) peak 2.00 ms since start"
+        "RX arrival (measured packet age at arrival): peak 0.72 ms since start, last second at the 10 s look 0.10-0.35 ms; read wait (arrival to the writer's read) peak 2.00 ms since start"
     );
     for t in [r.text(), r.suffix(), r.json(), r.pull_wait_json()] {
         for advice in ["recommend", "latency_ns", "set ", "below"] {
