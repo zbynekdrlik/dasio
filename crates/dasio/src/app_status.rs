@@ -26,6 +26,61 @@ pub struct Facts {
     pub late_per_min: u64,
     /// The PC profile's problems (dasio#5); `None` without a profile.
     pub pc_problems: Option<u32>,
+    /// How audio TX goes out (dasio#125).
+    pub tx: TxPath,
+}
+
+/// How the instance's audio TX goes out (dasio#125).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TxPath {
+    /// Through dasio's NDIS filter, with the filter's last 10 s window:
+    /// frames that went to the UDP socket (no slot) and frames the NIC
+    /// refused.
+    Kernel { no_slot: u64, failed: u64 },
+    /// On the UDP sockets: only the CI/test clock runs so.
+    Udp,
+}
+
+impl Default for TxPath {
+    /// Kernel TX, every frame taken: the only way a device on a real clock
+    /// runs.
+    fn default() -> Self {
+        TxPath::Kernel {
+            no_slot: 0,
+            failed: 0,
+        }
+    }
+}
+
+impl TxPath {
+    /// Frames missed the filter in the last window.
+    fn bad(self) -> bool {
+        matches!(self, TxPath::Kernel { no_slot, failed } if no_slot > 0 || failed > 0)
+    }
+
+    /// The tray line's TX part.
+    fn suffix(self) -> String {
+        match self {
+            TxPath::Kernel {
+                no_slot: 0,
+                failed: 0,
+            } => " · kernel TX".to_string(),
+            TxPath::Kernel { no_slot, failed } => {
+                format!(" · kernel TX: {no_slot} to the socket, {failed} failed (10 s)")
+            }
+            TxPath::Udp => " · UDP TX (test clock)".to_string(),
+        }
+    }
+
+    /// The JSON fields: `kernel_tx`, `ktx_no_slot`, `ktx_failed`.
+    fn json(self) -> String {
+        match self {
+            TxPath::Kernel { no_slot, failed } => {
+                format!("\"kernel_tx\":true,\"ktx_no_slot\":{no_slot},\"ktx_failed\":{failed}")
+            }
+            TxPath::Udp => "\"kernel_tx\":false,\"ktx_no_slot\":0,\"ktx_failed\":0".to_string(),
+        }
+    }
 }
 
 /// The late counter over the last minute.
@@ -71,8 +126,9 @@ fn ms(samples: u32, rate: u32) -> f64 {
 /// The menu line dtray shows after the device's own.
 pub fn line(f: &Facts) -> String {
     let pc = pc_suffix(f.pc_problems);
+    let tx = f.tx.suffix();
     format!(
-        "{} · {} @ {} kHz{} · in {:.2} / out {:.2} ms · late {}/min ({} total){pc}",
+        "{} · {} @ {} kHz{} · in {:.2} / out {:.2} ms · late {}/min ({} total){tx}{pc}",
         if f.attached { "DAW attached" } else { "no DAW" },
         f.block,
         f.sample_rate / 1000,
@@ -85,10 +141,11 @@ pub fn line(f: &Facts) -> String {
 }
 
 /// The icon's state: `warn` without a DAW, with a late block in the
-/// last minute or with a PC profile problem, else `ok`. (A device that stopped answers no status at
+/// last minute, with frames that missed the filter in its last window or
+/// with a PC profile problem, else `ok`. (A device that stopped answers no status at
 /// all: dtray shows that as an expected device not running.)
 pub fn state(f: &Facts) -> &'static str {
-    if !f.attached || f.late_per_min > 0 || f.pc_problems.is_some_and(|n| n > 0) {
+    if !f.attached || f.late_per_min > 0 || f.tx.bad() || f.pc_problems.is_some_and(|n| n > 0) {
         "warn"
     } else {
         "ok"
@@ -103,7 +160,7 @@ pub fn json(f: &Facts) -> String {
             "{{\"line\":\"{}\",\"state\":\"{}\",\"daw_attached\":{},\"block\":{},",
             "\"sample_rate\":{},\"latency_in\":{},\"latency_out\":{},\"spare_blocks\":{},",
             "\"late_blocks\":{},\"late_per_min\":{},\"driver_missed\":{},\"stale\":{},",
-            "\"waited\":{},\"heartbeat_ms\":{},\"pc_profile_problems\":{}}}"
+            "\"waited\":{},\"heartbeat_ms\":{},\"pc_profile_problems\":{},{}}}"
         ),
         line,
         state(f),
@@ -120,6 +177,7 @@ pub fn json(f: &Facts) -> String {
         f.waited,
         f.heartbeat_ms,
         f.pc_problems.map_or(-1, i64::from),
+        f.tx.json(),
     )
 }
 
@@ -147,6 +205,8 @@ pub struct BridgeFacts {
     /// The PC profile's problems, checked in process (dasio#120); `None`
     /// without a profile or before the first check.
     pub pc_problems: Option<u32>,
+    /// How audio TX goes out (dasio#125).
+    pub tx: TxPath,
 }
 
 impl BridgeFacts {
@@ -158,6 +218,7 @@ impl BridgeFacts {
         to_asio_underruns: u64,
         from_asio_underruns: u64,
         pc_problems: Option<u32>,
+        tx: TxPath,
     ) -> Self {
         BridgeFacts {
             driver: driver.to_string(),
@@ -171,6 +232,7 @@ impl BridgeFacts {
             from_asio_underruns,
             resets: status.resets,
             pc_problems,
+            tx,
         }
     }
 }
@@ -187,11 +249,12 @@ pub fn bridge_line(f: &BridgeFacts) -> String {
         }
     };
     format!(
-        "bridge to \"{}\": {now} · underruns to ASIO {} / from ASIO {} · resets {}{}",
+        "bridge to \"{}\": {now} · underruns to ASIO {} / from ASIO {} · resets {}{}{}",
         f.driver,
         f.to_asio_underruns,
         f.from_asio_underruns,
         f.resets,
+        f.tx.suffix(),
         pc_suffix(f.pc_problems)
     )
 }
@@ -199,7 +262,7 @@ pub fn bridge_line(f: &BridgeFacts) -> String {
 /// The icon's state of a bridge instance: `ok` while the driver runs the
 /// bridge, `warn` otherwise.
 pub fn bridge_state(f: &BridgeFacts) -> &'static str {
-    if f.running && !f.pc_problems.is_some_and(|n| n > 0) {
+    if f.running && !f.tx.bad() && !f.pc_problems.is_some_and(|n| n > 0) {
         "ok"
     } else {
         "warn"
@@ -232,7 +295,7 @@ pub fn bridge_json(f: &BridgeFacts) -> String {
             "{{\"line\":\"{}\",\"state\":\"{}\",\"kind\":\"bridge\",\"daw_attached\":false,",
             "\"driver\":\"{}\",\"running\":{},\"reason\":\"{}\",\"rate\":{},",
             "\"buffer_frames\":{},\"to_asio_underruns\":{},\"from_asio_underruns\":{},",
-            "\"resets\":{},\"pc_profile_problems\":{}}}"
+            "\"resets\":{},\"pc_profile_problems\":{},{}}}"
         ),
         escaped(&bridge_line(f)),
         bridge_state(f),
@@ -245,6 +308,7 @@ pub fn bridge_json(f: &BridgeFacts) -> String {
         f.from_asio_underruns,
         f.resets,
         f.pc_problems.map_or(-1, i64::from),
+        f.tx.json(),
     )
 }
 

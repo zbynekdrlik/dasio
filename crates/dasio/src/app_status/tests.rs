@@ -15,6 +15,7 @@ fn master() -> Facts {
         heartbeat_ms: 1234,
         late_per_min: 0,
         pc_problems: None,
+        tx: TxPath::default(),
     }
 }
 
@@ -22,7 +23,7 @@ fn master() -> Facts {
 fn the_line_says_the_daw_the_block_the_latencies_and_the_late_blocks() {
     assert_eq!(
         line(&master()),
-        "DAW attached · 64 @ 96 kHz · in 1.67 / out 5.67 ms · late 0/min (95 total)"
+        "DAW attached · 64 @ 96 kHz · in 1.67 / out 5.67 ms · late 0/min (95 total) · kernel TX"
     );
     let band = Facts {
         block: 256,
@@ -35,7 +36,7 @@ fn the_line_says_the_daw_the_block_the_latencies_and_the_late_blocks() {
     };
     assert_eq!(
         line(&band),
-        "no DAW · 256 @ 96 kHz + spare · in 3.67 / out 9.00 ms · late 3/min (95 total)"
+        "no DAW · 256 @ 96 kHz + spare · in 3.67 / out 9.00 ms · late 3/min (95 total) · kernel TX"
     );
 }
 
@@ -142,6 +143,7 @@ fn bridge_running() -> BridgeFacts {
         from_asio_underruns: 5,
         resets: 1,
         pc_problems: Some(0),
+        tx: TxPath::default(),
     }
 }
 
@@ -156,7 +158,7 @@ fn the_bridge_facts_come_from_the_runner_s_status() {
         resets: 4,
         ..Default::default()
     };
-    let f = BridgeFacts::of("Test ASIO", &waiting, 7, 9, Some(2));
+    let f = BridgeFacts::of("Test ASIO", &waiting, 7, 9, Some(2), TxPath::Udp);
     assert_eq!(
         f,
         BridgeFacts {
@@ -171,13 +173,14 @@ fn the_bridge_facts_come_from_the_runner_s_status() {
             from_asio_underruns: 9,
             resets: 4,
             pc_problems: Some(2),
+            tx: TxPath::Udp,
         }
     );
     let running = dstack_asio::Status {
         state: dstack_asio::RunState::Running,
         ..Default::default()
     };
-    let f = BridgeFacts::of("Test ASIO", &running, 0, 0, None);
+    let f = BridgeFacts::of("Test ASIO", &running, 0, 0, None, TxPath::default());
     assert!(f.running);
     assert_eq!((f.reason, f.reason_code), (None, None));
 }
@@ -187,7 +190,7 @@ fn a_running_bridge_says_its_rate_buffer_and_underruns() {
     let f = bridge_running();
     assert_eq!(
         bridge_line(&f),
-        "bridge to \"Test \"ASIO\"\": running 96000 Hz / 256 · underruns to ASIO 2 / from ASIO 5 · resets 1"
+        "bridge to \"Test \"ASIO\"\": running 96000 Hz / 256 · underruns to ASIO 2 / from ASIO 5 · resets 1 · kernel TX"
     );
     assert_eq!(bridge_state(&f), "ok");
 }
@@ -268,7 +271,7 @@ fn a_bridge_with_pc_profile_problems_says_so_and_warns() {
         ..bridge_running()
     };
     assert!(
-        bridge_line(&two).ends_with(" · resets 1 · PC profile: 2 problems"),
+        bridge_line(&two).ends_with(" · resets 1 · kernel TX · PC profile: 2 problems"),
         "{}",
         bridge_line(&two)
     );
@@ -283,7 +286,85 @@ fn a_bridge_with_pc_profile_problems_says_so_and_warns() {
         pc_problems: None,
         ..bridge_running()
     };
-    assert!(bridge_line(&unchecked).ends_with(" · resets 1"));
+    assert!(bridge_line(&unchecked).ends_with(" · resets 1 · kernel TX"));
     assert_eq!(bridge_state(&unchecked), "ok");
     assert!(bridge_json(&unchecked).contains("\"pc_profile_problems\":-1"));
+}
+
+#[test]
+fn the_tx_part_says_kernel_tx_or_what_missed_the_filter() {
+    // dasio#125: the tray shows how audio TX goes out.
+    assert!(line(&master()).ends_with(" · kernel TX"));
+    let missed = Facts {
+        tx: TxPath::Kernel {
+            no_slot: 3,
+            failed: 1,
+        },
+        ..master()
+    };
+    assert!(
+        line(&missed).ends_with(" · kernel TX: 3 to the socket, 1 failed (10 s)"),
+        "{}",
+        line(&missed)
+    );
+    assert_eq!(state(&missed), "warn");
+    for (no_slot, failed) in [(1, 0), (0, 1)] {
+        assert_eq!(
+            state(&Facts {
+                tx: TxPath::Kernel { no_slot, failed },
+                ..master()
+            }),
+            "warn"
+        );
+    }
+    let udp = Facts {
+        tx: TxPath::Udp,
+        ..master()
+    };
+    assert!(line(&udp).ends_with(" · UDP TX (test clock)"));
+    assert_eq!(state(&udp), "ok");
+    let with_pc = Facts {
+        pc_problems: Some(1),
+        ..master()
+    };
+    assert!(line(&with_pc).ends_with(" · kernel TX · PC profile: 1 problem"));
+}
+
+#[test]
+fn the_json_carries_the_tx_path() {
+    assert!(json(&master()).contains("\"kernel_tx\":true,\"ktx_no_slot\":0,\"ktx_failed\":0"));
+    let missed = Facts {
+        tx: TxPath::Kernel {
+            no_slot: 4,
+            failed: 2,
+        },
+        ..master()
+    };
+    assert!(json(&missed).contains("\"kernel_tx\":true,\"ktx_no_slot\":4,\"ktx_failed\":2"));
+    let udp = json(&Facts {
+        tx: TxPath::Udp,
+        ..master()
+    });
+    assert!(udp.contains("\"kernel_tx\":false"), "{udp}");
+    assert!(udp.ends_with('}'));
+}
+
+#[test]
+fn a_bridge_shows_its_tx_path_and_warns_on_missed_frames() {
+    let missed = BridgeFacts {
+        tx: TxPath::Kernel {
+            no_slot: 0,
+            failed: 5,
+        },
+        ..bridge_running()
+    };
+    assert!(bridge_line(&missed).contains(" · kernel TX: 0 to the socket, 5 failed (10 s)"));
+    assert_eq!(bridge_state(&missed), "warn");
+    assert!(bridge_json(&missed).contains("\"ktx_failed\":5"));
+    let udp = BridgeFacts {
+        tx: TxPath::Udp,
+        ..bridge_running()
+    };
+    assert!(bridge_line(&udp).ends_with(" · resets 1 · UDP TX (test clock)"));
+    assert_eq!(bridge_state(&udp), "ok");
 }

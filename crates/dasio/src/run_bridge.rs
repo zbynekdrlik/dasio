@@ -124,6 +124,7 @@ pub fn run(
     // The PC profile's problems (dasio#5, #120); u32::MAX while there is none.
     let pc_problems = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
     {
+        let kernel_tx = tuning.kernel_tx;
         let (status, to_stats, from_stats, driver, pc_problems) = (
             Arc::clone(&status),
             Arc::clone(&to_stats),
@@ -142,6 +143,7 @@ pub fn run(
                     u32::MAX => None,
                     n => Some(n),
                 },
+                crate::run::tx_path(kernel_tx),
             ))
         });
     }

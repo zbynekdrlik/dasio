@@ -119,6 +119,7 @@ pub fn run(
                     u32::MAX => None,
                     n => Some(n),
                 },
+                tx: tx_path(tuning.kernel_tx),
             })
         });
     }
@@ -722,6 +723,16 @@ fn started_cpus() -> usize {
 /// Hands dstack dasio's NDIS filter as the audio TX path (dasio#1). The
 /// device does not start without it (owner 15.11.2026, dasio#125): the
 /// error names what is missing, and the SCM restarts the service.
+/// How the instance's audio TX goes out, for the tray (dasio#125).
+pub(crate) fn tx_path(kernel_tx: bool) -> crate::app_status::TxPath {
+    if kernel_tx {
+        let (no_slot, failed) = crate::kernel_tx::windows::window();
+        crate::app_status::TxPath::Kernel { no_slot, failed }
+    } else {
+        crate::app_status::TxPath::Udp
+    }
+}
+
 fn kernel_tx(media: &dstack::daemon::media::Media, ip: std::net::Ipv4Addr) -> Result<(), String> {
     let k = crate::kernel_tx::windows::KernelTx::open(ip).map_err(|e| {
         let e = format!(
