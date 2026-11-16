@@ -526,7 +526,9 @@ fn the_converted_path_sets_the_device_block_s_start_for_the_wait() {
                 "{rate} Hz: {got} for {want}"
             );
         } else {
-            // The bridge alone: its own block's start.
+            // The bridge alone: nothing sets the cell (the direct path
+            // never sees it), so the bridge waits from its own block's
+            // start; this also pins `WaitFrom`'s unset value.
             assert_eq!((first, tenth), (None, None), "{rate} Hz");
         }
     }

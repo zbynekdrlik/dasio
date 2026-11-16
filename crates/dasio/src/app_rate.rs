@@ -152,7 +152,8 @@ impl Plan {
     /// offset (`device_offset`, its samples, [`crate::wait_offset`]) at the
     /// app's rate, rounded down, so the wait ends at the device block's own
     /// deadline (dlink's Rated keeps the device block's start in app
-    /// samples within one sample, inside the offset's work margin). At 44.1
+    /// samples within one sample of it, either way: at most about 23 us
+    /// past at 44.1 kHz, inside the offset's work margin). At 44.1
     /// kHz a DAW block starts up to a block before that device block; the
     /// wait still counts from the device block (dasio#107).
     pub fn wait_offset(&self, device_offset: u64) -> u64 {
