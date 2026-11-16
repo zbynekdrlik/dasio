@@ -39,7 +39,7 @@ use serde::Deserialize;
 
 mod baseline;
 pub mod layout;
-mod power;
+pub(crate) mod power;
 #[cfg(windows)]
 pub mod windows;
 

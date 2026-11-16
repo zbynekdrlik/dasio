@@ -1,6 +1,6 @@
 //! The PC as the profile sees it: HKLM values (with the Dante NIC's keys
 //! resolved), ini lines, running processes and free disk space; and the
-//! writes `apply` makes. No process is spawned.
+//! writes `apply` makes (power-plan values through powercfg, dasio#128).
 
 use std::path::Path;
 
@@ -98,9 +98,7 @@ impl Pc {
                     .as_deref()
                     .ok_or("the Dante NIC's class key was not found")?
             )
-        } else if let Some(rest) = key.strip_prefix(
-            r"HKLM\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\{active_scheme}",
-        ) {
+        } else if let Some(rest) = key.strip_prefix(super::power::ACTIVE_SCHEME) {
             // The active power plan's own key (dasio#128): the baseline
             // sets its processor and power values, whichever plan it is.
             let scheme = match read(
@@ -262,7 +260,10 @@ impl Reader for Pc {
 /// its first output line.
 fn powercfg(args: &[String]) -> Result<(), String> {
     let cmd = format!("powercfg {}", args.join(" "));
-    let out = std::process::Command::new("powercfg")
+    // System32's powercfg by its full path: apply runs elevated, and a
+    // lookup by name would try the exe's own folder first.
+    let root = std::env::var("SystemRoot").map_err(|e| format!("{cmd}: SystemRoot: {e}"))?;
+    let out = std::process::Command::new(format!(r"{root}\System32\powercfg.exe"))
         .args(args)
         .output()
         .map_err(|e| format!("{cmd}: {e}"))?;
