@@ -16,6 +16,9 @@ pub(super) fn look_at_pump(
         rebootstraps: v.rebootstraps,
         rebootstraps_late: v.rebootstraps_late,
     };
+    // The counts' loads before the ring's on any memory model, not only
+    // x86's.
+    std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
     let wakes = stats.wakes();
     let end = wakes.late_wakes();
     let recent: Vec<Wake> = wakes

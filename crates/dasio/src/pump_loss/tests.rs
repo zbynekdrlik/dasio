@@ -227,6 +227,18 @@ fn a_wake_read_before_its_re_bootstrap_was_counted_carries_to_the_next_look() {
 }
 
 #[test]
+fn a_look_with_more_wakes_measured_than_counted_is_late() {
+    let mut t = started();
+    // A wake read before its count, then the next look reads the next
+    // wake while it counts only the first re-bootstrap: measured past the
+    // count, the look is late.
+    t.take(Counts::default(), ring(1, &[LATE]));
+    let two = [LATE, LATE];
+    assert_eq!(t.take(counts(10, 0, 1, 1), ring(2, &two)), lost(0, 0));
+    assert_eq!(t.take(counts(10, 0, 1, 1), ring(2, &two)), lost(3_333, 0));
+}
+
+#[test]
 fn a_ring_gone_back_is_learnt_again() {
     let mut t = tracker();
     t.take(Counts::default(), ring(5, &[LATE]));
