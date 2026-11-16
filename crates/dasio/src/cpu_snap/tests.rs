@@ -188,9 +188,14 @@ fn a_spinning_thread_shows_in_this_process_and_by_its_name() {
     use std::time::{Duration, Instant};
     let (spun, wait) = mpsc::channel();
     let (done, hold) = mpsc::channel::<()>();
+    let (began, begun) = mpsc::channel::<()>();
     let spinner = std::thread::Builder::new()
         .name("cpu-snap-test".into())
         .spawn(move || {
+            // std names the thread inside it before this runs: once this
+            // is sent, the first sample reads the name (it reads a name
+            // once, CI 43820329361 read it empty before it was set).
+            began.send(()).unwrap();
             let t = Instant::now();
             while t.elapsed() < Duration::from_millis(300) {
                 std::hint::spin_loop();
@@ -203,6 +208,7 @@ fn a_spinning_thread_shows_in_this_process_and_by_its_name() {
     // This test process stands in for the DAW: its threads are read as
     // the DAW's too.
     let mut g = windows::Gatherer::new(std::process::id);
+    begun.recv().unwrap();
     let before = g.sample(0);
     wait.recv().unwrap();
     let now = g.sample(300);
