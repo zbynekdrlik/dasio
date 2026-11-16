@@ -110,9 +110,10 @@ impl Layout {
     /// of such an instance names the problem; 0 (nothing reserved) when
     /// none fits.
     pub fn dasio_cpus_mask(&self) -> u64 {
-        (1..=self.instances)
-            .filter_map(|n| self.dasio_mask(n).ok())
-            .fold(0, |m, n| m | n)
+        let fit = (1..=self.instances)
+            .take_while(|&n| self.dasio_mask(n).is_ok())
+            .count();
+        range(self.system, self.system + fit * self.per_instance)
     }
 
     /// The DAW's CPUs: those after the last instance's.

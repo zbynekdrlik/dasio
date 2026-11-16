@@ -98,8 +98,9 @@ fn parse_refuses_a_cut_or_broken_buffer() {
     assert!(parse(&one[..5]).unwrap_err().contains("cut short"));
     let mut zero = one.clone();
     zero[0..4].copy_from_slice(&0u32.to_le_bytes());
-    assert!(
-        parse(&zero).unwrap_err().contains("size 0"),
+    assert_eq!(
+        parse(&zero).unwrap_err(),
+        "a CPU set entry at byte 0 has size 0 (32 bytes left)",
         "never loops forever"
     );
     let mut small = one;
@@ -262,4 +263,50 @@ fn the_helper_threads_stay_within_the_process_s_reserved_cpus() {
     assert_eq!(helpers_within(0xC0, 0x30), 0xC0);
     // Nothing pinned: no helpers to place.
     assert_eq!(helpers_within(0, assigned), 0);
+}
+
+#[test]
+fn the_smallest_entries_parse() {
+    // An entry of another type takes 8 bytes at least, a CPU set 20 (up
+    // to its flags): both are read to the buffer's last byte.
+    let mut tiny_other = vec![0u8; 8];
+    tiny_other[0..4].copy_from_slice(&8u32.to_le_bytes());
+    tiny_other[4..8].copy_from_slice(&3u32.to_le_bytes());
+    let mut short_set = entry(0x105, 0, 5, ALLOCATED)[..20].to_vec();
+    short_set[0..4].copy_from_slice(&20u32.to_le_bytes());
+    let mut buf = short_set.clone();
+    buf.extend(&tiny_other);
+    let sets = parse(&buf).unwrap();
+    assert_eq!(
+        sets,
+        [CpuSet {
+            id: 0x105,
+            group: 0,
+            cpu: 5,
+            allocated: true,
+            parked: false
+        }]
+    );
+    let mut buf = tiny_other;
+    buf.extend(&short_set);
+    assert_eq!(parse(&buf).unwrap(), sets);
+}
+
+#[test]
+fn a_cpu_beyond_the_mask_s_64_is_left_out() {
+    let mut buf = pc(2, 0x3);
+    buf.extend(entry(0x140, 0, 64, ALLOCATED));
+    buf.extend(entry(0x1FF, 0, 255, ALLOCATED));
+    let sets = parse(&buf).unwrap();
+    assert_eq!(sets.len(), 4);
+    assert_eq!(reserved_mask(&sets), 0x3);
+}
+
+#[test]
+fn the_start_s_cpus_are_kept_for_the_helper_placer() {
+    assert_eq!(assigned(), 0, "nothing assigned before the start");
+    set_assigned(0x6);
+    assert_eq!(assigned(), 0x6);
+    set_assigned(0);
+    assert_eq!(assigned(), 0);
 }

@@ -391,5 +391,7 @@ fn site_instances_reads_the_site_file_or_one() {
             .unwrap_err()
             .contains("instances must be 1")
     );
+    // A profile path that cannot be read (a directory): an error, not 1.
+    assert!(site_instances(&dir).is_err());
     std::fs::remove_dir_all(&dir).unwrap();
 }
