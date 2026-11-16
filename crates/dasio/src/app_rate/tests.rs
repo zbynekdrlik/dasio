@@ -615,10 +615,12 @@ impl Process for Pinger {
 /// the returned pulse's centroid on the DAW's timeline (to a small fraction
 /// of a sample). As soon as the third pulse has left the device, while it
 /// is on its way back, the pump re-bootstraps as a late wake makes it do:
-/// a discontinuity, and the device blocks up to a start whose app position
-/// is half a sample off the app's grid at 44.1 kHz skipped
-/// (dstack::stream::Blocks::rebootstrap: whole blocks).
-fn loopback_round_trips(rate: u32) -> Vec<(u64, f64)> {
+/// a discontinuity, and the device blocks skipped (at least two) up to a
+/// start whose block index is `phase` mod 10
+/// (dstack::stream::Blocks::rebootstrap: whole blocks). Ten blocks of 32
+/// device frames are the 44.1 kHz grid (320 device frames, 147 app
+/// frames), so `phase` picks the new start's place on it.
+fn loopback_round_trips(rate: u32, phase: usize) -> Vec<(u64, f64)> {
     const LOOP: usize = 960;
     let plan = Plan::new(96_000, rate, 32).unwrap();
     let n = plan.device_block as usize;
@@ -654,11 +656,12 @@ fn loopback_round_trips(rate: u32) -> Vec<(u64, f64)> {
         if left == 3 && !rebootstrapped {
             rebootstrapped = true;
             s.discontinuity();
-            // At least two blocks skipped, up to a block index of 5 mod 10:
-            // at 44.1 kHz its start is 14.7 * (10 k + 5) app samples, half a
-            // sample off the grid the first start (0) set.
+            // At least two blocks skipped, up to a block index of `phase`
+            // mod 10: at 44.1 kHz its start is 14.7 * (10 k + phase) app
+            // samples, `phase` = 5 half a sample off the grid the first
+            // start (0) set.
             let mut m = start / n + 2;
-            while m % 10 != 5 {
+            while m % 10 != phase {
                 m += 1;
             }
             start = m * n;
@@ -697,7 +700,7 @@ fn a_re_bootstrap_keeps_the_round_trip_on_the_app_s_timeline_sample_exact() {
     // re-bootstrap: every pulse, the one in flight too, comes back at one
     // round trip, to a small fraction of a sample.
     for rate in [96_000, 48_000, 44_100] {
-        let trips = loopback_round_trips(rate);
+        let trips = loopback_round_trips(rate, 5);
         let js: Vec<u64> = trips.iter().map(|&(j, _)| j).collect();
         assert!(
             js.contains(&2) && js.contains(&3) && js.contains(&4),
@@ -709,5 +712,38 @@ fn a_re_bootstrap_keeps_the_round_trip_on_the_app_s_timeline_sample_exact() {
             hi - lo < 0.05,
             "{rate} Hz: round trips {trips:?} app samples: the re-bootstrap moved the DAW's timeline off the media clock"
         );
+    }
+}
+
+#[test]
+fn a_re_bootstrap_at_any_place_on_the_app_s_grid_keeps_the_round_trip_fixed() {
+    // dasio#152, dstack issue 341 (v0.6.154): wherever the pump's new start
+    // falls on the 44.1 kHz grid (every block phase of the 320-frame
+    // period), and at 48 kHz (2:1, every block start a whole app frame),
+    // the pulse in flight across the re-bootstrap comes back at the same
+    // round trip as the ones before and after it, to well under a sample.
+    for rate in [44_100, 48_000] {
+        let mut first: Option<f64> = None;
+        for phase in 0..10 {
+            let trips = loopback_round_trips(rate, phase);
+            let js: Vec<u64> = trips.iter().map(|&(j, _)| j).collect();
+            assert!(
+                js.contains(&2) && js.contains(&3) && js.contains(&4),
+                "{rate} Hz, phase {phase}: pulses back {trips:?}"
+            );
+            let lo = trips.iter().map(|&(_, t)| t).fold(f64::MAX, f64::min);
+            let hi = trips.iter().map(|&(_, t)| t).fold(f64::MIN, f64::max);
+            assert!(
+                hi - lo < 0.05,
+                "{rate} Hz, phase {phase}: round trips {trips:?} app samples moved across the re-bootstrap"
+            );
+            // The same round trip whatever the phase: the DAW's timeline
+            // is the media clock's, not the restart's.
+            let at = *first.get_or_insert(lo);
+            assert!(
+                (lo - at).abs() < 0.05,
+                "{rate} Hz, phase {phase}: round trip {lo} app samples, {at} at phase 0"
+            );
+        }
     }
 }
