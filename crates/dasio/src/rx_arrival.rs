@@ -1,15 +1,16 @@
 //! The measured age of the RX packets at placement (dasio#128): our PTP
 //! now less each packet's own stamp, so the transit, the RX pass's wake and
 //! our clock's offset (dstack's `RxCounts::lateness_peak` since the device
-//! started, and the heartbeat's last second's least and largest). Plain
+//! started, and the least and largest of the heartbeat's last second as the
+//! 10 s look found it). Plain
 //! information for the status JSON, dtray's line and the log: dasio never
 //! computes, proposes or sets a latency from it. Every latency change is a
 //! deliberate change the owner makes from dcontroller's long-term graph
 //! (owner ruling 16.11.2026). Pure but for [`flows`], so tested
 //! everywhere; the run loops feed it.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use tracing::info;
 
@@ -84,13 +85,13 @@ impl Report {
     pub fn text(&self) -> String {
         match self.last {
             Some((least, most)) => format!(
-                "RX arrival (measured packet age at placement): peak {} ms since start, last second {}-{} ms",
+                "RX arrival (measured packet age at placement): peak {} ms since start, last second at the 10 s look {}-{} ms",
                 ms(self.peak_ns),
                 ms(least),
                 ms(most),
             ),
             None => format!(
-                "RX arrival (measured packet age at placement): peak {} ms since start, no packet in the last second",
+                "RX arrival (measured packet age at placement): peak {} ms since start, no packet in the last second at the 10 s look",
                 ms(self.peak_ns),
             ),
         }
@@ -131,32 +132,31 @@ pub fn suffix(r: Option<Report>) -> String {
 }
 
 /// The figures shared with the status closure. The peak only grows, so a
-/// slot whose counts dstack starts again never lowers it; the last second
-/// is the latest look's. Each held as the value + 1, so 0 is "none".
+/// slot whose counts dstack starts again never lowers it (held as the peak
+/// + 1, so 0 is "none"); the last second is the latest look's, one pair
+/// under a lock so a reader never sees one look's least with another's
+/// largest. Neither side is a media thread.
 #[derive(Debug, Clone, Default)]
-pub struct Arrival(Arc<[AtomicU64; 3]>);
+pub struct Arrival {
+    peak: Arc<AtomicU64>,
+    last: Arc<Mutex<Option<(u64, u64)>>>,
+}
 
 impl Arrival {
     /// Takes a look's figures (`None`: no packet yet).
     pub fn set(&self, r: Option<Report>) {
         let Some(r) = r else { return };
-        let [peak, least, most] = &*self.0;
-        peak.fetch_max(r.peak_ns.saturating_add(1), Ordering::Relaxed);
-        let (l, m) = r
-            .last
-            .map_or((0, 0), |(l, m)| (l.saturating_add(1), m.saturating_add(1)));
-        least.store(l, Ordering::Relaxed);
-        most.store(m, Ordering::Relaxed);
+        self.peak
+            .fetch_max(r.peak_ns.saturating_add(1), Ordering::Relaxed);
+        if let Ok(mut last) = self.last.lock() {
+            *last = r.last;
+        }
     }
 
     /// The figures now; `None` before any packet.
     pub fn report(&self) -> Option<Report> {
-        let [peak, least, most] = &*self.0;
-        let peak_ns = peak.load(Ordering::Relaxed).checked_sub(1)?;
-        let last = least
-            .load(Ordering::Relaxed)
-            .checked_sub(1)
-            .zip(most.load(Ordering::Relaxed).checked_sub(1));
+        let peak_ns = self.peak.load(Ordering::Relaxed).checked_sub(1)?;
+        let last = self.last.lock().ok().and_then(|l| *l);
         Some(Report { peak_ns, last })
     }
 }

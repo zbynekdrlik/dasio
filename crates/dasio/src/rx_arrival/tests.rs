@@ -159,7 +159,7 @@ fn the_log_text_is_a_measurement_never_advice() {
     };
     assert_eq!(
         r.text(),
-        "RX arrival (measured packet age at placement): peak 0.72 ms since start, last second 0.10-0.35 ms"
+        "RX arrival (measured packet age at placement): peak 0.72 ms since start, last second at the 10 s look 0.10-0.35 ms"
     );
     assert_eq!(
         Report {
@@ -167,7 +167,7 @@ fn the_log_text_is_a_measurement_never_advice() {
             last: None
         }
         .text(),
-        "RX arrival (measured packet age at placement): peak 0.98 ms since start, no packet in the last second"
+        "RX arrival (measured packet age at placement): peak 0.98 ms since start, no packet in the last second at the 10 s look"
     );
     for t in [r.text(), r.suffix(), r.json()] {
         for advice in ["recommend", "latency_ns", "set ", "below"] {
