@@ -33,6 +33,16 @@ paths:
   status` (Ready 1, Failed 0, TxNoSlot 0). Each dasio log must have
   "audio TX goes through dasio's NDIS filter (kernel TX)".
 
+## Deferred receive (rxd)
+
+- `rxdDpc` indicates at most 64 NBLs a run (`RXD_SLICE`) and queues itself
+  again while more waits; one run at a time (`RxdRunning` under the Lock),
+  so slices go up in order even with no `RxdCpu` (dasio#27). Since then
+  `rxd.ps1 status` MaxBatch is at most 64 and DpcRuns counts slices.
+- The DPC glue has no unit test (NDIS types, kernel only). Verify a change
+  on dsg with rxd on: MaxBatch, DpcRuns rising, the longest DPC of
+  `dasiopacer.sys` (xperf/WPR), and dcontroller late 0 at its receivers.
+
 ## Changing a status struct
 
 - `ktx.ps1 status` splits the reply into records of a fixed field count.
