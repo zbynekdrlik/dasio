@@ -12,15 +12,16 @@
 //! / 12-31, mbc (12, 1) 0-1 / 2-3 / 4-11, dsg (4, 1) 0 / 1-2 / 3.
 //!
 //! A profile asks for it with `computed = "system_cpus"` (a binary
-//! affinity mask, e.g. the NIC's `AssignmentSetOverride`) or
-//! `computed = "rxd_cpu"` (a dword, the filter's `RxdCpu`) on a registry
-//! entry, and with `{system}`, `{dasio:N}` or `{daw}` as a process's
+//! affinity mask, e.g. the NIC's `AssignmentSetOverride`),
+//! `computed = "dasio_cpus"` (a binary mask of every instance's CPUs, the
+//! kernel's `ReservedCpuSets`, dasio#120) or `computed = "rxd_cpu"` (a
+//! dword, the filter's `RxdCpu`) on a registry entry, and with `{system}`, `{dasio:N}` or `{daw}` as a process's
 //! affinity; [`resolve`] puts the values in.
 
 use super::{Profile, parse_mask};
 
 /// The names `computed` takes.
-pub const COMPUTED: [&str; 2] = ["system_cpus", "rxd_cpu"];
+pub const COMPUTED: [&str; 3] = ["system_cpus", "dasio_cpus", "rxd_cpu"];
 
 /// The CPUs an affinity mask (a u64) can name: one processor group.
 const MAX_CPUS: usize = 64;
@@ -102,6 +103,18 @@ impl Layout {
         Ok(range(from, to))
     }
 
+    /// Every instance's CPUs together (the CPUs Windows reserves for
+    /// dasio, dasio#120). An instance that does not fit adds none: the
+    /// reservation never makes a whole profile refuse to load (a profile
+    /// that does not load stops the device), and the affinity placeholder
+    /// of such an instance names the problem; 0 (nothing reserved) when
+    /// none fits.
+    pub fn dasio_cpus_mask(&self) -> u64 {
+        (1..=self.instances)
+            .filter_map(|n| self.dasio_mask(n).ok())
+            .fold(0, |m, n| m | n)
+    }
+
     /// The DAW's CPUs: those after the last instance's.
     pub fn daw_mask(&self) -> Result<u64, String> {
         let from = self.system + self.instances * self.per_instance;
@@ -158,6 +171,14 @@ pub fn affinity_ok(text: &str) -> bool {
     parse_mask(text).is_some() || Layout::of(MAX_CPUS, 1).placeholder(text).is_some()
 }
 
+/// A mask as a registry binary: 8 bytes, little-endian, in hex.
+fn mask_hex(mask: u64) -> String {
+    mask.to_le_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 /// `p` with its computed values put in, for a PC of `cpus` logical CPUs:
 /// each `computed` registry entry gets its value, each placeholder
 /// affinity its hex mask. The error names an entry the layout cannot fill.
@@ -166,16 +187,8 @@ pub fn resolve(p: &mut Profile, cpus: usize) -> Result<(), String> {
     for e in &mut p.registry {
         match e.computed.take().as_deref() {
             None => {}
-            Some("system_cpus") => {
-                e.binary = Some(
-                    layout
-                        .system_mask()
-                        .to_le_bytes()
-                        .iter()
-                        .map(|b| format!("{b:02x}"))
-                        .collect(),
-                );
-            }
+            Some("system_cpus") => e.binary = Some(mask_hex(layout.system_mask())),
+            Some("dasio_cpus") => e.binary = Some(mask_hex(layout.dasio_cpus_mask())),
             Some("rxd_cpu") => e.dword = Some(layout.rxd_cpu()),
             Some(other) => {
                 return Err(format!(

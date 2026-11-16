@@ -300,3 +300,96 @@ fn an_older_profile_s_own_values_win_over_the_computed_ones() {
     assert_eq!(live.affinity.as_deref(), Some("0xFFFFF000"));
     assert!(p.registry.iter().all(|e| e.computed.is_none()));
 }
+
+#[test]
+fn the_reserved_cpus_are_every_instance_s_cpus() {
+    assert_eq!(Layout::of(32, 2).dasio_cpus_mask(), 0xFF0, "FOH");
+    assert_eq!(Layout::of(12, 1).dasio_cpus_mask(), 0xC, "mbc");
+    assert_eq!(Layout::of(4, 1).dasio_cpus_mask(), 0x6, "dsg");
+    // An instance that does not fit adds nothing: the profile still loads
+    // (its placeholder names the problem); none fits, nothing reserved.
+    assert_eq!(Layout::of(4, 2).dasio_cpus_mask(), 0x6);
+    assert_eq!(Layout::of(2, 1).dasio_cpus_mask(), 0);
+}
+
+#[test]
+fn the_shipped_baseline_reserves_dasio_s_cpus_after_a_reboot() {
+    let get = |cpus: usize, instances: usize| {
+        let mut b = baseline().unwrap();
+        b.instances = Some(instances);
+        resolve(&mut b, cpus).unwrap();
+        let all: Vec<_> = b
+            .registry
+            .iter()
+            .filter(|e| e.name == "ReservedCpuSets")
+            .collect();
+        assert_eq!(all.len(), 1);
+        let e = all[0];
+        assert_eq!(
+            e.key,
+            r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\kernel"
+        );
+        // Checked and applied, never a reason to refuse the start.
+        assert!(!e.must && !e.check_only && !e.absent_ok);
+        assert!(e.computed.is_none());
+        want_reg(e).unwrap()
+    };
+    assert_eq!(
+        get(32, 2),
+        Value::Binary(vec![0xf0, 0x0f, 0, 0, 0, 0, 0, 0])
+    );
+    assert_eq!(get(12, 1), Value::Binary(vec![0x0c, 0, 0, 0, 0, 0, 0, 0]));
+    assert_eq!(get(4, 1), Value::Binary(vec![0x06, 0, 0, 0, 0, 0, 0, 0]));
+    // A too small PC loads (nothing reserved), never refuses the profile.
+    assert_eq!(get(2, 1), Value::Binary(vec![0; 8]));
+    // apply says it takes a reboot.
+    let a = Action::Reg {
+        key: r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\kernel".into(),
+        name: "ReservedCpuSets".into(),
+        value: get(4, 1),
+    };
+    assert_eq!(takes_effect(&a), "a reboot");
+}
+
+#[test]
+fn a_site_s_own_reserved_cpus_win_over_the_baseline_s() {
+    let dir = std::env::temp_dir().join(format!("dasio-reserved-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("pc.toml");
+    std::fs::write(
+        &file,
+        "name = \"foh\"\ninstances = 2\n[[registry]]\nkey = 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\kernel'\nname = \"ReservedCpuSets\"\nbinary = \"f0ffffff00000000\"\n",
+    )
+    .unwrap();
+    let p = load(&file, 32).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let all: Vec<_> = p
+        .registry
+        .iter()
+        .filter(|e| e.name == "ReservedCpuSets")
+        .collect();
+    assert_eq!(all.len(), 1, "the site's entry replaces the baseline's");
+    assert_eq!(
+        want_reg(all[0]),
+        Some(Value::Binary(vec![0xf0, 0xff, 0xff, 0xff, 0, 0, 0, 0]))
+    );
+}
+
+#[test]
+fn site_instances_reads_the_site_file_or_one() {
+    let dir = std::env::temp_dir().join(format!("dasio-instances-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("pc.toml");
+    assert_eq!(site_instances(&file), Ok(1), "no profile: one instance");
+    std::fs::write(&file, "name = \"foh\"\ninstances = 2\n").unwrap();
+    assert_eq!(site_instances(&file), Ok(2));
+    std::fs::write(&file, "name = \"mbc\"\n").unwrap();
+    assert_eq!(site_instances(&file), Ok(1));
+    std::fs::write(&file, "name = \"x\"\ninstances = 0\n").unwrap();
+    assert!(
+        site_instances(&file)
+            .unwrap_err()
+            .contains("instances must be 1")
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}

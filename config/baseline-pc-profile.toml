@@ -257,6 +257,12 @@ nic_service = "rt640x64"
 why = "the Dante NIC's interrupts on the system CPUs, off dasio's and the DAW's (FOH 0-3; the CPU layout, dasio#128)"
 
 [[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\kernel'
+name = "ReservedCpuSets"
+computed = "dasio_cpus"
+why = "Windows keeps every thread off dasio's CPUs unless its process asks for them (CPU sets) or is pinned there (Lasso): Defender's MsMpEng, which Lasso cannot pin, ran on dsg's pump CPU 0.4-1.4 ms (dasio#120); the service takes its CPUs with SetProcessDefaultCpuSets. Read at boot. Not must-have: FOH runs it since 5.11 (its own 4-31 overrides)"
+
+[[registry]]
 key = '{nic_class}'
 name = "DriverVersion"
 string = "10.79.20.1003"
