@@ -411,6 +411,14 @@ fn the_device_mean_is_the_tick_s_from_two_looks_never_from_maxima() {
         measure([running(totals(10, 1), Totals::default(), 0)], 48_000).and_then(|r| r.wait),
         None
     );
+    // Counted waits under 1 µs (a peak of 0 µs) are a wait measurement.
+    assert_eq!(
+        measure([running(totals(10, 1), totals(500, 1), 0)], 48_000).and_then(|r| r.wait),
+        Some(Wait {
+            mean_ns: Some(500),
+            peak_us: 0,
+        })
+    );
     // A wait peak alone (no counted wait) is still a wait measurement.
     assert_eq!(
         measure([running(totals(10, 1), Totals::default(), 5)], 48_000).and_then(|r| r.wait),
