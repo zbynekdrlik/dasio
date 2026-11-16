@@ -453,48 +453,54 @@ fn a_fallback_deletes_only_the_allowed_folder_of_its_own_exe() {
     let exe_in = |dir: &str, extra: &str| {
         format!("exe = '{dir}\\x.exe'\nuninstall = ['C:\\u.exe']\n{extra}")
     };
+    let web = r"C:\Program Files (x86)\Microsoft\EdgeWebView";
+    let not_listed = |exe: &str, dir: &str| {
+        format!(
+            "absent exe {exe}: dasio deletes only the folders {REMOVABLE_DIRS:?} (pc_profile::absent::REMOVABLE_DIRS), not {dir}"
+        )
+    };
+    let not_own = |exe: &str| {
+        format!("absent exe {exe}: remove_dir {UPDATE_DIR} must be the exe's own folder")
+    };
+    let sub = format!(r"{UPDATE_DIR}\sub\x.exe");
     let refused = [
         // Not on the list, even as the exe's own folder.
         (
-            exe_in(
-                r"C:\Program Files (x86)\Microsoft\EdgeWebView",
-                "remove_dir = 'C:\\Program Files (x86)\\Microsoft\\EdgeWebView'",
-            ),
-            "dasio deletes only the folders",
+            exe_in(web, &format!("remove_dir = '{web}'")),
+            not_listed(&format!(r"{web}\x.exe"), web),
         ),
         (
             exe_in(r"C:\Windows", "remove_dir = 'C:\\Windows'"),
-            "dasio deletes only the folders",
+            not_listed(r"C:\Windows\x.exe", r"C:\Windows"),
         ),
         // On the list, but not the exe's folder.
         (
             format!("exe = '{EDGE}'\nuninstall = ['C:\\u.exe']\nremove_dir = '{UPDATE_DIR}'"),
-            "must be the exe's own folder",
+            not_own(EDGE),
         ),
         (
-            format!(
-                "exe = '{UPDATE_DIR}\\sub\\x.exe'\nuninstall = ['C:\\u.exe']\nremove_dir = '{UPDATE_DIR}'"
-            ),
-            "must be the exe's own folder",
+            format!("exe = '{sub}'\nuninstall = ['C:\\u.exe']\nremove_dir = '{UPDATE_DIR}'"),
+            not_own(&sub),
         ),
         (
             format!(
                 "exe = '{UPDATE}'\nuninstall = ['C:\\u.exe']\nstop_processes = ['MicrosoftEdgeUpdate.exe']"
             ),
-            "stop_processes needs remove_dir",
+            format!(
+                "absent exe {UPDATE}: stop_processes needs remove_dir (they stop only what runs from it)"
+            ),
         ),
         (
             "service = \"edgeupdate\"\nremove_dir = 'C:\\x'".to_string(),
-            "absent service edgeupdate: remove_dir and stop_processes are for exe only",
+            "absent service edgeupdate: remove_dir and stop_processes are for exe only".to_string(),
         ),
         (
             "task = '\\x*'\nstop_processes = ['a.exe']".to_string(),
-            r"absent task \x*: remove_dir and stop_processes are for exe only",
+            r"absent task \x*: remove_dir and stop_processes are for exe only".to_string(),
         ),
     ];
     for (body, want) in refused {
-        let e = one(&body).unwrap_err();
-        assert!(e.contains(want), "{body:?}: {e}");
+        assert_eq!(one(&body).unwrap_err(), want, "{body:?}");
     }
     for bad in [
         r"C:\x\a.exe",
@@ -569,7 +575,16 @@ fn the_baselines_edgeupdate_entry_deletes_its_folder_when_it_stays() {
     assert_eq!(e.remove_dir.as_deref(), Some(UPDATE_DIR));
     assert_eq!(
         e.stop_processes.as_deref(),
-        Some(["MicrosoftEdgeUpdate.exe".to_string()].as_slice())
+        Some(
+            [
+                "MicrosoftEdgeUpdate.exe",
+                "MicrosoftEdgeUpdateCore.exe",
+                "MicrosoftEdgeUpdateOnDemand.exe",
+                "MicrosoftEdgeUpdateBroker.exe"
+            ]
+            .map(String::from)
+            .as_slice()
+        )
     );
     // Edge's own entry has no fallback: WebView2 shares its parent.
     let edge = b

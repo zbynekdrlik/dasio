@@ -6,8 +6,7 @@
 use std::path::Path;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_SUCCESS, HANDLE,
-    INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+    CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_SUCCESS, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
@@ -21,9 +20,8 @@ use windows_sys::Win32::System::Registry::{
 use windows_sys::Win32::System::Threading::{
     ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, GetPriorityClass,
     GetProcessAffinityMask, HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
-    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-    PROCESS_TERMINATE, QueryFullProcessImageNameW, REALTIME_PRIORITY_CLASS, TerminateProcess,
-    WaitForSingleObject,
+    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    REALTIME_PRIORITY_CLASS,
 };
 
 use super::absent::{self, AbsentEntry, Fallback, Removal, Step, Target};
@@ -492,71 +490,71 @@ fn run_fallback(fb: &Fallback) -> Result<(), String> {
     Ok(())
 }
 
-/// How long a stopped process may take to exit.
-const STOP_WAIT_MS: u32 = 10_000;
+/// How long a stopped process may take to exit, in 100 ms looks.
+const STOP_LOOKS: u32 = 100;
 
 /// Stops every process named `name` whose image lies inside `dir`; one
-/// elsewhere is left (and printed). A process that cannot be opened or
-/// stopped is an error: its folder could not be deleted anyway.
+/// elsewhere, or one whose path cannot be read, is left (and printed: a
+/// left one inside the folder makes its delete fail, which says so).
 fn stop_inside(name: &str, dir: &str) -> Result<(), String> {
     for pid in find_processes(name)? {
-        // SAFETY: a handle for the query, the stop and the wait, closed
-        // below.
-        let h = unsafe {
-            OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE,
-                0,
-                pid,
-            )
+        let image = match image_path(pid) {
+            Ok(image) => image,
+            Err(e) => {
+                // Ended since the snapshot, or not ours to read.
+                println!("fallback: left {name} pid {pid}: {e}");
+                continue;
+            }
         };
-        if h.is_null() {
-            // Ended since the snapshot, or not ours to open.
-            return Err(format!(
-                "{name} pid {pid}: cannot open it ({})",
-                std::io::Error::last_os_error()
-            ));
+        if !absent::inside(dir, &image) {
+            println!("fallback: left {name} pid {pid} ({image}): not inside {dir}");
+            continue;
         }
-        let r = stop_one(h, name, pid, dir);
-        // SAFETY: the handle opened above, closed once.
-        unsafe { CloseHandle(h) };
-        r?;
+        // taskkill turns on the debug privilege a stop of the updater's
+        // SYSTEM service process needs; the filter keeps it to this name.
+        let pid_text = pid.to_string();
+        let filter = format!("IMAGENAME eq {name}");
+        system32_tool("taskkill", &["/F", "/PID", &pid_text, "/FI", &filter])
+            .map_err(|e| format!("{name} pid {pid} ({image}): not stopped: {e}"))?;
+        let mut looks = 0;
+        while find_processes(name)?.contains(&pid) {
+            looks += 1;
+            if looks > STOP_LOOKS {
+                return Err(format!(
+                    "{name} pid {pid} ({image}): still running {} s after the stop",
+                    STOP_LOOKS / 10
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        println!("fallback: stopped {name} pid {pid} ({image})");
     }
     Ok(())
 }
 
-/// Stops the process `h` when its image lies inside `dir`.
-fn stop_one(h: HANDLE, name: &str, pid: u32, dir: &str) -> Result<(), String> {
-    let mut buf = [0u16; 1024];
+/// The full image path of process `pid`.
+fn image_path(pid: u32) -> Result<String, String> {
+    // SAFETY: a query-only handle, closed below.
+    let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if h.is_null() {
+        return Err(format!(
+            "cannot open it ({})",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // The longest path Windows gives.
+    let mut buf = vec![0u16; 32_768];
     let mut len = buf.len() as u32;
     // SAFETY: a valid handle, a buffer of `len` UTF-16 units.
     let ok =
         unsafe { QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) };
+    let err = std::io::Error::last_os_error();
+    // SAFETY: the handle opened above, closed once.
+    unsafe { CloseHandle(h) };
     if ok == 0 {
-        return Err(format!(
-            "{name} pid {pid}: its path is unreadable ({})",
-            std::io::Error::last_os_error()
-        ));
+        return Err(format!("its path is unreadable ({err})"));
     }
-    let image = String::from_utf16_lossy(&buf[..len as usize]);
-    if !absent::inside(dir, &image) {
-        println!("fallback: left {name} pid {pid} ({image}): not inside {dir}");
-        return Ok(());
-    }
-    // SAFETY: a valid handle opened with PROCESS_TERMINATE.
-    if unsafe { TerminateProcess(h, 1) } == 0 {
-        return Err(format!(
-            "{name} pid {pid} ({image}): not stopped ({})",
-            std::io::Error::last_os_error()
-        ));
-    }
-    // SAFETY: a valid handle opened with PROCESS_SYNCHRONIZE.
-    if unsafe { WaitForSingleObject(h, STOP_WAIT_MS) } != WAIT_OBJECT_0 {
-        return Err(format!(
-            "{name} pid {pid} ({image}): still running {STOP_WAIT_MS} ms after the stop"
-        ));
-    }
-    println!("fallback: stopped {name} pid {pid} ({image})");
-    Ok(())
+    Ok(String::from_utf16_lossy(&buf[..len as usize]))
 }
 
 /// Runs `prog args` and waits at most [`UNINSTALL_LIMIT`]; past it the
