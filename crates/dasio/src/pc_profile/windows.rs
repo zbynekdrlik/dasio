@@ -36,6 +36,26 @@ fn from_wide(w: &[u16]) -> String {
     String::from_utf16_lossy(&w[..n])
 }
 
+/// The PC's logical CPUs, every processor group (the CPU layout's count,
+/// dasio#128): never the calling process's affinity, which Process Lasso
+/// narrows for dasio's own processes. An error when Windows gives none:
+/// a layout for one CPU would put everything on CPU 0.
+pub fn cpu_count() -> Result<usize, String> {
+    // SAFETY: no pointers; ALL_PROCESSOR_GROUPS counts every group.
+    let n = unsafe {
+        windows_sys::Win32::System::Threading::GetActiveProcessorCount(
+            windows_sys::Win32::System::Threading::ALL_PROCESSOR_GROUPS,
+        )
+    };
+    if n == 0 {
+        return Err(format!(
+            "the PC's CPU count is unreadable: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(n as usize)
+}
+
 /// The PC, with the Dante NIC's keys found from the profile's GUID.
 pub struct Pc {
     nic_class: Option<String>,

@@ -95,6 +95,16 @@ Owner rules from dasio#1. They hold for every change on a PC running dasio.
     `pktmon etl2pcap`, pull the pcap at 1 MB/s with `curl.exe --limit-rate 1M -T`,
     and analyse it off the PC with tshark.
   - A remote-shell call ends after 30 s: run the conversion detached too.
+- **Never run `install.ps1` straight from the remote shell.** The 30 s
+  limit kills it midway. On dsg, 16.11, the old service was already removed
+  when it died, and the bridge stayed down until a rerun. Write the bundle's
+  `deploy.ps1` (install.ps1 with output into `install.log`, then
+  `install.done`) and start it with a SYSTEM scheduled task (`schtasks
+  /create ... /ru SYSTEM /rl HIGHEST` + `/run`). Poll for `install.done`.
+- **A GitHub artifact reaches a PC through its signed blob URL.** Get the
+  302 `Location` of `/actions/artifacts/<id>/zip` with the gh token. It lives
+  about 10 min. Download it on the PC and check every SHA256SUMS line. The
+  file-drop share is behind Cloudflare Access, so a PC gets its login page.
 - **A device's service restart re-makes every receiver's flows from it.**
   On band that is iem-mixer's return channels and more; on mbc it is
   stream-obs. Before a band restart, tell camera-box and fohmixer; before

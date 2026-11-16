@@ -243,6 +243,14 @@ pub fn run(
             error!(why = %e, "the device ends");
             break Some(e);
         }
+        // A must-have item of the baseline went missing (dasio#128): the
+        // device ends, the SCM restarts it and its start names it again.
+        if tuning.kernel_tx
+            && let Some(e) = profile.must_have()
+        {
+            error!(why = %e, "the device ends");
+            break Some(e);
+        }
         if let Some(e) = crate::health::pump_failure(&stats.stream_stats(), pump.is_finished()) {
             error!(why = %e, "the device ends");
             break Some(e);

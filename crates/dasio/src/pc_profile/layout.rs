@@ -1,0 +1,196 @@
+//! The CPU layout a dasio PC runs (dasio#128), computed from its logical
+//! CPU count, so a new PC never works it out again:
+//! - the system CPUs first: Windows, the Dante NIC's interrupts, the
+//!   filter's deferred receive (on the last of them) and every other
+//!   process; one per 8 CPUs, at least one;
+//! - then each dasio instance's media threads: 4 CPUs on a PC of 16 or
+//!   more (FOH's spinning pump, rx, io and helpers), else 2 (mbc's
+//!   timer-waiting device);
+//! - the DAW the rest.
+//!
+//! It is what the PCs proved: FOH (32 CPUs, 2 instances) 0-3 / 4-7 / 8-11
+//! / 12-31, mbc (12, 1) 0-1 / 2-3 / 4-11, dsg (4, 1) 0 / 1-2 / 3.
+//!
+//! A profile asks for it with `computed = "system_cpus"` (a binary
+//! affinity mask, e.g. the NIC's `AssignmentSetOverride`) or
+//! `computed = "rxd_cpu"` (a dword, the filter's `RxdCpu`) on a registry
+//! entry, and with `{system}`, `{dasio:N}` or `{daw}` as a process's
+//! affinity; [`resolve`] puts the values in.
+
+use super::{Profile, parse_mask};
+
+/// The names `computed` takes.
+pub const COMPUTED: [&str; 2] = ["system_cpus", "rxd_cpu"];
+
+/// The CPUs an affinity mask (a u64) can name: one processor group.
+const MAX_CPUS: usize = 64;
+
+/// One PC's CPU layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Layout {
+    /// Logical CPUs (at most [`MAX_CPUS`] are laid out).
+    pub cpus: usize,
+    /// The system CPUs, 0 to `system - 1`.
+    pub system: usize,
+    /// CPUs per dasio instance.
+    pub per_instance: usize,
+    /// dasio instances on the PC.
+    pub instances: usize,
+}
+
+/// The mask of CPUs `from` to `to - 1` (a span narrower than 64: the
+/// system CPUs come first).
+fn range(from: usize, to: usize) -> u64 {
+    ((1u64 << (to - from)) - 1) << from
+}
+
+/// `from-to` (or one CPU) as the layout's text shows it.
+fn span(from: usize, to: usize) -> String {
+    if to - from == 1 {
+        format!("{from}")
+    } else {
+        format!("{from}-{}", to - 1)
+    }
+}
+
+impl Layout {
+    /// The layout of a PC with `cpus` logical CPUs and `instances` dasio
+    /// instances.
+    pub fn of(cpus: usize, instances: usize) -> Self {
+        let cpus = cpus.clamp(1, MAX_CPUS);
+        Self {
+            cpus,
+            system: cpus.div_ceil(8),
+            per_instance: if cpus >= 16 { 4 } else { 2 },
+            instances,
+        }
+    }
+
+    /// The system CPUs' mask (the NIC's interrupts go there).
+    pub fn system_mask(&self) -> u64 {
+        range(0, self.system)
+    }
+
+    /// The deferred receive's CPU: the last system CPU.
+    pub fn rxd_cpu(&self) -> u32 {
+        (self.system - 1) as u32
+    }
+
+    /// Instance `n`'s first CPU and the CPU after its last.
+    fn dasio_span(&self, n: usize) -> Result<(usize, usize), String> {
+        if n == 0 || n > self.instances {
+            return Err(format!(
+                "dasio:{n}: the profile has instances = {} (1 to {0})",
+                self.instances
+            ));
+        }
+        let from = self.system + (n - 1) * self.per_instance;
+        let to = from + self.per_instance;
+        if to > self.cpus {
+            return Err(format!(
+                "dasio:{n} needs CPUs {}, the PC has {}",
+                span(from, to),
+                self.cpus
+            ));
+        }
+        Ok((from, to))
+    }
+
+    /// The CPUs of dasio instance `n` (1-based, in install order).
+    pub fn dasio_mask(&self, n: usize) -> Result<u64, String> {
+        let (from, to) = self.dasio_span(n)?;
+        Ok(range(from, to))
+    }
+
+    /// The DAW's CPUs: those after the last instance's.
+    pub fn daw_mask(&self) -> Result<u64, String> {
+        let from = self.system + self.instances * self.per_instance;
+        if from >= self.cpus {
+            return Err(format!(
+                "no CPU is left for the DAW: {} system and {} x {} dasio CPUs of {}",
+                self.system, self.instances, self.per_instance, self.cpus
+            ));
+        }
+        Ok(range(from, self.cpus))
+    }
+
+    /// One line, e.g. `system 0-3 (NIC interrupts, rxd 3), dasio:1 4-7,
+    /// DAW 8-31`.
+    pub fn describe(&self) -> String {
+        let mut out = format!(
+            "system {} (NIC interrupts, rxd {})",
+            span(0, self.system),
+            self.rxd_cpu()
+        );
+        for n in 1..=self.instances {
+            match self.dasio_span(n) {
+                Ok((from, to)) => out.push_str(&format!(", dasio:{n} {}", span(from, to))),
+                Err(e) => out.push_str(&format!(", {e}")),
+            }
+        }
+        let from = self.system + self.instances * self.per_instance;
+        if from < self.cpus {
+            out.push_str(&format!(", DAW {}", span(from, self.cpus)));
+        } else {
+            out.push_str(", no CPU left for the DAW");
+        }
+        out
+    }
+
+    /// The mask a process affinity placeholder stands for; `None` when
+    /// `text` is not one.
+    pub fn placeholder(&self, text: &str) -> Option<Result<u64, String>> {
+        let inner = text.trim().strip_prefix('{')?.strip_suffix('}')?;
+        match inner {
+            "system" => Some(Ok(self.system_mask())),
+            "daw" => Some(self.daw_mask()),
+            _ => {
+                let n = inner.strip_prefix("dasio:")?.parse().ok()?;
+                Some(self.dasio_mask(n))
+            }
+        }
+    }
+}
+
+/// Whether `text` is a process affinity the profile takes: a hex mask or
+/// one of [`Layout::placeholder`]'s.
+pub fn affinity_ok(text: &str) -> bool {
+    parse_mask(text).is_some() || Layout::of(MAX_CPUS, 1).placeholder(text).is_some()
+}
+
+/// `p` with its computed values put in, for a PC of `cpus` logical CPUs:
+/// each `computed` registry entry gets its value, each placeholder
+/// affinity its hex mask. The error names an entry the layout cannot fill.
+pub fn resolve(p: &mut Profile, cpus: usize) -> Result<(), String> {
+    let layout = Layout::of(cpus, p.instances.unwrap_or(1));
+    for e in &mut p.registry {
+        match e.computed.take().as_deref() {
+            None => {}
+            Some("system_cpus") => {
+                e.binary = Some(
+                    layout
+                        .system_mask()
+                        .to_le_bytes()
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect(),
+                );
+            }
+            Some("rxd_cpu") => e.dword = Some(layout.rxd_cpu()),
+            Some(other) => {
+                return Err(format!(
+                    "registry {}\\{}: computed {other} is not one of {COMPUTED:?}",
+                    e.key, e.name
+                ));
+            }
+        }
+    }
+    for e in &mut p.process {
+        let Some(a) = &e.affinity else { continue };
+        if let Some(mask) = layout.placeholder(a) {
+            let mask = mask.map_err(|err| format!("process {}: {err}", e.exe))?;
+            e.affinity = Some(format!("0x{mask:X}"));
+        }
+    }
+    Ok(())
+}

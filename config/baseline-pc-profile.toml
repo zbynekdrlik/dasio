@@ -4,6 +4,9 @@
 # adds or overrides site data (adapter GUID, CPU layout, its own services).
 # No site data here: no addresses, no device names, no GUIDs of one PC.
 # Check: dasio pc-profile check; set: dasio pc-profile apply [--plan].
+# `must = true`: dasio does not run without it (the service ends, the check
+# exits 2, install.ps1 refuses). `computed`: the value comes from the PC's
+# CPU layout (system CPUs = 1 per 8, then dasio's, then the DAW's).
 name = "dasio baseline"
 
 [[registry]]
@@ -234,6 +237,26 @@ dword = 1
 why = "deferred receive: TCP and discovery chatter leave the NIC's DPC (the NIC DPC stall fix, dasio#1; FOH since 5.11, dsg since 16.11); each PC's profile names its RxdCpu"
 
 [[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\dasiopacer\Parameters'
+name = "RxdCpu"
+computed = "rxd_cpu"
+why = "the deferred receive on the last system CPU, off dasio's and the DAW's (FOH 3, dsg 0; the CPU layout, dasio#128)"
+
+[[registry]]
+key = '{nic_device}\Interrupt Management\Affinity Policy'
+name = "DevicePolicy"
+dword = 4
+nic_service = "rt640x64"
+why = "the Dante NIC's interrupts on a fixed CPU set (IrqPolicySpecifiedProcessors), FOH dasio#1; a USB NIC's go to its xHCI controller (mbc's own profile, dasio#24)"
+
+[[registry]]
+key = '{nic_device}\Interrupt Management\Affinity Policy'
+name = "AssignmentSetOverride"
+computed = "system_cpus"
+nic_service = "rt640x64"
+why = "the Dante NIC's interrupts on the system CPUs, off dasio's and the DAW's (FOH 0-3; the CPU layout, dasio#128)"
+
+[[registry]]
 key = '{nic_class}'
 name = "DriverVersion"
 string = "10.79.20.1003"
@@ -246,6 +269,7 @@ key = '{nic_class}'
 name = "*EEE"
 string = "0"
 nic_service = "rt640x64"
+must = true
 why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
 
 [[registry]]
@@ -253,6 +277,7 @@ key = '{nic_class}'
 name = "*FlowControl"
 string = "0"
 nic_service = "rt640x64"
+must = true
 why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
 
 [[registry]]
@@ -260,6 +285,7 @@ key = '{nic_class}'
 name = "*InterruptModeration"
 string = "0"
 nic_service = "rt640x64"
+must = true
 why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
 
 [[registry]]
@@ -267,6 +293,7 @@ key = '{nic_class}'
 name = "*JumboPacket"
 string = "1514"
 nic_service = "rt640x64"
+must = true
 why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
 
 [[registry]]
@@ -274,6 +301,7 @@ key = '{nic_class}'
 name = "*LsoV2IPv4"
 string = "0"
 nic_service = "rt640x64"
+must = true
 why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
 
 [[registry]]
@@ -281,6 +309,7 @@ key = '{nic_class}'
 name = "*LsoV2IPv6"
 string = "0"
 nic_service = "rt640x64"
+must = true
 why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
 
 [[registry]]
@@ -295,6 +324,7 @@ key = '{nic_class}'
 name = "*ReceiveBuffers"
 string = "4096"
 nic_service = "rt640x64"
+must = true
 why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
 
 [[registry]]
@@ -302,6 +332,7 @@ key = '{nic_class}'
 name = "*TransmitBuffers"
 string = "4096"
 nic_service = "rt640x64"
+must = true
 why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
 
 [[registry]]
@@ -309,6 +340,7 @@ key = '{nic_class}'
 name = "*RSS"
 string = "1"
 nic_service = "rt640x64"
+must = true
 why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
 
 [[registry]]
@@ -316,6 +348,7 @@ key = '{nic_class}'
 name = "*SpeedDuplex"
 string = "0"
 nic_service = "rt640x64"
+must = true
 why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
 
 [[registry]]
@@ -337,6 +370,7 @@ key = '{nic_class}'
 name = "AdvancedEEE"
 string = "0"
 nic_service = "rt640x64"
+must = true
 why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
 
 [[registry]]
@@ -344,6 +378,7 @@ key = '{nic_class}'
 name = "EnableGreenEthernet"
 string = "0"
 nic_service = "rt640x64"
+must = true
 why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
 
 [[registry]]
@@ -351,6 +386,7 @@ key = '{nic_class}'
 name = "GigaLite"
 string = "0"
 nic_service = "rt640x64"
+must = true
 why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
 
 [[registry]]
@@ -358,6 +394,7 @@ key = '{nic_class}'
 name = "PowerSavingMode"
 string = "0"
 nic_service = "rt640x64"
+must = true
 why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
 
 [[registry]]
@@ -444,6 +481,7 @@ why = "idle CPUs keep the timer tick (FOH 11.11.2026, dasio#26)"
 [[bcd]]
 name = "testsigning"
 value = "Yes"
+must = true
 why = "dasio_pacer, the NDIS filter, is test-signed; dasio does not run without it (owner 15.11.2026, dasio#125)"
 
 [[disk]]

@@ -16,6 +16,34 @@ paths:
   its own services, overrides). NIC-family settings carry `nic_service`
   (the Dante NIC's driver service, e.g. `rt640x64`); power-plan values use
   `{active_scheme}`. Never set up a new PC by redoing findings one by one.
+- **The CPU layout is computed** from the PC's logical CPU count
+  (`pc_profile::Layout`, dasio#128): system CPUs first (1 per 8, at least
+  1: Windows, the Dante NIC's interrupts, rxd on the last of them), then
+  each dasio instance (4 CPUs on 16+, else 2), then the DAW. FOH 32/2 =
+  0-3, 4-7, 8-11, 12-31; mbc 12/1 = 0-1, 2-3, 4-11; dsg 4/1 = 0, 1-2, 3.
+  `dasio pc-profile layout` prints it. In a profile: `computed =
+  "system_cpus"` (binary mask) or `"rxd_cpu"` (dword) on a registry entry,
+  `{system}` / `{dasio:N}` / `{daw}` as a process affinity, `instances = N`
+  (default 1) in the site profile. Never write a CPU mask by hand where the
+  layout gives it.
+- **Must-have items** (`must = true`, dasio#128): the Dante NIC's timing
+  settings (Realtek PCIe) and `testsigning`. A missing one: the device does
+  not start / ends at the 10-min check (the SCM restarts it, the start
+  names it again), `dasio pc-profile check|apply` exits 2 with a
+  `MUST-HAVE` line, and `install.ps1` refuses before touching the instance.
+  A site value for a must-have item stays must-have. A profile that does
+  not load counts as must-have too (start refused, exit 2). The start
+  checks the whole profile (test signing included); the bridge's 10-min
+  in-process check skips `[[bcd]]`/`[[task]]` (no process started from the
+  media process). A Dante NIC not found ends the device as well.
+  `install.ps1` refuses a PC without a site profile naming the device's
+  adapter as `nic_guid` (it prints the GUID to write).
+- At rollout, a site entry for the NIC's interrupt affinity must use the
+  `{nic_device}` key (or go): a literal `Enum\PCI\...` path (dsg's) is a
+  second entry for the same value, and the two fight. Give FOH's profile
+  `instances = 2`.
+- `computed`, `must`, `instances` and placeholder affinities need dasio
+  0.1.107+ on the PC: an older one refuses the whole profile.
 
 - Every Windows, NIC, driver-parameter or Process Lasso change on a dasio
   PC goes into that PC's profile in the same step. A change that lives only
