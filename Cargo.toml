@@ -14,3 +14,18 @@ authors = ["zbynekdrlik"]
 [profile.mutants]
 inherits = "test"
 debug = "none"
+
+# The rate converter runs on the pump's real-time thread (an app at its
+# own rate, dasio#107): a debug build of its filters overran every block
+# in the e2e test (CI 43795516353: 800 us for a 333 us block). Optimized
+# in every profile, so tests run the converter at the speed it ships at.
+[profile.dev.package.rubato]
+opt-level = 3
+[profile.dev.package.dstack-resample]
+opt-level = 3
+[profile.dev.package.dlink]
+opt-level = 3
+[profile.dev.package.audioadapter]
+opt-level = 3
+[profile.dev.package.audioadapter-buffers]
+opt-level = 3
