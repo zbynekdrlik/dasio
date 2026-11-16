@@ -157,6 +157,9 @@ paths:
   rules naming site exes (DefaultPriorities, DefaultAffinitiesEx, ...),
   Lasso's `Version`/`DefaultsLevel`, other tools' tasks, the disk floor.
   The classification table is on dasio#128 (16.11.2026).
+  Committing baseline `[[ini]]` lines trips the secret-staging hook
+  (`key = '...'` reads as a credential): it is a Lasso key name, commit
+  with `# airuleset:secret-ok Process Lasso ini key names`.
 - Defender: Windows will not uninstall it, so the baseline holds FOH's
   whole policy set off (`Policies\Microsoft\Windows Defender`); its
   `WinDefend` Start 4 is `check_only` (Windows 11's self-protection
