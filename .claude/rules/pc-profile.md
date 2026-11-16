@@ -173,11 +173,14 @@ paths:
   name in that folder: Edge's task names end in a GUID). The check reports
   each one found (WARN + tray count, every 10 min, so a Windows upgrade
   bringing it back shows); `apply` removes exactly what was found and
-  prints each removal; an exe still there after its uninstaller is a
-  FAILED line. Tasks are read from `System32\Tasks` (no process), so the
-  bridge's in-process check covers absences too. A site profile with
-  `[[absent]]` needs the dasio that knows it: an older one refuses the
-  whole profile.
+  prints each removal; what an earlier removal already took with it
+  (EdgeUpdate's uninstaller removes its services and tasks) is fine; an
+  exe still there after its uninstaller, or an uninstaller still running
+  after 10 min (killed), is a FAILED line. Tasks are read from
+  `System32\Tasks` (no process), so the bridge's in-process check covers
+  absences too. A site profile with `[[absent]]` needs the first dasio
+  after 0.1.113 (the one shipping it): an older one refuses the whole
+  profile.
 - The baseline removes Edge (`setup.exe --uninstall --msedge
   --system-level --force-uninstall`), EdgeUpdate (`/uninstall`), its
   services edgeupdate / edgeupdatem / MicrosoftEdgeElevationService and

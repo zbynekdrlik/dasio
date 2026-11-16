@@ -88,6 +88,9 @@ fn an_absent_entry_that_names_too_little_or_too_much_is_refused() {
         ("task = '\\*'", "as schtasks shows it"),
         ("task = '\\a*b'", "as schtasks shows it"),
         ("task = '\\a\\'", "as schtasks shows it"),
+        ("task = '\\..\\..\\x*'", "as schtasks shows it"),
+        ("task = '\\.\\x'", "as schtasks shows it"),
+        ("task = '\\a\\\\x'", "as schtasks shows it"),
         (
             "task = '\\a'\nuninstall = ['C:\\u.exe']",
             "uninstall is for exe only",
@@ -233,7 +236,11 @@ fn the_uninstaller_runs_from_the_newest_version_folder() {
     );
     assert_eq!(split_star(r"C:\a\b\setup.exe"), None);
     assert_eq!(split_star(r"C:\a\v*\setup.exe"), None);
-    assert_eq!(split_star(r"\*\b\setup.exe"), None, "no folder before the *");
+    assert_eq!(
+        split_star(r"\*\b\setup.exe"),
+        None,
+        "no folder before the *"
+    );
     assert_eq!(split_star(r"C:\a\*\"), None, "nothing after the *");
     let names: Vec<String> = [
         "154.0.4258.62.deleting",

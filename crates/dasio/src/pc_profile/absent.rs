@@ -150,7 +150,12 @@ pub fn validate(e: &AbsentEntry) -> Result<(), String> {
             }
             let leaf = t.rsplit('\\').next().unwrap_or("");
             let star_ok = !t.strip_suffix('*').unwrap_or(t).contains('*');
-            if !t.starts_with('\\') || leaf.is_empty() || leaf == "*" || !star_ok {
+            // The folder is listed under System32\Tasks: no way out of it.
+            let parts_ok = t
+                .split('\\')
+                .skip(1)
+                .all(|p| !p.is_empty() && p != "." && p != "..");
+            if !t.starts_with('\\') || leaf.is_empty() || leaf == "*" || !star_ok || !parts_ok {
                 return Err(format!(
                     "absent task {t}: give the path as schtasks shows it, e.g. \\MicrosoftEdgeUpdateTaskMachineCore*, a * only at the end after part of the name"
                 ));
@@ -200,8 +205,8 @@ pub fn versions_newest_first(names: &[String]) -> Vec<&str> {
         .iter()
         .filter_map(|n| parse(n).map(|k| (k, n.as_str())))
         .collect();
-    v.sort_by(|a, b| b.0.cmp(&a.0));
-    v.into_iter().map(|(_, n)| n).collect()
+    v.sort();
+    v.into_iter().rev().map(|(_, n)| n).collect()
 }
 
 /// The uninstaller to run for `prog`: itself without a `*`; else the

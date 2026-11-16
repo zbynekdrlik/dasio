@@ -388,8 +388,14 @@ fn folder_names(dir: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// How long `apply` waits for an uninstaller: a hung or interactive one
+/// must not hold the boot-time apply or install.ps1 for good (dasio#128).
+const UNINSTALL_LIMIT: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// Removes what `r` names (dasio#128): exactly that service, task or
-/// program, nothing else.
+/// program, nothing else. What is already gone is fine: one removal can
+/// take others with it (EdgeUpdate's uninstaller removes its services and
+/// tasks), and the plan was made before any ran.
 fn remove(r: &Removal) -> Result<(), String> {
     match r {
         Removal::Service(s) => {
@@ -401,33 +407,72 @@ fn remove(r: &Removal) -> Result<(), String> {
                     absent::DELETABLE_SERVICES
                 ));
             }
+            if !key_exists(&format!(r"SYSTEM\CurrentControlSet\Services\{s}"))? {
+                return Ok(());
+            }
             // A stopped or disabled service answers "not started" (1062):
             // the delete is what counts.
             let _ = system32_tool("sc", &["stop", s.as_str()]);
             system32_tool("sc", &["delete", s.as_str()])
         }
-        Removal::Task(t) => system32_tool("schtasks", &["/delete", "/tn", t.as_str(), "/f"]),
+        Removal::Task(t) => {
+            let file = Path::new(&system32()?)
+                .join("Tasks")
+                .join(t.trim_start_matches('\\'));
+            if !file_there(&file.to_string_lossy())? {
+                return Ok(());
+            }
+            system32_tool("schtasks", &["/delete", "/tn", t.as_str(), "/f"])
+        }
         Removal::Exe { exe, uninstall } => {
+            if !file_there(exe)? {
+                return Ok(());
+            }
             let Some((first, args)) = uninstall.split_first() else {
                 return Err(format!("{exe}: no uninstaller given"));
             };
             let prog = absent::resolve_uninstaller(first, folder_names, |p| Path::new(p).is_file())
                 .ok_or_else(|| format!("{exe}: its uninstaller {first} was not found"))?;
-            let out = std::process::Command::new(&prog)
-                .args(args)
-                .output()
-                .map_err(|e| format!("{prog}: {e}"))?;
+            let status = run_bounded(&prog, args)?;
             // An uninstaller's exit code says little (some end non-zero
             // after a good uninstall): the exe gone is what counts.
             if file_there(exe)? {
                 return Err(format!(
-                    "ran {prog} {} ({}): {exe} is still there",
-                    args.join(" "),
-                    out.status
+                    "ran {prog} {} ({status}): {exe} is still there",
+                    args.join(" ")
                 ));
             }
             Ok(())
         }
+    }
+}
+
+/// Runs `prog args` and waits at most [`UNINSTALL_LIMIT`]; past it the
+/// process is killed and the error says so.
+fn run_bounded(prog: &str, args: &[String]) -> Result<std::process::ExitStatus, String> {
+    use std::process::Stdio;
+    let mut child = std::process::Command::new(prog)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("{prog}: {e}"))?;
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().map_err(|e| format!("{prog}: {e}"))? {
+            return Ok(status);
+        }
+        if start.elapsed() > UNINSTALL_LIMIT {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "{prog} {}: still running after {} s, stopped",
+                args.join(" "),
+                UNINSTALL_LIMIT.as_secs()
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
     }
 }
 
