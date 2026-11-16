@@ -6,7 +6,7 @@
 //! process off the media CPUs ([`ChildCheck`]), and reports what differs;
 //! `dasio pc-profile apply` sets what differs.
 //!
-//! Six kinds of entries:
+//! Seven kinds of entries:
 //! - `[[registry]]`: one value under `HKLM\...` (a DWORD, a string, a
 //!   list of strings (REG_MULTI_SZ, e.g. a NIC's `SubnetMask`), or binary
 //!   as hex). `{nic_class}` and `{nic_device}` in a key stand for
@@ -26,6 +26,8 @@
 //!   (`schtasks /query /tn <name> /xml`, e.g. FOH's fleetbackup moved from
 //!   every 2 h to daily 04:00); checked only, never applied: the task is
 //!   another tool's install.
+//! - `[[absent]]`: a program, service or task that must not exist (Edge
+//!   and its updater, dasio#128); `apply` removes it ([`absent`]).
 //!
 //! Every PC is held to the built-in baseline merged with its own profile
 //! ([`baseline`](self::baseline), dasio#128); the baseline's CPU masks are
@@ -37,14 +39,18 @@
 
 use serde::Deserialize;
 
+pub mod absent;
 mod baseline;
 pub mod layout;
+mod os_text;
 pub(crate) mod power;
 #[cfg(windows)]
 pub mod windows;
 
+pub use absent::{AbsentEntry, Removal};
 pub use baseline::{BASELINE, MUST_HAVE, baseline, baseline_only, load, merge, must_have_failure};
 pub use layout::{Layout, resolve};
+pub use os_text::{parse_bcdedit, parse_task_xml};
 pub use power::{PowerSetting, describe, power_setting, powercfg_commands};
 
 /// Where the service looks for the profile.
@@ -78,6 +84,9 @@ pub struct Profile {
     pub bcd: Vec<BcdEntry>,
     #[serde(default)]
     pub task: Vec<TaskEntry>,
+    /// What must not exist on the PC ([`absent`], dasio#128).
+    #[serde(default)]
+    pub absent: Vec<AbsentEntry>,
 }
 
 impl Profile {
@@ -89,6 +98,7 @@ impl Profile {
             + self.disk.len()
             + self.bcd.len()
             + self.task.len()
+            + self.absent.len()
     }
 }
 
@@ -265,6 +275,10 @@ pub trait Reader {
     /// The Dante NIC's driver service (e.g. `rt640x64`); `None` when the
     /// NIC or its service was not found.
     fn nic_service(&self) -> Option<String>;
+    /// What of `e`'s thing the PC has ([`absent`]): the exe's path, the
+    /// service's name, each task the pattern matches by its full path;
+    /// empty when there is none.
+    fn absent(&self, e: &AbsentEntry) -> Result<Vec<String>, String>;
 }
 
 /// Whether `e` applies on the PC `r` reads: an entry for one NIC driver
@@ -409,6 +423,9 @@ fn parse_with(text: &str, need_nic_guid: bool) -> Result<Profile, String> {
             return Err(format!("task {}: give enabled, triggers or both", e.name));
         }
     }
+    for e in &p.absent {
+        absent::validate(e)?;
+    }
     Ok(p)
 }
 
@@ -527,12 +544,33 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
             must: e.must,
         });
     }
+    // A file that cannot be read is one problem, not one per key: a PC
+    // without Process Lasso shows it once (dasio#128).
+    let mut unreadable: Vec<&str> = Vec::new();
     for e in &p.ini {
+        if unreadable.iter().any(|f| f.eq_ignore_ascii_case(&e.file)) {
+            continue;
+        }
         let found = match r.ini(&e.file, &e.key) {
             Ok(Some(v)) if v == e.value => continue,
             Ok(Some(v)) => format!("\"{v}\""),
             Ok(None) => "absent".to_string(),
-            Err(err) => format!("unreadable ({err})"),
+            Err(err) => {
+                unreadable.push(&e.file);
+                let keys = p
+                    .ini
+                    .iter()
+                    .filter(|x| x.file.eq_ignore_ascii_case(&e.file))
+                    .count();
+                out.push(Problem {
+                    what: e.file.clone(),
+                    found: format!("unreadable ({err})"),
+                    want: format!("the file, with the {keys} key(s) the profile names"),
+                    why: e.why.clone(),
+                    must: false,
+                });
+                continue;
+            }
         };
         out.push(Problem {
             what: format!("{} {}", e.file, e.key),
@@ -654,133 +692,7 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
             });
         }
     }
-    out
-}
-
-/// The text inside the first `<tag>...</tag>` of `xml` (no attributes on
-/// the opening tag, as Task Scheduler writes the elements read here).
-fn xml_inner<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let start = xml.find(&open)? + open.len();
-    let len = xml[start..].find(&close)?;
-    Some(xml[start..start + len].trim())
-}
-
-/// The child elements of `xml`, as their tag name and inner text, in order.
-fn xml_children(xml: &str) -> Vec<(&str, &str)> {
-    let mut out = Vec::new();
-    let mut rest = xml;
-    while let Some(lt) = rest.find('<') {
-        rest = &rest[lt + 1..];
-        let end = rest
-            .find(|c: char| c == '>' || c == '/' || c.is_whitespace())
-            .unwrap_or(rest.len());
-        let name = &rest[..end];
-        let Some(gt) = rest.find('>') else { break };
-        if rest[..gt].ends_with('/') {
-            // Self-closing: the next `<` is the next element.
-            out.push((name, ""));
-            continue;
-        }
-        let body = &rest[gt + 1..];
-        let close = format!("</{name}>");
-        let Some(c) = body.find(&close) else { break };
-        out.push((name, body[..c].trim()));
-        rest = &body[c + close.len()..];
-    }
-    out
-}
-
-/// The `HH:MM` of a trigger's `StartBoundary` (`2026-11-05T04:00:00+01:00`),
-/// as written: the task's own local time.
-fn boundary_time(trigger: &str) -> String {
-    xml_inner(trigger, "StartBoundary")
-        .and_then(|b| b.split_once('T'))
-        .and_then(|(_, t)| t.get(..5))
-        .unwrap_or("?")
-        .to_string()
-}
-
-/// A scheduled task's state from `schtasks /query /xml`: on unless its
-/// `Settings` say `<Enabled>false</Enabled>`; each trigger as a short line:
-/// `daily HH:MM`, `every Nd HH:MM`, `weekly HH:MM`, `monthly HH:MM`,
-/// `time HH:MM`, `boot`, `logon`, `idle`, `event`, else `other:<Tag>`; with
-/// ` every <interval>` when it repeats (e.g. `every PT2H`) and ` (off)` when
-/// the trigger is disabled.
-pub fn parse_task_xml(xml: &str) -> TaskState {
-    let enabled = xml_inner(xml, "Settings")
-        .and_then(|s| xml_children(s).into_iter().find(|(n, _)| *n == "Enabled"))
-        .is_none_or(|(_, v)| !v.eq_ignore_ascii_case("false"));
-    let triggers = xml_inner(xml, "Triggers")
-        .map(|t| {
-            xml_children(t)
-                .into_iter()
-                .map(|(name, body)| {
-                    let at = boundary_time(body);
-                    let mut line = match name {
-                        "CalendarTrigger" => {
-                            if let Some(d) = xml_inner(body, "ScheduleByDay") {
-                                match xml_inner(d, "DaysInterval").unwrap_or("1") {
-                                    "1" => format!("daily {at}"),
-                                    n => format!("every {n}d {at}"),
-                                }
-                            } else if body.contains("<ScheduleByWeek>") {
-                                format!("weekly {at}")
-                            } else if body.contains("<ScheduleByMonth") {
-                                format!("monthly {at}")
-                            } else {
-                                format!("other:{name}")
-                            }
-                        }
-                        "TimeTrigger" => format!("time {at}"),
-                        "BootTrigger" => "boot".into(),
-                        "LogonTrigger" => "logon".into(),
-                        "IdleTrigger" => "idle".into(),
-                        "EventTrigger" => "event".into(),
-                        other => format!("other:{other}"),
-                    };
-                    if let Some(i) =
-                        xml_inner(body, "Repetition").and_then(|r| xml_inner(r, "Interval"))
-                    {
-                        line.push_str(&format!(" every {i}"));
-                    }
-                    if xml_children(body)
-                        .iter()
-                        .any(|(n, v)| *n == "Enabled" && v.eq_ignore_ascii_case("false"))
-                    {
-                        line.push_str(" (off)");
-                    }
-                    line
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    TaskState { enabled, triggers }
-}
-
-/// The settings of the entry `bcdedit /enum {current}` printed: each line
-/// after the dashed line under the entry's title, as its first word and the
-/// rest. A value bcdedit continues on indented lines (a list) keeps only its
-/// first line; element names are never localized, the title is skipped.
-pub fn parse_bcdedit(text: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    let mut body = false;
-    for line in text.lines() {
-        let t = line.trim_end();
-        if !body {
-            body = !t.is_empty() && t.chars().all(|c| c == '-');
-            continue;
-        }
-        if t.is_empty() || t.starts_with(char::is_whitespace) {
-            continue;
-        }
-        let mut parts = t.splitn(2, char::is_whitespace);
-        let (Some(name), Some(value)) = (parts.next(), parts.next()) else {
-            continue;
-        };
-        out.push((name.to_string(), value.trim().to_string()));
-    }
+    out.extend(absent::check(&p.absent, r));
     out
 }
 
@@ -804,6 +716,8 @@ pub enum Action {
         key: String,
         value: String,
     },
+    /// Removes what an `[[absent]]` entry names (dasio#128).
+    Remove(Removal),
 }
 
 /// What has to change for the PC to match (processes are only checked:
@@ -829,8 +743,18 @@ pub fn plan(p: &Profile, r: &dyn Reader) -> Vec<Action> {
             });
         }
     }
+    // A file that cannot be read gets one write (it says why it fails),
+    // not one per key (dasio#128).
+    let mut unreadable: Vec<&str> = Vec::new();
     for e in &p.ini {
-        if !matches!(r.ini(&e.file, &e.key), Ok(Some(ref v)) if *v == e.value) {
+        if unreadable.iter().any(|f| f.eq_ignore_ascii_case(&e.file)) {
+            continue;
+        }
+        let found = r.ini(&e.file, &e.key);
+        if found.is_err() {
+            unreadable.push(&e.file);
+        }
+        if !matches!(found, Ok(Some(ref v)) if *v == e.value) {
             out.push(Action::Ini {
                 file: e.file.clone(),
                 key: e.key.clone(),
@@ -838,6 +762,7 @@ pub fn plan(p: &Profile, r: &dyn Reader) -> Vec<Action> {
             });
         }
     }
+    out.extend(absent::plan(&p.absent, r).into_iter().map(Action::Remove));
     out
 }
 
@@ -893,6 +818,10 @@ pub fn takes_effect(a: &Action) -> &'static str {
             "a reinstall of the filter (or a reboot)"
         }
         Action::Ini { .. } => "Process Lasso's next read of its ini (a restart of Process Lasso)",
+        Action::Remove(Removal::Service(_)) => {
+            "nothing more (a service still held open goes at the next reboot)"
+        }
+        Action::Remove(_) => "nothing more",
         Action::Reg { .. } => "nothing more",
     }
 }

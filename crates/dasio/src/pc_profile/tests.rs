@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use super::*;
 
+mod absent_kind;
+mod fold;
 mod layout;
 mod must;
 mod power;
@@ -23,11 +25,38 @@ struct Pc {
     /// `task()` fails for these names.
     task_err: Vec<String>,
     nic_service: Option<String>,
+    /// `ini()` fails for these files.
+    ini_err: Vec<String>,
+    /// Files, services and tasks (full paths) the PC has, for `[[absent]]`.
+    files: Vec<String>,
+    services: Vec<String>,
+    task_names: Vec<String>,
+    /// `absent()` fails.
+    absent_err: Option<String>,
 }
 
 impl Reader for Pc {
     fn nic_service(&self) -> Option<String> {
         self.nic_service.clone()
+    }
+    fn absent(&self, e: &AbsentEntry) -> Result<Vec<String>, String> {
+        if let Some(err) = &self.absent_err {
+            return Err(err.clone());
+        }
+        let has = |list: &[String], x: &str| list.iter().any(|y| y.eq_ignore_ascii_case(x));
+        Ok(match e.target() {
+            Some(absent::Target::Exe(x)) if has(self.files.as_slice(), x) => vec![x.to_string()],
+            Some(absent::Target::Service(x)) if has(self.services.as_slice(), x) => {
+                vec![x.to_string()]
+            }
+            Some(absent::Target::Task(t)) => self
+                .task_names
+                .iter()
+                .filter(|n| absent::task_matches(t, n))
+                .cloned()
+                .collect(),
+            _ => Vec::new(),
+        })
     }
     fn reg(&self, key: &str, name: &str) -> Result<Option<Value>, String> {
         if self.unreadable.iter().any(|k| k == key) {
@@ -36,6 +65,9 @@ impl Reader for Pc {
         Ok(self.reg.get(&(key.to_string(), name.to_string())).cloned())
     }
     fn ini(&self, file: &str, key: &str) -> Result<Option<String>, String> {
+        if self.ini_err.iter().any(|f| f == file) {
+            return Err(format!("{file}: not found"));
+        }
         Ok(self.ini.get(&(file.to_string(), key.to_string())).cloned())
     }
     fn process(&self, exe: &str) -> Option<ProcState> {
