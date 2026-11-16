@@ -23,9 +23,14 @@ pub fn overlaps(span: (u64, u64), stalls: &[(u64, u64)]) -> bool {
     stalls.iter().any(|&(s, e)| s <= span.1 && span.0 <= e)
 }
 
-/// How many of `spans` overlap a stall.
-pub fn explained(spans: &[(u64, u64)], stalls: &[(u64, u64)]) -> u64 {
-    spans.iter().filter(|&&sp| overlaps(sp, stalls)).count() as u64
+/// How many of `ways` (a lost impulse's emit to the next emit) had a host
+/// gap end inside them: after the emit, up to and with the next. A gap that
+/// ended at the emit's own switch came before the impulse left (dasio#114,
+/// the rule the probe's 1 ms gap counter kept before).
+pub fn ended_within(ways: &[(u64, u64)], ends: &[u64]) -> u64 {
+    ways.iter()
+        .filter(|&&(from, to)| ends.iter().any(|&e| from < e && e <= to))
+        .count() as u64
 }
 
 /// The blocks of the host's gaps that overlap a stall: each gap is
@@ -77,11 +82,18 @@ mod tests {
     }
 
     #[test]
-    fn only_spans_over_a_stall_are_explained() {
-        let stalls = [(100, 200)];
-        assert_eq!(explained(&[(0, 50), (90, 110), (150, 400)], &stalls), 2);
-        assert_eq!(explained(&[(0, 50)], &stalls), 0);
-        assert_eq!(explained(&[], &stalls), 0);
+    fn a_gap_counts_for_a_lost_impulse_when_it_ends_on_its_way() {
+        let ways = [(1_000, 2_000), (5_000, 6_000)];
+        // Ended at the emit itself: before the impulse left.
+        assert_eq!(ended_within(&ways, &[1_000]), 0);
+        assert_eq!(ended_within(&ways, &[1_001]), 1);
+        // Ended at the next emit's switch: on its way.
+        assert_eq!(ended_within(&ways, &[2_000]), 1);
+        assert_eq!(ended_within(&ways, &[2_001]), 0);
+        assert_eq!(ended_within(&ways, &[1_500, 5_500]), 2);
+        assert_eq!(ended_within(&ways, &[1_500, 1_600]), 1);
+        assert_eq!(ended_within(&ways, &[]), 0);
+        assert_eq!(ended_within(&[], &[1_500]), 0);
     }
 
     #[test]
