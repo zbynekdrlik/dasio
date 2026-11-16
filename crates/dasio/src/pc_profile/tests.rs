@@ -925,6 +925,13 @@ fn the_shipped_baseline_parses_and_holds_the_must_haves() {
             .iter()
             .any(|e| e.nic_service.as_deref() == Some("rtcx21") && e.check_only)
     );
+    // The filter's deferred receive is on everywhere; the CPU is per PC.
+    assert!(
+        b.registry
+            .iter()
+            .any(|e| e.name == "RxdEnable" && e.dword == Some(1))
+    );
+    assert!(!b.registry.iter().any(|e| e.name == "RxdCpu"));
 }
 
 fn site(text: &str) -> Profile {
