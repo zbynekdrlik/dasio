@@ -125,12 +125,12 @@ pub fn run(
     };
     // The PC profile's problems (dasio#5, #120); u32::MAX while there is none.
     let pc_problems = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
-    // The RX latency the measured arrival asks for (dasio#128): reported,
-    // never applied while the device runs.
-    let mut rx_latency = crate::rx_latency::Watch::new(cfg.latency_ns);
+    // The measured RX packet age at placement (dasio#128): information
+    // only, the latency stays the owner's decision.
+    let mut rx_arrival = crate::rx_arrival::Watch::default();
     {
         let kernel_tx = tuning.kernel_tx;
-        let (rx_peak, rx_latency_ns) = (rx_latency.peak(), cfg.latency_ns);
+        let rx_figures = rx_arrival.arrival();
         let (status, to_stats, from_stats, driver, pc_problems, age) = (
             Arc::clone(&status),
             Arc::clone(&to_stats),
@@ -142,7 +142,7 @@ pub fn run(
         media.set_app_status(move || {
             let s = lock(&status).clone();
             crate::app_status::bridge_json(&BridgeFacts {
-                rx: rx_peak.report(rx_latency_ns),
+                rx: rx_figures.report(),
                 ..BridgeFacts::of(
                     &driver,
                     &s,
@@ -192,15 +192,15 @@ pub fn run(
         if now >= profile_due {
             profile_due = now + Duration::from_secs(crate::pc_profile::CHECK_EVERY_S);
             profile.start_in_process(&pc_problems);
-            if let Some(r) = rx_latency.report() {
-                crate::rx_latency::log(&r);
+            if let Some(r) = rx_arrival.report() {
+                crate::rx_arrival::log(&r);
             }
         }
         if counts.due(now) {
             if let Some(r) =
-                rx_latency.observe(crate::rx_latency::flows(&media.rx), cfg.sample_rate)
+                rx_arrival.observe(crate::rx_arrival::flows(&media.rx), cfg.sample_rate)
             {
-                crate::rx_latency::log(&r);
+                crate::rx_arrival::log(&r);
             }
             // The TX packets' age and the receivers' late counts: here,
             // never in the pump or the driver's callback (the view locks the

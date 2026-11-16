@@ -22,4 +22,4 @@ Design: `docs/design/2026-10-29-dante-asio-design.md`; MVP plan: `docs/plans/202
 - the driver's host tests (packed ABI fields, instance numbers) → `.claude/rules/asio-driver-tests.md` (auto-loads on its `paths:`)
 - the bridge instance kind (`[bridge]`, a local ASIO driver) → `.claude/rules/bridge-kind.md` (auto-loads on its `paths:`)
 - an ASIO app at its own sample rate (conversion, re-serve, latencies) → `.claude/rules/app-rate.md` (auto-loads on its `paths:`)
-- the recommended RX latency (measured arrival peak, report only) → `.claude/rules/rx-latency.md` (auto-loads on its `paths:`)
+- the measured RX arrival (information only, never a latency proposal) → `.claude/rules/rx-arrival.md` (auto-loads on its `paths:`)
