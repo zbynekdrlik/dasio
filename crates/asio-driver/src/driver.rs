@@ -23,7 +23,7 @@ use core::ffi::{c_char, c_void};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use shm::{HostUse, Shape, Shared};
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
@@ -33,13 +33,12 @@ use crate::com::OBJECTS;
 use crate::guard::{guard, join_within, lock};
 use crate::ident::{driver_name, instance_of};
 use crate::liveness::Verdict;
+use crate::rate::{self, Step};
 use crate::systime;
 
 mod worker;
 use worker::Job;
 
-/// The rate: Dante at 96 kHz.
-pub const RATE: f64 = 96_000.0;
 /// The shape a DAW sees while no device runs (it asks again after a reset).
 pub const NO_DEVICE_SHAPE: Shape = Shape {
     rx: 8,
@@ -108,12 +107,26 @@ impl Rt {
     }
 }
 
-#[derive(Default)]
 struct State {
     error: String,
     shape: Option<Shape>,
     created: Option<Created>,
     worker: Option<Worker>,
+    /// The rate the DAW set while no device runs (the free-run's); with a
+    /// device the section's header says the rate (dasio#107).
+    rate: u32,
+}
+
+impl Default for State {
+    fn default() -> State {
+        State {
+            error: String::new(),
+            shape: None,
+            created: None,
+            worker: None,
+            rate: rate::DEFAULT_RATE,
+        }
+    }
 }
 
 /// The running worker and its own stop flag (an abandoned worker keeps its
@@ -193,6 +206,52 @@ impl Driver {
 
     fn shape(&self) -> Shape {
         lock(&self.state).shape.unwrap_or(NO_DEVICE_SHAPE)
+    }
+
+    /// The rate the DAW runs at: the device's section's (dasio#107), or
+    /// the free-run's without a device.
+    fn rate(&self, st: &State) -> u32 {
+        match self.rt.shm() {
+            Some(s) => s.header().rate.load(Ordering::Acquire),
+            None => st.rate,
+        }
+    }
+
+    /// Asks the device for `rate` and waits up to [`rate::SWITCH_WAIT`]
+    /// for its section at it, then holds that section (as `init` does).
+    /// With buffers out, it only asks: the worker sees the new session
+    /// and asks the DAW for a reset.
+    fn switch_rate(&self, st: &mut State, s: &Shared, asked: u32) -> ASIOError {
+        s.request_rate(asked);
+        if st.created.is_some() {
+            return ASE_OK;
+        }
+        let until = Instant::now() + rate::SWITCH_WAIT;
+        loop {
+            let published = s.published_session();
+            if published != s.session()
+                && let Ok(next) = Shared::open(self.instance)
+                && rate::served(
+                    asked,
+                    s.session(),
+                    next.session(),
+                    next.header().rate.load(Ordering::Acquire),
+                )
+            {
+                st.shape = Some(next.shape());
+                *lock(&self.rt.shm) = Some(Arc::new(next));
+                return ASE_OK;
+            }
+            if Instant::now() >= until {
+                st.error = format!(
+                    "the dasio device {} did not serve {asked} Hz within {} s",
+                    self.instance,
+                    rate::SWITCH_WAIT.as_secs()
+                );
+                return ASE_HW_MALFUNCTION;
+            }
+            std::thread::sleep(rate::SWITCH_POLL);
+        }
     }
 
     fn latencies(&self) -> (i32, i32) {
@@ -396,12 +455,14 @@ unsafe extern "system" fn start(this: *mut c_void) -> ASIOError {
             return ASE_INVALID_MODE;
         };
         let time_info = created.time_info;
+        let rate = f64::from(d.rate(&st));
         let stop = Arc::new(AtomicBool::new(false));
         let generation = d.rt.starts.fetch_add(1, Ordering::AcqRel) + 1;
         let job = Job {
             callbacks: created.callbacks,
             time_info,
             shape: st.shape.unwrap_or(NO_DEVICE_SHAPE),
+            rate,
             instance: d.instance,
             rt: Arc::clone(&d.rt),
             stop: Arc::clone(&stop),
@@ -525,25 +586,50 @@ unsafe extern "system" fn get_buffer_size(
     })
 }
 
+/// The rates an app may open the instance at (`shm::APP_RATES`): the
+/// device converts for any but its own (dasio#107).
 unsafe extern "system" fn can_sample_rate(_this: *mut c_void, rate: f64) -> ASIOError {
-    if rate == RATE { ASE_OK } else { ASE_NO_CLOCK }
-}
-
-unsafe extern "system" fn get_sample_rate(_this: *mut c_void, rate: *mut f64) -> ASIOError {
-    if rate.is_null() {
-        return ASE_INVALID_PARAMETER;
-    }
-    // SAFETY: checked non-null.
-    unsafe { *rate = RATE };
-    ASE_OK
-}
-
-unsafe extern "system" fn set_sample_rate(_this: *mut c_void, rate: f64) -> ASIOError {
-    if rate == RATE || rate == 0.0 {
+    if shm::app_rate(rate).is_some() {
         ASE_OK
     } else {
         ASE_NO_CLOCK
     }
+}
+
+unsafe extern "system" fn get_sample_rate(this: *mut c_void, rate: *mut f64) -> ASIOError {
+    guard(ASE_HW_MALFUNCTION, || {
+        if rate.is_null() {
+            return ASE_INVALID_PARAMETER;
+        }
+        // SAFETY: a live Driver.
+        let d = unsafe { me(this) };
+        let r = d.rate(&lock(&d.state));
+        // SAFETY: checked non-null.
+        unsafe { *rate = f64::from(r) };
+        ASE_OK
+    })
+}
+
+unsafe extern "system" fn set_sample_rate(this: *mut c_void, rate: f64) -> ASIOError {
+    guard(ASE_HW_MALFUNCTION, || {
+        // SAFETY: a live Driver.
+        let d = unsafe { me(this) };
+        let mut st = lock(&d.state);
+        let shm = d.rt.shm();
+        let current = d.rate(&st);
+        match (rate::step(rate, current, shm.is_some()), shm) {
+            (Step::Keep, _) => ASE_OK,
+            (Step::Refuse, _) => ASE_NO_CLOCK,
+            (Step::Ask(r), Some(s)) => {
+                st.rate = r;
+                d.switch_rate(&mut st, &s, r)
+            }
+            (Step::Local(r) | Step::Ask(r), _) => {
+                st.rate = r;
+                ASE_OK
+            }
+        }
+    })
 }
 
 unsafe extern "system" fn get_clock_sources(

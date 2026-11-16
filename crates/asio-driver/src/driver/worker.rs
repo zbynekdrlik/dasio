@@ -14,7 +14,7 @@ use windows_sys::Win32::System::Threading::{
     TIMER_ALL_ACCESS, WaitForSingleObject,
 };
 
-use super::{RATE, Rt};
+use super::Rt;
 use crate::abi::*;
 use crate::guard::lock;
 use crate::ident::MAX_INSTANCES;
@@ -48,6 +48,8 @@ pub(super) struct Job {
     pub(super) callbacks: ASIOCallbacks,
     pub(super) time_info: bool,
     pub(super) shape: Shape,
+    /// The DAW's rate, Hz (the section's, or the free-run's; dasio#107).
+    pub(super) rate: f64,
     pub(super) instance: u32,
     pub(super) rt: Arc<Rt>,
     /// This worker's own stop flag.
@@ -98,7 +100,7 @@ impl Job {
                 speed: 1.0,
                 systemTime: Asio64::default(),
                 samplePosition: Asio64::default(),
-                sampleRate: RATE,
+                sampleRate: self.rate,
                 flags: K_SYSTEM_TIME_VALID | K_SAMPLE_POSITION_VALID | K_SAMPLE_RATE_VALID,
                 reserved: [0; 12],
             },
@@ -109,7 +111,7 @@ impl Job {
                 future: [0; 64],
             },
         };
-        let period = Duration::from_secs_f64(f64::from(self.shape.block) / RATE);
+        let period = Duration::from_secs_f64(f64::from(self.shape.block) / self.rate.max(1.0));
         let mut pacer = Pacer::new();
         let mut next = Instant::now();
         let mut half = 0i32;
@@ -368,7 +370,7 @@ fn facts(s: &Shared) -> Facts {
     Facts {
         beat: h.heartbeat_ms.load(Ordering::Acquire),
         pid: h.device_pid.load(Ordering::Acquire),
-        shape: Shape::new(
+        shape: Shape::app(
             h.rx.load(Ordering::Acquire),
             h.tx.load(Ordering::Acquire),
             h.block.load(Ordering::Acquire),
