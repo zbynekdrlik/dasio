@@ -7,6 +7,8 @@
 # `must = true`: dasio does not run without it (the service ends, the check
 # exits 2, install.ps1 refuses). `computed`: the value comes from the PC's
 # CPU layout (system CPUs = 1 per 8, then dasio's, then the DAW's).
+# `[[absent]]`: a program, service or task that must not exist; `apply`
+# removes it (dasio#128).
 name = "dasio baseline"
 
 [[registry]]
@@ -494,3 +496,1146 @@ why = "dasio_pacer, the NDIS filter, is test-signed; dasio does not run without 
 drive = "C:"
 min_free_gb = 20
 why = "a full C: hurts the DAWs, Windows updates and the logs (FOH 9.11.2026)"
+
+# --- dasio#128, 16.11.2026: the full fold of the FOH and mbc profiles ---
+# Every non-site key of both is here (a test checks it against a list of
+# generic names); what stays in a PC's own file is listed on dasio#128.
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\WinDefend'
+name = "Start"
+dword = 4
+absent_ok = true
+check_only = true
+why = "Defender's service off (FOH, owner 4.11.2026). Windows 11's Defender self-protection refuses the write (mbc 10.11, dasio#23), so it is checked, not set (dasio#128)"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender'
+name = "DisableAntiSpyware"
+dword = 1
+why = "owner 16.11.2026: Defender held off on every dasio PC by policy (Windows will not uninstall it); its scan of every process start made dsg's pump wake late (FOH's live policy, dasio#120, dasio#128)"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender'
+name = "DisableAntiVirus"
+dword = 1
+why = "owner 16.11.2026: Defender held off on every dasio PC by policy (Windows will not uninstall it); its scan of every process start made dsg's pump wake late (FOH's live policy, dasio#120, dasio#128)"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender'
+name = "DisableRoutinelyTakingAction"
+dword = 1
+why = "owner 16.11.2026: Defender held off on every dasio PC by policy (Windows will not uninstall it); its scan of every process start made dsg's pump wake late (FOH's live policy, dasio#120, dasio#128)"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender'
+name = "ServiceKeepAlive"
+dword = 0
+why = "owner 16.11.2026: Defender held off on every dasio PC by policy (Windows will not uninstall it); its scan of every process start made dsg's pump wake late (FOH's live policy, dasio#120, dasio#128)"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection'
+name = "DisableRealtimeMonitoring"
+dword = 1
+why = "owner 16.11.2026: Defender held off on every dasio PC by policy (Windows will not uninstall it); its scan of every process start made dsg's pump wake late (FOH's live policy, dasio#120, dasio#128)"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection'
+name = "DisableBehaviorMonitoring"
+dword = 1
+why = "owner 16.11.2026: Defender held off on every dasio PC by policy (Windows will not uninstall it); its scan of every process start made dsg's pump wake late (FOH's live policy, dasio#120, dasio#128)"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection'
+name = "DisableOnAccessProtection"
+dword = 1
+why = "owner 16.11.2026: Defender held off on every dasio PC by policy (Windows will not uninstall it); its scan of every process start made dsg's pump wake late (FOH's live policy, dasio#120, dasio#128)"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection'
+name = "DisableScanOnRealtimeEnable"
+dword = 1
+why = "owner 16.11.2026: Defender held off on every dasio PC by policy (Windows will not uninstall it); its scan of every process start made dsg's pump wake late (FOH's live policy, dasio#120, dasio#128)"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection'
+name = "DisableIOAVProtection"
+dword = 1
+why = "owner 16.11.2026: Defender held off on every dasio PC by policy (Windows will not uninstall it); its scan of every process start made dsg's pump wake late (FOH's live policy, dasio#120, dasio#128)"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Spynet'
+name = "SpynetReporting"
+dword = 0
+why = "owner 16.11.2026: Defender held off on every dasio PC by policy (Windows will not uninstall it); its scan of every process start made dsg's pump wake late (FOH's live policy, dasio#120, dasio#128)"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Spynet'
+name = "SubmitSamplesConsent"
+dword = 2
+why = "owner 16.11.2026: Defender held off on every dasio PC by policy (Windows will not uninstall it); its scan of every process start made dsg's pump wake late (FOH's live policy, dasio#120, dasio#128)"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\MpEngine'
+name = "MpEnablePus"
+dword = 0
+why = "owner 16.11.2026: Defender held off on every dasio PC by policy (Windows will not uninstall it); its scan of every process start made dsg's pump wake late (FOH's live policy, dasio#120, dasio#128)"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Signature Updates'
+name = "ForceUpdateFromMU"
+dword = 0
+why = "owner 16.11.2026: Defender held off on every dasio PC by policy (Windows will not uninstall it); its scan of every process start made dsg's pump wake late (FOH's live policy, dasio#120, dasio#128)"
+
+[[registry]]
+key = 'HKLM\SOFTWARE\Microsoft\Windows Defender\Scan'
+name = "ScheduleDay"
+dword = 8
+why = "Defender's scheduled scan never runs (8 = never; it was every day; owner 4.11, mbc 10.11.2026, dasio#23); a write needs Tamper Protection off"
+
+[[registry]]
+key = '{nic_class}'
+name = "*IPChecksumOffloadIPv4"
+string = "3"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "*TCPChecksumOffloadIPv4"
+string = "3"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "*TCPChecksumOffloadIPv6"
+string = "3"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "*UDPChecksumOffloadIPv4"
+string = "3"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "*UDPChecksumOffloadIPv6"
+string = "3"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "*PMARPOffload"
+string = "1"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "*PMNSOffload"
+string = "1"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "*PriorityVLANTag"
+string = "3"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "RegVlanid"
+string = "0"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "EEEMaxSupportSpeed"
+string = "1000"
+nic_service = "rt640x64"
+why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_device}\Interrupt Management\MessageSignaledInterruptProperties'
+name = "MSISupported"
+dword = 1
+nic_service = "rt640x64"
+why = "the Dante NIC's interrupts as MSI, read at boot (FOH, dasio#1)"
+
+[[registry]]
+key = '{nic_device}\Interrupt Management\MessageSignaledInterruptProperties'
+name = "MessageNumberLimit"
+dword = 16
+nic_service = "rt640x64"
+why = "the Dante NIC's MSI message limit, read at boot (FOH, dasio#1)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\GigabyteUpdateService'
+name = "Start"
+dword = 4
+absent_ok = true
+why = "a board/GPU vendor's background service, off where it exists (FOH 5.11.2026, owner: one less thief for the DAWs and dasio, dasio#1, dasio#26)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\AMD External Events Utility'
+name = "Start"
+dword = 4
+absent_ok = true
+why = "a board/GPU vendor's background service, off where it exists (FOH 5.11.2026, owner: one less thief for the DAWs and dasio, dasio#1, dasio#26)"
+
+[[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\AMD Crash Defender Service'
+name = "Start"
+dword = 4
+absent_ok = true
+why = "a board/GPU vendor's background service, off where it exists (FOH 5.11.2026, owner: one less thief for the DAWs and dasio, dasio#1, dasio#26)"
+
+[[process]]
+exe = "dsync.exe"
+affinity = "{system}"
+why = "dantesync on the system CPUs, off dasio's and the DAW's (FOH 0-3, mbc 0-1, dsg 0; the CPU layout, dasio#1, dasio#128)"
+
+# Process Lasso's global settings as on FOH (dasio#1). Its per-exe rules
+# (priorities, affinities, gaming-mode paths) name site exes and stay in
+# each PC's own file. A PC without Process Lasso shows one problem.
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ConfigPasswordMD5'
+value = ''
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'OocOn'
+value = 'false'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ExcludeChildrenOfForeground'
+value = 'true'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'DisableProBalanceWhenSysIdle'
+value = 'false'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ProBalanceDropOneRandomCore'
+value = 'false'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'DoNotAdjustAffinityIfCustomized'
+value = 'true'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'OocDisableCoreParkingWhileIn'
+value = 'false'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'UseEfficiencyMode'
+value = 'false'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'DisableProBalanceIfSysIdleThisManyMS'
+value = '30000'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'TotalProcessorUsageBeforeRestraint'
+value = '7'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'PerProcessUsageBeforeRestraint'
+value = '2'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'TimeOverQuotaBeforeRestraint'
+value = '900'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'PerProcessUsageForRestore'
+value = '1'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'PlayOnRestraint'
+value = 'C:\windows\media\Windows Pop-up Blocked.wav'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'PlayOnRestore'
+value = 'C:\windows\media\Windows Feed Discovered.wav'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'MinimumTimeOfRestraint'
+value = '4200'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'MaximumTimeOfRestraint'
+value = '0'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'TameOnlyNormal'
+value = 'true'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LowerToIdleInsteadOfBelowNormal'
+value = 'false'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ExcludeServices'
+value = 'true'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'PlaySoundOnRestraint'
+value = 'false'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'PlaySoundOnRestore'
+value = 'false'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'RestrainByAffinity'
+value = 'false'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'RestraintAffinity'
+value = ''
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ExcludeForegroundProcesses2'
+value = 'true'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'DoNotLowerPriorityClass'
+value = 'false'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LowerIOPriorityDuringRestraint'
+value = 'false'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'MatchExclusionsByPathnameToo'
+value = 'false'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ChangeTrayIconOnRestraint'
+value = 'true'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'OocExclusions'
+value = ''
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'OocHardCodedExclusionOverrides'
+value = ''
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ClearLogAtExit'
+value = 'false'
+why = 'Process Lasso logs what it does (affinity, priority, ProBalance, power plan), so a change on the PC can be traced (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ShowCPUCoreUtilGraphs'
+value = 'true'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ShowGraphLegend'
+value = 'true'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ShowGraphCPU'
+value = 'true'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ShowGraphResponsiveness'
+value = 'true'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ShowGraphMemoryLoad'
+value = 'true'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ShowGraphProBalanceEvents'
+value = 'true'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ShowGraphSelectedProcessesCPUHistory'
+value = 'true'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ShowGraphGPU'
+value = 'true'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'GraphGPUShowAllLines'
+value = 'false'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'GraphGPUCombinedWidget'
+value = 'false'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'GPUCollectMode'
+value = '0'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'GraphAntiAliasing'
+value = 'true'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ProBalanceCountersOnGraph'
+value = 'true'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ShowGraphLicenseName'
+value = 'true'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ShowPowerProfile'
+value = 'true'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'GraphShowTooltips'
+value = 'true'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ShowCPUUtilityAsPrimary'
+value = 'true'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'AutomaticUpdate'
+value = 'false'
+why = 'Lasso never updates itself: an update migrates its ini (the PC profile rule) (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'GracefulWaitTimeInMs'
+value = '5000'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'UpdateSpeedGUI'
+value = '1000'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'UpdateSpeedCore'
+value = '1000'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'SamplingEnabled'
+value = 'false'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'SamplingIntervalSeconds'
+value = '900'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'SamplingOutputPath'
+value = ''
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'SamplingIncludePattern'
+value = '*'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'SamplingExcludePattern'
+value = ''
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ManageOnlyCurrentUser'
+value = 'false'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ExitOnCloseWindow'
+value = 'false'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'SoundsOff'
+value = 'true'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'IsConfigWritable'
+value = 'true'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ForcedMode'
+value = 'false'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'IgnoreProblematicProcesses'
+value = 'true'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'AllowBlacklistedProcesses'
+value = 'false'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'IgnoreSuspendedProcesses'
+value = 'false'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'RecentlyTerminatedViewExclusions'
+value = 'conhost.exe,dllhost.exe,runtimebroker.exe,sppsvc.exe,svchost.exe,taskhostw.exe'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'SetTimerResolutionAtStartup'
+value = '0'
+why = "Lasso sets no timer resolution and boosts no foreground process: dasio's and the DAWs' priorities stay as set (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'BoostForegroundProcess'
+value = 'false'
+why = "Lasso sets no timer resolution and boosts no foreground process: dasio's and the DAWs' priorities stay as set (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ForegroundBoostPriorityClass'
+value = '0x8000'
+why = "Lasso sets no timer resolution and boosts no foreground process: dasio's and the DAWs' priorities stay as set (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ForegroundBoostGPU'
+value = '-1'
+why = "Lasso sets no timer resolution and boosts no foreground process: dasio's and the DAWs' priorities stay as set (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'BoostOnlyNormal'
+value = 'true'
+why = "Lasso sets no timer resolution and boosts no foreground process: dasio's and the DAWs' priorities stay as set (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'BoostOnlyNormalGPU'
+value = 'true'
+why = "Lasso sets no timer resolution and boosts no foreground process: dasio's and the DAWs' priorities stay as set (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ForegroundBoostExclusions'
+value = ''
+why = "Lasso sets no timer resolution and boosts no foreground process: dasio's and the DAWs' priorities stay as set (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'UseStaticIcon'
+value = 'false'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ShowResponsivnessInTrayInsteadOfProcessorUsage'
+value = 'false'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LogDisable'
+value = 'false'
+why = 'Process Lasso logs what it does (affinity, priority, ProBalance, power plan), so a change on the PC can be traced (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'IncludeCommandLines'
+value = 'false'
+why = 'Process Lasso logs what it does (affinity, priority, ProBalance, power plan), so a change on the PC can be traced (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LogSmartTrim'
+value = 'true'
+why = 'Process Lasso logs what it does (affinity, priority, ProBalance, power plan), so a change on the PC can be traced (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LogCPULimiter'
+value = 'true'
+why = 'Process Lasso logs what it does (affinity, priority, ProBalance, power plan), so a change on the PC can be traced (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LogStartupBoostActions'
+value = 'true'
+why = 'Process Lasso logs what it does (affinity, priority, ProBalance, power plan), so a change on the PC can be traced (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LogEfficiencyMode'
+value = 'true'
+why = 'Process Lasso logs what it does (affinity, priority, ProBalance, power plan), so a change on the PC can be traced (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LogGroupExtender'
+value = 'true'
+why = 'Process Lasso logs what it does (affinity, priority, ProBalance, power plan), so a change on the PC can be traced (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LogCPUSets'
+value = 'true'
+why = 'Process Lasso logs what it does (affinity, priority, ProBalance, power plan), so a change on the PC can be traced (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LogProBalanceParkingChanges'
+value = 'true'
+why = 'Process Lasso logs what it does (affinity, priority, ProBalance, power plan), so a change on the PC can be traced (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LogProcessExecutions'
+value = 'false'
+why = 'Process Lasso logs what it does (affinity, priority, ProBalance, power plan), so a change on the PC can be traced (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LogProcessTerminations'
+value = 'false'
+why = 'Process Lasso logs what it does (affinity, priority, ProBalance, power plan), so a change on the PC can be traced (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LogProcessesDisallowed'
+value = 'true'
+why = 'Process Lasso logs what it does (affinity, priority, ProBalance, power plan), so a change on the PC can be traced (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LogDefaultPriorityAdjustments'
+value = 'true'
+why = 'Process Lasso logs what it does (affinity, priority, ProBalance, power plan), so a change on the PC can be traced (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LogDefaultAffinityAdjustments'
+value = 'true'
+why = 'Process Lasso logs what it does (affinity, priority, ProBalance, power plan), so a change on the PC can be traced (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LogProBalanceBegin'
+value = 'true'
+why = 'Process Lasso logs what it does (affinity, priority, ProBalance, power plan), so a change on the PC can be traced (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LogProBalanceEnd'
+value = 'true'
+why = 'Process Lasso logs what it does (affinity, priority, ProBalance, power plan), so a change on the PC can be traced (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LogInstanceLimitTerminations'
+value = 'true'
+why = 'Process Lasso logs what it does (affinity, priority, ProBalance, power plan), so a change on the PC can be traced (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LogPowerProfileChanges'
+value = 'true'
+why = 'Process Lasso logs what it does (affinity, priority, ProBalance, power plan), so a change on the PC can be traced (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'SmartTrimIsEnabled'
+value = 'false'
+why = 'SmartTrim off: no working-set trims or standby-list clears under the DAWs (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'SmartTrimWorkingSetTrims'
+value = 'false'
+why = 'SmartTrim off: no working-set trims or standby-list clears under the DAWs (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'SmartTrimClearStandbyList'
+value = 'false'
+why = 'SmartTrim off: no working-set trims or standby-list clears under the DAWs (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'SmartTrimClearFileCache'
+value = 'false'
+why = 'SmartTrim off: no working-set trims or standby-list clears under the DAWs (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'SmartTrimLogNoAction'
+value = 'true'
+why = 'SmartTrim off: no working-set trims or standby-list clears under the DAWs (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ClearStandbyFreeRAMThresholdMB'
+value = '1024'
+why = 'SmartTrim off: no working-set trims or standby-list clears under the DAWs (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ClearStandbyOnlyInPerfMode'
+value = 'true'
+why = 'SmartTrim off: no working-set trims or standby-list clears under the DAWs (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'SmartTrimExclusions'
+value = ''
+why = 'SmartTrim off: no working-set trims or standby-list clears under the DAWs (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'SmartTrimAutoMinimumRAMLoad'
+value = '65'
+why = 'SmartTrim off: no working-set trims or standby-list clears under the DAWs (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'MinimumProcessWSSInMb'
+value = '196'
+why = 'SmartTrim off: no working-set trims or standby-list clears under the DAWs (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'SmartTrimIntervalMins'
+value = '15'
+why = 'SmartTrim off: no working-set trims or standby-list clears under the DAWs (FOH, dasio#1)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'EnableSystemTrayNotification'
+value = 'false'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'BalloonTipDuration'
+value = '10000'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ShowBalloonsForOocPriorityRestoration'
+value = 'false'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ApplyInstanceCountLimitsToAllUsers'
+value = 'false'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'AllowedProcesses'
+value = ''
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'DisallowedProcesses'
+value = ''
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'InstanceLimitedProcesses'
+value = ''
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'InstanceManagedCPUAffinities'
+value = ''
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ProcessThrottles'
+value = ''
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'OneTimeProcessThrottles'
+value = ''
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'CPULimitRules'
+value = ''
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'StartupBoostRules'
+value = ''
+why = "Lasso sets no timer resolution and boosts no foreground process: dasio's and the DAWs' priorities stay as set (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'DefaultGPUAdapterPreferences'
+value = ''
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'CPUSets'
+value = ''
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'KeepRunningProcessesEx'
+value = ''
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'EfficiencyMode'
+value = ''
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'MatchWildcardsToPathnames'
+value = 'true'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'MatchOnCommandLine'
+value = 'false'
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'DivideCPUPercentThresholdsBySystemCPUCount'
+value = 'false'
+why = 'ProBalance as on FOH: it never restrains a service (dasio runs as one) or the foreground (dasio#1, dasio#120)'
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ProcessorGroupExtended'
+value = ''
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'ProhibitInternetExplorerExceptWhenAny'
+value = ''
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'WatchdogRules2'
+value = ''
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'GamingModeEnabled'
+value = 'false'
+why = "Lasso never switches the power plan (gaming mode, energy saver, load-based switcher off): the baseline's plan values hold (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'GamingChangePowerPlan'
+value = 'true'
+why = "Lasso never switches the power plan (gaming mode, energy saver, load-based switcher off): the baseline's plan values hold (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'GamingModeEngageForSteam'
+value = 'true'
+why = "Lasso never switches the power plan (gaming mode, energy saver, load-based switcher off): the baseline's plan values hold (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'AutomaticGamingModeUserExclusions'
+value = ''
+why = "Process Lasso's other global settings as on FOH (GUI, tray, sounds, empty rule lists), so every PC's Lasso behaves the same (dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'StartWithPowerPlan'
+value = ''
+why = "Lasso never switches the power plan (gaming mode, energy saver, load-based switcher off): the baseline's plan values hold (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'Display'
+value = ''
+why = "Lasso never switches the power plan (gaming mode, energy saver, load-based switcher off): the baseline's plan values hold (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'PC'
+value = ''
+why = "Lasso never switches the power plan (gaming mode, energy saver, load-based switcher off): the baseline's plan values hold (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'PowerSaver_IdleTime'
+value = '0'
+why = "Lasso never switches the power plan (gaming mode, energy saver, load-based switcher off): the baseline's plan values hold (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'EnergySaverEnabled'
+value = 'false'
+why = "Lasso never switches the power plan (gaming mode, energy saver, load-based switcher off): the baseline's plan values hold (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'EnergySaverForceActivePowerProfile'
+value = 'false'
+why = "Lasso never switches the power plan (gaming mode, energy saver, load-based switcher off): the baseline's plan values hold (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'EnergySaverUpPowerProfileName'
+value = ''
+why = "Lasso never switches the power plan (gaming mode, energy saver, load-based switcher off): the baseline's plan values hold (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'EnergySaverEvents'
+value = 'true'
+why = "Lasso never switches the power plan (gaming mode, energy saver, load-based switcher off): the baseline's plan values hold (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'DisableEnergySaverDuringGamingMode'
+value = 'true'
+why = "Lasso never switches the power plan (gaming mode, energy saver, load-based switcher off): the baseline's plan values hold (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'EnergySaverUseCPUThreshold'
+value = 'false'
+why = "Lasso never switches the power plan (gaming mode, energy saver, load-based switcher off): the baseline's plan values hold (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'EnergySaverCPUThreshold'
+value = '5.00'
+why = "Lasso never switches the power plan (gaming mode, energy saver, load-based switcher off): the baseline's plan values hold (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'PowerSaver_Exclusions'
+value = ''
+why = "Lasso never switches the power plan (gaming mode, energy saver, load-based switcher off): the baseline's plan values hold (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LoadBasedPowerSwitcherEnabled'
+value = 'false'
+why = "Lasso never switches the power plan (gaming mode, energy saver, load-based switcher off): the baseline's plan values hold (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LoadBasedPowerSwitcherLowCPULoadThreshold'
+value = '10.00'
+why = "Lasso never switches the power plan (gaming mode, energy saver, load-based switcher off): the baseline's plan values hold (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LoadBasedPowerSwitcherHighCPULoadThreshold'
+value = '50.00'
+why = "Lasso never switches the power plan (gaming mode, energy saver, load-based switcher off): the baseline's plan values hold (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LoadBasedPowerSwitcherMinimumTimeInPowerPlanMs'
+value = '5000'
+why = "Lasso never switches the power plan (gaming mode, energy saver, load-based switcher off): the baseline's plan values hold (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LoadBasedPowerSwitcherAveragingWindowSamples'
+value = '5'
+why = "Lasso never switches the power plan (gaming mode, energy saver, load-based switcher off): the baseline's plan values hold (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LoadBasedPowerSwitcherLoggingEnabled'
+value = 'true'
+why = "Lasso never switches the power plan (gaming mode, energy saver, load-based switcher off): the baseline's plan values hold (FOH, dasio#1)"
+
+[[ini]]
+file = 'C:\ProgramData\ProcessLasso\config\prolasso.ini'
+key = 'LoadBasedPowerSwitcherDeferLowPlan'
+value = 'true'
+why = "Lasso never switches the power plan (gaming mode, energy saver, load-based switcher off): the baseline's plan values hold (FOH, dasio#1)"
+
+# What must not exist on a dasio PC (owner 16.11.2026, dasio#128): the
+# check reports it, `dasio pc-profile apply` removes it.
+
+[[absent]]
+exe = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
+uninstall = ['C:\Program Files (x86)\Microsoft\Edge\Application\*\Installer\setup.exe', '--uninstall', '--msedge', '--system-level', '--force-uninstall']
+why = "Microsoft Edge: owner 16.11.2026: no browser and no updater on a dasio PC, removed, not only disabled, so nothing starts by chance; re-removed after a Windows upgrade (dasio#128)"
+
+[[absent]]
+exe = 'C:\Program Files (x86)\Microsoft\EdgeUpdate\MicrosoftEdgeUpdate.exe'
+uninstall = ['C:\Program Files (x86)\Microsoft\EdgeUpdate\MicrosoftEdgeUpdate.exe', '/uninstall']
+why = "Edge's updater (it re-installs Edge and runs as a service): owner 16.11.2026: no browser and no updater on a dasio PC, removed, not only disabled, so nothing starts by chance; re-removed after a Windows upgrade (dasio#128)"
+
+[[absent]]
+service = "edgeupdate"
+why = "Edge's updater service: owner 16.11.2026: no browser and no updater on a dasio PC, removed, not only disabled, so nothing starts by chance; re-removed after a Windows upgrade (dasio#128)"
+
+[[absent]]
+service = "edgeupdatem"
+why = "Edge's updater service: owner 16.11.2026: no browser and no updater on a dasio PC, removed, not only disabled, so nothing starts by chance; re-removed after a Windows upgrade (dasio#128)"
+
+[[absent]]
+service = "MicrosoftEdgeElevationService"
+why = "Edge's updater service: owner 16.11.2026: no browser and no updater on a dasio PC, removed, not only disabled, so nothing starts by chance; re-removed after a Windows upgrade (dasio#128)"
+
+[[absent]]
+task = '\MicrosoftEdgeUpdateTaskMachineCore*'
+why = "Edge's updater task (its name ends in a GUID): owner 16.11.2026: no browser and no updater on a dasio PC, removed, not only disabled, so nothing starts by chance; re-removed after a Windows upgrade (dasio#128)"
+
+[[absent]]
+task = '\MicrosoftEdgeUpdateTaskMachineUA*'
+why = "Edge's updater task (its name ends in a GUID): owner 16.11.2026: no browser and no updater on a dasio PC, removed, not only disabled, so nothing starts by chance; re-removed after a Windows upgrade (dasio#128)"

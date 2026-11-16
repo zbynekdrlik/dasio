@@ -1,6 +1,7 @@
 //! The PC as the profile sees it: HKLM values (with the Dante NIC's keys
 //! resolved), ini lines, running processes and free disk space; and the
-//! writes `apply` makes (power-plan values through powercfg, dasio#128).
+//! writes `apply` makes (power-plan values through powercfg, dasio#128);
+//! what an `[[absent]]` entry names and its removal (dasio#128).
 
 use std::path::Path;
 
@@ -22,6 +23,7 @@ use windows_sys::Win32::System::Threading::{
     OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, REALTIME_PRIORITY_CLASS,
 };
 
+use super::absent::{self, AbsentEntry, Removal, Target};
 use super::{Action, ProcState, Profile, Reader, Value, get_ini, set_ini};
 
 const NET_CLASS: &str =
@@ -141,6 +143,7 @@ impl Pc {
                 let text = read_text(path)?;
                 std::fs::write(path, set_ini(&text, key, value)).map_err(|e| format!("{file}: {e}"))
             }
+            Action::Remove(r) => remove(r),
         }
     }
 }
@@ -148,6 +151,25 @@ impl Pc {
 impl Reader for Pc {
     fn nic_service(&self) -> Option<String> {
         self.nic_service.clone()
+    }
+
+    fn absent(&self, e: &AbsentEntry) -> Result<Vec<String>, String> {
+        let one = |there: bool, what: &str| {
+            if there {
+                vec![what.to_string()]
+            } else {
+                Vec::new()
+            }
+        };
+        match e.target() {
+            Some(Target::Exe(exe)) => Ok(one(file_there(exe)?, exe)),
+            Some(Target::Service(s)) => Ok(one(
+                key_exists(&format!(r"SYSTEM\CurrentControlSet\Services\{s}"))?,
+                s,
+            )),
+            Some(Target::Task(t)) => tasks_matching(t),
+            None => Err("the entry names nothing".into()),
+        }
     }
 
     fn reg(&self, key: &str, name: &str) -> Result<Option<Value>, String> {
@@ -259,12 +281,26 @@ impl Reader for Pc {
 /// Runs `powercfg <args>`; the error names the command, its status and
 /// its first output line.
 fn powercfg(args: &[String]) -> Result<(), String> {
-    let cmd = format!("powercfg {}", args.join(" "));
-    // System32's powercfg by its full path: apply runs elevated, and a
-    // lookup by name would try the exe's own folder first.
-    let root = std::env::var("SystemRoot").map_err(|e| format!("{cmd}: SystemRoot: {e}"))?;
-    let out = std::process::Command::new(format!(r"{root}\System32\powercfg.exe"))
-        .args(args)
+    system32_tool("powercfg", args)
+}
+
+/// Windows' System32 folder (`%SystemRoot%\System32`).
+fn system32() -> Result<String, String> {
+    std::env::var("SystemRoot")
+        .map(|root| format!(r"{root}\System32"))
+        .map_err(|e| format!("SystemRoot: {e}"))
+}
+
+/// Runs System32's `<tool>.exe <args>`; the error names the command, its
+/// status and its first output line.
+fn system32_tool(tool: &str, args: &[impl AsRef<str>]) -> Result<(), String> {
+    let args: Vec<&str> = args.iter().map(|a| a.as_ref()).collect();
+    let cmd = format!("{tool} {}", args.join(" "));
+    // System32's tool by its full path: apply runs elevated, and a lookup
+    // by name would try the exe's own folder first.
+    let dir = system32().map_err(|e| format!("{cmd}: {e}"))?;
+    let out = std::process::Command::new(format!(r"{dir}\{tool}.exe"))
+        .args(&args)
         .output()
         .map_err(|e| format!("{cmd}: {e}"))?;
     if out.status.success() {
@@ -280,6 +316,164 @@ fn powercfg(args: &[String]) -> Result<(), String> {
         out.status,
         text.trim().lines().next().unwrap_or("")
     ))
+}
+
+/// Whether `path` exists; an error other than "not found" (access denied)
+/// is an error, never "absent".
+fn file_there(path: &str) -> Result<bool, String> {
+    match std::fs::metadata(path) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!("{path}: {e}")),
+    }
+}
+
+/// Whether the key HKLM\`key` exists.
+fn key_exists(key: &str) -> Result<bool, String> {
+    let mut h: HKEY = std::ptr::null_mut();
+    let k = wide(key);
+    // SAFETY: a valid name; the key is closed below when opened.
+    let r = unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, k.as_ptr(), 0, KEY_READ, &mut h) };
+    if r == ERROR_SUCCESS {
+        // SAFETY: opened above.
+        unsafe { RegCloseKey(h) };
+        return Ok(true);
+    }
+    if r == ERROR_FILE_NOT_FOUND {
+        return Ok(false);
+    }
+    Err(format!(r"HKLM\{key}: os error {r}"))
+}
+
+/// The scheduled tasks `pattern` names, by their full path: each task is
+/// a file under System32\Tasks, so the folder is listed, no process is
+/// started (the bridge checks in process, dasio#106).
+fn tasks_matching(pattern: &str) -> Result<Vec<String>, String> {
+    let folder = absent::task_folder(pattern);
+    let dir = Path::new(&system32()?).join("Tasks").join(folder);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{}: {e}", dir.display())),
+    };
+    let prefix = if folder.is_empty() {
+        r"\".to_string()
+    } else {
+        format!(r"\{folder}\")
+    };
+    let mut out = Vec::new();
+    for ent in entries {
+        let ent = ent.map_err(|e| format!("{}: {e}", dir.display()))?;
+        if !ent.file_type().is_ok_and(|t| t.is_file()) {
+            continue;
+        }
+        let name = format!("{prefix}{}", ent.file_name().to_string_lossy());
+        if absent::task_matches(pattern, &name) {
+            out.push(name);
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// The folder names under `dir` (for an uninstaller's version folder).
+fn folder_names(dir: &str) -> Vec<String> {
+    std::fs::read_dir(dir)
+        .map(|d| {
+            d.flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// How long `apply` waits for an uninstaller: a hung or interactive one
+/// must not hold the boot-time apply or install.ps1 for good (dasio#128).
+const UNINSTALL_LIMIT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Removes what `r` names (dasio#128): exactly that service, task or
+/// program, nothing else. What is already gone is fine: one removal can
+/// take others with it (EdgeUpdate's uninstaller removes its services and
+/// tasks), and the plan was made before any ran.
+fn remove(r: &Removal) -> Result<(), String> {
+    match r {
+        Removal::Service(s) => {
+            // The parse refuses any other; checked again before an
+            // irreversible delete.
+            if !absent::deletable(s) {
+                return Err(format!(
+                    "service {s}: not one dasio deletes ({:?})",
+                    absent::DELETABLE_SERVICES
+                ));
+            }
+            if !key_exists(&format!(r"SYSTEM\CurrentControlSet\Services\{s}"))? {
+                return Ok(());
+            }
+            // A stopped or disabled service answers "not started" (1062):
+            // the delete is what counts.
+            let _ = system32_tool("sc", &["stop", s.as_str()]);
+            system32_tool("sc", &["delete", s.as_str()])
+        }
+        Removal::Task(t) => {
+            let file = Path::new(&system32()?)
+                .join("Tasks")
+                .join(t.trim_start_matches('\\'));
+            if !file_there(&file.to_string_lossy())? {
+                return Ok(());
+            }
+            system32_tool("schtasks", &["/delete", "/tn", t.as_str(), "/f"])
+        }
+        Removal::Exe { exe, uninstall } => {
+            if !file_there(exe)? {
+                return Ok(());
+            }
+            let Some((first, args)) = uninstall.split_first() else {
+                return Err(format!("{exe}: no uninstaller given"));
+            };
+            let prog = absent::resolve_uninstaller(first, folder_names, |p| Path::new(p).is_file())
+                .ok_or_else(|| format!("{exe}: its uninstaller {first} was not found"))?;
+            let status = run_bounded(&prog, args)?;
+            // An uninstaller's exit code says little (some end non-zero
+            // after a good uninstall): the exe gone is what counts.
+            if file_there(exe)? {
+                return Err(format!(
+                    "ran {prog} {} ({status}): {exe} is still there",
+                    args.join(" ")
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Runs `prog args` and waits at most [`UNINSTALL_LIMIT`]; past it the
+/// process is killed and the error says so.
+fn run_bounded(prog: &str, args: &[String]) -> Result<std::process::ExitStatus, String> {
+    use std::process::Stdio;
+    let mut child = std::process::Command::new(prog)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("{prog}: {e}"))?;
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().map_err(|e| format!("{prog}: {e}"))? {
+            return Ok(status);
+        }
+        if start.elapsed() > UNINSTALL_LIMIT {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "{prog} {}: still running after {} s, stopped",
+                args.join(" "),
+                UNINSTALL_LIMIT.as_secs()
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
 }
 
 /// An ini file as text (UTF-16 with a BOM or 8-bit).
