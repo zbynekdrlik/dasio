@@ -85,7 +85,7 @@ pub fn run(
         .ok_or("the bridge's pump side was taken already")?;
     let (to_stats, from_stats, to_fifo) =
         (b.to_asio_stats(), b.from_asio_stats(), b.to_asio_fifo());
-    // The from-ASIO block age (dstack #325, dasio#120).
+    // The from-ASIO figures (dstack #325, dasio#120).
     let age = b.from_asio_age();
     let shared = Arc::new(Mutex::new(b));
     let map = Map {
@@ -187,10 +187,15 @@ pub fn run(
             profile.start_in_process(&pc_problems);
         }
         if counts.due(now) {
-            // The TX flows' receivers against the from-ASIO block age: here,
-            // never in the pump or the driver's callback (it locks the TX
-            // table); dstack WARNs at most once an hour.
-            crate::app_status::from_asio_age_tick(&age, || media.tx.receiver_latencies());
+            // The TX packets' age and the receivers' late counts: here,
+            // never in the pump or the driver's callback (the view locks the
+            // TX table); the device's only reader of the view; dstack WARNs
+            // at most once an hour.
+            crate::app_status::from_asio_age_tick(
+                &age,
+                &media.tx.take_app_view(),
+                media.rx.network_p99_ns(),
+            );
             let s = lock(&status).clone();
             let v = stats.view();
             info!(

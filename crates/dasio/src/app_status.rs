@@ -5,6 +5,7 @@
 
 use std::collections::VecDeque;
 
+use dstack::media::tx::AppView;
 use dstack_asio::bridge::{AgeReport, BlockAge};
 
 /// Seconds the late count per minute is taken over.
@@ -209,8 +210,8 @@ pub struct BridgeFacts {
     pub pc_problems: Option<u32>,
     /// How audio TX goes out (dasio#125).
     pub tx: TxPath,
-    /// The from-ASIO block age (dstack #325, dasio#120); `None` before the
-    /// pump's first take and once no block was taken for 1-2 minutes.
+    /// The from-ASIO figures (dstack #325, dasio#120); `None` while neither
+    /// a block was taken nor a TX packet seen for 1-2 minutes.
     pub from_asio_age: Option<AgeReport>,
 }
 
@@ -244,32 +245,44 @@ impl BridgeFacts {
     }
 }
 
-/// The bridge's from-ASIO age keys for its status JSON, each followed by a
-/// comma; empty while there is no report (the keys are left out).
+/// The bridge's from-ASIO keys for its status JSON (dstack #325,
+/// dasio#120), each followed by a comma: each key only while its value is
+/// known (never a 0 that reads as a fast driver or a young packet), all of
+/// them left out without a report. `from_asio_block_age_*` is the modelled
+/// age of the driver's blocks (a diagnostic); `from_asio_packet_age_us` the
+/// TX packets' measured age past their stamps over the last minute, and
+/// `from_asio_min_receiver_latency_us` that + the network.
 fn age_json(age: Option<AgeReport>) -> String {
-    age.map_or_else(String::new, |a| {
-        format!(
-            concat!(
-                "\"from_asio_block_age_us\":{},\"from_asio_block_age_max_us\":{},",
-                "\"from_asio_min_receiver_latency_us\":{},"
-            ),
-            a.block_age_us, a.block_age_max_us, a.min_receiver_latency_us
-        )
-    })
+    let Some(a) = age else {
+        return String::new();
+    };
+    [
+        ("from_asio_block_age_us", a.block_age_us),
+        ("from_asio_block_age_max_us", a.block_age_max_us),
+        ("from_asio_packet_age_us", a.packet_age_us),
+        (
+            "from_asio_min_receiver_latency_us",
+            a.min_receiver_latency_us,
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(key, v)| v.map(|v| format!("\"{key}\":{v},")))
+    .collect()
 }
 
-/// The bridge status loop's check of the TX flows' receivers against the
-/// from-ASIO block age (dstack #325, dasio#120), once a counts tick, never
-/// from the pump or the driver's callback. `receivers` (the TX table's
-/// receiver latencies, a lock and an allocation) is read only while the age
-/// has a report: with no driver serving, nothing is read. Returns the
-/// warning `age` logged (at most one an hour).
+/// The bridge status loop's look at the TX side (dstack #325, dasio#120),
+/// once a counts tick, never from the pump or the driver's callback (the
+/// view locks the TX table): `view` from `TxShared::take_app_view` (this
+/// device's only reader: a second one would take its peak), the device's
+/// measured network p99 from `RxShared::network_p99_ns`. It records the TX
+/// packets' age for the status and returns the warning `age` logged, at
+/// most one an hour, when a receiver's late count rose.
 pub fn from_asio_age_tick(
     age: &BlockAge,
-    receivers: impl FnOnce() -> Vec<(String, u64)>,
+    view: &AppView,
+    network_p99_ns: Option<u64>,
 ) -> Option<String> {
-    age.report()?;
-    age.warn_low_receivers(&receivers())
+    age.look(view, network_p99_ns)
 }
 
 /// The menu line dtray shows for a bridge instance.
