@@ -35,6 +35,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use dlink::bridge::RxPull;
+use dlink::bridge::pull::PullStats;
 use dstack::host::{self, Signals, Stopped};
 use dstack::stream::{self, Map, Pump, PumpStats};
 use dstack_asio::bridge::Bridge;
@@ -89,29 +90,8 @@ pub fn run(
     let stats = Arc::new(PumpStats::new(timing, cfg.sample_rate));
     media.attach_engine(Arc::clone(&stats));
     let mut b = Bridge::new(spec).map_err(|e| format!("the bridge: {e}"))?;
-    // The to-ASIO side pulled by the driver's buffer switch (dasio#120,
-    // dstack issue 307 step 2): the RX rings' writes claimed before the
-    // pump (Pump::new would claim them), one to-ASIO channel per RX
-    // channel in RX order, handed over before the driver's first open.
-    // A bridge with no RX channel has no to-ASIO FIFO and nothing to pull.
-    if let Some(fifo) = b.to_asio_fifo() {
-        let intake = media
-            .rx
-            .app_intake()
-            .ok_or("the to-ASIO pull: the device's RX rings have another writer already")?;
-        let pull = RxPull::new(
-            intake,
-            Arc::clone(&media.clock),
-            Arc::clone(&media.rx),
-            (0..cfg.rx.len()).collect(),
-            fifo,
-            timing.playout,
-            cfg.sample_rate,
-        )
-        .map_err(|e| format!("the to-ASIO pull: {e}"))?;
-        b.pull_to_asio(pull)
-            .map_err(|e| format!("the to-ASIO pull: {e}"))?;
-    }
+    // Before Pump::new, which would claim the RX rings itself.
+    pull_to_driver(&mut b, &media, timing.playout, cfg.sample_rate)?;
     let pull_stats = b.to_asio_pull_stats();
     let dante = b
         .dante_side()
@@ -225,27 +205,8 @@ pub fn run(
         // The players the pump gave back, freed here, off its thread.
         lock(&shared).collect();
         let now = Instant::now();
-        // The bridge's lock only for the look itself, not the log lines.
-        let looked = if keep.due(now) {
-            lock(&shared).keep_pulled()
-        } else {
-            None
-        };
-        if let Some((look, poisoned)) = looked {
-            let (pulls, restarts, frames) = pull_stats
-                .as_ref()
-                .map_or((0, 0, 0), |p| (p.pulls(), p.restarts(), p.frames()));
-            for note in crate::to_asio_pull::notes(look, poisoned) {
-                let rose = match note {
-                    crate::to_asio_pull::Note::Restarted(n) => n,
-                    _ => 0,
-                };
-                if note.warns() {
-                    warn!(pulls, restarts, rose, frames, "{}", note.text());
-                } else {
-                    info!(pulls, restarts, frames, "{}", note.text());
-                }
-            }
+        if keep.due(now) {
+            look_at_pull(&shared, pull_stats.as_deref());
         }
         if now >= profile_due {
             profile_due = now + Duration::from_secs(crate::pc_profile::CHECK_EVERY_S);
@@ -360,6 +321,63 @@ pub fn run(
     match why {
         None => Ok(()),
         Some(e) => Err(e),
+    }
+}
+
+/// Hands the to-ASIO side of `b` to the driver's buffer switch (dasio#120,
+/// dstack issue 307 step 2): the RX rings' writes claimed for the app
+/// (before `Pump::new`, which would claim them), an `RxPull` reading
+/// to-ASIO channel `i` from RX channel `i` (`kind.rs`: one to-ASIO channel
+/// per RX channel, in RX order) at the device's playout `playout`, handed
+/// over before the driver's first open. A bridge with no to-ASIO channel
+/// has no FIFO and nothing to pull.
+fn pull_to_driver(
+    b: &mut Bridge,
+    media: &dstack::daemon::media::Media,
+    playout: u64,
+    rate: u32,
+) -> Result<(), String> {
+    let Some(fifo) = b.to_asio_fifo() else {
+        return Ok(());
+    };
+    let intake = media
+        .rx
+        .app_intake()
+        .ok_or("the to-ASIO pull: the device's RX rings have another writer already")?;
+    let pull = RxPull::new(
+        intake,
+        Arc::clone(&media.clock),
+        Arc::clone(&media.rx),
+        (0..b.spec().to_asio).collect(),
+        fifo,
+        playout,
+        rate,
+    )
+    .map_err(|e| format!("the to-ASIO pull: {e}"))?;
+    b.pull_to_asio(pull)
+        .map_err(|e| format!("the to-ASIO pull: {e}"))
+}
+
+/// The run loop's look at the to-ASIO pull (dstack v0.6.155's
+/// `Bridge::keep_pulled`; [`crate::to_asio_pull`]): the idle drain while
+/// no driver side pulls, and its lines. The bridge's lock only for the
+/// look itself, not the log lines.
+fn look_at_pull(shared: &Mutex<Bridge>, stats: Option<&PullStats>) {
+    let Some((look, poisoned)) = lock(shared).keep_pulled() else {
+        return;
+    };
+    let (pulls, restarts, frames) =
+        stats.map_or((0, 0, 0), |p| (p.pulls(), p.restarts(), p.frames()));
+    for note in crate::to_asio_pull::notes(look, poisoned, pulls) {
+        let rose = match note {
+            crate::to_asio_pull::Note::Restarted(n) => n,
+            _ => 0,
+        };
+        if note.warns() {
+            warn!(pulls, restarts, rose, frames, "{}", note.text());
+        } else {
+            info!(pulls, restarts, frames, "{}", note.text());
+        }
     }
 }
 

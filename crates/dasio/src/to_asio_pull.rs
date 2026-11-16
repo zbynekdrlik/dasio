@@ -14,21 +14,14 @@ use std::time::Duration;
 use dlink::bridge::pull::Look;
 
 /// The period of the look at the pull, on the instance's own timer (never
-/// the pump, never the driver's callback). dstack's rule for
-/// `Bridge::keep_pulled`: longer than the driver's buffer period (under
-/// [`MAX_DEFAULT_BUFFER`] at the default target), or a running driver
-/// reads as stopped between two switches and the idle drain restarts its
-/// read; and well inside a flow's keepalive ([`FLOW_KEEPALIVE`]), so a
-/// flow no driver pulls stays heard. dlisten looks every 250 ms too.
+/// the pump, never the driver's callback), as dstack v0.6.155's Consumers
+/// line asks. dstack's rule for `Bridge::keep_pulled`: longer than the
+/// driver's buffer period (under 150 ms at the default target), or a
+/// running driver reads as stopped between two switches and the idle
+/// drain restarts its read; and well inside a flow's 2 s keepalive, so a
+/// flow no driver pulls stays heard. dlisten looks every 250 ms too. The
+/// run loop passes every 100 ms, so a look comes every 250-350 ms.
 pub const KEEP_EVERY: Duration = Duration::from_millis(250);
-
-/// The longest driver buffer period at the bridge's default FIFO target
-/// (dstack v0.6.155's `Bridge::keep_pulled` doc).
-pub const MAX_DEFAULT_BUFFER: Duration = Duration::from_millis(150);
-
-/// The time a flow stays granted without a keepalive (dstack issue 307
-/// step 1: an idle drain keeps the flow alive within its 2 s).
-pub const FLOW_KEEPALIVE: Duration = Duration::from_secs(2);
 
 /// One line a look gives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,8 +29,10 @@ pub enum Note {
     /// A pull panicked; its poisoned lock was cleared and the switches
     /// pull on.
     Panicked,
-    /// No driver side pulls any more: the look drains the flow itself.
-    Idle,
+    /// No driver side pulls (any more, when `after_pulls`: a driver that
+    /// pulled stopped; else none pulled yet, as at the start before the
+    /// driver's first open): the look drains the flow itself.
+    Idle { after_pulls: bool },
     /// A driver side pulls again.
     Pulls,
     /// The pull started again at now this many times since the look
@@ -46,16 +41,18 @@ pub enum Note {
 }
 
 impl Note {
-    /// Whether the line is a WARN (else INFO).
+    /// Whether the line is a WARN (else INFO): not the driver pulling
+    /// (again), nor the start's idle before any pull (a driver whose first
+    /// open takes longer than a look, e.g. SoundGrid's).
     pub fn warns(self) -> bool {
-        !matches!(self, Note::Pulls)
+        !matches!(self, Note::Pulls | Note::Idle { after_pulls: false })
     }
 
     /// The line's message.
     pub fn text(self) -> &'static str {
         match self {
             Note::Panicked => "a to-ASIO pull panicked: its lock was cleared, the driver pulls on",
-            Note::Idle => {
+            Note::Idle { .. } => {
                 "no ASIO driver side pulls the to-ASIO audio: the instance drains the flow itself"
             }
             Note::Pulls => "the ASIO driver pulls the to-ASIO audio again",
@@ -66,16 +63,23 @@ impl Note {
     }
 }
 
-/// The lines for one look (`Bridge::keep_pulled`'s `(look, poisoned)`), in
-/// order: a cleared poison, the change of who pulls (both ways, once at
-/// the change, never again while it stays), the restarts' rise.
-pub fn notes(look: Look, poisoned: bool) -> Vec<Note> {
+/// The lines for one look (`Bridge::keep_pulled`'s `(look, poisoned)`,
+/// `pulls` the pull's count so far), in order: a cleared poison, the
+/// change of who pulls (both ways, once at the change, never again while
+/// it stays), the restarts' rise.
+pub fn notes(look: Look, poisoned: bool, pulls: u64) -> Vec<Note> {
     let mut out = Vec::new();
     if poisoned {
         out.push(Note::Panicked);
     }
     if look.changed {
-        out.push(if look.idle { Note::Idle } else { Note::Pulls });
+        out.push(if look.idle {
+            Note::Idle {
+                after_pulls: pulls > 0,
+            }
+        } else {
+            Note::Pulls
+        });
     }
     if look.restarts_rose > 0 {
         out.push(Note::Restarted(look.restarts_rose));

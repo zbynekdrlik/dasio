@@ -17,3 +17,4 @@ paths:
 - Status JSON keys `rx_arrival_peak_ns`, `rx_arrival_last_min_ns`, `rx_arrival_last_max_ns` appear only once measured (the last two only for a second with a packet), never a 0 that reads as a measured age. dtray's line: ` · RX arrival 0.10-0.35 ms, peak 0.72 ms`.
 - Name the method `observe`, not `look`: `app_status/tests.rs` guards `run_bridge.rs` against any `.look(` call (dstack 0.6.151's removed age look).
 - dstack judges a packet late against its FLOW's playout (`RxPlan.latency`, at least the device latency), so a peak above `latency_ns` is not by itself a late packet: read it next to the late counts.
+- A bridge instance pulls its RX at the ASIO driver's buffer switch (dstack v0.6.155, dasio issue 120): there the age at placement includes up to one driver buffer period of wait (Windows has no receive stamps), so a bridge's arrival reads higher than a DAW instance's at the same network; compare a bridge with itself, before and after.
