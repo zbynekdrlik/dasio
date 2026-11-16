@@ -444,6 +444,9 @@ typedef struct _MS_FILTER
     BOOLEAN                         RxdEnabled;
     LONG                            RxdCpu;
     KDPC                            RxdDpc;
+    // A run of RxdDpc is indicating (under Lock): a second run on another
+    // CPU returns at once, so slices go up in order.
+    BOOLEAN                         RxdRunning;
     PNET_BUFFER_LIST                RxdHead;
     PNET_BUFFER_LIST               *RxdTail;
     ULONG                           RxdQueued;

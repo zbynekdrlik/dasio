@@ -418,6 +418,7 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
         pFilter->RxdHead = NULL;
         pFilter->RxdTail = &pFilter->RxdHead;
         pFilter->RxdCpu = -1;
+        pFilter->RxdRunning = FALSE;
         rxdApply(pFilter);
         pFilter->State = FilterPaused;
 
@@ -3061,6 +3062,13 @@ rxdDpc(
     UNREFERENCED_PARAMETER(SystemArgument1);
     UNREFERENCED_PARAMETER(SystemArgument2);
     FILTER_ACQUIRE_LOCK(&Filter->Lock, bTrue);
+    if (Filter->RxdRunning)
+    {
+        // Another CPU indicates a slice (no RxdCpu: the DPC runs where it
+        // was queued): it queues the next run when it ends, in order.
+        FILTER_RELEASE_LOCK(&Filter->Lock, bTrue);
+        return;
+    }
     Chain = Filter->RxdHead;
     Rest = Chain;
     while (Rest != NULL && Count < RXD_SLICE)
@@ -3081,6 +3089,7 @@ rxdDpc(
     Filter->RxdQueued -= Count;
     if (Chain != NULL)
     {
+        Filter->RxdRunning = TRUE;
         Filter->RxdDpcRuns++;
         if (Count > Filter->RxdMaxBatch)
         {
@@ -3101,6 +3110,7 @@ rxdDpc(
     // not queued at all: none runs after the filter is gone. A receive that
     // queued the DPC meanwhile makes this a no-op.
     FILTER_ACQUIRE_LOCK(&Filter->Lock, bTrue);
+    Filter->RxdRunning = FALSE;
     if (Filter->RxdHead != NULL && Filter->State == FilterRunning)
     {
         KeInsertQueueDpc(&Filter->RxdDpc, NULL, NULL);
