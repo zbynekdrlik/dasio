@@ -267,8 +267,11 @@ impl<L: Link> Bridge<L> {
     }
 
     /// Waits until the DAW returned block `due` or the deadline after
-    /// `start` passed; whether it had to wait and the answer came.
+    /// `start` passed (after the [`WaitFrom`] start when one is set: the
+    /// device block's, under the reblock); whether it had to wait and the
+    /// answer came.
     fn wait_for(&self, due: u64, start: Option<u64>) -> bool {
+        let start = self.wait_from.get().or(start);
         let (Some((offset, now)), Some(start)) = (&self.deadline, start) else {
             return false;
         };

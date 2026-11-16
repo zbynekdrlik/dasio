@@ -146,13 +146,15 @@ impl Plan {
         )
     }
 
-    /// How long after a DAW block's start the bridge may wait for its
-    /// answer, app samples: the device's offset (`device_offset`, its
-    /// samples, [`crate::wait_offset`]) at the app's rate, rounded down,
-    /// so the wait never passes the device block's own deadline. At 44.1
-    /// kHz a DAW block starts up to a block before the device block that
-    /// completes it, so its wait ends up to that much early (more late
-    /// blocks under load, never a late output); at 48 kHz none.
+    /// How long the bridge may wait for the DAW's answer, app samples
+    /// after the start of the device block its DAW block runs in (the
+    /// reblock sets that start, [`crate::bridge::WaitFrom`]): the device's
+    /// offset (`device_offset`, its samples, [`crate::wait_offset`]) at the
+    /// app's rate, rounded down, so the wait ends at the device block's own
+    /// deadline (dlink's Rated keeps the device block's start in app
+    /// samples within one sample, inside the offset's work margin). At 44.1
+    /// kHz a DAW block starts up to a block before that device block; the
+    /// wait still counts from the device block (dasio#107).
     pub fn wait_offset(&self, device_offset: u64) -> u64 {
         (u128::from(device_offset) * u128::from(self.app_rate)
             / u128::from(self.device_rate.max(1))) as u64
