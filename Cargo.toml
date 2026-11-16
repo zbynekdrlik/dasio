@@ -17,15 +17,31 @@ debug = "none"
 
 # The rate converter runs on the pump's real-time thread (an app at its
 # own rate, dasio#107): a debug build of its filters overran every block
-# in the e2e test (CI 43795516353: 800 us for a 333 us block). Optimized
-# in every profile, so tests run the converter at the speed it ships at.
+# in the e2e test (CI 43795516353: 800 us for a 333 us block). Built as
+# the release build ships them in every profile, so tests run the
+# converter at the speed it ships at: optimized, and without debug
+# assertions or overflow checks. With debug assertions on, std's unsafe
+# preconditions are checked too (`-Z ub-checks` follows them), a bounds
+# check on every load of rubato's AVX sinc loop: the two converters took
+# 111-183 us of each 333 us block at the e2e shape (CI 43807646396), and
+# the coverage job's 44.1 kHz step overran (CI 43806346111).
 [profile.dev.package.rubato]
 opt-level = 3
+debug-assertions = false
+overflow-checks = false
 [profile.dev.package.dstack-resample]
 opt-level = 3
+debug-assertions = false
+overflow-checks = false
 [profile.dev.package.dlink]
 opt-level = 3
+debug-assertions = false
+overflow-checks = false
 [profile.dev.package.audioadapter]
 opt-level = 3
+debug-assertions = false
+overflow-checks = false
 [profile.dev.package.audioadapter-buffers]
 opt-level = 3
+debug-assertions = false
+overflow-checks = false
