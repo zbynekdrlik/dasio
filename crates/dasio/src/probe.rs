@@ -46,19 +46,19 @@ pub struct Report {
     /// RX 1's largest magnitude in each second, and the sample of it within
     /// the second (the impulses' arrivals, whatever their level).
     pub rx_peaks: Vec<(i32, u64)>,
-    /// Impulses that never came back while the whole guest stopped on
-    /// their way (a watchdog stall between their emit and the next): a
-    /// shared runner's VM, not the device (dasio#114). Any other lost
-    /// impulse is the device's.
+    /// Impulses that never came back while the host itself lost its CPU
+    /// on their way (a switch over 1 ms late between their emit and the
+    /// next): a shared runner's VM, not the device (dasio#114). Any other
+    /// lost impulse is the device's.
     pub lost_in_host_gap: u64,
-    /// The watchdog's stalls: wakes over 1 ms late on its own timer, the
-    /// whole guest stopped (`vm_stall`), and the longest of them, µs.
+    /// Diagnostics, not a rule (dasio#114): the watchdog's stalls (wakes
+    /// over 1 ms late on its own timer, unpinned) and the longest, µs; the
+    /// `gap_blocks` of host gaps a stall overlaps; the blocks the stalls
+    /// span. A whole guest stopping shows here and in the gaps; a stall of
+    /// the pump's CPU alone (CI 43779634868) only in the gaps.
     pub vm_stalls: u64,
     pub vm_stall_max_us: u64,
-    /// The `gap_blocks` of host gaps that overlap a stall: the runner's.
-    /// A late block beyond them is the device's.
     pub vm_gap_blocks: u64,
-    /// The blocks the stalls span: switches a stopped guest could not take.
     pub vm_stall_blocks: u64,
 }
 
@@ -102,7 +102,7 @@ static LAST_SWITCH: Mutex<Option<Instant>> = Mutex::new(None);
 static RUNNING: AtomicU32 = AtomicU32::new(0);
 /// The probe's start: every span is µs since it.
 static T0: Mutex<Option<Instant>> = Mutex::new(None);
-/// The host's gaps over 1.5 blocks: `((start, end), blocks)`.
+/// The host's gaps over 1.5 blocks or 1 ms: `((start, end), blocks)`.
 static GAPS: Mutex<Vec<((u64, u64), u64)>> = Mutex::new(Vec::new());
 /// The watchdog runs while this is 1.
 static WATCHING: AtomicU32 = AtomicU32::new(0);
@@ -145,7 +145,7 @@ unsafe fn timed(half: i32, direct: ASIOBool, pos: Option<u64>) {
             }
             let blocks = blocks_in_gap(gap, BLOCK_US.load(Ordering::Relaxed));
             GAP_BLOCKS.fetch_add(blocks, Ordering::Relaxed);
-            if blocks > 0 {
+            if blocks > 0 || gap > 1000 {
                 let span = (since_start(t), since_start(entered));
                 // Pre-sized at the start: no allocation in the switch until
                 // its capacity runs out.
@@ -398,15 +398,23 @@ pub fn probe_stalled(instance: u32, seconds: u64, stall_ms: u64) -> Result<Repor
     report.emitted = s.emitted;
     report.skipped = s.skipped;
     report.round_trips = s.round_trips;
-    report.lost_in_host_gap = vm_stall::explained(&s.lost, &stalls);
     report.rx_peaks = s.peaks;
     let gaps = std::mem::take(&mut *GAPS.lock().unwrap());
+    let over_1ms: Vec<(u64, u64)> = gaps
+        .iter()
+        .map(|&(span, _)| span)
+        .filter(|&(a, b)| b - a > 1000)
+        .collect();
+    report.lost_in_host_gap = vm_stall::explained(&s.lost, &over_1ms);
     report.vm_stalls = stalls.len() as u64;
     report.vm_stall_max_us = stalls.iter().map(|&(a, b)| b - a).max().unwrap_or(0);
     report.vm_gap_blocks = vm_stall::explained_blocks(&gaps, &stalls);
     report.vm_stall_blocks = vm_stall::stall_blocks(&stalls, BLOCK_US.load(Ordering::Relaxed));
     Ok(report)
 }
+
+/// The watchdog thread: its stalls, or why it could not run.
+type Watchdog = std::thread::JoinHandle<Result<Vec<(u64, u64)>, String>>;
 
 /// The VM-stall watchdog (dasio#114): a thread at TIME_CRITICAL in this
 /// High-priority process, unpinned, waking each 1 ms on a high-resolution
@@ -415,7 +423,7 @@ pub fn probe_stalled(instance: u32, seconds: u64, stall_ms: u64) -> Result<Repor
 /// (both late) from a device stall (only the switches). Runs while
 /// `WATCHING` is 1; returns its stalls, or why it could not run (the
 /// probe then fails: without it nothing could be told apart).
-fn watchdog() -> Result<std::thread::JoinHandle<Result<Vec<(u64, u64)>, String>>, String> {
+fn watchdog() -> Result<Watchdog, String> {
     use windows_sys::Win32::Foundation::{CloseHandle, WAIT_FAILED};
     use windows_sys::Win32::System::Threading::{
         CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, GetCurrentThread,

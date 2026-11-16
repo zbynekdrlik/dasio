@@ -226,12 +226,10 @@ fn round_trip_stalled(instance: u32, seconds: u64, stall_ms: u64) -> dasio::prob
         "instance {instance}: {} switches in {seconds} s at block {block}: more than the device drove",
         r.switches
     );
-    // The device drives the host: 90 % of the switches, besides the blocks
-    // the whole guest was stopped for (the probe's watchdog stalls: a
-    // shared runner's VM, CI 43578537664 lost 31 ms gaps on the coverage
-    // job, dasio#114). A device stall alone stalls no watchdog: it counts.
+    // The device drives the host. The probe's watchdog figures say whether
+    // the whole guest stopped meanwhile (dasio#114).
     assert!(
-        r.switches + r.vm_stall_blocks >= seconds * 96_000 / block * 9 / 10,
+        r.switches >= seconds * 96_000 / block * 9 / 10,
         "instance {instance}: the device drives the host: {} switches in {seconds} s at block {block} ({} blocks in {} VM stalls, longest {} us)",
         r.switches,
         r.vm_stall_blocks,
@@ -261,13 +259,13 @@ fn round_trip_stalled(instance: u32, seconds: u64, stall_ms: u64) -> dasio::prob
         r.emitted,
         r.skipped
     );
-    // An impulse lost while the whole guest stopped on the way (a probe
-    // watchdog stall) is the runner's (CI 43579913777: the probe's host
-    // stalled 16 ms and the real-time pump 13 ms at once; 2 of 4 back,
-    // dasio#114). Every other lost impulse fails, as before.
+    // An impulse lost while the host itself lost its CPU on the way is
+    // the runner's (CI 43579913777: the probe's host stalled 16 ms and the
+    // real-time pump 13 ms at once, the VM stopping the whole guest; 2 of 4
+    // back, dasio#114). Every other lost impulse fails, as before.
     assert!(
         r.round_trips.len() as u64 + r.lost_in_host_gap >= r.emitted - 1,
-        "instance {instance}: impulses back: {} of {} ({} lost while the guest was stopped)",
+        "instance {instance}: impulses back: {} of {} ({} lost while the host had a gap)",
         r.round_trips.len(),
         r.emitted,
         r.lost_in_host_gap
@@ -317,21 +315,21 @@ fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_a
     // and that is the PC's gate (HIL, soak).
     dasio::probe::high_priority().expect("High priority");
     let r = round_trip(FIRST, 6);
-    // A late block is the device's fault unless the whole guest stopped:
-    // a shared runner's VM does now and then (a 48.9 ms gap, CI
-    // 41130881044; a 763 us one at block 32, CI 41340984953, past the 667
-    // us work margin). Each host gap over 1.5 blocks that a probe watchdog
-    // stall overlaps may cost at most the blocks it spans; a host gap with
-    // no stall is the device's own (the device drives the host), and any
-    // other late block fails (the attach defect b0233cd fixed read late 3
-    // with no gap; dasio#114). Real-time timing is the FOH PC's gate (HIL,
+    // A late block is the device's fault unless the host itself lost its
+    // CPU: a shared runner's VM deschedules a thread now and then (a 48.9
+    // ms gap, CI 41130881044; a 763 us one at block 32, CI 41340984953,
+    // past the 667 us work margin). Each host gap over 1.5 blocks may cost
+    // at most the blocks it spans; any other late block fails (the attach
+    // defect b0233cd fixed read late 3 with no gap). A watchdog cannot
+    // tighten this: the runner also stalls the pump's CPU alone (CI
+    // 43779634868, dasio#114). Real-time timing is the FOH PC's gate (HIL,
     // soak).
     assert!(
-        r.late <= r.vm_gap_blocks,
-        "{} late blocks, {} explained by host gaps in VM stalls ({} gap blocks in all, longest gap {} us, {} over 1 ms; {} VM stalls, longest {} us)",
+        r.late <= r.gap_blocks,
+        "{} late blocks, {} explained by the host's gaps ({} in VM stalls, longest gap {} us, {} over 1 ms; {} VM stalls, longest {} us)",
         r.late,
-        r.vm_gap_blocks,
         r.gap_blocks,
+        r.vm_gap_blocks,
         r.max_gap_us,
         r.gaps_over_1ms,
         r.vm_stalls,
