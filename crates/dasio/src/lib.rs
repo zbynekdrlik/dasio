@@ -34,6 +34,7 @@ pub mod run;
 pub mod run_bridge;
 pub mod rx_arrival;
 pub mod service;
+pub mod to_asio_pull;
 pub mod turnaround;
 pub mod vm_stall;
 
