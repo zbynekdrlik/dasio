@@ -31,8 +31,17 @@ paths:
   not start / ends at the 10-min check (the SCM restarts it, the start
   names it again), `dasio pc-profile check|apply` exits 2 with a
   `MUST-HAVE` line, and `install.ps1` refuses before touching the instance.
-  A site value for a must-have item stays must-have. `install.ps1` also
-  refuses a site profile whose `nic_guid` is not the device's adapter.
+  A site value for a must-have item stays must-have. A profile that does
+  not load counts as must-have too (start refused, exit 2). The start
+  checks the whole profile (test signing included); the bridge's 10-min
+  in-process check skips `[[bcd]]`/`[[task]]` (no process started from the
+  media process). A Dante NIC not found ends the device as well.
+  `install.ps1` refuses a PC without a site profile naming the device's
+  adapter as `nic_guid` (it prints the GUID to write).
+- At rollout, a site entry for the NIC's interrupt affinity must use the
+  `{nic_device}` key (or go): a literal `Enum\PCI\...` path (dsg's) is a
+  second entry for the same value, and the two fight. Give FOH's profile
+  `instances = 2`.
 - `computed`, `must`, `instances` and placeholder affinities need dasio
   0.1.107+ on the PC: an older one refuses the whole profile.
 

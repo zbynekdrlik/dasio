@@ -11,9 +11,9 @@
 #   owns or has an entry of its own for,
 # - applies dasio's baseline PC setup with the PC's own profile
 #   (`dasio pc-profile apply`, dasio#128) before the instance is touched;
-#   refuses, naming the step, a profile whose nic_guid is not the device's
-#   adapter and a must-have item left unset (exit 2: the Dante NIC's
-#   settings, test signing),
+#   refuses, naming the step, a profile without the device adapter's
+#   nic_guid and a must-have item left unset (exit 2: the Dante NIC's
+#   settings, test signing, a profile that does not load),
 # - copies dasio.exe and dasio_driver.dll to C:\Program Files\dasio, and
 #   dasio.exe again as dasio-<device name>.exe, the instance's own binary
 #   (its service runs it, so Process Lasso can pin each instance by name);
@@ -358,31 +358,29 @@ Protect-DataFolder $root
 # The built-in baseline (dasio#128) with this PC's own profile, set before
 # the instance is touched, by the bundle's dasio.exe (the bundle and the
 # data folder are admin-only by now). A must-have item it cannot set (exit
-# 2: the Dante NIC's settings, test signing) refuses the install, the
-# instance as it was; other problems (a reboot pending, a NIC driver to
-# install) are listed and the install goes on. The service checks it again
-# at start and every 10 min.
+# 2: the Dante NIC's settings, test signing, a profile that does not load)
+# refuses the install, the instance as it was; other problems (a reboot
+# pending, a NIC driver to install) are listed and the install goes on. The
+# service checks it again at start and every 10 min.
+$applied = 0
 if (-not $TestClock) {
-    # The NIC settings are checked on the profile's nic_guid: it must be the
-    # adapter the device runs on.
+    # The NIC's must-have settings are checked on the profile's nic_guid:
+    # without it they are not checked at all, and it must be the adapter the
+    # device runs on.
     $profilePath = Join-Path $root "pc-profile.toml"
     $adapterGuid = (Get-NetAdapter | Where-Object { $_.Name -ceq $alias } | Select-Object -First 1).InterfaceGuid
     $profileGuid = if (Test-Path $profilePath) { Get-TomlString $profilePath "nic_guid" } else { $null }
+    if (-not $profileGuid) {
+        throw "the baseline step: $profilePath has no nic_guid, so the Dante NIC's must-have settings go unchecked: write nic_guid = `"$adapterGuid`" ('$alias') there; nothing changed"
+    }
     if ($profileGuid -ne $adapterGuid) {
         throw "the baseline step: $profilePath names the Dante NIC '$profileGuid', but the device runs on '$alias' ($adapterGuid): set nic_guid = `"$adapterGuid`" there; nothing changed"
     }
     & (Join-Path $here "dasio.exe") pc-profile apply
     $applied = $LASTEXITCODE
     if ($applied -eq 2) {
-        throw "the baseline step: dasio pc-profile apply left must-have items unset (the MUST-HAVE line above); dasio does not run without them; the instance was not touched"
+        throw "the baseline step: dasio pc-profile apply left must-have items unchecked or unset (the MUST-HAVE line above); dasio does not run without them; the instance was not touched"
     }
-    # Power plan values are read when the plan is made active, QoS policies
-    # at a Group Policy refresh: make both current now.
-    & powercfg.exe /setactive SCHEME_CURRENT
-    if ($LASTEXITCODE -ne 0) { Write-Output "WARNING: powercfg /setactive failed ($LASTEXITCODE): the power plan values take effect at the next reboot" }
-    & gpupdate.exe /target:computer /force | Out-Null
-    if ($LASTEXITCODE -ne 0) { Write-Output "WARNING: gpupdate failed ($LASTEXITCODE): the QoS policies (mDNS cap) take effect at the next reboot" }
-    if ($applied -ne 0) { Write-Output "the PC profile still has problems (listed above): see dasio#128" }
 }
 
 $installed = Join-Path $env:ProgramFiles "dasio\dasio.exe"
@@ -524,6 +522,16 @@ if ($stateFile -and (Test-Path $stateFile)) {
 }
 
 $exe = Join-Path $bin "dasio.exe"
+if (-not $TestClock) {
+    # Power plan values are read when the plan is made active, QoS policies
+    # at a Group Policy refresh: make both current now, with the instance
+    # stopped (gpupdate's burst is no live audio's).
+    & powercfg.exe /setactive SCHEME_CURRENT
+    if ($LASTEXITCODE -ne 0) { Write-Output "WARNING: powercfg /setactive failed ($LASTEXITCODE): the power plan values take effect at the next reboot" }
+    & gpupdate.exe /target:computer /force | Out-Null
+    if ($LASTEXITCODE -ne 0) { Write-Output "WARNING: gpupdate failed ($LASTEXITCODE): the QoS policies (mDNS cap) take effect at the next reboot" }
+    if ($applied -ne 0) { Write-Output "the PC profile still has problems (listed above): see dasio#128" }
+}
 # A bridge instance (`[bridge]` in its config, dasio#106) carries Dante to a
 # local ASIO driver itself and has no DAW side: registering dasio's own ASIO
 # driver for it would list a driver no DAW can attach to.

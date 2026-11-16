@@ -221,6 +221,13 @@ fn the_service_stops_on_a_must_have_item() {
     }
     let watch = src("src/run/profile.rs");
     assert!(watch.contains("crate::pc_profile::must_have_failure(p)"));
+    // The start reads the whole profile (test signing is a bcd entry) and
+    // refuses one that does not load; the 10-min in-process check skips
+    // the entries that start a process.
+    let gate = watch.find("fn must_have_at_start").expect("the start gate");
+    assert!(watch[gate..].contains("in_process_problems(true)"));
+    assert!(watch[gate..].contains("ChildCheck::NoProfile(e) => Some("));
+    assert!(watch.contains("Ok(in_process_problems(false))"));
 }
 
 /// install.ps1 (PowerShell, run on the PCs only): the baseline step runs
@@ -239,13 +246,17 @@ fn install_ps1_refuses_before_it_touches_the_instance() {
         s.find(needle)
             .unwrap_or_else(|| panic!("install.ps1 has no {needle}"))
     };
+    let none = at("if (-not $profileGuid) {");
     let guid = at("if ($profileGuid -ne $adapterGuid) {");
     let apply = at("& (Join-Path $here \"dasio.exe\") pc-profile apply");
     let refuse = at("if ($applied -eq 2) {");
     let stop = at("Stop-Service -Name $service");
     let protect = at("Protect-DataFolder $root\n");
-    assert!(protect < guid, "the profile it reads is admin-only first");
-    assert!(guid < apply && apply < refuse && refuse < stop);
+    assert!(protect < none, "the profile it reads is admin-only first");
+    assert!(none < guid && guid < apply && apply < refuse && refuse < stop);
+    assert!(s[none..guid].contains("throw \"the baseline step:"));
+    // gpupdate's burst comes with the instance stopped.
+    assert!(at("& gpupdate.exe") > stop);
     assert!(s[refuse..stop].contains("throw \"the baseline step:"));
     assert!(s[guid..apply].contains("throw \"the baseline step:"));
     assert_eq!(

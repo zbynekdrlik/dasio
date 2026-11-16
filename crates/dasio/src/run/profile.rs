@@ -139,18 +139,19 @@ fn in_process_check(_own: usize) -> Result<crate::pc_profile::ChildCheck, String
     if unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST) } == 0 {
         warn!(err = %std::io::Error::last_os_error(), "the PC profile check runs at normal priority");
     }
-    Ok(in_process_problems())
+    Ok(in_process_problems(false))
 }
 
-/// The profile's problems as read in this process, without the entries
-/// whose reading starts a process.
-fn in_process_problems() -> crate::pc_profile::ChildCheck {
+/// The profile's problems as read in this process; `whole` = with the
+/// entries whose reading starts a process (bcdedit, the Task Scheduler).
+fn in_process_problems(whole: bool) -> crate::pc_profile::ChildCheck {
     use crate::pc_profile::{
         ChildCheck, check, in_process, load,
         windows::{Pc, cpu_count},
     };
     let path = std::path::Path::new(crate::pc_profile::DEFAULT_PATH);
-    let p = match load(path, cpu_count()) {
+    let p = match cpu_count().and_then(|cpus| load(path, cpus)) {
+        Ok(p) if whole => p,
         Ok(p) => in_process(&p),
         Err(e) => return ChildCheck::NoProfile(e),
     };
@@ -159,21 +160,23 @@ fn in_process_problems() -> crate::pc_profile::ChildCheck {
 }
 
 /// Before the device starts (dasio#128): a must-have item of the baseline
-/// missing ends the start with its name. In this process: nothing is
-/// loaded yet (no ASIO driver, no media thread). A profile that cannot be
-/// read is left to the periodic check, which logs it.
+/// missing ends the start with its name, and so does a profile that cannot
+/// be loaded (its must-have items cannot be checked). The whole profile,
+/// test signing too: nothing is loaded yet (no ASIO driver, no media
+/// thread), so starting bcdedit here costs no audio.
 pub(crate) fn must_have_at_start() -> Result<(), String> {
-    match in_process_problems() {
-        crate::pc_profile::ChildCheck::Problems(p) => {
-            match crate::pc_profile::must_have_failure(&p) {
-                Some(why) => {
-                    tracing::error!(%why, "the device does not start");
-                    Err(why)
-                }
-                None => Ok(()),
-            }
+    let why = match in_process_problems(true) {
+        crate::pc_profile::ChildCheck::Problems(p) => crate::pc_profile::must_have_failure(&p),
+        crate::pc_profile::ChildCheck::NoProfile(e) => Some(format!(
+            "the PC profile does not load, so dasio's must-have items cannot be checked (dasio#128): {e}"
+        )),
+    };
+    match why {
+        Some(why) => {
+            tracing::error!(%why, "the device does not start");
+            Err(why)
         }
-        crate::pc_profile::ChildCheck::NoProfile(_) => Ok(()),
+        None => Ok(()),
     }
 }
 
