@@ -502,7 +502,13 @@ if ($deviceName) {
 if (-not (Test-Path $instExe) -or (Get-FileHash $instExe).Hash -ne (Get-FileHash (Join-Path $bin "dasio.exe")).Hash) {
     Copy-Item (Join-Path $bin "dasio.exe") $instExe -Force
 }
-Copy-Item $Config $cfg -Force
+# A re-install may be given the instance's own installed config: Copy-Item
+# refuses to copy a file onto itself (dasio#148), and there is nothing to copy.
+if ([string]::Equals($Config, [System.IO.Path]::GetFullPath($cfg), [System.StringComparison]::OrdinalIgnoreCase)) {
+    Write-Output "the config is the instance's installed one ($cfg): kept as it is"
+} else {
+    Copy-Item $Config $cfg -Force
+}
 
 # The config's state file is this device's memory (its names and its
 # subscriptions). One another config left there is another device's: it is
