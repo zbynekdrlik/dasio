@@ -1,6 +1,6 @@
 //! The PC as the profile sees it: HKLM values (with the Dante NIC's keys
 //! resolved), ini lines, running processes and free disk space; and the
-//! writes `apply` makes. No process is spawned.
+//! writes `apply` makes (power-plan values through powercfg, dasio#128).
 
 use std::path::Path;
 
@@ -98,9 +98,7 @@ impl Pc {
                     .as_deref()
                     .ok_or("the Dante NIC's class key was not found")?
             )
-        } else if let Some(rest) = key.strip_prefix(
-            r"HKLM\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\{active_scheme}",
-        ) {
+        } else if let Some(rest) = key.strip_prefix(super::power::ACTIVE_SCHEME) {
             // The active power plan's own key (dasio#128): the baseline
             // sets its processor and power values, whichever plan it is.
             let scheme = match read(
@@ -128,6 +126,11 @@ impl Pc {
 
     /// Applies one action; the error says why it failed.
     pub fn apply(&self, a: &Action) -> Result<(), String> {
+        // A power-plan value goes through powercfg (dasio#128): a plain
+        // write leaves a value the scheme never stored absent.
+        if let Some(cmds) = super::powercfg_commands(a) {
+            return cmds.iter().try_for_each(|args| powercfg(args.as_slice()));
+        }
         match a {
             Action::Reg { key, name, value } => {
                 let k = self.resolve(key)?;
@@ -251,6 +254,32 @@ impl Reader for Pc {
                 .unwrap_or("")
         ))
     }
+}
+
+/// Runs `powercfg <args>`; the error names the command, its status and
+/// its first output line.
+fn powercfg(args: &[String]) -> Result<(), String> {
+    let cmd = format!("powercfg {}", args.join(" "));
+    // System32's powercfg by its full path: apply runs elevated, and a
+    // lookup by name would try the exe's own folder first.
+    let root = std::env::var("SystemRoot").map_err(|e| format!("{cmd}: SystemRoot: {e}"))?;
+    let out = std::process::Command::new(format!(r"{root}\System32\powercfg.exe"))
+        .args(args)
+        .output()
+        .map_err(|e| format!("{cmd}: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Err(format!(
+        "{cmd}: {} {}",
+        out.status,
+        text.trim().lines().next().unwrap_or("")
+    ))
 }
 
 /// An ini file as text (UTF-16 with a BOM or 8-bit).
