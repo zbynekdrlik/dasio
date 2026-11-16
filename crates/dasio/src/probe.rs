@@ -422,16 +422,6 @@ pub fn probe_at(instance: u32, seconds: u64, stall_ms: u64, rate: u32) -> Result
         Ok(w) => w,
         Err(e) => return abandon(e),
     };
-    // The pump's lost time as of a fresh device tick, just before the start:
-    // only what the pump lost while this run ran counts (dasio#114).
-    let lost_before = match pump_lost_at_next_tick(instance) {
-        Ok(l) => l,
-        Err(e) => {
-            WATCHING.store(0, Ordering::Release);
-            let _ = watchdog.join();
-            return abandon(e);
-        }
-    };
     // SAFETY: the driver's start, as a host calls it.
     if unsafe { (v.start)(d) } != ASE_OK {
         WATCHING.store(0, Ordering::Release);
@@ -439,9 +429,16 @@ pub fn probe_at(instance: u32, seconds: u64, stall_ms: u64, rate: u32) -> Result
         return abandon("start refused".into());
     }
     let end = Instant::now() + Duration::from_secs(seconds);
+    // The pump's lost time counts from the second device tick after the
+    // start, to the end of the run (dasio#114): a look's late blocks
+    // publish one tick after the look, so every late block published from
+    // there on was lost after the start.
+    let lost_before = pump_lost_after_ticks(instance, 2);
     while Instant::now() < end && RUNNING.load(Ordering::Acquire) == 1 {
         std::thread::sleep(Duration::from_millis(100));
     }
+    // Before the stop: nothing the pump lost after the run is credited.
+    let lost_after = shm::Shared::open(instance).map(|sh| pump_lost(sh.header()));
     // SAFETY: as a host ends.
     unsafe {
         (v.stop)(d);
@@ -452,6 +449,13 @@ pub fn probe_at(instance: u32, seconds: u64, stall_ms: u64, rate: u32) -> Result
     let stalls = watchdog
         .join()
         .map_err(|_| "the watchdog thread panicked".to_string())??;
+    let lost_before = lost_before?;
+    let lost_after =
+        lost_after.map_err(|e| format!("the device's shared memory at the run's end: {e}"))?;
+    let block = report.block;
+    let host_blocks = |us: u64| crate::pump_loss::blocks_of(us, rate, block);
+    report.pump_lost_late_blocks = host_blocks(lost_after.0.saturating_sub(lost_before.0));
+    report.pump_lost_device_blocks = host_blocks(lost_after.1.saturating_sub(lost_before.1));
     if let Ok(shared) = shm::Shared::open(instance) {
         report.late = shared.header().late.load(Ordering::Relaxed);
         report.missed = shared
@@ -459,13 +463,6 @@ pub fn probe_at(instance: u32, seconds: u64, stall_ms: u64, rate: u32) -> Result
             .missed
             .load(Ordering::Relaxed)
             .saturating_sub(missed_before);
-        // Read at once, no tick awaited: a stall the device has not judged
-        // yet is not credited (the conservative side).
-        let (late_us, device_us) = pump_lost(shared.header());
-        let block = report.block;
-        let host_blocks = |us: u64| crate::pump_loss::blocks_of(us, rate, block);
-        report.pump_lost_late_blocks = host_blocks(late_us.saturating_sub(lost_before.0));
-        report.pump_lost_device_blocks = host_blocks(device_us.saturating_sub(lost_before.1));
     }
     let s = STATE.lock().unwrap().take().unwrap();
     report.samples = s.position + s.block as u64;
@@ -496,20 +493,24 @@ fn pump_lost(h: &shm::Header) -> (u64, u64) {
     )
 }
 
-/// The pump's lost time once the device's loop has ticked again (it writes
-/// the lost time before its heartbeat): what it lost up to about now.
-fn pump_lost_at_next_tick(instance: u32) -> Result<(u64, u64), String> {
+/// The pump's lost time once the device's loop has ticked `ticks` more
+/// times (it writes the lost time before its heartbeat).
+fn pump_lost_after_ticks(instance: u32, ticks: u32) -> Result<(u64, u64), String> {
     let shared = shm::Shared::open(instance)
         .map_err(|e| format!("the device's shared memory for the pump's lost time: {e}"))?;
     let h = shared.header();
-    let beat = h.heartbeat_ms.load(Ordering::Acquire);
     // The loop ticks every 100 ms.
     let until = Instant::now() + Duration::from_secs(2);
-    while h.heartbeat_ms.load(Ordering::Acquire) == beat {
-        if Instant::now() >= until {
-            return Err("the device's loop did not tick in 2 s".into());
+    for _ in 0..ticks {
+        let beat = h.heartbeat_ms.load(Ordering::Acquire);
+        while h.heartbeat_ms.load(Ordering::Acquire) == beat {
+            if Instant::now() >= until {
+                return Err(format!(
+                    "the device's loop did not tick {ticks} times in 2 s"
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(1));
         }
-        std::thread::sleep(Duration::from_millis(1));
     }
     Ok(pump_lost(h))
 }

@@ -21,6 +21,8 @@ use crate::turnaround::{Stamps, Turnaround, free_at, split};
 
 pub(crate) mod profile;
 use profile::ProfileWatch;
+mod pump_look;
+use pump_look::look_at_pump;
 mod serve;
 use serve::Base;
 
@@ -453,36 +455,6 @@ fn device_config(
         ),
     }
     Ok((cfg, kind))
-}
-
-/// One look of `tracker` at the pump: its counts first, then its late
-/// wakes, read whole or not at all (dasio#114). The counts come first:
-/// the pump records a wake before it counts that wake's re-bootstrap.
-fn look_at_pump(
-    tracker: &mut crate::pump_loss::Tracker,
-    stats: &PumpStats,
-) -> crate::pump_loss::Lost {
-    use crate::pump_loss::{Counts, Wake, Wakes};
-    let v = stats.view();
-    let counts = Counts {
-        missed: v.missed,
-        overruns: v.overruns,
-        rebootstraps: v.rebootstraps,
-        rebootstraps_late: v.rebootstraps_late,
-    };
-    let wakes = stats.wakes();
-    let end = wakes.late_wakes();
-    let recent: Vec<Wake> = wakes
-        .recent()
-        .iter()
-        .map(|w| Wake {
-            behind_us: w.behind_us,
-            rebootstrap: w.rebootstrap,
-        })
-        .collect();
-    let end_after = wakes.late_wakes();
-    let kept = dstack::stream::wake::RECENT as u64;
-    tracker.take(counts, Wakes::whole(end, &recent, end_after, kept))
 }
 
 /// Seconds since the Unix epoch (0 before it).

@@ -14,11 +14,19 @@
 //! longer than its period, an overrun) is the device's.
 //!
 //! A look's new blocks are the environment's only when, since the look
-//! before: every new re-bootstrap was for lateness, no block overran in
-//! this look's window or the one before (a long block of the device's own
-//! puts the pump behind for its next wake), every late re-bootstrap counted
-//! so far has its own late wake in the ring measured at or past W, and the
-//! ring's new wakes were all read. Anything else is the device's.
+//! before: at least one re-bootstrap for lateness and none of another
+//! cause (in this look and the next: dstack adds the skipped blocks before
+//! it counts their cause), no block overran in this look's window or the
+//! one before (a long block of the device's own puts the pump behind for
+//! its next wake), every late re-bootstrap counted so far has its own late
+//! wake in the ring measured at or past W, and the ring's new wakes were
+//! all read. Anything else is the device's. (dstack flags a wake late only
+//! past W, so the margin check restates its rule: the gate is that each
+//! late re-bootstrap's wake was read.)
+//!
+//! A runner stall that lands inside a block's processing reads as an
+//! overrun: the device's, as the pump cannot tell its wall time from its
+//! CPU time there.
 
 /// The pump's cumulative counts at one look (dstack's `PumpView`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -77,10 +85,15 @@ pub struct Tracker {
     last: Option<Counts>,
     /// The ring's index past the last wake read.
     seen_end: u64,
-    /// Late re-bootstraps whose wake was read and measured at or past W
-    /// (or settled: see [`Tracker::take`]).
+    /// Late re-bootstraps whose wake was read and measured at or past W,
+    /// settled up to the count after every read that moved `seen_end`.
     measured: u64,
     overran_before: bool,
+    /// The last look's blocks judged late, held until the next look shows
+    /// no re-bootstrap of another cause: dstack adds a re-bootstrap's
+    /// skipped blocks before its cause, so a look can see the blocks of a
+    /// re-anchor before the re-anchor itself.
+    pending_ns: u64,
     late_ns: u64,
     device_ns: u64,
 }
@@ -97,63 +110,76 @@ impl Tracker {
             seen_end: 0,
             measured: 0,
             overran_before: false,
+            pending_ns: 0,
             late_ns: 0,
             device_ns: 0,
         }
     }
 
     /// One look: the pump's counts `now` (read first) and its late wakes
-    /// (`None` for a torn read). The first look, and one whose counts went
-    /// down, only learns them. Returns the totals.
+    /// (`None` for a torn read). The first look, one whose counts went
+    /// down and one whose ring went back (a new engine) only learn them.
+    /// Returns the totals; a look's late blocks count from the next look
+    /// on (see `pending_ns`).
     pub fn take(&mut self, now: Counts, wakes: Option<Wakes>) -> Lost {
         let before = self.last.replace(now);
+        let ring_back = wakes.is_some_and(|w| w.end < self.seen_end);
         let Some(before) = before.filter(|b| {
-            now.missed >= b.missed
+            !ring_back
+                && now.missed >= b.missed
                 && now.overruns >= b.overruns
                 && now.rebootstraps >= b.rebootstraps
                 && now.rebootstraps_late >= b.rebootstraps_late
         }) else {
-            self.seen_end = wakes.map_or(self.seen_end, |w| w.end);
+            self.seen_end = wakes.map_or(0, |w| w.end);
             self.measured = now.rebootstraps_late;
             self.overran_before = false;
+            self.device_ns += std::mem::take(&mut self.pending_ns);
             return self.lost();
         };
-        let read = match wakes {
-            Some(w) if w.end >= self.seen_end => {
-                let new = w.end - self.seen_end;
-                self.seen_end = w.end;
-                let len = w.recent.len() as u64;
-                if new <= len {
-                    let fresh = &w.recent[(len - new) as usize..];
-                    self.measured += fresh
-                        .iter()
-                        .filter(|x| x.rebootstrap && x.behind_us >= self.margin_us)
-                        .count() as u64;
-                    true
-                } else {
-                    false
-                }
+        let mut read = false;
+        if let Some(w) = wakes {
+            let new = w.end - self.seen_end;
+            let len = w.recent.len() as u64;
+            if new <= len {
+                let fresh = &w.recent[(len - new) as usize..];
+                self.measured += fresh
+                    .iter()
+                    .filter(|x| x.rebootstrap && x.behind_us >= self.margin_us)
+                    .count() as u64;
+                read = true;
             }
-            _ => false,
-        };
+            self.seen_end = w.end;
+        }
         let overran = now.overruns > before.overruns;
         let only_late = now.rebootstraps - before.rebootstraps
             == now.rebootstraps_late - before.rebootstraps_late;
+        let held = std::mem::take(&mut self.pending_ns);
+        if only_late {
+            self.late_ns += held;
+        } else {
+            self.device_ns += held;
+        }
         let late = read
             && only_late
+            && now.rebootstraps_late > before.rebootstraps_late
             && !overran
             && !self.overran_before
             && self.measured >= now.rebootstraps_late;
         let ns = (now.missed - before.missed) * self.block_ns;
         if late {
-            self.late_ns += ns;
+            self.pending_ns = ns;
         } else {
             self.device_ns += ns;
         }
         self.overran_before = overran;
-        // A late re-bootstrap judged without its wake (a ring read past)
-        // was the device's in its look; the next looks start even.
-        self.measured = self.measured.max(now.rebootstraps_late);
+        // Every wake up to `seen_end` was judged: a late re-bootstrap
+        // without its measured wake (a ring read past, a wake short of W)
+        // was the device's in its look; the next looks start even. A torn
+        // read moved nothing: its wakes are read next time.
+        if wakes.is_some() {
+            self.measured = self.measured.max(now.rebootstraps_late);
+        }
         self.lost()
     }
 

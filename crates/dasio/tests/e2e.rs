@@ -228,11 +228,13 @@ fn round_trip_at(instance: u32, seconds: u64, stall_ms: u64, rate: u32) -> dasio
     let rate = u64::from(rate);
     let block = u64::from(r.block);
     // This probe's own switches only, not an earlier probe's in this
-    // process too.
+    // process too; and the switches the pump's late wakes cost (below)
+    // were really missing, not credited on top of switches that came.
     assert!(
-        r.switches <= seconds * rate / block * 11 / 10,
-        "instance {instance}: {} switches in {seconds} s at block {block}: more than the device drove",
-        r.switches
+        r.switches + r.pump_lost_late_blocks <= seconds * rate / block * 11 / 10,
+        "instance {instance}: {} switches and {} lost to the pump's late wakes in {seconds} s at block {block}: more than the device drove",
+        r.switches,
+        r.pump_lost_late_blocks
     );
     // The device drives the host. A switch the device's pump lost because
     // it woke late, past its margin, as the device itself measured at that
