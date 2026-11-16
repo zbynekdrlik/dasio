@@ -458,8 +458,9 @@ fn the_age_tick_warns_about_a_1_ms_receiver_once_an_hour() {
     let text = from_asio_age_tick(&age, receivers).expect("a 1 ms receiver warns");
     assert!(text.contains("stage-rack at 1000 us"), "{text}");
     assert!(!text.contains("foh") && !text.contains("unknown"), "{text}");
-    // The next tick, seconds later: the receivers are read, no new warning.
-    t.store(15_200_000, Ordering::Relaxed);
+    // The next counts tick, 10 s later: the receivers are read, no new
+    // warning.
+    t.store(10_005_200_000, Ordering::Relaxed);
     let mut read = false;
     let again = from_asio_age_tick(&age, || {
         read = true;
@@ -467,14 +468,25 @@ fn the_age_tick_warns_about_a_1_ms_receiver_once_an_hour() {
     });
     assert_eq!(again, None);
     assert!(read);
-    // Receivers at or above the need: nothing.
+    // An hour after the warning, with blocks still taken: it warns again.
+    let hour_later = 5_200_000 + 3_600_000_000_000;
+    t.store(hour_later - 200_000, Ordering::Relaxed);
+    age.handed(128, 96_000);
+    t.store(hour_later, Ordering::Relaxed);
+    age.taken();
+    assert!(from_asio_age_tick(&age, receivers).is_some());
+    // Receivers at or above the need (2866 us: 1533 us of age + a 1333 us
+    // pump block): nothing.
     let (t, age) = age_on_fake_clock();
     t.store(5_000_000, Ordering::Relaxed);
     age.handed(128, 96_000);
     t.store(5_200_000, Ordering::Relaxed);
     age.taken();
     assert_eq!(
-        from_asio_age_tick(&age, || vec![("foh".into(), 3_000_000)]),
+        from_asio_age_tick(&age, || vec![
+            ("at-need".into(), 2_866_000),
+            ("foh".into(), 3_000_000)
+        ]),
         None
     );
 }
