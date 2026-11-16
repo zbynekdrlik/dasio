@@ -320,6 +320,16 @@ foreach ($n in $instance, $second) {
 if ((Get-ServicePid) -eq $first) { throw "the first instance still runs the old binary (pid $first)" }
 Write-Output "each instance runs the new binary after its own install"
 
+# A re-install given the instance's own installed config (dasio#148,
+# iem-snv 16.11: Copy-Item refused to copy the file onto itself and the
+# install rolled back). Written in upper case: Windows paths match in any case.
+$installedCfg = Join-Path $data "instance-$instance\device.toml"
+$cfgBefore = (Get-FileHash $installedCfg).Hash
+& (Join-Path $newer "install.ps1") -Instance $instance -Ip $ip -Config $installedCfg.ToUpperInvariant() -Name "ci-asio-dante" -TestClock
+if ((Get-Service "dasio-$instance").Status -ne "Running") { throw "dasio-$instance is not running after the re-install with its installed config" }
+if ((Get-FileHash $installedCfg).Hash -ne $cfgBefore) { throw "the re-install with its installed config changed it" }
+Write-Output "a re-install with the instance's installed config keeps it and runs"
+
 # Updates back and forth, each instance in turn, as an update of the PC
 # runs them: each new binary pauses the other instance, and the device
 # managing the address stops while the other is a member. No instance may
