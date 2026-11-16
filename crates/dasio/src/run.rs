@@ -70,6 +70,9 @@ pub fn run(
     let late_per_min = Arc::new(std::sync::atomic::AtomicU64::new(0));
     // The PC profile's problems (dasio#5); u32::MAX while there is none.
     let pc_problems = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
+    // The RX latency the measured arrival asks for (dasio#128): reported,
+    // never applied while the device runs.
+    let mut rx_latency = crate::rx_latency::Watch::new(cfg.latency_ns);
     let turnaround = Arc::new(Mutex::new(Turnaround::default()));
     let base = Base {
         instance,
@@ -99,6 +102,7 @@ pub fn run(
         Arc::clone(&current),
         Arc::clone(&late_per_min),
         Arc::clone(&pc_problems),
+        (rx_latency.peak(), cfg.latency_ns),
         spare,
         tuning.kernel_tx,
     );
@@ -192,8 +196,16 @@ pub fn run(
         }) {
             profile_at = Some(now);
             profile.start(&pc_problems);
+            if let Some(r) = rx_latency.report() {
+                crate::rx_latency::log(&r);
+            }
         }
         if counts.due(now) {
+            if let Some(r) =
+                rx_latency.observe(crate::rx_latency::flows(&media.rx), cfg.sample_rate)
+            {
+                crate::rx_latency::log(&r);
+            }
             let v = stats.view();
             let (resets_asked, latencies_changed) = h.messages();
             info!(
