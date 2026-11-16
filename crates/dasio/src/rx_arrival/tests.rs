@@ -326,7 +326,7 @@ fn two_looks_at_the_totals_give_the_packets_between_them() {
 
 #[test]
 fn the_mean_weighs_every_packet_and_needs_one() {
-    assert_eq!(mean([]), None);
+    assert_eq!(mean(Vec::<Totals>::new()), None);
     assert_eq!(mean([totals(0, 0), totals(0, 0)]), None);
     // One busy slot and one with a single packet: per packet, not per slot
     // (per slot it would be (100 + 1000) / 2 = 550).
