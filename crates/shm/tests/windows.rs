@@ -210,9 +210,10 @@ fn another_rate_at_the_same_block_makes_a_fresh_section() {
     let next = Shared::create(98, shape, 44_100, (40, 60)).unwrap();
     assert_ne!(next.session(), held.session());
     assert_eq!(held.published_session(), next.session());
-    // The same shape and rate again: taken over, no new session.
-    drop(next);
+    // The same shape and rate again (a driver holds this section too):
+    // taken over, no new session.
     let held2 = Shared::open(98).unwrap();
+    drop(next);
     let again = Shared::create(98, shape, 44_100, (40, 60)).unwrap();
     assert_eq!(again.session(), held2.session());
     // Without a device's section the driver's ask still reaches the
