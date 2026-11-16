@@ -26,6 +26,7 @@ pub mod pc_profile;
 pub mod place;
 #[cfg(windows)]
 pub mod probe;
+pub mod pump_loss;
 pub mod register;
 #[cfg(windows)]
 pub mod run;
