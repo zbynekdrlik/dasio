@@ -3033,7 +3033,14 @@ rxdApply(
     FILTER_RELEASE_LOCK(&Filter->Lock, bFalse);
 }
 
-// Indicates everything queued, in order, as one chain per run.
+// The NBLs one run of the DPC indicates at most. The rest waits for the
+// DPC's next run, queued again at its end, so other DPCs on its CPU run
+// between slices: one run indicating a whole burst took 9342 us (6.11.2026,
+// dasio#27).
+#define RXD_SLICE 64
+
+// Indicates up to RXD_SLICE NBLs of what is queued, in order, as one
+// chain, and queues itself again while more waits.
 _Use_decl_annotations_
 static VOID
 rxdDpc(
@@ -3045,36 +3052,60 @@ rxdDpc(
 {
     PMS_FILTER Filter = (PMS_FILTER)DeferredContext;
     PNET_BUFFER_LIST Chain;
-    ULONG Count;
+    PNET_BUFFER_LIST Last = NULL;
+    PNET_BUFFER_LIST Rest;
+    ULONG Count = 0;
     BOOLEAN bTrue = TRUE;
 
     UNREFERENCED_PARAMETER(Dpc);
     UNREFERENCED_PARAMETER(SystemArgument1);
     UNREFERENCED_PARAMETER(SystemArgument2);
-    for (;;)
+    FILTER_ACQUIRE_LOCK(&Filter->Lock, bTrue);
+    Chain = Filter->RxdHead;
+    Rest = Chain;
+    while (Rest != NULL && Count < RXD_SLICE)
     {
-        FILTER_ACQUIRE_LOCK(&Filter->Lock, bTrue);
-        Chain = Filter->RxdHead;
-        Count = Filter->RxdQueued;
-        Filter->RxdHead = NULL;
-        Filter->RxdTail = &Filter->RxdHead;
-        Filter->RxdQueued = 0;
-        if (Chain != NULL)
-        {
-            Filter->RxdDpcRuns++;
-            if (Count > Filter->RxdMaxBatch)
-            {
-                Filter->RxdMaxBatch = Count;
-            }
-        }
-        FILTER_RELEASE_LOCK(&Filter->Lock, bTrue);
-        if (Chain == NULL)
-        {
-            return;
-        }
-        NdisFIndicateReceiveNetBufferLists(Filter->FilterHandle, Chain, NDIS_DEFAULT_PORT_NUMBER, Count,
-                                           NDIS_RECEIVE_FLAGS_DISPATCH_LEVEL);
+        Last = Rest;
+        Rest = NET_BUFFER_LIST_NEXT_NBL(Rest);
+        Count++;
     }
+    if (Last != NULL)
+    {
+        NET_BUFFER_LIST_NEXT_NBL(Last) = NULL;
+    }
+    Filter->RxdHead = Rest;
+    if (Rest == NULL)
+    {
+        Filter->RxdTail = &Filter->RxdHead;
+    }
+    Filter->RxdQueued -= Count;
+    if (Chain != NULL)
+    {
+        Filter->RxdDpcRuns++;
+        if (Count > Filter->RxdMaxBatch)
+        {
+            Filter->RxdMaxBatch = Count;
+        }
+    }
+    FILTER_RELEASE_LOCK(&Filter->Lock, bTrue);
+    if (Chain == NULL)
+    {
+        return;
+    }
+    NdisFIndicateReceiveNetBufferLists(Filter->FilterHandle, Chain, NDIS_DEFAULT_PORT_NUMBER, Count,
+                                       NDIS_RECEIVE_FLAGS_DISPATCH_LEVEL);
+    // More waits: the next slice in a run of its own, queued under the
+    // Lock and only while running. Pause sets Pausing under the Lock before
+    // rxdDrop and KeFlushQueuedDpcs, so a run queued here is either queued
+    // before that flush (which waits for it; it finds the queue dropped) or
+    // not queued at all: none runs after the filter is gone. A receive that
+    // queued the DPC meanwhile makes this a no-op.
+    FILTER_ACQUIRE_LOCK(&Filter->Lock, bTrue);
+    if (Filter->RxdHead != NULL && Filter->State == FilterRunning)
+    {
+        KeInsertQueueDpc(&Filter->RxdDpc, NULL, NULL);
+    }
+    FILTER_RELEASE_LOCK(&Filter->Lock, bTrue);
 }
 
 // Pause: what waits goes back to the miniport unindicated.
