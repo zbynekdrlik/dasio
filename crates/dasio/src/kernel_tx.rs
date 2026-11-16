@@ -21,8 +21,20 @@ pub const DEVICE_PATH: &str = r"\\.\dasiopacer";
 pub const MIN_FRAME: usize = 42;
 pub const MAX_FRAME: usize = 1514;
 
-/// The input's header: the adapter's IfIndex and a reserved word.
+/// The input's header: the adapter's IfIndex and the 802.1Q tag word
+/// (dasio#151: the VLAN ID, 0 = untagged; a filter older than the tag
+/// reads it as reserved and ignores it).
 pub const HEADER: usize = 8;
+
+/// The highest VLAN ID (802.1Q reserves 4095; `PACER_TX_VLAN_MAX`).
+pub const VLAN_MAX: u16 = 4094;
+
+/// The first `DASIO_KTX_STATUS` version whose filter tags media frames
+/// (`TxTag`): an older one ignores the tag word and would send untagged.
+pub const TAG_VERSION: u64 = 5;
+
+/// The most u64 fields a status record has (the newest version's).
+pub const MAX_STATUS_FIELDS: usize = 28;
 
 /// Windows' `CTL_CODE(device, function, method, access)`: its fields
 /// never overlap, so the sum is the macro's bitwise or.
@@ -46,6 +58,7 @@ fn status_fields(version: u64) -> Option<usize> {
         2 => Some(20),
         3 => Some(25),
         4 => Some(27),
+        5 => Some(MAX_STATUS_FIELDS),
         _ => None,
     }
 }
@@ -77,6 +90,9 @@ pub struct KtxStatus {
     /// interrupt time (0: none yet).
     pub no_slot_events: u64,
     pub last_no_slot_time: u64,
+    /// Version 5: the tag word of the last media send that sent a frame
+    /// (its VLAN ID, 0 = untagged).
+    pub tx_tag: u64,
 }
 
 /// Bound adapters dasio reads at most (the reply buffer's size).
@@ -113,6 +129,7 @@ pub fn parse_status(reply: &[u8]) -> Vec<KtxStatus> {
             last_fail_time: f(24),
             no_slot_events: f(25),
             last_no_slot_time: f(26),
+            tx_tag: f(27),
         });
         at += fields * 8;
     }
@@ -210,12 +227,19 @@ pub enum PackError {
     /// The batch does not fit the buffer's capacity (packing never
     /// allocates: it runs on the TX thread).
     Full,
+    /// A VLAN ID above [`VLAN_MAX`] (the filter would refuse the input).
+    Tag(u16),
 }
 
-/// Packs `frames` for `if_index` into `buf`, replacing what it held:
-/// the header, then each frame as a 2-byte little-endian length and its
-/// bytes. Never grows `buf`.
-pub fn pack(frames: &[&[u8]], if_index: u32, buf: &mut Vec<u8>) -> Result<(), PackError> {
+/// Packs `frames` for `if_index` with the VLAN `tag` (0 = untagged) into
+/// `buf`, replacing what it held: the header, then each frame as a 2-byte
+/// little-endian length and its bytes. Never grows `buf`.
+pub fn pack(
+    frames: &[&[u8]],
+    if_index: u32,
+    tag: u16,
+    buf: &mut Vec<u8>,
+) -> Result<(), PackError> {
     let need = HEADER + frames.iter().map(|f| 2 + f.len()).sum::<usize>();
     for (i, f) in frames.iter().enumerate() {
         let ipv4 = f.len() >= MIN_FRAME
@@ -227,12 +251,15 @@ pub fn pack(frames: &[&[u8]], if_index: u32, buf: &mut Vec<u8>) -> Result<(), Pa
             return Err(PackError::Frame(i));
         }
     }
+    if tag > VLAN_MAX {
+        return Err(PackError::Tag(tag));
+    }
     if need > buf.capacity() {
         return Err(PackError::Full);
     }
     buf.clear();
     buf.extend_from_slice(&if_index.to_le_bytes());
-    buf.extend_from_slice(&0u32.to_le_bytes());
+    buf.extend_from_slice(&u32::from(tag).to_le_bytes());
     for f in frames {
         buf.extend_from_slice(&(f.len() as u16).to_le_bytes());
         buf.extend_from_slice(f);
@@ -269,6 +296,110 @@ impl Relookup {
         }
         self.last_ms = Some(now_ms);
         true
+    }
+}
+
+/// The VLAN ID of the Dante adapter from its driver key's `VlanID` value
+/// (dasio#151; what `Get-NetAdapter` shows as VlanID: Realtek's VLAN
+/// adapter writes it as a string, RtVlan's "89" on mbc). No value, or 0,
+/// is no VLAN. Anything else must be a VLAN ID.
+pub fn vlan_of(value: Option<&crate::pc_profile::Value>) -> Result<u16, String> {
+    use crate::pc_profile::Value;
+    let n = match value {
+        None => return Ok(0),
+        Some(Value::Dword(n)) => u64::from(*n),
+        Some(Value::String(s)) if s.trim().is_empty() => return Ok(0),
+        Some(Value::String(s)) => s
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| format!("the adapter's VlanID {s:?} is not a number"))?,
+        Some(other) => {
+            return Err(format!(
+                "the adapter's VlanID is not a number: {other:?}"
+            ));
+        }
+    };
+    if n > u64::from(VLAN_MAX) {
+        return Err(format!(
+            "the adapter's VlanID {n} is not a VLAN ID (0..={VLAN_MAX})"
+        ));
+    }
+    Ok(n as u16)
+}
+
+/// Where media TX goes: the filter binding's IfIndex and the VLAN tag the
+/// filter puts on each frame (0 = untagged).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TxRoute {
+    pub if_index: u32,
+    pub tag: u16,
+}
+
+/// The route for a device on the adapter `dante` (IfIndex) whose own VLAN
+/// ID is `vlan` (0: none), given the adapters directly below it in the
+/// interface stack (`lower`) and the filter's status `reply` (one record
+/// per bound adapter). dasio#151, one NIC with the LAN untagged and Dante
+/// on a tagged VLAN:
+/// - a VLAN adapter on a NIC that carries the filter: that NIC, tagged
+///   with the adapter's VLAN (the filter must be new enough to tag);
+/// - the filter on the Dante adapter itself: that adapter, untagged (on a
+///   VLAN adapter its own driver tags);
+/// - anything else is refused, named: the frames would leave untagged on
+///   the LAN, or not through the filter at all.
+pub fn route(
+    dante: u32,
+    vlan: u16,
+    lower: &[u32],
+    reply: &[KtxStatus],
+) -> Result<TxRoute, String> {
+    let bound: Vec<u32> = reply.iter().map(|s| s.if_index).collect();
+    let below: Vec<&KtxStatus> = reply
+        .iter()
+        .filter(|s| lower.contains(&s.if_index))
+        .collect();
+    if vlan == 0 {
+        if bound_to(reply, dante) {
+            return Ok(TxRoute {
+                if_index: dante,
+                tag: 0,
+            });
+        }
+        if let Some(s) = below.first() {
+            return Err(format!(
+                "the Dante adapter (IfIndex {dante}) sits on IfIndex {}, where dasio_pacer is bound, \
+                 but has no VLAN ID: its frames would leave untagged, on the LAN (dasio#151)",
+                s.if_index
+            ));
+        }
+        return Err(format!(
+            "dasio_pacer is not bound to the Dante adapter (IfIndex {dante}; bound to {bound:?})"
+        ));
+    }
+    match below.as_slice() {
+        [s] if s.version >= TAG_VERSION => Ok(TxRoute {
+            if_index: s.if_index,
+            tag: vlan,
+        }),
+        [s] => Err(format!(
+            "dasio_pacer on IfIndex {} is older than the VLAN tag (status version {}, needs \
+             {TAG_VERSION}): it would send VLAN {vlan}'s frames untagged, on the LAN; install the \
+             current filter (dasio#151)",
+            s.if_index, s.version
+        )),
+        [] if bound_to(reply, dante) => Ok(TxRoute {
+            if_index: dante,
+            tag: 0,
+        }),
+        [] => Err(format!(
+            "dasio_pacer is bound neither to the Dante adapter (IfIndex {dante}, VLAN {vlan}) \
+             nor to the NIC below it (IfIndex {lower:?}; bound to {bound:?})"
+        )),
+        many => Err(format!(
+            "the Dante adapter (IfIndex {dante}, VLAN {vlan}) sits on {} adapters with \
+             dasio_pacer bound ({:?}): kernel TX needs exactly one",
+            many.len(),
+            many.iter().map(|s| s.if_index).collect::<Vec<_>>()
+        )),
     }
 }
 

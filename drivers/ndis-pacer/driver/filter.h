@@ -438,6 +438,8 @@ typedef struct _MS_FILTER
     // more than 1 s apart, and the interrupt time of the last one.
     ULONG64                         TxNoSlotEvents;
     ULONG64                         TxLastNoSlotTime;
+    // The Tag word of the last media send that sent a frame (dasio#151).
+    ULONG                           TxTag;
 
     // dasio deferred receive (rxd, dasio#1): received NBLs queued in
     // order (under Lock) and indicated up by RxdDpc.
@@ -491,7 +493,7 @@ VOID ktxStop(_In_ PMS_FILTER Filter);
 // the service's Parameters TxMaxOut at load): 0 = every slot.
 extern ULONG TxMaxOutSetting;
 
-NTSTATUS txSendAtDispatch(_In_ PMS_FILTER Filter, _In_reads_bytes_(Length) const UCHAR *Input,
+NTSTATUS txSendAtDispatch(_In_ PMS_FILTER Filter, _In_ ULONG Tag, _In_reads_bytes_(Length) const UCHAR *Input,
                           _In_ ULONG Length, _Out_ PULONG Accepted);
 
 // Deferred receive (filter.c): settings for all filters, applied under

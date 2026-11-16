@@ -202,7 +202,8 @@ uint32_t pacer_ktx_due(uint64_t start, uint64_t now, uint64_t interval_100ns, ui
  * through IOCTL_DASIO_TX_SEND and sent straight to the miniport, below
  * tcpip and WFP (where Windows refuses or holds socket sends with Realtek
  * 10.79). The input packs each frame as a 2-byte little-endian length and
- * the frame: Ethernet II carrying IPv4 (no VLAN tag). */
+ * the frame: Ethernet II carrying IPv4 (no VLAN tag in the data; a tagged
+ * send carries its VLAN out of band, pacer_tx_tag). */
 #define PACER_TX_MIN_FRAME 42u
 #define PACER_TX_MAX_FRAME 1514u
 
@@ -213,5 +214,16 @@ uint32_t pacer_ktx_due(uint64_t start, uint64_t now, uint64_t interval_100ns, ui
  * PACER_TX_MAX_FRAME, an EtherType other than IPv4, an IP version other
  * than 4 or a header shorter than 20 bytes); `*at` then stays. */
 int pacer_tx_next(const uint8_t *buf, uint32_t len, uint32_t *at, uint32_t *frame_off, uint32_t *frame_len);
+
+/* The 802.1Q tag of a media send (dasio#151: Dante on a tagged VLAN, the
+ * LAN untagged, one NIC). DASIO_TX_SEND's Tag word holds the VLAN ID in
+ * bits 0-11 (1..PACER_TX_VLAN_MAX; 0 = untagged, what a dasio older than
+ * the tag sends) and 0 in every other bit: the priority bits stay 0 (the
+ * switches trust DSCP). The tag never goes into the frame data: the filter
+ * puts it into the NBL's 802.1Q OOB and the miniport inserts it. Returns
+ * the VLAN ID (0 = untagged), or -1 when the word is malformed (another
+ * bit set, or VLAN 4095, which 802.1Q reserves). */
+#define PACER_TX_VLAN_MAX 4094u
+int32_t pacer_tx_tag(uint32_t word);
 
 #endif

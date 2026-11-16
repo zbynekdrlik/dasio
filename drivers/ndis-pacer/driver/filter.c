@@ -2837,6 +2837,9 @@ ktxTimer(
                 continue;
             }
             Nbl->SourceHandle = Filter->FilterHandle;
+            // Untagged; the pool is shared with media TX, whose NBLs carry
+            // an 802.1Q OOB (dasio#151).
+            NET_BUFFER_LIST_INFO(Nbl, Ieee8021QNetBufferListInfo) = NULL;
             *(PULONG)NET_BUFFER_LIST_CONTEXT_DATA_START(Nbl) = Slot;
             *Tail = Nbl;
             Tail = &NET_BUFFER_LIST_NEXT_NBL(Nbl);
@@ -2866,11 +2869,13 @@ ULONG TxMaxOutSetting = 0;
 // Media TX (dasio#1): the dasio service's own audio frames, copied into
 // free test stream slots and sent down in one chain. Their completions go
 // through ktxDone like the test stream's (same pool), and pause waits for
-// them (KtxOut).
+// them (KtxOut). `Tag` (dasio#151): the frames' 802.1Q VLAN ID (0 =
+// untagged), put into each NBL's OOB for the miniport to insert.
 _Use_decl_annotations_
 NTSTATUS
 txSendAtDispatch(
     PMS_FILTER Filter,
+    ULONG Tag,
     const UCHAR *Input,
     ULONG Length,
     PULONG Accepted
@@ -2885,9 +2890,18 @@ txSendAtDispatch(
     ULONG Total = 0;
     ULONG Batch = 0;
     int r;
+    int32_t Vlan;
+    NDIS_NET_BUFFER_LIST_8021Q_INFO Q;
 
     *Accepted = 0;
     // The whole input first: a malformed one sends nothing.
+    Vlan = pacer_tx_tag(Tag);
+    if (Vlan < 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    Q.Value = NULL;
+    Q.TagHeader.VlanId = (UINT32)Vlan;
     while ((r = pacer_tx_next(Input, Length, &At, &Off, &Len)) == 1)
     {
         Total++;
@@ -2915,7 +2929,14 @@ txSendAtDispatch(
         Slot = Filter->KtxFree[--Filter->KtxFreeCount];
         Frame = Filter->KtxBuf + Slot * KTX_SLOT_BYTES;
         NdisMoveMemory(Frame, Input + Off, Len);
-        NdisMoveMemory(Frame + 6, Filter->KtxSrcMac, 6);
+        if (Vlan == 0)
+        {
+            // Untagged: the frame leaves as this adapter's. A tagged frame
+            // keeps the VLAN adapter's MAC dstack wrote (its address's ARP
+            // answer), which differs from the physical one (Realtek's
+            // RtVlan, dasio#151).
+            NdisMoveMemory(Frame + 6, Filter->KtxSrcMac, 6);
+        }
         Nbl = NdisAllocateNetBufferAndNetBufferList(Filter->KtxPool, PACER_CHILD_CONTEXT, 0,
                                                     Filter->KtxMdl[Slot], 0, Len);
         if (Nbl == NULL)
@@ -2924,6 +2945,8 @@ txSendAtDispatch(
             break;
         }
         Nbl->SourceHandle = Filter->FilterHandle;
+        // Always written: a pooled NBL may carry an earlier send's OOB.
+        NET_BUFFER_LIST_INFO(Nbl, Ieee8021QNetBufferListInfo) = Q.Value;
         *(PULONG)NET_BUFFER_LIST_CONTEXT_DATA_START(Nbl) = Slot;
         *Tail = Nbl;
         Tail = &NET_BUFFER_LIST_NEXT_NBL(Nbl);
@@ -2950,6 +2973,7 @@ txSendAtDispatch(
     if (Batch > 0)
     {
         Filter->TxBatches++;
+        Filter->TxTag = (ULONG)Vlan;
     }
     if (Batch > Filter->TxMaxBatch)
     {

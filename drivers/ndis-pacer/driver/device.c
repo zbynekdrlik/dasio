@@ -394,6 +394,7 @@ FilterDeviceIoControl(
                 Out->LastFailTime = pFilter->KtxLastFailTime;
                 Out->NoSlotEvents = pFilter->TxNoSlotEvents;
                 Out->LastNoSlotTime = pFilter->TxLastNoSlotTime;
+                Out->TxTag = pFilter->TxTag;
                 FILTER_RELEASE_LOCK(&pFilter->Lock, bTrue);
                 InfoLength += (ULONG)sizeof(DASIO_KTX_STATUS);
             }
@@ -420,6 +421,7 @@ FilterDeviceIoControl(
             }
             {
                 ULONG IfIndex = ((PDASIO_TX_SEND)InputBuffer)->IfIndex;
+                ULONG Tag = ((PDASIO_TX_SEND)InputBuffer)->Tag;
                 ULONG Accepted = 0;
                 Status = STATUS_NOT_FOUND;
                 PMS_FILTER Found = NULL;
@@ -439,7 +441,7 @@ FilterDeviceIoControl(
                 {
                     KIRQL OldIrql;
                     KeRaiseIrql(DISPATCH_LEVEL, &OldIrql);
-                    Status = txSendAtDispatch(Found, InputBuffer + sizeof(DASIO_TX_SEND),
+                    Status = txSendAtDispatch(Found, Tag, InputBuffer + sizeof(DASIO_TX_SEND),
                                               InputBufferLength - (ULONG)sizeof(DASIO_TX_SEND), &Accepted);
                     KeLowerIrql(OldIrql);
                     InterlockedDecrement(&Found->TxRefs);

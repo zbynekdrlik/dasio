@@ -442,3 +442,11 @@ int pacer_tx_next(const uint8_t *buf, uint32_t len, uint32_t *at, uint32_t *fram
     *at = pos + n;
     return 1;
 }
+
+int32_t pacer_tx_tag(uint32_t word)
+{
+    if ((word & ~0x0FFFu) != 0 || word > PACER_TX_VLAN_MAX) {
+        return -1;
+    }
+    return (int32_t)word;
+}

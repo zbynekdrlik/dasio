@@ -179,7 +179,7 @@ typedef struct _DASIO_KTX_START
 
 // dasio: one bound adapter's test stream, read under its lock. All fields
 // 64 bit, read in this order.
-#define DASIO_KTX_STATUS_VERSION            4
+#define DASIO_KTX_STATUS_VERSION            5
 typedef struct _DASIO_KTX_STATUS
 {
     ULONG64         Version;
@@ -214,6 +214,9 @@ typedef struct _DASIO_KTX_STATUS
     // Version 4: media frames handed back to the socket (TxNoSlot).
     ULONG64         NoSlotEvents;     // TxNoSlot bursts more than 1 s after the previous one
     ULONG64         LastNoSlotTime;   // 100 ns interrupt time of the last one
+    // Version 5 (dasio#151): the Tag word of the last media send that sent
+    // a frame (DASIO_TX_SEND): its VLAN ID, 0 = untagged.
+    ULONG64         TxTag;
 } DASIO_KTX_STATUS, *PDASIO_KTX_STATUS;
 
 // dasio: media TX. IfIndex names the adapter; the frames follow this
@@ -223,10 +226,16 @@ typedef struct _DASIO_KTX_STATUS
 // filter has free slots: the output's count says how many, and the rest
 // were not sent (the caller sends them another way). A malformed input
 // sends nothing (STATUS_INVALID_PARAMETER).
+// Tag (dasio#151, was a reserved 0): the 802.1Q VLAN ID of every frame of
+// the call in bits 0-11 (1..4094), 0 = untagged, every other bit 0
+// (pacer_tx_tag). A tagged frame goes down with the VLAN in the NBL's
+// Ieee8021QNetBufferListInfo (the miniport inserts the tag) and keeps its
+// own source MAC (the VLAN adapter's, which ARP gives for the address);
+// an untagged one gets the adapter's MAC as its source.
 typedef struct _DASIO_TX_SEND
 {
     ULONG           IfIndex;
-    ULONG           Reserved;
+    ULONG           Tag;
 } DASIO_TX_SEND, *PDASIO_TX_SEND;
 
 // dasio: deferred receive. The miniport's receive DPC hands its NBLs to the

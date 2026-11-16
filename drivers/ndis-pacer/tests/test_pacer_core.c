@@ -739,6 +739,24 @@ static void tx_next(void)
     CHECK(pacer_tx_next(buf, len, &at, &off, &n) == -1 && at == 62);
 }
 
+/* The 802.1Q tag word of a media send (dasio#151): VLAN 1..4094 tagged,
+ * 0 untagged, anything else refused. */
+static void tx_tag(void)
+{
+    CHECK(pacer_tx_tag(0) == 0);
+    CHECK(pacer_tx_tag(1) == 1);
+    CHECK(pacer_tx_tag(70) == 70);
+    CHECK(pacer_tx_tag(PACER_TX_VLAN_MAX) == 4094);
+    /* 4095 is reserved by 802.1Q. */
+    CHECK(pacer_tx_tag(0x0FFFu) == -1);
+    /* Priority bits (12-15) and anything above stay 0. */
+    CHECK(pacer_tx_tag(0x1000u | 70u) == -1);
+    CHECK(pacer_tx_tag(0x8000u) == -1);
+    CHECK(pacer_tx_tag(0x10000u | 70u) == -1);
+    CHECK(pacer_tx_tag(0x80000000u) == -1);
+    CHECK(pacer_tx_tag(0xFFFFFFFFu) == -1);
+}
+
 int main(void)
 {
     classify();
@@ -749,6 +767,7 @@ int main(void)
     ktx();
     rx_defer();
     tx_next();
+    tx_tag();
     printf("%d checks, %d failed\n", checks, failed);
     return failed == 0 ? 0 : 1;
 }
