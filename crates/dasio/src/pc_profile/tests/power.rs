@@ -57,6 +57,22 @@ fn anything_else_is_no_power_setting() {
         power_setting(&format!(r"{SCHEME}\{SUB}\not-a-guid"), "ACSettingIndex"),
         None
     );
+    // GUID-shaped but not one: a part of the right length with a non-hex
+    // digit, and all hex digits with a part one short.
+    assert_eq!(
+        power_setting(
+            &format!(r"{SCHEME}\{SUB}\bc5038f7-23e0-4960-96da-33abaf5935eg"),
+            "ACSettingIndex"
+        ),
+        None
+    );
+    assert_eq!(
+        power_setting(
+            &format!(r"{SCHEME}\{SUB}\bc5038f7-23e0-4960-96da-33abaf5935e"),
+            "ACSettingIndex"
+        ),
+        None
+    );
     // A literal scheme GUID is a plain registry entry, not the active plan.
     assert_eq!(
         power_setting(
