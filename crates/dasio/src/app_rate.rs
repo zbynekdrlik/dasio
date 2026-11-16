@@ -118,7 +118,7 @@ impl Plan {
     /// a block on the mean, and its outputs the rest of the prime. None on
     /// an exact ratio. (`Rated::delay_ns` states RX's worst case instead,
     /// which would overstate the round trip by up to a block.)
-    pub fn reblock_share(&self) -> (u64, u64) {
+    pub fn fixed_block_share(&self) -> (u64, u64) {
         let a = self.prime() as u64;
         (a / 2, a - a / 2)
     }
@@ -135,7 +135,7 @@ impl Plan {
         if !self.converts() {
             return device;
         }
-        let (share_in, share_out) = self.reblock_share();
+        let (share_in, share_out) = self.fixed_block_share();
         let way = |samples: u32, ns: u64, share: u64| {
             let total = self
                 .to_app(u64::from(samples))

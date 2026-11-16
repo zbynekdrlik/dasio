@@ -94,7 +94,10 @@ fn a_re_bootstrap_that_skips_no_block_defers_one_look_only() {
     assert_eq!(t.take(counts(0, 0, 1, 0), ring(0, &[])), lost(0, 0));
     assert_eq!(t.take(counts(0, 0, 2, 1), ring(1, &[LATE])), lost(0, 0));
     // Its late re-bootstrap had no blocks in its look: the blocks that
-    // come now have no cause of their own, the device's.
+    // come now have no cause of their own, the device's. A known limit,
+    // on the safe side (see the module docs): it needs a re-bootstrap with
+    // no block skipped right before a look that falls between a late
+    // cause's count and its blocks'.
     assert_eq!(
         t.take(counts(10, 0, 2, 1), ring(1, &[LATE])),
         lost(0, 3_333)

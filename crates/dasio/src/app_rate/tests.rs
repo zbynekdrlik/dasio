@@ -135,20 +135,20 @@ fn the_reported_latencies_are_the_device_s_at_the_app_rate_plus_the_conversion()
     assert_eq!(same.latencies((128, 152), (0, 0)), (128, 152));
     assert_eq!(same.latencies((128, 152), (5_000, 5_000)), (128, 152));
     // 48 kHz: B + P = 128 -> 64, out 152 -> 76; 0.63 ms -> 30.24 -> 31,
-    // 0.64 ms -> 30.72 -> 31; exact: no reblock share.
+    // 0.64 ms -> 30.72 -> 31; exact: no fixed block share.
     let h = Plan::new(96_000, 48_000, 32).unwrap();
-    assert_eq!(h.reblock_share(), (0, 0));
+    assert_eq!(h.fixed_block_share(), (0, 0));
     assert_eq!(h.latencies((128, 152), (630_000, 640_000)), (95, 107));
     // 44.1 kHz at block 128: A = 59, the share 29 in and 30 out (one
     // block over the round trip, the TX FIFO's prime); 224 -> 102.9 -> 103,
     // 1.32 ms -> 58.21 -> 59; 400 -> 183.75 -> 184, 3.08 ms -> 135.83
     // -> 136.
     let p = Plan::new(96_000, 44_100, 128).unwrap();
-    assert_eq!(p.reblock_share(), (29, 30));
+    assert_eq!(p.fixed_block_share(), (29, 30));
     let (i, o) = p.latencies((224, 400), (1_320_000, 3_080_000));
     assert_eq!((i, o), (103 + 59 + 29, 184 + 136 + 30));
     // The shares add up to the prime: the round trip's one block.
-    let (a, b) = p.reblock_share();
+    let (a, b) = p.fixed_block_share();
     assert_eq!(a + b, p.prime() as u64);
 }
 
@@ -234,7 +234,7 @@ fn the_converted_path_delays_what_the_latencies_say_beyond_the_device() {
         // What the latencies add beyond the device's own terms (the echo
         // answers in its own block: no double buffer here).
         let (rx, tx) = conversion_ns(&plan).unwrap();
-        let (a, b) = plan.reblock_share();
+        let (a, b) = plan.fixed_block_share();
         let said = (plan.ns_to_app(rx) + plan.ns_to_app(tx) + a + b) as f64;
         assert!(
             (measured - said).abs() <= 4.0,
@@ -544,12 +544,12 @@ fn the_converted_path_sets_the_device_block_s_start_for_the_wait() {
             // block's 9 * 128 device samples at the app's rate (on the
             // app's clock, rounded down: `Plan::at_app`).
             assert_eq!(first, Some(0), "{rate} Hz");
-            let got = tenth.unwrap();
-            let want = plan.to_app(9 * 128);
-            assert!(
-                got + 2 >= want && got <= want + 2,
-                "{rate} Hz: {got} for {want}"
-            );
+            // 44.1 kHz: 1152 * 0.459375 = 529.2 -> 529; 48 kHz: 576.
+            let want = [(44_100, 529), (48_000, 576)]
+                .into_iter()
+                .find(|&(r, _)| r == rate)
+                .map(|(_, w)| w);
+            assert_eq!(tenth, want, "{rate} Hz");
         } else {
             // The bridge alone: nothing sets the cell (the direct path
             // never sees it), so the bridge waits from its own block's

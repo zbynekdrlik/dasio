@@ -29,7 +29,13 @@
 //! a look's blocks count in that look. A look can still fall between the
 //! two and see a cause with none of its blocks: such a look judges
 //! nothing, and the next look judges both windows together (one look at
-//! most, as a re-bootstrap may skip no block).
+//! most, as a re-bootstrap may skip no block). The limit of that bound: a
+//! look right after one that used it up (a re-bootstrap that skipped no
+//! block) that again falls between a cause's count and its blocks judges
+//! the cause with no blocks, and the next look gives those blocks, with no
+//! cause of their own, to the device. The device's side is the safe one
+//! (the e2e test credits only late wakes), and it needs two such looks in
+//! a row, each a window of nanoseconds in 100 ms.
 //!
 //! A runner stall that lands inside a block's processing reads as an
 //! overrun: the device's, as the pump cannot tell its wall time from its
