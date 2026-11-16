@@ -72,11 +72,13 @@ fn the_installer_s_protocol_is_the_layout_s_version() {
     );
 }
 
-// The ack record uses what was padding: the header keeps its size, so a
-// driver and a device of either age share one layout (VERSION unchanged).
+// The ack record used what was padding (VERSION unchanged then); the pump's
+// lost time (dasio#114) grew the header past 128 bytes: VERSION 6.
 #[test]
 fn the_header_keeps_its_size() {
-    assert_eq!(std::mem::size_of::<Header>(), 128);
+    assert_eq!(std::mem::size_of::<Header>(), 192);
+    assert_eq!(std::mem::offset_of!(Header, pump_lost_late_us), 128);
+    assert_eq!(std::mem::offset_of!(Header, pump_lost_device_us), 136);
     assert_eq!(std::mem::offset_of!(Header, acked_seq), 104);
     assert_eq!(std::mem::offset_of!(Header, acked_entered_ns), 112);
     assert_eq!(std::mem::offset_of!(Header, driver_messages), 120);
