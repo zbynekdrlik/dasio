@@ -3,7 +3,7 @@
 
 use std::io;
 use std::net::Ipv4Addr;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -33,6 +33,18 @@ use super::{
 /// the start: the run loop ends the device (dasio#125, never a silent UDP
 /// fallback); the SCM restarts it, and its start checks the binding.
 static UNBOUND: AtomicBool = AtomicBool::new(false);
+/// The filter's last 10 s window for this adapter: frames that went to the
+/// socket and frames the NIC refused (the tray's TX part, dasio#125).
+static WINDOW_NO_SLOT: AtomicU64 = AtomicU64::new(0);
+static WINDOW_FAILED: AtomicU64 = AtomicU64::new(0);
+
+/// The last window's frames to the socket and frames refused.
+pub fn window() -> (u64, u64) {
+    (
+        WINDOW_NO_SLOT.load(Ordering::Relaxed),
+        WINDOW_FAILED.load(Ordering::Relaxed),
+    )
+}
 
 /// Whether the filter was found unbound from the device's adapter.
 pub fn unbound() -> bool {
@@ -154,6 +166,8 @@ impl Adapter {
         let Some(r) = watch.step(&reply, if_index) else {
             return;
         };
+        WINDOW_NO_SLOT.store(r.no_slot, Ordering::Relaxed);
+        WINDOW_FAILED.store(r.failed, Ordering::Relaxed);
         if r.bad() {
             *quiet = 0;
             warn!(
