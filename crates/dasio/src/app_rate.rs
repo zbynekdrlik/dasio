@@ -127,9 +127,9 @@ impl Plan {
     /// (`device`, samples at its rate: B + P in, B + W + TX latency +
     /// spare blocks out, [`crate::latencies`]) at the app's rate, plus the
     /// converter's delay each way (`conversion_ns`, RX then TX:
-    /// [`dlink::rated::delay_ns`]) and the reblock's share. Exact at 48 kHz;
+    /// [`dlink::rated::delay_ns`]) and the fixed block's share. Exact at 48 kHz;
     /// at 44.1 kHz the round trip is exact to a sample or two (the pulse
-    /// test measures it) and the in/out split of the reblock's share is
+    /// test measures it) and the in/out split of the fixed block's share is
     /// its mean, as the residue varies block to block.
     pub fn latencies(&self, device: (u32, u32), conversion_ns: (u64, u64)) -> (u32, u32) {
         if !self.converts() {
@@ -154,7 +154,9 @@ impl Plan {
     /// ([`Served`] sets that start, [`crate::bridge::WaitFrom`]): the
     /// device's offset (`device_offset`, its samples,
     /// [`crate::wait_offset`]) at the app's rate, rounded down, so the wait
-    /// ends at the device block's own deadline. At 44.1 kHz a DAW block
+    /// ends at the device block's own deadline, or up to about 2 app
+    /// samples before it (this floor and [`Plan::at_app`]'s on the start;
+    /// about 45 us at 44.1 kHz), never after it. At 44.1 kHz a DAW block
     /// starts up to a block before that device block; the wait still
     /// counts from the device block (dasio#107).
     pub fn wait_offset(&self, device_offset: u64) -> u64 {
@@ -203,7 +205,7 @@ pub enum Served<P> {
 /// and the bridge's [`WaitFrom`] set to each device block's start on the
 /// app's clock before Rated runs that block.
 pub struct Converted<P> {
-    rated: Rated<P>,
+    rated: Rated<Zeroed<P>>,
     plan: Plan,
     wait_from: WaitFrom,
 }
@@ -217,6 +219,24 @@ impl<P: Process> Converted<P> {
         self.wait_from
             .set(block.start().map(|s| self.plan.at_app(s)));
         self.rated.process(block);
+    }
+}
+
+/// The inner processor on a block whose outputs start at silence, as the
+/// pump gives them: dlink's Rated hands it its own app buffer again, and
+/// the bridge writes nothing where it has nothing to play (no DAW
+/// attached, a gap's later blocks), which must play silence, never the
+/// last block again.
+pub struct Zeroed<P>(P);
+
+impl<P: Process> Process for Zeroed<P> {
+    fn process(&mut self, block: &mut Block<'_>) {
+        block.zero_outputs();
+        self.0.process(block);
+    }
+
+    fn discontinuity(&mut self) {
+        self.0.discontinuity();
     }
 }
 
@@ -253,7 +273,7 @@ impl<P: Process> Served<P> {
             return Ok((Served::Direct(inner), Counters::default()));
         }
         let rated = Rated::with_fixed_app_block(
-            inner,
+            Zeroed(inner),
             plan.device_rate,
             plan.app_rate,
             plan.device_block as usize,
