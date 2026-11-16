@@ -308,7 +308,7 @@ fn no_channels_still_keep_the_pace() {
 /// Gaussian 8 samples wide, far inside both rates' band, so the filters
 /// pass its shape and its peak moves by their delay alone.
 fn served_delay(plan: &Plan) -> usize {
-    let (mut s, _) = Served::new(Echo::default(), plan, 1, 1).unwrap();
+    let (mut s, _) = Served::new(Echo::default(), plan, 1, 1, WaitFrom::default()).unwrap();
     let n = plan.device_block as usize;
     let at = 50 * n + 7;
     let pulse = |i: usize| {
@@ -351,7 +351,7 @@ fn the_converted_path_delays_what_the_latencies_say_beyond_the_device() {
 #[test]
 fn the_device_s_rate_is_the_bridge_alone_without_delay() {
     let plan = Plan::new(96_000, 96_000, 32).unwrap();
-    let (s, counters) = Served::new(Echo::default(), &plan, 1, 1).unwrap();
+    let (s, counters) = Served::new(Echo::default(), &plan, 1, 1, WaitFrom::default()).unwrap();
     assert!(matches!(s, Served::Direct(_)));
     assert_eq!(counters.read(), (0, 0, 0));
     assert_eq!(served_delay(&plan), 0);
@@ -375,7 +375,14 @@ fn a_discontinuity_reaches_the_bridge_on_either_path() {
     for rate in [96_000, 48_000, 44_100] {
         let plan = Plan::new(96_000, rate, 32).unwrap();
         let seen = std::sync::Arc::new(AtomicU64::new(0));
-        let (mut s, _) = Served::new(Resets(std::sync::Arc::clone(&seen)), &plan, 1, 1).unwrap();
+        let (mut s, _) = Served::new(
+            Resets(std::sync::Arc::clone(&seen)),
+            &plan,
+            1,
+            1,
+            WaitFrom::default(),
+        )
+        .unwrap();
         s.discontinuity();
         s.discontinuity();
         assert_eq!(seen.load(Ordering::Relaxed), 2, "{rate} Hz");
@@ -386,7 +393,8 @@ fn a_discontinuity_reaches_the_bridge_on_either_path() {
 fn a_converted_path_counts_nothing_dry_in_steady_running() {
     for rate in [48_000, 44_100] {
         let plan = Plan::new(96_000, rate, 32).unwrap();
-        let (mut s, counters) = Served::new(Echo::default(), &plan, 2, 2).unwrap();
+        let (mut s, counters) =
+            Served::new(Echo::default(), &plan, 2, 2, WaitFrom::default()).unwrap();
         assert!(matches!(s, Served::Converted(_)));
         // 100 blocks: the filters are full after about ten.
         for b in 0..100u64 {
@@ -395,5 +403,131 @@ fn a_converted_path_counts_nothing_dry_in_steady_running() {
             s.process(&mut Block::new(32, &input, &mut o).at(b * 32));
         }
         assert_eq!(counters.read(), (0, 0, 0), "{rate}");
+    }
+}
+
+/// A DAW on a scripted media clock (app samples, one sample a read): once
+/// the clock reaches `at` it has answered every block before the newest one
+/// handed over (the one the bridge waits for, without a spare block).
+struct Scripted {
+    seq: std::sync::Arc<AtomicU64>,
+    ack: std::sync::Arc<AtomicU64>,
+    late: std::sync::Arc<AtomicU64>,
+}
+
+impl crate::bridge::Link for Scripted {
+    fn attached(&self) -> bool {
+        true
+    }
+    fn input(&mut self, _half: u32, _ch: usize) -> &mut [i32] {
+        &mut []
+    }
+    fn read_output(&self, _half: u32, _ch: usize, dst: &mut [f64]) {
+        dst.fill(0.5);
+    }
+    fn publish(&self, seq: u64, _start: Option<u64>) {
+        self.seq.store(seq, Ordering::Relaxed);
+    }
+    fn ack(&self) -> u64 {
+        self.ack.load(Ordering::Relaxed)
+    }
+    fn count_late(&self) {
+        self.late.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[test]
+fn behind_the_reblock_the_bridge_waits_until_the_device_block_s_deadline() {
+    use std::sync::Arc;
+    // 44.1 kHz on a 128-sample device block: 58 or 59 app frames a device
+    // block, a DAW block of 59. An inner block starts up to 58 frames
+    // before the device block that completes it.
+    const OFFSET: u64 = 40;
+    let (seq, ack, late) = (
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(AtomicU64::new(0)),
+    );
+    let (clock, at) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
+    let now = {
+        let (clock, at, seq, ack) = (
+            Arc::clone(&clock),
+            Arc::clone(&at),
+            Arc::clone(&seq),
+            Arc::clone(&ack),
+        );
+        move || {
+            let t = clock.fetch_add(1, Ordering::Relaxed);
+            if t >= at.load(Ordering::Relaxed) {
+                ack.fetch_max(
+                    seq.load(Ordering::Relaxed).saturating_sub(1),
+                    Ordering::Relaxed,
+                );
+            }
+            Some(t)
+        }
+    };
+    let link = Scripted {
+        seq: Arc::clone(&seq),
+        ack: Arc::clone(&ack),
+        late: Arc::clone(&late),
+    };
+    let bridge = crate::bridge::Bridge::with_spare(link, 0).with_deadline(OFFSET, now);
+    let waited = bridge.waited_counter();
+    let wait_from = bridge.wait_from();
+    let mut r = Reblock::new(bridge, 59, 59, 1, 1, 67).with_wait_from(wait_from);
+    let mut start = 0u64;
+    let mut early_starts = 0;
+    for b in 0..300 {
+        let k = [58, 59, 59, 58, 59][b % 5];
+        // The device block starts now; the DAW answers 2 samples before
+        // its deadline (its start + the offset).
+        clock.store(start, Ordering::Relaxed);
+        at.store(start + OFFSET - 2, Ordering::Relaxed);
+        if r.held > 2 && r.held + k >= 59 {
+            // An inner block that starts more than 2 frames before this
+            // device block runs in it.
+            early_starts += 1;
+        }
+        let input = vec![0.0; k];
+        let mut o = vec![0.0; k];
+        r.process(&mut Block::new(k, &input, &mut o).at(start));
+        start += k as u64;
+    }
+    assert!(early_starts > 200, "the case under test: {early_starts}");
+    // Every answer came before its device block's deadline: none late.
+    assert_eq!(late.load(Ordering::Relaxed), 0, "late answers");
+    assert!(waited.load(Ordering::Relaxed) > 250, "saved by the wait");
+}
+
+#[test]
+fn the_converted_path_sets_the_device_block_s_start_for_the_wait() {
+    for rate in [96_000, 48_000, 44_100] {
+        let plan = Plan::new(96_000, rate, 128).unwrap();
+        let wait_from = WaitFrom::default();
+        let (mut s, _) = Served::new(Echo::default(), &plan, 1, 1, wait_from.clone()).unwrap();
+        let input = [0.0; 128];
+        let mut o = [0.0; 128];
+        s.process(&mut Block::new(128, &input, &mut o).at(0));
+        let first = wait_from.get();
+        for b in 1..10u64 {
+            s.process(&mut Block::new(128, &input, &mut o).at(b * 128));
+        }
+        let tenth = wait_from.get();
+        if plan.converts() {
+            // The device block's start in app samples: 0, then the tenth
+            // block's 9 * 128 device samples at the app's rate (dlink's
+            // Rated keeps it within an app sample of that).
+            assert_eq!(first, Some(0), "{rate} Hz");
+            let got = tenth.unwrap();
+            let want = plan.to_app(9 * 128);
+            assert!(
+                got + 2 >= want && got <= want + 2,
+                "{rate} Hz: {got} for {want}"
+            );
+        } else {
+            // The bridge alone: its own block's start.
+            assert_eq!((first, tenth), (None, None), "{rate} Hz");
+        }
     }
 }

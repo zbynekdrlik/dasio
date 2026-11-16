@@ -56,6 +56,40 @@ pub fn to_f64(s: i32) -> f64 {
 /// The media clock now, samples (`None` while it is not ready).
 type MediaNow = Box<dyn Fn() -> Option<u64> + Send>;
 
+/// The media start (samples) a bridge's wait for a missing answer counts
+/// from, when a processor runs the bridge inside a longer block: the
+/// reblock (`app_rate::Reblock`) sets it to the device block's start in app
+/// samples before it runs the bridge's blocks of that device block, since
+/// the deadline offset is the device block's (dasio#107). Unset, the wait
+/// counts from the bridge's own block's start. Shared between the two on
+/// the pump's one thread.
+#[derive(Debug, Clone)]
+pub struct WaitFrom(Arc<AtomicU64>);
+
+/// No start set.
+const UNSET: u64 = u64::MAX;
+
+impl Default for WaitFrom {
+    fn default() -> Self {
+        WaitFrom(Arc::new(AtomicU64::new(UNSET)))
+    }
+}
+
+impl WaitFrom {
+    /// The start the wait counts from now; `None` unsets it.
+    pub fn set(&self, start: Option<u64>) {
+        self.0.store(start.unwrap_or(UNSET), Ordering::Relaxed);
+    }
+
+    /// The start set, if any.
+    pub fn get(&self) -> Option<u64> {
+        match self.0.load(Ordering::Relaxed) {
+            UNSET => None,
+            s => Some(s),
+        }
+    }
+}
+
 /// The pump's processor for one instance.
 pub struct Bridge<L: Link> {
     link: L,
@@ -75,6 +109,10 @@ pub struct Bridge<L: Link> {
     deadline: Option<(u64, MediaNow)>,
     /// Answers that came in during that wait (late without it).
     waited: Arc<AtomicU64>,
+    /// The media start the wait counts from when a processor runs the
+    /// bridge inside a longer block (the reblock); unset: the bridge's own
+    /// block's start.
+    wait_from: WaitFrom,
     /// The concealment of late blocks; `None`: a late block is silence.
     conceal: Option<Conceal>,
 }
@@ -190,6 +228,7 @@ impl<L: Link> Bridge<L> {
             starts: vec![None; spare as usize + 2],
             deadline: None,
             waited: Arc::new(AtomicU64::new(0)),
+            wait_from: WaitFrom::default(),
             conceal: None,
         }
     }
@@ -214,6 +253,12 @@ impl<L: Link> Bridge<L> {
     ) -> Self {
         self.deadline = Some((offset, Box::new(now)));
         self
+    }
+
+    /// The start the wait counts from, shared: a processor that runs the
+    /// bridge inside a longer block sets it ([`WaitFrom`]).
+    pub fn wait_from(&self) -> WaitFrom {
+        self.wait_from.clone()
     }
 
     /// The count of answers that came in during the wait, shared.

@@ -35,6 +35,8 @@ use dlink::rated::Rated;
 use dstack_audio_io::{Block, Process};
 use dstack_resample::{Converter, Fixed};
 
+use crate::bridge::WaitFrom;
+
 /// How an instance serves an app at `app_rate` on a device at
 /// `device_rate` running `device_block` frames a block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,6 +216,10 @@ pub struct Reblock<P> {
     dry: Arc<AtomicU64>,
     /// Blocks whose start did not follow on (the FIFOs started again).
     restarts: Arc<AtomicU64>,
+    /// Set to each outer block's start before its inner blocks run: an
+    /// inner block may start up to a block before it, and the bridge's wait
+    /// counts from the device block's start.
+    wait_from: Option<WaitFrom>,
 }
 
 impl<P: Process> Reblock<P> {
@@ -250,7 +256,16 @@ impl<P: Process> Reblock<P> {
             staged_out: vec![0.0; outputs * block],
             dry: Arc::new(AtomicU64::new(0)),
             restarts: Arc::new(AtomicU64::new(0)),
+            wait_from: None,
         }
+    }
+
+    /// This reblock setting `wait_from` to each outer block's start before
+    /// it runs that block's inner blocks (the bridge's
+    /// [`crate::bridge::Bridge::wait_from`]).
+    pub fn with_wait_from(mut self, wait_from: WaitFrom) -> Self {
+        self.wait_from = Some(wait_from);
+        self
     }
 
     /// The output frames played as silence because the FIFO was dry,
@@ -334,6 +349,9 @@ impl<P: Process> Process for Reblock<P> {
             }
         }
         self.held += k;
+        if let Some(w) = &self.wait_from {
+            w.set(block.start());
+        }
         // The whole blocks gathered, counted first: the loop is bounded by
         // the frames in, whatever an inner block does.
         for _ in 0..self.held / self.block {
@@ -388,12 +406,15 @@ impl Counters {
 impl<P: Process> Served<P> {
     /// `inner` (the bridge, at the plan's app block) served by `plan` for
     /// `inputs` RX and `outputs` TX channels; the converter's refusal as
-    /// text.
+    /// text. On a converted path the reblock sets `wait_from` (the bridge's
+    /// own, [`crate::bridge::Bridge::wait_from`]) to each device block's
+    /// start in app samples; the direct path leaves it unset.
     pub fn new(
         inner: P,
         plan: &Plan,
         inputs: usize,
         outputs: usize,
+        wait_from: WaitFrom,
     ) -> Result<(Served<P>, Counters), String> {
         if !plan.converts() {
             return Ok((Served::Direct(inner), Counters::default()));
@@ -411,7 +432,8 @@ impl<P: Process> Served<P> {
         )
         .map_err(|e| e.to_string())?
         .output_frames_max();
-        let reblock = Reblock::new(inner, app_block, plan.prime(), inputs, outputs, most);
+        let reblock = Reblock::new(inner, app_block, plan.prime(), inputs, outputs, most)
+            .with_wait_from(wait_from);
         let counters_reblock = (reblock.dry(), reblock.restarts());
         let rated = Rated::new(
             reblock,

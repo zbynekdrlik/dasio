@@ -161,8 +161,14 @@ impl Base<'_> {
         .with_concealment(self.engine_tx.len(), shape.block as usize);
         let stale = bridge.stale_counter();
         let waited = bridge.waited_counter();
-        let (processor, counters) =
-            Served::new(bridge, &plan, self.shape.rx as usize, self.engine_tx.len())?;
+        let wait_from = bridge.wait_from();
+        let (processor, counters) = Served::new(
+            bridge,
+            &plan,
+            self.shape.rx as usize,
+            self.engine_tx.len(),
+            wait_from,
+        )?;
         let map = Map {
             rx: (0..cfg.rx.len()).collect(),
             tx: self.engine_tx.to_vec(),
