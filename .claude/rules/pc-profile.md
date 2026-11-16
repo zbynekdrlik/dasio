@@ -16,6 +16,13 @@ paths:
   its own services, overrides). NIC-family settings carry `nic_service`
   (the Dante NIC's driver service, e.g. `rt640x64`); power-plan values use
   `{active_scheme}`. Never set up a new PC by redoing findings one by one.
+- **Power-plan values go through powercfg** (dasio#128, mbc 16.11.2026):
+  `apply` sets an `{active_scheme}\<subgroup>\<setting>` `ACSettingIndex`
+  / `DCSettingIndex` DWORD with `powercfg /setacvalueindex|/setdcvalueindex
+  scheme_current <subgroup> <setting> <value>` + `powercfg /setactive
+  scheme_current` (`pc_profile::powercfg_commands`), never a registry
+  write: a value the scheme never stored stayed absent after one. Keep
+  every baseline power entry in that shape (a test checks it).
 - **The CPU layout is computed** from the PC's logical CPU count
   (`pc_profile::Layout`, dasio#128): system CPUs first (1 per 8, at least
   1: Windows, the Dante NIC's interrupts, rxd on the last of them), then

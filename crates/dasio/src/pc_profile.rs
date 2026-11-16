@@ -39,11 +39,13 @@ use serde::Deserialize;
 
 mod baseline;
 pub mod layout;
+mod power;
 #[cfg(windows)]
 pub mod windows;
 
 pub use baseline::{BASELINE, MUST_HAVE, baseline, baseline_only, load, merge, must_have_failure};
 pub use layout::{Layout, resolve};
+pub use power::{PowerSetting, describe, power_setting, powercfg_commands};
 
 /// Where the service looks for the profile.
 pub const DEFAULT_PATH: &str = r"C:\ProgramData\dasio\pc-profile.toml";
@@ -831,6 +833,11 @@ pub fn plan(p: &Profile, r: &dyn Reader) -> Vec<Action> {
 pub fn takes_effect(a: &Action) -> &'static str {
     match a {
         Action::Reg { key, .. } if key.starts_with("{nic_") => "a restart of the Dante NIC",
+        // apply sets a power-plan value with powercfg and activates the
+        // plan (dasio#128).
+        a if powercfg_commands(a).is_some() => {
+            "nothing more (apply ran powercfg /setactive scheme_current)"
+        }
         Action::Reg { key, .. } if key.contains("{active_scheme}") => {
             "powercfg /setactive of the active plan (install.ps1 runs it) or a reboot"
         }

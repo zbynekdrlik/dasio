@@ -128,6 +128,11 @@ impl Pc {
 
     /// Applies one action; the error says why it failed.
     pub fn apply(&self, a: &Action) -> Result<(), String> {
+        // A power-plan value goes through powercfg (dasio#128): a plain
+        // write leaves a value the scheme never stored absent.
+        if let Some(cmds) = super::powercfg_commands(a) {
+            return cmds.iter().try_for_each(|args| powercfg(args.as_slice()));
+        }
         match a {
             Action::Reg { key, name, value } => {
                 let k = self.resolve(key)?;
@@ -251,6 +256,29 @@ impl Reader for Pc {
                 .unwrap_or("")
         ))
     }
+}
+
+/// Runs `powercfg <args>`; the error names the command, its status and
+/// its first output line.
+fn powercfg(args: &[String]) -> Result<(), String> {
+    let cmd = format!("powercfg {}", args.join(" "));
+    let out = std::process::Command::new("powercfg")
+        .args(args)
+        .output()
+        .map_err(|e| format!("{cmd}: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Err(format!(
+        "{cmd}: {} {}",
+        out.status,
+        text.trim().lines().next().unwrap_or("")
+    ))
 }
 
 /// An ini file as text (UTF-16 with a BOM or 8-bit).

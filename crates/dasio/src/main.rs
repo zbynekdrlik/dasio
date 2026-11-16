@@ -361,7 +361,7 @@ fn run(
 #[cfg(windows)]
 fn pc_profile(path: &str, apply: bool, plan_only: bool) -> ExitCode {
     use dasio::pc_profile::{
-        Action, check, load, must_have_failure, plan, takes_effect,
+        check, describe, load, must_have_failure, plan, takes_effect,
         windows::{Pc, cpu_count},
     };
     // The built-in baseline (dasio#128) with this PC's own profile. A
@@ -381,10 +381,9 @@ fn pc_profile(path: &str, apply: bool, plan_only: bool) -> ExitCode {
     if apply {
         let actions = plan(&p, &pc);
         for a in &actions {
-            let what = match a {
-                Action::Reg { key, name, value } => format!("registry {key}\\{name} = {value:?}"),
-                Action::Ini { file, key, value } => format!("{file} {key}={value}"),
-            };
+            // The real step: a power-plan value goes through powercfg
+            // (dasio#128).
+            let what = describe(a);
             if plan_only {
                 println!("would set {what} (takes effect after {})", takes_effect(a));
                 continue;
