@@ -4,6 +4,9 @@
 /// One look of `tracker` at the pump: its counts first, then its late
 /// wakes, read whole or not at all (dasio#114). The counts come first:
 /// the pump records a wake before it counts that wake's re-bootstrap.
+/// Within the counts, dstack's `view()` loads `missed` first (Acquire),
+/// then the causes, which the pump counts before it adds their skipped
+/// blocks (Release): blocks never show without their cause (dstack #332).
 pub(super) fn look_at_pump(
     tracker: &mut crate::pump_loss::Tracker,
     stats: &dstack::stream::PumpStats,

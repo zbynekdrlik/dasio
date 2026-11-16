@@ -15,9 +15,6 @@ dstack = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.150" }
 # Windows layer, comes only on Windows.
 dstack-asio = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.150" }
 dlink = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.150" }
-# The rate converter behind dlink's `Rated` (an ASIO app at its own rate,
-# dasio#107): its RX bound sizes the reblock's FIFOs.
-dstack-resample = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.150" }
 shm = { path = "../shm" }
 asio-driver = { path = "../asio-driver" }
 serde = { version = "1.0", features = ["derive"] }
@@ -52,6 +49,10 @@ dstack-endpoint = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.1
 # The bridge's real-time proof (tests/rt_bridge.rs, dasio#28 E13): counts
 # allocations inside `assert_no_alloc` instead of aborting.
 assert_no_alloc = { version = "1.1.2", default-features = false, features = ["warn_debug", "warn_release"] }
+# The rate converter behind dlink's `Rated` (an ASIO app at its own rate,
+# dasio#107): the tests check the plan's exact ratio against it and time it
+# alone (tests/bench_bridge.rs).
+dstack-resample = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.150" }
 
 [lints.rust]
 # The rtsan CI job's cfg (dasio#28 E13).

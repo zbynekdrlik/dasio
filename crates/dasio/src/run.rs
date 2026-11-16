@@ -140,7 +140,7 @@ pub fn run(
             Arc::clone(&serving.current.waited),
         );
         let h = shared.header();
-        let (converter_dry, reblock_dry, reblock_restarts) = serving.counters.read();
+        let converter_dry = serving.counters.read();
         // Before the heartbeat: a reader that sees this tick's heartbeat
         // sees its pump loss too.
         let lost = look_at_pump(&mut pump_loss, &stats);
@@ -215,11 +215,9 @@ pub fn run(
                 time_info = u8::from(h.uses(HostUse::TimeInfo)),
                 latency_reads = h.latency_reads.load(Ordering::Relaxed),
                 // The app's rate and its conversion (dasio#107): frames
-                // played as silence by a dry FIFO, and reblock restarts.
+                // played as silence by the converter's dry TX FIFO.
                 app_rate = serving.current.plan.app_rate,
                 converter_dry,
-                reblock_dry,
-                reblock_restarts,
                 "counts"
             );
             // The DAW's turnaround since the last counts (see turnaround).

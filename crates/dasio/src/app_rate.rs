@@ -5,35 +5,38 @@
 //! whole network, and an app at another rate is converted locally).
 //!
 //! The pump keeps the device's block B at the network's rate. For an app
-//! at another rate R the instance's processor is
-//! `Rated<Reblock<Bridge>>` ([`Served`]):
+//! at another rate R the instance's processor is dlink's [`Rated`] around
+//! the bridge, with a fixed app block ([`Served`]):
 //!
-//! - dlink's [`Rated`] (dstack #90) converts the device's RX block into
-//!   about `B * R / 96000` app frames and the app's output back into
-//!   exactly B device frames, on the device's one media clock (a fixed,
-//!   exact ratio). 48 kHz steps through dstack-resample's half-band (an
-//!   exact 2:1 on an even block), 44.1 kHz through its sinc.
-//! - [`Reblock`] gives the bridge (and so the DAW) a FIXED block of
-//!   `A = ceil(B * R / 96000)` app frames, as ASIO's buffer size is fixed:
-//!   at 44.1 kHz [`Rated`] gives 58 or 59 frames a device block. The DAW's
-//!   answers wait in a FIFO primed with A frames, so the frame-to-frame
-//!   variation never runs it dry. At 48 kHz every device block gives
-//!   exactly A frames: one DAW block a device block, no prime, no residue.
+//! - [`Rated`] (dstack #90) converts the device's RX block into about
+//!   `B * R / 96000` app frames and the app's output back into exactly B
+//!   device frames, on the device's one media clock (a fixed, exact
+//!   ratio). 48 kHz steps through dstack-resample's half-band (an exact 2:1
+//!   on an even block), 44.1 kHz through its sinc.
+//! - Made with [`Rated::with_fixed_app_block`] (dstack #330), it gives the
+//!   bridge (and so the DAW) a FIXED block of `A = ceil(B * R / 96000)` app
+//!   frames, as ASIO's buffer size is fixed: at 44.1 kHz the converter
+//!   gives 58 or 59 frames a device block, which wait in Rated's RX FIFO
+//!   until A are in (0 or 1 DAW blocks a device block), and its TX FIFO
+//!   starts with A more frames of silence. At 48 kHz every device block
+//!   gives exactly A frames: one DAW block a device block, no FIFO, no
+//!   residue.
 //! - The bridge is the 96 kHz bridge unchanged, at the app's block and
 //!   rate: its media starts are in app samples ([`Rated`] keeps them
-//!   contiguous), its deadline on the media clock at the app's rate.
+//!   contiguous), its deadline on the media clock at the app's rate. Its
+//!   wait counts from the device block's start ([`WaitFrom`], set before
+//!   [`Rated`] runs that device block): a DAW block starts up to a block
+//!   before it at 44.1 kHz.
 //!
 //! At the device's own rate the processor is the bridge alone, as before.
 //! [`Plan`] holds every decision (the app's block, whether the ratio is
 //! exact, the latencies the driver reports) as plain arithmetic.
 
-use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use dlink::rated::Rated;
 use dstack_audio_io::{Block, Process};
-use dstack_resample::{Converter, Fixed};
 
 use crate::bridge::WaitFrom;
 
@@ -84,9 +87,11 @@ impl Plan {
         self.app_rate != self.device_rate
     }
 
-    /// The silence the reblock's TX FIFO starts with, app frames: none on
-    /// an exact ratio, else a whole DAW block (the most the RX side can
-    /// hold back, `app_block - 1` frames, never runs it dry).
+    /// The silence the fixed app block adds to [`Rated`]'s TX FIFO, app
+    /// frames (beyond its own `dlink::rated::PRIME`, which
+    /// [`conversion_ns`] holds): none on an exact ratio, else a whole DAW
+    /// block (its RX FIFO holds back up to `app_block - 1` frames, dstack
+    /// #330).
     pub fn prime(&self) -> usize {
         if self.exact {
             0
@@ -106,17 +111,15 @@ impl Plan {
         (u128::from(ns) * u128::from(self.app_rate)).div_ceil(1_000_000_000) as u64
     }
 
-    /// The reblock's share of the input and the output latency, app
-    /// frames. On a ratio that is not exact the round trip gains the TX
-    /// FIFO's prime, one DAW block: a DAW block's inputs wait in the RX
-    /// FIFO for the residue (0 to `app_block - 1` frames, block to block),
-    /// half a block on the mean, and its outputs the rest of the prime.
-    /// None on an exact ratio.
-    pub fn reblock_share(&self) -> (u64, u64) {
-        if self.exact {
-            return (0, 0);
-        }
-        let a = u64::from(self.app_block);
+    /// The fixed app block's share of the input and the output latency,
+    /// app frames. On a ratio that is not exact the round trip gains its
+    /// prime, one DAW block: a DAW block's inputs wait in Rated's RX FIFO
+    /// for the residue (0 to `app_block - 1` frames, block to block), half
+    /// a block on the mean, and its outputs the rest of the prime. None on
+    /// an exact ratio. (`Rated::delay_ns` states RX's worst case instead,
+    /// which would overstate the round trip by up to a block.)
+    pub fn fixed_block_share(&self) -> (u64, u64) {
+        let a = self.prime() as u64;
         (a / 2, a - a / 2)
     }
 
@@ -124,15 +127,15 @@ impl Plan {
     /// (`device`, samples at its rate: B + P in, B + W + TX latency +
     /// spare blocks out, [`crate::latencies`]) at the app's rate, plus the
     /// converter's delay each way (`conversion_ns`, RX then TX:
-    /// [`dlink::rated::delay_ns`]) and the reblock's share. Exact at 48 kHz;
+    /// [`dlink::rated::delay_ns`]) and the fixed block's share. Exact at 48 kHz;
     /// at 44.1 kHz the round trip is exact to a sample or two (the pulse
-    /// test measures it) and the in/out split of the reblock's share is
+    /// test measures it) and the in/out split of the fixed block's share is
     /// its mean, as the residue varies block to block.
     pub fn latencies(&self, device: (u32, u32), conversion_ns: (u64, u64)) -> (u32, u32) {
         if !self.converts() {
             return device;
         }
-        let (share_in, share_out) = self.reblock_share();
+        let (share_in, share_out) = self.fixed_block_share();
         let way = |samples: u32, ns: u64, share: u64| {
             let total = self
                 .to_app(u64::from(samples))
@@ -147,18 +150,24 @@ impl Plan {
     }
 
     /// How long the bridge may wait for the DAW's answer, app samples
-    /// after the start of the device block its DAW block runs in (the
-    /// reblock sets that start, [`crate::bridge::WaitFrom`]): the device's
-    /// offset (`device_offset`, its samples, [`crate::wait_offset`]) at the
-    /// app's rate, rounded down, so the wait ends at the device block's own
-    /// deadline (dlink's Rated keeps the device block's start in app
-    /// samples within one sample of it, either way: at most about 23 us
-    /// past at 44.1 kHz, inside the offset's work margin). At 44.1
-    /// kHz a DAW block starts up to a block before that device block; the
-    /// wait still counts from the device block (dasio#107).
+    /// after the start of the device block its DAW block runs in
+    /// ([`Served`] sets that start, [`crate::bridge::WaitFrom`]): the
+    /// device's offset (`device_offset`, its samples,
+    /// [`crate::wait_offset`]) at the app's rate, rounded down, so the wait
+    /// ends at the device block's own deadline, or up to about 2 app
+    /// samples before it (this floor and [`Plan::at_app`]'s on the start;
+    /// about 45 us at 44.1 kHz), never after it. At 44.1 kHz a DAW block
+    /// starts up to a block before that device block; the wait still
+    /// counts from the device block (dasio#107).
     pub fn wait_offset(&self, device_offset: u64) -> u64 {
-        (u128::from(device_offset) * u128::from(self.app_rate)
-            / u128::from(self.device_rate.max(1))) as u64
+        self.at_app(device_offset)
+    }
+
+    /// The device's sample time `samples` on the app's clock, rounded
+    /// down: the app samples that have passed by then.
+    pub fn at_app(&self, samples: u64) -> u64 {
+        (u128::from(samples) * u128::from(self.app_rate) / u128::from(self.device_rate.max(1)))
+            as u64
     }
 
     /// The DAW block's period, ns.
@@ -185,238 +194,73 @@ pub fn first_plan(device_rate: u32, device_block: u32, asked: u32) -> Option<Pla
         .or_else(|| Plan::new(device_rate, device_rate, device_block))
 }
 
-/// Fills `dst` from the front of `fifo` and the rest with silence; the
-/// frames it had to fill with silence.
-fn drain_into(fifo: &mut VecDeque<f64>, dst: &mut [f64]) -> usize {
-    let have = fifo.len().min(dst.len());
-    take_front(fifo, &mut dst[..have]);
-    dst[have..].fill(0.0);
-    dst.len() - have
+/// The instance's processor for a [`Plan`]: the bridge alone at the
+/// device's rate, behind the converters with a fixed app block at another.
+pub enum Served<P> {
+    Direct(P),
+    Converted(Box<Converted<P>>),
 }
 
-/// Moves the front `dst.len()` frames of `fifo` (it holds at least that
-/// many) into `dst`. By slices, the ring's two halves at most: the e2e test
-/// runs the debug (and coverage-instrumented) binary, where a sample-by-sample
-/// drain costs tens of ns a sample on the pump's thread (dasio#107).
-fn take_front(fifo: &mut VecDeque<f64>, dst: &mut [f64]) {
-    let n = dst.len();
-    let (a, b) = fifo.as_slices();
-    let from_a = a.len().min(n);
-    dst[..from_a].copy_from_slice(&a[..from_a]);
-    dst[from_a..].copy_from_slice(&b[..n - from_a]);
-    fifo.drain(..n);
+/// The converted path: [`Rated`] with a fixed app block around the bridge,
+/// and the bridge's [`WaitFrom`] set to each device block's start on the
+/// app's clock before Rated runs that block.
+pub struct Converted<P> {
+    rated: Rated<Zeroed<P>>,
+    plan: Plan,
+    wait_from: WaitFrom,
 }
 
-/// Fixed blocks for an inner processor from variable ones (see the module
-/// docs): the inputs gather until a whole block of `block` frames is in,
-/// the inner processor's outputs go out through a FIFO primed with
-/// `prime` frames of silence. Every buffer is allocated in [`Reblock::new`].
-pub struct Reblock<P> {
-    inner: P,
-    block: usize,
-    prime: usize,
-    /// Input frames gathered, per input channel, and how many (also with
-    /// no input channel).
-    rx: Vec<VecDeque<f64>>,
-    held: usize,
-    /// The media start of the oldest gathered frame.
-    rx_start: Option<u64>,
-    /// The inner processor's outputs waiting to go out, per channel.
-    tx: Vec<VecDeque<f64>>,
-    /// One inner block's inputs and outputs, channel-major.
-    staged_in: Vec<f64>,
-    staged_out: Vec<f64>,
-    /// Output frames the TX FIFO could not give (played as silence).
-    dry: Arc<AtomicU64>,
-    /// Blocks whose start did not follow on (the FIFOs started again).
-    restarts: Arc<AtomicU64>,
-    /// Set to each outer block's start before its inner blocks run: an
-    /// inner block may start up to a block before it, and the bridge's wait
-    /// counts from the device block's start.
-    wait_from: Option<WaitFrom>,
-}
-
-impl<P: Process> Reblock<P> {
-    /// `inner` on blocks of `block` frames of `inputs` and `outputs`
-    /// channels, its outputs behind `prime` frames of silence; the outer
-    /// blocks are at most `most` frames.
-    pub fn new(
-        inner: P,
-        block: usize,
-        prime: usize,
-        inputs: usize,
-        outputs: usize,
-        most: usize,
-    ) -> Self {
-        let block = block.max(1);
-        // The most each FIFO ever holds: under a block gathered plus an
-        // outer block (RX); the prime plus an outer block (TX).
-        let room = block + most + prime;
-        let mut tx: Vec<VecDeque<f64>> = (0..outputs)
-            .map(|_| VecDeque::with_capacity(room))
-            .collect();
-        for q in &mut tx {
-            q.extend(std::iter::repeat_n(0.0, prime));
-        }
-        Reblock {
-            inner,
-            block,
-            prime,
-            rx: (0..inputs).map(|_| VecDeque::with_capacity(room)).collect(),
-            held: 0,
-            rx_start: None,
-            tx,
-            staged_in: vec![0.0; inputs * block],
-            staged_out: vec![0.0; outputs * block],
-            dry: Arc::new(AtomicU64::new(0)),
-            restarts: Arc::new(AtomicU64::new(0)),
-            wait_from: None,
-        }
-    }
-
-    /// This reblock setting `wait_from` to each outer block's start before
-    /// it runs that block's inner blocks (the bridge's
-    /// [`crate::bridge::Bridge::wait_from`]).
-    pub fn with_wait_from(mut self, wait_from: WaitFrom) -> Self {
-        self.wait_from = Some(wait_from);
-        self
-    }
-
-    /// The output frames played as silence because the FIFO was dry,
-    /// shared.
-    pub fn dry(&self) -> Arc<AtomicU64> {
-        Arc::clone(&self.dry)
-    }
-
-    /// The times the FIFOs started again (a jump in the blocks' starts),
-    /// shared.
-    pub fn restarts(&self) -> Arc<AtomicU64> {
-        Arc::clone(&self.restarts)
-    }
-
-    /// The FIFOs from the start: nothing gathered, the TX FIFO primed.
-    fn restart(&mut self) {
-        for q in &mut self.rx {
-            q.clear();
-        }
-        self.held = 0;
-        self.rx_start = None;
-        for q in &mut self.tx {
-            q.clear();
-            q.extend(std::iter::repeat_n(0.0, self.prime));
-        }
-    }
-
-    /// One inner block from the gathered frames.
-    fn inner_block(&mut self) {
-        let n = self.block;
-        for (c, q) in self.rx.iter_mut().enumerate() {
-            take_front(q, &mut self.staged_in[c * n..(c + 1) * n]);
-        }
-        // The inner processor writes only what it answers (the bridge
-        // leaves a missing answer's block alone).
-        self.staged_out.fill(0.0);
-        {
-            let mut b = Block::new(n, &self.staged_in, &mut self.staged_out);
-            if let Some(s) = self.rx_start {
-                b = b.at(s);
-            }
-            self.inner.process(&mut b);
-        }
-        for (c, q) in self.tx.iter_mut().enumerate() {
-            q.extend(&self.staged_out[c * n..(c + 1) * n]);
-        }
-        self.held -= n;
-        self.rx_start = self.rx_start.map(|s| s + n as u64);
+impl<P: Process> Converted<P> {
+    /// One device block, the bridge's wait set to count from its start.
+    fn run(&mut self, block: &mut Block<'_>) {
+        // Rated hands the DAW a block that starts up to a block before
+        // this device block (its RX FIFO's frames came first); the wait
+        // counts from the device block's own start (dasio#107).
+        self.wait_from
+            .set(block.start().map(|s| self.plan.at_app(s)));
+        self.rated.process(block);
     }
 }
 
-impl<P: Process> Process for Reblock<P> {
+/// The inner processor on a block whose outputs start at silence, as the
+/// pump gives them: dlink's Rated hands it its own app buffer again, and
+/// the bridge writes nothing where it has nothing to play (no DAW
+/// attached, a gap's later blocks), which must play silence, never the
+/// last block again.
+pub struct Zeroed<P>(P);
+
+impl<P: Process> Process for Zeroed<P> {
     fn process(&mut self, block: &mut Block<'_>) {
-        let k = block.frames();
-        // A block that does not follow the gathered frames (the device
-        // skipped blocks): what was gathered belongs to another time.
-        let follows = match (block.start(), self.rx_start) {
-            (Some(s), Some(first)) => s == first + self.held as u64,
-            _ => true,
-        };
-        if !follows {
-            self.restart();
-            self.restarts.fetch_add(1, Ordering::Relaxed);
-        }
-        if self.held == 0 {
-            self.rx_start = block.start();
-        }
-        for (c, q) in self.rx.iter_mut().enumerate() {
-            let input = block.input(c);
-            if input.len() == k {
-                q.extend(input);
-            } else {
-                // A channel the block lacks: silence, so every channel
-                // holds the same frames.
-                q.extend(std::iter::repeat_n(0.0, k));
-            }
-        }
-        self.held += k;
-        if let Some(w) = &self.wait_from {
-            w.set(block.start());
-        }
-        // The whole blocks gathered, counted first: the loop is bounded by
-        // the frames in, whatever an inner block does.
-        for _ in 0..self.held / self.block {
-            self.inner_block();
-        }
-        // Every channel's FIFO holds the same frames: channel 0 counts.
-        let mut short = 0;
-        for (c, q) in self.tx.iter_mut().enumerate() {
-            let s = drain_into(q, block.output(c));
-            if c == 0 {
-                short = s;
-            }
-        }
-        self.dry.fetch_add(short as u64, Ordering::Relaxed);
+        block.zero_outputs();
+        self.0.process(block);
     }
 
     fn discontinuity(&mut self) {
-        self.restart();
-        self.inner.discontinuity();
+        self.0.discontinuity();
     }
 }
 
-/// The instance's processor for a [`Plan`]: the bridge alone at the
-/// device's rate, behind the converters and the reblock at another.
-pub enum Served<P> {
-    Direct(P),
-    Converted(Box<Rated<Reblock<P>>>),
-}
-
-/// The counters of a converted path: the converter's TX FIFO's dry frames
-/// and the reblock's (both played as silence), and the reblock's restarts.
+/// The counters of a converted path: the frames the converter's TX FIFO
+/// played as silence.
 #[derive(Debug, Clone, Default)]
 pub struct Counters {
     pub converter_dry: Option<Arc<AtomicU64>>,
-    pub reblock_dry: Option<Arc<AtomicU64>>,
-    pub reblock_restarts: Option<Arc<AtomicU64>>,
 }
 
 impl Counters {
-    /// (converter dry, reblock dry, reblock restarts), 0 without a
-    /// converter.
-    pub fn read(&self) -> (u64, u64, u64) {
-        let get = |c: &Option<Arc<AtomicU64>>| c.as_ref().map_or(0, |a| a.load(Ordering::Relaxed));
-        (
-            get(&self.converter_dry),
-            get(&self.reblock_dry),
-            get(&self.reblock_restarts),
-        )
+    /// The converter's dry frames, 0 without a converter.
+    pub fn read(&self) -> u64 {
+        self.converter_dry
+            .as_ref()
+            .map_or(0, |a| a.load(Ordering::Relaxed))
     }
 }
 
 impl<P: Process> Served<P> {
     /// `inner` (the bridge, at the plan's app block) served by `plan` for
     /// `inputs` RX and `outputs` TX channels; the converter's refusal as
-    /// text. On a converted path the reblock sets `wait_from` (the bridge's
-    /// own, [`crate::bridge::Bridge::wait_from`]) to each device block's
+    /// text. On a converted path `wait_from` (the bridge's own,
+    /// [`crate::bridge::Bridge::wait_from`]) is set to each device block's
     /// start in app samples; the direct path leaves it unset.
     pub fn new(
         inner: P,
@@ -428,24 +272,8 @@ impl<P: Process> Served<P> {
         if !plan.converts() {
             return Ok((Served::Direct(inner), Counters::default()));
         }
-        let app_block = plan.app_block as usize;
-        // The most app frames a device block gives: the RX converter's own
-        // bound (Rated makes its RX converter the same way), so the
-        // reblock's FIFOs never grow on the pump's thread.
-        let most = Converter::low_delay(
-            plan.device_rate,
-            plan.app_rate,
-            1,
-            plan.device_block as usize,
-            Fixed::Input,
-        )
-        .map_err(|e| e.to_string())?
-        .output_frames_max();
-        let reblock = Reblock::new(inner, app_block, plan.prime(), inputs, outputs, most)
-            .with_wait_from(wait_from);
-        let counters_reblock = (reblock.dry(), reblock.restarts());
-        let rated = Rated::new(
-            reblock,
+        let rated = Rated::with_fixed_app_block(
+            Zeroed(inner),
             plan.device_rate,
             plan.app_rate,
             plan.device_block as usize,
@@ -453,12 +281,24 @@ impl<P: Process> Served<P> {
             outputs,
         )
         .map_err(|e| e.to_string())?;
+        // dlink rounds the device block's period up the same way: the
+        // DAW's buffer the driver announced.
+        if rated.app_block() != Some(plan.app_block as usize) {
+            return Err(format!(
+                "the converter's app block {:?} is not the plan's {}",
+                rated.app_block(),
+                plan.app_block
+            ));
+        }
         let counters = Counters {
             converter_dry: Some(rated.dry()),
-            reblock_dry: Some(counters_reblock.0),
-            reblock_restarts: Some(counters_reblock.1),
         };
-        Ok((Served::Converted(Box::new(rated)), counters))
+        let converted = Converted {
+            rated,
+            plan: *plan,
+            wait_from,
+        };
+        Ok((Served::Converted(Box::new(converted)), counters))
     }
 }
 
@@ -467,14 +307,14 @@ impl<P: Process> Process for Served<P> {
     fn process(&mut self, block: &mut Block<'_>) {
         match self {
             Served::Direct(p) => p.process(block),
-            Served::Converted(p) => p.process(block),
+            Served::Converted(p) => p.run(block),
         }
     }
 
     fn discontinuity(&mut self) {
         match self {
             Served::Direct(p) => p.discontinuity(),
-            Served::Converted(p) => p.discontinuity(),
+            Served::Converted(p) => p.rated.discontinuity(),
         }
     }
 }

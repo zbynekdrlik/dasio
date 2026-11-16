@@ -31,3 +31,9 @@ paths:
   instance ends for the SCM to restart it.
 - `run_bridge.rs` and `run/profile.rs` are Windows glue, excluded from
   mutants; keep decisions in `kind.rs` / `app_status.rs`, tested on Linux.
+- The from-ASIO block age (dstack issue 325, dasio issue 120): `bridge_json`
+  shows `from_asio_block_age_us` / `_max_us` / `from_asio_min_receiver_latency_us`
+  only while `BlockAge::report()` is Some. The receiver check is
+  `app_status::from_asio_age_tick`, called once in `run_bridge.rs` inside the
+  `counts.due(now)` branch (10 s), never the pump or the callback; a test
+  reads `run_bridge.rs` and fails if the call moves or is duplicated.
