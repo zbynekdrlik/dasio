@@ -380,8 +380,8 @@ fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_a
     );
     // A host at 44.1 kHz: not an exact ratio, so the device converts
     // through the sinc and gives the DAW fixed blocks of
-    // ceil(B * 441 / 960) frames out of its 58.8-frame periods (the
-    // reblock, one DAW block of prime). Impulses sit at whole seconds, a
+    // ceil(B * 441 / 960) frames out of its 58.8-frame periods (dlink's
+    // fixed app block, one DAW block of prime). Impulses sit at whole seconds, a
     // whole sample at both rates, so each meets the converter at the same
     // phase and comes back at one fixed round trip within the latencies
     // the driver reports at 44.1 kHz.

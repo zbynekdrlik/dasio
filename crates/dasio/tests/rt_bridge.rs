@@ -173,7 +173,8 @@ fn an_app_at_its_own_rate_never_allocates_either() {
     for rate in [48_000, 44_100] {
         let plan = Plan::new(96_000, rate, FRAMES as u32).unwrap();
         let (b, k) = bridge_of(0, plan.app_block as usize);
-        // Every buffer of the converters and the reblock is made here.
+        // Every buffer of the converters and the fixed app block's FIFOs
+        // is made here.
         let wait_from = b.wait_from();
         let (mut served, counters) = Served::new(b, &plan, CHANNELS, CHANNELS, wait_from).unwrap();
         reset_violation_count();
@@ -184,7 +185,8 @@ fn an_app_at_its_own_rate_never_allocates_either() {
                 if n == 200 {
                     served.discontinuity();
                 }
-                // A pump that re-bootstrapped: the reblock starts again.
+                // A jump in the starts (a pump's grid shift): Rated starts
+                // the app's times again, its FIFOs go on.
                 let step: u64 = if n == 250 { 10 } else { 1 };
                 start += step * FRAMES as u64;
                 k.now.store(u64::MAX / 4, Ordering::Relaxed);
@@ -202,6 +204,8 @@ fn an_app_at_its_own_rate_never_allocates_either() {
             k.late.load(Ordering::Relaxed) > 0,
             "late blocks ({rate} Hz)"
         );
-        assert!(counters.read().2 > 0, "the reblock restarted ({rate} Hz)");
+        // The prime held through the missing answers, the discontinuity
+        // and the jump: no frame played as silence for a dry FIFO.
+        assert_eq!(counters.read(), 0, "dry frames ({rate} Hz)");
     }
 }

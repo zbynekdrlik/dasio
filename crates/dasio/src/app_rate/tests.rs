@@ -1,4 +1,5 @@
 use super::*;
+use dstack_resample::{Converter, Fixed};
 
 #[test]
 fn the_app_block_is_the_device_block_s_period_at_the_app_s_rate_rounded_up() {
@@ -75,6 +76,32 @@ fn the_prime_is_a_block_only_where_the_ratio_is_not_exact() {
 }
 
 #[test]
+fn the_prime_is_what_dlink_s_fixed_app_block_adds_to_its_tx_side() {
+    // dlink's fixed app block adds its prime to the TX FIFO beyond the
+    // free `delay_ns` (which `conversion_ns` reports), and gives the plan's
+    // block: the latencies stay the path's.
+    for &block in &shm::BLOCKS {
+        for &rate in &shm::APP_RATES {
+            let plan = Plan::new(96_000, rate, block).unwrap();
+            if !plan.converts() {
+                continue;
+            }
+            let rated =
+                Rated::with_fixed_app_block(Echo, 96_000, rate, block as usize, 1, 1).unwrap();
+            let what = format!("{rate} Hz at block {block}");
+            assert_eq!(rated.app_block(), Some(plan.app_block as usize), "{what}");
+            let (_, free_tx) = conversion_ns(&plan).unwrap();
+            let (_, fixed_tx) = rated.delay_ns();
+            let prime_ns = plan.prime() as u64 * 1_000_000_000 / u64::from(rate);
+            assert!(
+                fixed_tx.abs_diff(free_tx + prime_ns) <= 1,
+                "{what}: TX {fixed_tx} ns, free {free_tx} + prime {prime_ns}"
+            );
+        }
+    }
+}
+
+#[test]
 fn samples_and_ns_go_to_app_samples_rounded_up_the_wait_rounded_down() {
     let p = Plan::new(96_000, 44_100, 128).unwrap();
     // 100 * 0.459375 = 45.9375
@@ -84,6 +111,10 @@ fn samples_and_ns_go_to_app_samples_rounded_up_the_wait_rounded_down() {
     assert_eq!(p.to_app(320), 147);
     assert_eq!(p.wait_offset(320), 147);
     assert_eq!(p.wait_offset(100), 45);
+    // A device time on the app's clock rounds down too: 1152 * 0.459375
+    // = 529.2.
+    assert_eq!(p.at_app(9 * 128), 529);
+    assert_eq!(p.at_app(320), 147);
     // 1 ms at 44.1 kHz: 44.1 samples.
     assert_eq!(p.ns_to_app(1_000_000), 45);
     assert_eq!(p.ns_to_app(0), 0);
@@ -154,153 +185,17 @@ fn the_first_plan_is_the_rate_asked_before_else_the_device_s() {
     assert_eq!(first_plan(96_000, 0, 48_000), None);
 }
 
-/// Records each block it gets and answers with its inputs (an echo).
+/// Answers each block with its inputs (an echo).
 #[derive(Default)]
-struct Echo {
-    frames: Vec<usize>,
-    starts: Vec<Option<u64>>,
-    resets: u32,
-}
+struct Echo;
 
 impl Process for Echo {
     fn process(&mut self, block: &mut Block<'_>) {
-        self.frames.push(block.frames());
-        self.starts.push(block.start());
         for c in 0..block.outputs().min(block.inputs()) {
             let input = block.input(c).to_vec();
             block.output(c).copy_from_slice(&input);
         }
     }
-
-    fn discontinuity(&mut self) {
-        self.resets += 1;
-    }
-}
-
-/// Feeds `r` blocks of the sizes in `sizes` (in turn) from media time
-/// `start`, channel 0 counting the frames from 1; returns channel 0 out and
-/// the inner calls per outer block.
-fn feed(
-    r: &mut Reblock<Echo>,
-    sizes: &[usize],
-    blocks: usize,
-    start: u64,
-) -> (Vec<f64>, Vec<usize>) {
-    let mut out = Vec::new();
-    let mut calls = Vec::new();
-    let mut at = start;
-    for b in 0..blocks {
-        let k = sizes[b % sizes.len()];
-        let input: Vec<f64> = (0..k).map(|i| (at - start + i as u64 + 1) as f64).collect();
-        let mut o = vec![0.0; k];
-        let before = r.inner.frames.len();
-        r.process(&mut Block::new(k, &input, &mut o).at(at));
-        calls.push(r.inner.frames.len() - before);
-        out.extend_from_slice(&o);
-        at += k as u64;
-    }
-    (out, calls)
-}
-
-#[test]
-fn the_inner_gets_only_whole_blocks_in_follow_on_time() {
-    let mut r = Reblock::new(Echo::default(), 59, 59, 1, 1, 67);
-    let (_, calls) = feed(&mut r, &[58, 59, 59, 58, 59], 500, 1_000);
-    assert!(r.inner.frames.iter().all(|&f| f == 59));
-    // At most one inner block per outer one (an outer block never brings
-    // more than a whole inner one), and the inner keeps pace.
-    assert!(calls.iter().all(|&c| c <= 1));
-    let total: usize = [58, 59, 59, 58, 59].iter().sum::<usize>() * 100;
-    assert_eq!(r.inner.frames.len(), total / 59);
-    for (i, s) in r.inner.starts.iter().enumerate() {
-        assert_eq!(*s, Some(1_000 + 59 * i as u64));
-    }
-    assert_eq!(r.dry().load(Ordering::Relaxed), 0);
-    assert_eq!(r.restarts().load(Ordering::Relaxed), 0);
-}
-
-#[test]
-fn every_frame_comes_back_after_exactly_the_prime() {
-    // Not exact: a block's prime.
-    let mut r = Reblock::new(Echo::default(), 59, 59, 1, 1, 67);
-    let (out, _) = feed(&mut r, &[58, 59], 400, 0);
-    assert_eq!(&out[..59], &[0.0; 59][..]);
-    for (i, &v) in out.iter().enumerate().skip(59) {
-        assert_eq!(v, (i - 59 + 1) as f64, "frame {i}");
-    }
-    assert_eq!(r.dry().load(Ordering::Relaxed), 0);
-    // Exact: no prime, each frame in its own block.
-    let mut e = Reblock::new(Echo::default(), 16, 0, 1, 1, 24);
-    let (out, calls) = feed(&mut e, &[16], 50, 0);
-    assert!(calls.iter().all(|&c| c == 1));
-    for (i, &v) in out.iter().enumerate() {
-        assert_eq!(v, (i + 1) as f64, "frame {i}");
-    }
-    assert_eq!(e.dry().load(Ordering::Relaxed), 0);
-}
-
-#[test]
-fn without_a_prime_a_short_ratio_runs_the_fifo_dry_and_counts_it() {
-    let mut r = Reblock::new(Echo::default(), 59, 0, 1, 1, 67);
-    feed(&mut r, &[58, 59], 10, 0);
-    assert!(r.dry().load(Ordering::Relaxed) > 0);
-}
-
-#[test]
-fn a_jump_in_the_starts_starts_the_fifos_again() {
-    let mut r = Reblock::new(Echo::default(), 59, 59, 1, 1, 67);
-    feed(&mut r, &[58, 59], 10, 0);
-    let calls = r.inner.frames.len();
-    // A block 10 000 frames later: what was gathered is dropped.
-    feed(&mut r, &[58, 59], 4, 100_000);
-    assert_eq!(r.restarts().load(Ordering::Relaxed), 1);
-    assert_eq!(r.inner.starts[calls], Some(100_000));
-    // Without media times nothing is checked.
-    let mut free = Reblock::new(Echo::default(), 16, 0, 1, 1, 24);
-    for _ in 0..4 {
-        let input = [0.5; 16];
-        let mut o = [0.0; 16];
-        free.process(&mut Block::new(16, &input, &mut o));
-    }
-    assert_eq!(free.restarts().load(Ordering::Relaxed), 0);
-    assert!(free.inner.starts.iter().all(Option::is_none));
-}
-
-#[test]
-fn a_discontinuity_starts_again_and_reaches_the_inner() {
-    let mut r = Reblock::new(Echo::default(), 59, 59, 1, 1, 67);
-    feed(&mut r, &[58], 3, 0);
-    r.discontinuity();
-    assert_eq!(r.inner.resets, 1);
-    // The prime again: the next frames come back a block later.
-    let (out, _) = feed(&mut r, &[59], 3, 0);
-    assert_eq!(&out[..59], &[0.0; 59][..]);
-    assert_eq!(out[59], 1.0);
-}
-
-#[test]
-fn a_channel_the_block_lacks_gathers_silence() {
-    // Two inputs, the block brings one: the second gathers silence and
-    // both keep the same frames (no short drain).
-    let mut r = Reblock::new(Echo::default(), 16, 0, 2, 2, 24);
-    for b in 0..4u64 {
-        let input = [0.5; 16];
-        let mut o = [0.0; 2 * 16];
-        r.process(&mut Block::new(16, &input, &mut o).at(b * 16));
-        assert_eq!(&o[..16], &[0.5; 16][..]);
-        assert_eq!(&o[16..], &[0.0; 16][..]);
-    }
-    assert_eq!(r.inner.frames.len(), 4);
-}
-
-#[test]
-fn no_channels_still_keep_the_pace() {
-    let mut r = Reblock::new(Echo::default(), 16, 0, 0, 0, 24);
-    for b in 0..10u64 {
-        let mut o: Vec<f64> = Vec::new();
-        r.process(&mut Block::new(16, &[], &mut o).at(b * 16));
-    }
-    assert_eq!(r.inner.frames.len(), 10);
 }
 
 /// The device-side delay of a pulse through `Served` around an echo (the
@@ -308,7 +203,7 @@ fn no_channels_still_keep_the_pace() {
 /// Gaussian 8 samples wide, far inside both rates' band, so the filters
 /// pass its shape and its peak moves by their delay alone.
 fn served_delay(plan: &Plan) -> usize {
-    let (mut s, _) = Served::new(Echo::default(), plan, 1, 1, WaitFrom::default()).unwrap();
+    let (mut s, _) = Served::new(Echo, plan, 1, 1, WaitFrom::default()).unwrap();
     let n = plan.device_block as usize;
     let at = 50 * n + 7;
     let pulse = |i: usize| {
@@ -351,9 +246,9 @@ fn the_converted_path_delays_what_the_latencies_say_beyond_the_device() {
 #[test]
 fn the_device_s_rate_is_the_bridge_alone_without_delay() {
     let plan = Plan::new(96_000, 96_000, 32).unwrap();
-    let (s, counters) = Served::new(Echo::default(), &plan, 1, 1, WaitFrom::default()).unwrap();
+    let (s, counters) = Served::new(Echo, &plan, 1, 1, WaitFrom::default()).unwrap();
     assert!(matches!(s, Served::Direct(_)));
-    assert_eq!(counters.read(), (0, 0, 0));
+    assert_eq!(counters.read(), 0);
     assert_eq!(served_delay(&plan), 0);
     assert_eq!(conversion_ns(&plan).unwrap(), (0, 0));
 }
@@ -393,8 +288,7 @@ fn a_discontinuity_reaches_the_bridge_on_either_path() {
 fn a_converted_path_counts_nothing_dry_in_steady_running() {
     for rate in [48_000, 44_100] {
         let plan = Plan::new(96_000, rate, 32).unwrap();
-        let (mut s, counters) =
-            Served::new(Echo::default(), &plan, 2, 2, WaitFrom::default()).unwrap();
+        let (mut s, counters) = Served::new(Echo, &plan, 2, 2, WaitFrom::default()).unwrap();
         assert!(matches!(s, Served::Converted(_)));
         // 100 blocks: the filters are full after about ten.
         for b in 0..100u64 {
@@ -402,7 +296,7 @@ fn a_converted_path_counts_nothing_dry_in_steady_running() {
             let mut o = [0.0; 2 * 32];
             s.process(&mut Block::new(32, &input, &mut o).at(b * 32));
         }
-        assert_eq!(counters.read(), (0, 0, 0), "{rate}");
+        assert_eq!(counters.read(), 0, "{rate}");
     }
 }
 
@@ -436,13 +330,36 @@ impl crate::bridge::Link for Scripted {
     }
 }
 
+/// The bridge behind the converted path, counting its blocks that start
+/// more than 2 app frames before the device block they run in (`wait_from`,
+/// set by `Served` before it runs that device block).
+struct EarlyStarts<P> {
+    inner: P,
+    wait_from: WaitFrom,
+    early: std::sync::Arc<AtomicU64>,
+}
+
+impl<P: Process> Process for EarlyStarts<P> {
+    fn process(&mut self, block: &mut Block<'_>) {
+        let early = match (block.start(), self.wait_from.get()) {
+            (Some(s), Some(w)) => s + 2 < w,
+            _ => false,
+        };
+        if early {
+            self.early.fetch_add(1, Ordering::Relaxed);
+        }
+        self.inner.process(block);
+    }
+}
+
 #[test]
-fn behind_the_reblock_the_bridge_waits_until_the_device_block_s_deadline() {
+fn behind_the_fixed_app_block_the_bridge_waits_until_the_device_block_s_deadline() {
     use std::sync::Arc;
     // 44.1 kHz on a 128-sample device block: 58 or 59 app frames a device
-    // block, a DAW block of 59. An inner block starts up to 58 frames
-    // before the device block that completes it.
+    // block, a DAW block of 59 (dlink's fixed app block). A DAW block
+    // starts up to 58 frames before the device block that completes it.
     const OFFSET: u64 = 40;
+    let plan = Plan::new(96_000, 44_100, 128).unwrap();
     let (seq, ack, late) = (
         Arc::new(AtomicU64::new(0)),
         Arc::new(AtomicU64::new(0)),
@@ -475,29 +392,95 @@ fn behind_the_reblock_the_bridge_waits_until_the_device_block_s_deadline() {
     let bridge = crate::bridge::Bridge::with_spare(link, 0).with_deadline(OFFSET, now);
     let waited = bridge.waited_counter();
     let wait_from = bridge.wait_from();
-    let mut r = Reblock::new(bridge, 59, 59, 1, 1, 67).with_wait_from(wait_from);
-    let mut start = 0u64;
-    let mut early_starts = 0;
-    for b in 0..300 {
-        let k = [58, 59, 59, 58, 59][b % 5];
-        // The device block starts now; the DAW answers 2 samples before
-        // its deadline (its start + the offset).
+    let early = Arc::new(AtomicU64::new(0));
+    let inner = EarlyStarts {
+        inner: bridge,
+        wait_from: wait_from.clone(),
+        early: Arc::clone(&early),
+    };
+    let (mut s, _) = Served::new(inner, &plan, 1, 1, wait_from).unwrap();
+    for b in 0..300u64 {
+        // The device block starts now on the app's clock; the DAW answers
+        // 2 samples before its deadline (its start + the offset).
+        let start = plan.at_app(b * 128);
         clock.store(start, Ordering::Relaxed);
         at.store(start + OFFSET - 2, Ordering::Relaxed);
-        if r.held > 2 && r.held + k >= 59 {
-            // An inner block that starts more than 2 frames before this
-            // device block runs in it.
-            early_starts += 1;
-        }
-        let input = vec![0.0; k];
-        let mut o = vec![0.0; k];
-        r.process(&mut Block::new(k, &input, &mut o).at(start));
-        start += k as u64;
+        let input = [0.0; 128];
+        let mut o = [0.0; 128];
+        s.process(&mut Block::new(128, &input, &mut o).at(b * 128));
     }
-    assert!(early_starts > 200, "the case under test: {early_starts}");
+    let early = early.load(Ordering::Relaxed);
+    assert!(early > 200, "the case under test: {early}");
     // Every answer came before its device block's deadline: none late.
     assert_eq!(late.load(Ordering::Relaxed), 0, "late answers");
     assert!(waited.load(Ordering::Relaxed) > 250, "saved by the wait");
+}
+
+/// Counts its calls and those not of `want` frames (shared, so the test
+/// reads them through the converters' box).
+struct Sizes {
+    want: usize,
+    calls: std::sync::Arc<AtomicU64>,
+    other: std::sync::Arc<AtomicU64>,
+}
+
+impl Process for Sizes {
+    fn process(&mut self, block: &mut Block<'_>) {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        if block.frames() != self.want {
+            self.other.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+#[test]
+fn the_daw_gets_its_fixed_block_at_most_once_a_device_block() {
+    for (rate, block, channels) in [
+        (44_100, 128, 1),
+        (44_100, 32, 2),
+        (44_100, 32, 0),
+        (48_000, 32, 1),
+        (48_000, 128, 0),
+    ] {
+        let plan = Plan::new(96_000, rate, block).unwrap();
+        let (calls, other) = (
+            std::sync::Arc::new(AtomicU64::new(0)),
+            std::sync::Arc::new(AtomicU64::new(0)),
+        );
+        let sizes = Sizes {
+            want: plan.app_block as usize,
+            calls: std::sync::Arc::clone(&calls),
+            other: std::sync::Arc::clone(&other),
+        };
+        let (mut s, counters) =
+            Served::new(sizes, &plan, channels, channels, WaitFrom::default()).unwrap();
+        let n = block as usize;
+        let input = vec![0.25; channels * n];
+        let mut o = vec![0.0; channels * n];
+        let blocks = 1_000u64;
+        let mut most = 0;
+        for b in 0..blocks {
+            let before = calls.load(Ordering::Relaxed);
+            s.process(&mut Block::new(n, &input, &mut o).at(b * u64::from(block)));
+            most = most.max(calls.load(Ordering::Relaxed) - before);
+        }
+        let what = format!("{rate} Hz at block {block}, {channels} channels");
+        assert_eq!(other.load(Ordering::Relaxed), 0, "{what}: other sizes");
+        assert_eq!(most, 1, "{what}: calls in one device block");
+        // The DAW keeps the app's pace: the device's frames at its rate
+        // over its block, to a call (the RX FIFO holds less than one).
+        let frames = plan.to_app(blocks * u64::from(block));
+        let calls = calls.load(Ordering::Relaxed);
+        let want = frames / u64::from(plan.app_block);
+        assert!(
+            calls + 1 >= want && calls <= want + 1,
+            "{what}: {calls} calls for {want}"
+        );
+        if plan.exact {
+            assert_eq!(calls, blocks, "{what}: one call a device block");
+        }
+        assert_eq!(counters.read(), 0, "{what}: dry frames");
+    }
 }
 
 #[test]
@@ -505,7 +488,7 @@ fn the_converted_path_sets_the_device_block_s_start_for_the_wait() {
     for rate in [96_000, 48_000, 44_100] {
         let plan = Plan::new(96_000, rate, 128).unwrap();
         let wait_from = WaitFrom::default();
-        let (mut s, _) = Served::new(Echo::default(), &plan, 1, 1, wait_from.clone()).unwrap();
+        let (mut s, _) = Served::new(Echo, &plan, 1, 1, wait_from.clone()).unwrap();
         let input = [0.0; 128];
         let mut o = [0.0; 128];
         s.process(&mut Block::new(128, &input, &mut o).at(0));
@@ -516,8 +499,8 @@ fn the_converted_path_sets_the_device_block_s_start_for_the_wait() {
         let tenth = wait_from.get();
         if plan.converts() {
             // The device block's start in app samples: 0, then the tenth
-            // block's 9 * 128 device samples at the app's rate (dlink's
-            // Rated keeps it within an app sample of that).
+            // block's 9 * 128 device samples at the app's rate (on the
+            // app's clock, rounded down: `Plan::at_app`).
             assert_eq!(first, Some(0), "{rate} Hz");
             let got = tenth.unwrap();
             let want = plan.to_app(9 * 128);
@@ -532,26 +515,4 @@ fn the_converted_path_sets_the_device_block_s_start_for_the_wait() {
             assert_eq!((first, tenth), (None, None), "{rate} Hz");
         }
     }
-}
-
-#[test]
-fn a_fifo_s_front_moves_out_in_order_across_the_ring_s_wrap() {
-    // A ring of 8 whose 6 frames wrap past its end: 2 at the back of the
-    // buffer, 4 at its front.
-    let mut q: VecDeque<f64> = VecDeque::with_capacity(8);
-    q.extend([0.0; 6]);
-    for _ in 0..6 {
-        q.pop_front();
-    }
-    q.extend([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-    assert!(!q.as_slices().1.is_empty(), "the frames wrap the ring");
-    let mut dst = [0.0; 4];
-    take_front(&mut q, &mut dst);
-    assert_eq!(dst, [1.0, 2.0, 3.0, 4.0]);
-    assert_eq!(q.iter().copied().collect::<Vec<_>>(), [5.0, 6.0]);
-    // Past what it holds: the rest is silence, counted.
-    let mut dst = [9.0; 3];
-    assert_eq!(drain_into(&mut q, &mut dst), 1);
-    assert_eq!(dst, [5.0, 6.0, 0.0]);
-    assert!(q.is_empty());
 }

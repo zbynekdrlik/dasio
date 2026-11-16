@@ -58,8 +58,9 @@ type MediaNow = Box<dyn Fn() -> Option<u64> + Send>;
 
 /// The media start (samples) a bridge's wait for a missing answer counts
 /// from, when a processor runs the bridge inside a longer block: the
-/// reblock (`app_rate::Reblock`) sets it to the device block's start in app
-/// samples before it runs the bridge's blocks of that device block, since
+/// converted path (`app_rate::Served`, dlink's fixed app block) sets it to
+/// the device block's start in app samples before it runs that device
+/// block, as a DAW block may start up to a block before it, since
 /// the deadline offset is the device block's (dasio#107). Unset, the wait
 /// counts from the bridge's own block's start. Shared between the two on
 /// the pump's one thread.
@@ -110,7 +111,7 @@ pub struct Bridge<L: Link> {
     /// Answers that came in during that wait (late without it).
     waited: Arc<AtomicU64>,
     /// The media start the wait counts from when a processor runs the
-    /// bridge inside a longer block (the reblock); unset: the bridge's own
+    /// bridge inside a longer block (the converted path); unset: the bridge's own
     /// block's start.
     wait_from: WaitFrom,
     /// The concealment of late blocks; `None`: a late block is silence.
@@ -268,7 +269,7 @@ impl<L: Link> Bridge<L> {
 
     /// Waits until the DAW returned block `due` or the deadline after
     /// `start` passed (after the [`WaitFrom`] start when one is set: the
-    /// device block's, under the reblock); whether it had to wait and the
+    /// device block's, on the converted path); whether it had to wait and the
     /// answer came.
     fn wait_for(&self, due: u64, start: Option<u64>) -> bool {
         let start = self.wait_from.get().or(start);
