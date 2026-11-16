@@ -241,7 +241,7 @@ fn probe(instance: u32, seconds: u64, affinity: Option<usize>, rate: u32) -> Res
     let min = r.round_trips.iter().min();
     let max = r.round_trips.iter().max();
     println!(
-        "probe instance {instance}: rate {} block {} latency_in {} latency_out {} switches {} emitted {} arrived {} round_trip_min {:?} round_trip_max {:?} late {} missed {} samples {} max_gap_us {} gaps_over_1ms {} gap_blocks {} max_switch_us {} vm_stalls {} vm_stall_max_us {} vm_gap_blocks {}",
+        "probe instance {instance}: rate {} block {} latency_in {} latency_out {} switches {} emitted {} arrived {} round_trip_min {:?} round_trip_max {:?} late {} missed {} samples {} max_gap_us {} gaps_over_1ms {} gap_blocks {} max_switch_us {} vm_stalls {} vm_stall_max_us {} vm_gap_blocks {} pump_lost_late_blocks {} pump_lost_device_blocks {}",
         r.rate,
         r.block,
         r.latency_in,
@@ -260,7 +260,9 @@ fn probe(instance: u32, seconds: u64, affinity: Option<usize>, rate: u32) -> Res
         r.max_switch_us,
         r.vm_stalls,
         r.vm_stall_max_us,
-        r.vm_gap_blocks
+        r.vm_gap_blocks,
+        r.pump_lost_late_blocks,
+        r.pump_lost_device_blocks
     );
     for (second, (peak, at)) in r.rx_peaks.iter().enumerate() {
         println!("rx1 second {second}: peak {peak} at sample {at}");

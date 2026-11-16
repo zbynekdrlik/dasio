@@ -228,18 +228,28 @@ fn round_trip_at(instance: u32, seconds: u64, stall_ms: u64, rate: u32) -> dasio
     let rate = u64::from(rate);
     let block = u64::from(r.block);
     // This probe's own switches only, not an earlier probe's in this
-    // process too.
+    // process too; and the switches the pump's late wakes cost (below)
+    // were really missing, not credited on top of switches that came.
     assert!(
-        r.switches <= seconds * rate / block * 11 / 10,
-        "instance {instance}: {} switches in {seconds} s at block {block}: more than the device drove",
-        r.switches
-    );
-    // The device drives the host. The probe's watchdog figures say whether
-    // the whole guest stopped meanwhile (dasio#114).
-    assert!(
-        r.switches >= seconds * rate / block * 9 / 10,
-        "instance {instance}: the device drives the host: {} switches in {seconds} s at block {block} ({} blocks in {} VM stalls, longest {} us)",
+        r.switches + r.pump_lost_late_blocks <= seconds * rate / block * 11 / 10,
+        "instance {instance}: {} switches and {} lost to the pump's late wakes in {seconds} s at block {block}: more than the device drove",
         r.switches,
+        r.pump_lost_late_blocks
+    );
+    // The device drives the host. A switch the device's pump lost because
+    // it woke late, past its margin, as the device itself measured at that
+    // wake, is the runner's: it took the pump's CPU (CI 43127690013,
+    // 43578537664, 43779634868: the coverage job's pump woke up to 11 ms
+    // late, dasio#114). Every other missing switch fails: the device's own
+    // losses (an overrun, another cause, an unmeasured wake) are never
+    // credited. The probe's watchdog figures say whether the whole guest
+    // stopped meanwhile.
+    assert!(
+        r.switches + r.pump_lost_late_blocks >= seconds * rate / block * 9 / 10,
+        "instance {instance}: the device drives the host: {} switches in {seconds} s at block {block}, {} more lost to the pump's late wakes, {} to the device ({} blocks in {} VM stalls, longest {} us)",
+        r.switches,
+        r.pump_lost_late_blocks,
+        r.pump_lost_device_blocks,
         r.vm_stall_blocks,
         r.vm_stalls,
         r.vm_stall_max_us

@@ -21,6 +21,8 @@ use crate::turnaround::{Stamps, Turnaround, free_at, split};
 
 pub(crate) mod profile;
 use profile::ProfileWatch;
+mod pump_look;
+use pump_look::look_at_pump;
 mod serve;
 use serve::Base;
 
@@ -126,6 +128,10 @@ pub fn run(
     let mut profile_at: Option<Instant> = None;
     // A rate asked that cannot be served: warned once, not tried again.
     let mut refused_rate = 0u32;
+    // The pump's lost blocks by cause, published in every section's header
+    // for `dasio probe` (dasio#114).
+    let mut pump_loss =
+        crate::pump_loss::Tracker::new(timing.block, timing.margin, cfg.sample_rate);
     let why = loop {
         // The serving now: a new one after a rate the DAW asked.
         let (shared, stale, waited) = (
@@ -135,6 +141,12 @@ pub fn run(
         );
         let h = shared.header();
         let (converter_dry, reblock_dry, reblock_restarts) = serving.counters.read();
+        // Before the heartbeat: a reader that sees this tick's heartbeat
+        // sees its pump loss too.
+        let lost = look_at_pump(&mut pump_loss, &stats);
+        h.pump_lost_late_us.store(lost.late_us, Ordering::Relaxed);
+        h.pump_lost_device_us
+            .store(lost.device_us, Ordering::Relaxed);
         h.heartbeat_ms
             .store(start.elapsed().as_millis() as u64, Ordering::Release);
         let now = Instant::now();
@@ -192,6 +204,9 @@ pub fn run(
                 overruns = v.overruns,
                 rebootstraps = v.rebootstraps,
                 max_process_us = v.max_process_us,
+                // The pump's lost time by cause (dasio#114).
+                pump_lost_late_us = lost.late_us,
+                pump_lost_device_us = lost.device_us,
                 resets_asked,
                 latencies_changed,
                 // How the DAW drives the driver (dasio#28 E4); 0 from a

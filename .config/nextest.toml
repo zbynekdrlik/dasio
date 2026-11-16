@@ -1,0 +1,7 @@
+# The bench binary's tests time the pump's work per block and assert on
+# it (bench_bridge.rs, dasio#107): under nextest (the mutation job) each
+# runs alone, as the binary's own mutex makes them under libtest, so no
+# other test's load is timed with them.
+[[profile.default.overrides]]
+filter = "binary(bench_bridge)"
+threads-required = "num-test-threads"

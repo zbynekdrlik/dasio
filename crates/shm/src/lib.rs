@@ -18,9 +18,10 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 pub const MAGIC: u32 = u32::from_le_bytes(*b"DASI");
 /// The layout's version. 4: one section per device session, found through
 /// the instance's directory; 5: the directory carries the DAW's asked
-/// sample rate (dasio#107). `scripts/install.ps1`'s `$ShmProtocol` is the
-/// same number: a held driver of another protocol makes it refuse.
-pub const VERSION: u32 = 5;
+/// sample rate (dasio#107); 6: the header carries the pump's lost time by
+/// cause (dasio#114). `scripts/install.ps1`'s `$ShmProtocol` is the same
+/// number: a held driver of another protocol makes it refuse.
+pub const VERSION: u32 = 6;
 /// [`Header::start`] of a block with no media time (no clock).
 pub const NO_START: u64 = u64::MAX;
 /// Every buffer starts on this boundary.
@@ -106,6 +107,15 @@ pub struct Header {
     /// ([`Header::note_message`], [`Header::messages`]). In what was
     /// padding: drivers before 0.1.34 leave it 0.
     pub driver_messages: AtomicU64,
+    /// The device pump's lost time since the device started, µs (the
+    /// blocks its re-bootstraps skipped, at the pump's block time), by
+    /// cause (dasio#114): `pump_lost_late_us` while the pump only woke
+    /// late, past its margin, as measured at that wake (the environment:
+    /// a CPU taken from the pump); `pump_lost_device_us` for everything
+    /// else (an overrun, another cause, a wake not measured). The device
+    /// writes both before its heartbeat each tick.
+    pub pump_lost_late_us: AtomicU64,
+    pub pump_lost_device_us: AtomicU64,
 }
 
 /// A message the driver sends its DAW, counted in

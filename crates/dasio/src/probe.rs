@@ -64,6 +64,13 @@ pub struct Report {
     pub vm_stall_max_us: u64,
     pub vm_gap_blocks: u64,
     pub vm_stall_blocks: u64,
+    /// The device pump's lost time in this run, by its own cause
+    /// (dasio#114), in the host's whole blocks: lost to late wakes the
+    /// device measured past its margin (the environment: the runner took
+    /// the pump's CPU) and to anything else (the device). Only the first
+    /// may excuse missing switches.
+    pub pump_lost_late_blocks: u64,
+    pub pump_lost_device_blocks: u64,
 }
 
 /// The onset of an arrival: a quarter of the impulse.
@@ -422,9 +429,16 @@ pub fn probe_at(instance: u32, seconds: u64, stall_ms: u64, rate: u32) -> Result
         return abandon("start refused".into());
     }
     let end = Instant::now() + Duration::from_secs(seconds);
+    // The pump's lost time counts from the second device tick after the
+    // start, to the end of the run (dasio#114): a look's late blocks
+    // publish one tick after the look, so every late block published from
+    // there on was lost after the start.
+    let lost_before = pump_lost_after_ticks(instance, 2);
     while Instant::now() < end && RUNNING.load(Ordering::Acquire) == 1 {
         std::thread::sleep(Duration::from_millis(100));
     }
+    // Before the stop: nothing the pump lost after the run is credited.
+    let lost_after = shm::Shared::open(instance).map(|sh| pump_lost(sh.header()));
     // SAFETY: as a host ends.
     unsafe {
         (v.stop)(d);
@@ -435,6 +449,13 @@ pub fn probe_at(instance: u32, seconds: u64, stall_ms: u64, rate: u32) -> Result
     let stalls = watchdog
         .join()
         .map_err(|_| "the watchdog thread panicked".to_string())??;
+    let lost_before = lost_before?;
+    let lost_after =
+        lost_after.map_err(|e| format!("the device's shared memory at the run's end: {e}"))?;
+    let block = report.block;
+    let host_blocks = |us: u64| crate::pump_loss::blocks_of(us, rate, block);
+    report.pump_lost_late_blocks = host_blocks(lost_after.0.saturating_sub(lost_before.0));
+    report.pump_lost_device_blocks = host_blocks(lost_after.1.saturating_sub(lost_before.1));
     if let Ok(shared) = shm::Shared::open(instance) {
         report.late = shared.header().late.load(Ordering::Relaxed);
         report.missed = shared
@@ -462,6 +483,36 @@ pub fn probe_at(instance: u32, seconds: u64, stall_ms: u64, rate: u32) -> Result
     report.vm_gap_blocks = vm_stall::explained_blocks(&gaps, &stalls);
     report.vm_stall_blocks = vm_stall::stall_blocks(&stalls, BLOCK_US.load(Ordering::Relaxed));
     Ok(report)
+}
+
+/// The pump's lost time (late, device), µs, from the header.
+fn pump_lost(h: &shm::Header) -> (u64, u64) {
+    (
+        h.pump_lost_late_us.load(Ordering::Relaxed),
+        h.pump_lost_device_us.load(Ordering::Relaxed),
+    )
+}
+
+/// The pump's lost time once the device's loop has ticked `ticks` more
+/// times (it writes the lost time before its heartbeat).
+fn pump_lost_after_ticks(instance: u32, ticks: u32) -> Result<(u64, u64), String> {
+    let shared = shm::Shared::open(instance)
+        .map_err(|e| format!("the device's shared memory for the pump's lost time: {e}"))?;
+    let h = shared.header();
+    // The loop ticks every 100 ms.
+    let until = Instant::now() + Duration::from_secs(2);
+    for _ in 0..ticks {
+        let beat = h.heartbeat_ms.load(Ordering::Acquire);
+        while h.heartbeat_ms.load(Ordering::Acquire) == beat {
+            if Instant::now() >= until {
+                return Err(format!(
+                    "the device's loop did not tick {ticks} times in 2 s"
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    Ok(pump_lost(h))
 }
 
 /// The watchdog thread: its stalls, or why it could not run.

@@ -189,11 +189,22 @@ pub fn first_plan(device_rate: u32, device_block: u32, asked: u32) -> Option<Pla
 /// frames it had to fill with silence.
 fn drain_into(fifo: &mut VecDeque<f64>, dst: &mut [f64]) -> usize {
     let have = fifo.len().min(dst.len());
-    for (d, v) in dst.iter_mut().zip(fifo.drain(..have)) {
-        *d = v;
-    }
+    take_front(fifo, &mut dst[..have]);
     dst[have..].fill(0.0);
     dst.len() - have
+}
+
+/// Moves the front `dst.len()` frames of `fifo` (it holds at least that
+/// many) into `dst`. By slices, the ring's two halves at most: the e2e test
+/// runs the debug (and coverage-instrumented) binary, where a sample-by-sample
+/// drain costs tens of ns a sample on the pump's thread (dasio#107).
+fn take_front(fifo: &mut VecDeque<f64>, dst: &mut [f64]) {
+    let n = dst.len();
+    let (a, b) = fifo.as_slices();
+    let from_a = a.len().min(n);
+    dst[..from_a].copy_from_slice(&a[..from_a]);
+    dst[from_a..].copy_from_slice(&b[..n - from_a]);
+    fifo.drain(..n);
 }
 
 /// Fixed blocks for an inner processor from variable ones (see the module
@@ -300,12 +311,7 @@ impl<P: Process> Reblock<P> {
     fn inner_block(&mut self) {
         let n = self.block;
         for (c, q) in self.rx.iter_mut().enumerate() {
-            for (d, v) in self.staged_in[c * n..(c + 1) * n]
-                .iter_mut()
-                .zip(q.drain(..n))
-            {
-                *d = v;
-            }
+            take_front(q, &mut self.staged_in[c * n..(c + 1) * n]);
         }
         // The inner processor writes only what it answers (the bridge
         // leaves a missing answer's block alone).
@@ -318,7 +324,7 @@ impl<P: Process> Reblock<P> {
             self.inner.process(&mut b);
         }
         for (c, q) in self.tx.iter_mut().enumerate() {
-            q.extend(self.staged_out[c * n..(c + 1) * n].iter().copied());
+            q.extend(&self.staged_out[c * n..(c + 1) * n]);
         }
         self.held -= n;
         self.rx_start = self.rx_start.map(|s| s + n as u64);
@@ -344,7 +350,7 @@ impl<P: Process> Process for Reblock<P> {
         for (c, q) in self.rx.iter_mut().enumerate() {
             let input = block.input(c);
             if input.len() == k {
-                q.extend(input.iter().copied());
+                q.extend(input);
             } else {
                 // A channel the block lacks: silence, so every channel
                 // holds the same frames.

@@ -281,7 +281,7 @@ if ($dllHeld -and -not $KeepHeldDriver) {
 # The shared memory's protocol between the driver and the service (shm's
 # VERSION; shm's tests check the two agree). A held driver of another
 # protocol would not find the new service's memory and play silence.
-$ShmProtocol = 5
+$ShmProtocol = 6
 $protocolKey = "HKLM:\SOFTWARE\dasio"
 $heldProtocol = (Get-ItemProperty -Path $protocolKey -Name ShmProtocol -ErrorAction SilentlyContinue).ShmProtocol
 if ($dllHeld -and $heldProtocol -ne $ShmProtocol) {
