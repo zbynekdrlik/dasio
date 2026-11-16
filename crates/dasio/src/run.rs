@@ -201,7 +201,9 @@ pub fn run(
             }
         }
         if counts.due(now) {
-            if let Some(r) = rx_latency.look(crate::rx_latency::flows(&media.rx), cfg.sample_rate) {
+            if let Some(r) =
+                rx_latency.observe(crate::rx_latency::flows(&media.rx), cfg.sample_rate)
+            {
                 crate::rx_latency::log(&r);
             }
             let v = stats.view();

@@ -35,7 +35,7 @@ fn the_flow_peak_is_the_largest_of_the_slots_that_received() {
     assert_eq!(peak_ns(flows, 96_000), Some(1_000_000));
     // An idle slot's figure is no measurement.
     assert_eq!(peak_ns([(0, 960), (0, 0)], 96_000), None);
-    assert_eq!(peak_ns([], 96_000), None);
+    assert_eq!(peak_ns(std::iter::empty(), 96_000), None);
     // A received slot with a 0 age is a measured 0.
     assert_eq!(peak_ns([(10, 0)], 48_000), Some(0));
 }
@@ -66,19 +66,21 @@ fn the_watch_says_the_report_only_when_the_recommendation_changes() {
     let mut w = Watch::new(1_000_000);
     let status = w.peak();
     // No packet: nothing to say.
-    assert_eq!(w.look([(0, 0)], 48_000), None);
+    assert_eq!(w.observe([(0, 0)], 48_000), None);
     assert_eq!(w.report(), None);
     // 0.5 ms peak (24 samples at 48 kHz) -> 0.75 ms.
-    let first = w.look([(100, 24)], 48_000).expect("a first measurement is said");
+    let first = w
+        .observe([(100, 24)], 48_000)
+        .expect("a first measurement is said");
     assert_eq!(first, Report::of(1_000_000, 500_000));
     assert_eq!(first.recommended_ns, 750_000);
     // A smaller look and the same step: nothing new.
-    assert_eq!(w.look([(200, 12)], 48_000), None);
+    assert_eq!(w.observe([(200, 12)], 48_000), None);
     // A dstack slot whose counts started again (peak 0) never lowers it.
-    assert_eq!(w.look([(5, 0)], 48_000), None);
+    assert_eq!(w.observe([(5, 0)], 48_000), None);
     assert_eq!(w.report().map(|r| r.peak_ns), Some(500_000));
     // A burst past the step: said again, now below the configured 1 ms.
-    let burst = w.look([(400, 48)], 48_000).expect("a new step is said");
+    let burst = w.observe([(400, 48)], 48_000).expect("a new step is said");
     assert_eq!(burst.recommended_ns, 1_250_000);
     assert!(burst.below());
     // The status closure reads the same peak.
@@ -129,4 +131,45 @@ fn the_json_keys_come_only_with_a_measurement() {
         json(Some(Report::of(1_000_000, 980_000))),
         "\"rx_latency_ns\":1000000,\"rx_arrival_peak_ns\":980000,\"rx_latency_recommended_ns\":1250000,\"rx_latency_below\":true,"
     );
+}
+
+/// The log lines `f` writes at INFO and above, without colours.
+fn logged(f: impl FnOnce()) -> String {
+    use std::sync::{Arc, Mutex};
+    #[derive(Clone, Default)]
+    struct Buf(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Buf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let buf = Buf::default();
+    let to = buf.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(move || to.clone())
+        .finish();
+    tracing::subscriber::with_default(subscriber, f);
+    String::from_utf8(buf.0.lock().unwrap().clone()).unwrap()
+}
+
+#[test]
+fn a_latency_below_the_recommendation_is_logged_at_warn() {
+    let below = logged(|| log(&Report::of(1_000_000, 980_000)));
+    assert!(below.contains(" WARN "), "at WARN: {below}");
+    assert!(
+        below.contains("set latency_ns = 1250000 in device.toml at the next restart"),
+        "{below}"
+    );
+    assert!(below.contains("latency_ns=1000000"), "{below}");
+    assert!(below.contains("arrival_peak_ns=980000"), "{below}");
+    assert!(below.contains("recommended_ns=1250000"), "{below}");
+    let holds = logged(|| log(&Report::of(2_000_000, 720_000)));
+    assert!(holds.contains(" INFO "), "at INFO: {holds}");
+    assert!(!holds.contains("WARN"), "{holds}");
+    assert!(holds.contains("RX latency 2.00 ms holds"), "{holds}");
 }

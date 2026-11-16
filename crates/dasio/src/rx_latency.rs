@@ -202,9 +202,13 @@ impl Watch {
         self.peak.clone()
     }
 
-    /// Takes a look at the flows (`(packets, lateness_peak)` at `rate`);
+    /// Folds the flows (`(packets, lateness_peak)` at `rate`);
     /// the report to log when the recommendation changed.
-    pub fn look(&mut self, flows: impl IntoIterator<Item = (u64, u64)>, rate: u32) -> Option<Report> {
+    pub fn observe(
+        &mut self,
+        flows: impl IntoIterator<Item = (u64, u64)>,
+        rate: u32,
+    ) -> Option<Report> {
         self.peak.seen(peak_ns(flows, rate));
         let r = self.report()?;
         (self.said != Some(r.recommended_ns)).then(|| {

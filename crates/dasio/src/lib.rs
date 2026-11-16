@@ -28,11 +28,11 @@ pub mod place;
 pub mod probe;
 pub mod pump_loss;
 pub mod register;
-pub mod rx_latency;
 #[cfg(windows)]
 pub mod run;
 #[cfg(windows)]
 pub mod run_bridge;
+pub mod rx_latency;
 pub mod service;
 pub mod turnaround;
 pub mod vm_stall;

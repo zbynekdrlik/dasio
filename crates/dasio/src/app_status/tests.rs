@@ -186,6 +186,7 @@ fn the_bridge_facts_come_from_the_runner_s_status() {
             pc_problems: Some(2),
             tx: TxPath::Udp,
             from_asio_age: Some(AGE_DSG),
+            rx: None,
         }
     );
     let running = dstack_asio::Status {
@@ -648,5 +649,8 @@ fn a_bridge_shows_its_rx_latency_and_warns_when_below_the_recommendation() {
     assert!(bridge_line(&below).contains(" · RX 1.00 ms < rec. 4.00 ms"));
     assert_eq!(bridge_state(&below), "warn");
     let j = bridge_json(&below);
-    assert!(j.contains("\"rx_latency_below\":true,\"kernel_tx\":true"), "{j}");
+    assert!(
+        j.contains("\"rx_latency_below\":true,\"kernel_tx\":true"),
+        "{j}"
+    );
 }
