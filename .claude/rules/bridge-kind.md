@@ -50,3 +50,16 @@ paths:
   hourly WARN ("a receiver counted our TX packets late") comes only from a
   flow's own `over_latency` rising, not from a threshold. A test reads
   `run_bridge.rs` and fails if the call or the view moves or is duplicated.
+- The to-ASIO side is pulled (dasio issue 120, dstack issue 307 step 2,
+  dstack v0.6.155): `run_bridge.rs` claims `media.rx.app_intake()` before
+  `Pump::new` (the pump would claim the rings otherwise; `None` = another
+  writer, the start fails), builds `RxPull::new(..)` (returns
+  `Result<_, String>`), hands it over with `Bridge::pull_to_asio` before
+  `spawn_runner` (refused after the driver's first open), and gives the
+  pump `Map { rx: vec![], .. }`. `Bridge::keep_pulled()` runs on the loop's
+  own `Every` of `to_asio_pull::KEEP_EVERY` (250 ms): never the 10 s counts
+  tick (the idle drain must keep the flow within its 2 s) and never every
+  100 ms pass (a driver buffer over 100 ms would read as stopped). What a
+  look logs is `to_asio_pull::notes` (portable, tested); its tests also
+  guard this order in `run_bridge.rs` as text. The counts line carries
+  `to_asio_pulls`, `to_asio_pull_restarts`, `to_asio_idle_drains`.
