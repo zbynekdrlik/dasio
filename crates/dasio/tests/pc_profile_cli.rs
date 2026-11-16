@@ -75,3 +75,55 @@ fn layout_prints_the_layout_of_the_pc_s_cpu_count() {
         )
     );
 }
+
+#[test]
+fn an_existing_absent_exe_is_a_problem_and_apply_plan_names_its_uninstaller() {
+    // dasio#128: the real reader on Windows. `--plan` runs nothing.
+    let dir = std::env::temp_dir().join(format!("dasio-cli-absent-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let there = dir.join("there.exe");
+    std::fs::write(&there, b"x").unwrap();
+    let gone = dir.join("gone.exe");
+    let file = dir.join("pc-profile.toml");
+    let entry = |exe: &std::path::Path| {
+        format!(
+            "[[absent]]\nexe = '{}'\nuninstall = ['C:\\Windows\\System32\\cmd.exe', '/c', 'exit']\n",
+            exe.display()
+        )
+    };
+    std::fs::write(
+        &file,
+        format!("name = \"ci\"\n{}{}", entry(&there), entry(&gone)),
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        let out = Command::new(exe())
+            .args(args)
+            .arg("--profile")
+            .arg(&file)
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+        )
+    };
+    let (code, check) = run(&["pc-profile", "check"]);
+    let (plan_code, plan) = run(&["pc-profile", "apply", "--plan"]);
+    let still = there.exists();
+    std::fs::remove_dir_all(&dir).unwrap();
+    // The runner misses the baseline's test signing too (exit 2): only
+    // "not as it should be" counts here.
+    assert_ne!(code, Some(0), "{check}");
+    let line = format!("PROBLEM absent exe {}: present", there.display());
+    assert!(check.lines().any(|l| l.starts_with(&line)), "{check}");
+    assert!(!check.contains("gone.exe"), "{check}");
+    assert_eq!(plan_code, Some(0), "{plan}");
+    let would = format!(
+        "would set the absence of {} (runs C:\\Windows\\System32\\cmd.exe /c exit)",
+        there.display()
+    );
+    assert!(plan.lines().any(|l| l.starts_with(&would)), "{plan}");
+    assert!(!plan.contains("gone.exe"), "{plan}");
+    assert!(still, "--plan removed nothing");
+}

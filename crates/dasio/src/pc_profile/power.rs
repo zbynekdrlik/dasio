@@ -98,5 +98,6 @@ pub fn describe(a: &Action) -> String {
     match a {
         Action::Reg { key, name, value } => format!("registry {key}\\{name} = {value:?}"),
         Action::Ini { file, key, value } => format!("{file} {key}={value}"),
+        Action::Remove(r) => r.describe(),
     }
 }

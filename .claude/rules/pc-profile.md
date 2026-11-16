@@ -143,3 +143,44 @@ paths:
   FOH's thread pins (pump/rx/io) belong to its spinning real-time profile.
 - After any CPU change, count `engine pump lost` lines per hour by
   `cause=` before and after, not only network loss.
+
+## The full fold and what must not exist (dasio#128, owner 16.11.2026)
+
+- The baseline holds EVERY non-site key of FOH's and mbc's profiles, not
+  a hand-picked subset (it had 72 entries while FOH's file had 235; dsg,
+  set up from it, still ran Defender, Edge's updater and 216 tasks).
+  `pc_profile/tests/fold-keys.txt` lists those keys with generic names; a
+  test fails when the baseline misses one. A new proven key on any PC: the
+  baseline AND the fixture, in the same step. Site only (stays in a PC's
+  file): the active plan's GUID, `dasio-N` ImagePath/Start, the adapter's
+  subnet, a literal `Enum\PCI` path, CPU masks the layout gives, Lasso
+  rules naming site exes (DefaultPriorities, DefaultAffinitiesEx, ...),
+  Lasso's `Version`/`DefaultsLevel`, other tools' tasks, the disk floor.
+  The classification table is on dasio#128 (16.11.2026).
+- Defender: Windows will not uninstall it, so the baseline holds FOH's
+  whole policy set off (`Policies\Microsoft\Windows Defender`); its
+  `WinDefend` Start 4 is `check_only` (Windows 11's self-protection
+  refuses the write, mbc 10.11), so it stays a WARN there until set by
+  hand with Tamper Protection off.
+- An unreadable ini file (no Process Lasso) is ONE problem naming how many
+  keys it holds, not one per key; `apply` plans one write for it.
+- `[[absent]]` entries name something that must not exist: exactly one of
+  `exe = '<full path>'` (with `uninstall = ['<uninstaller>', args...]`,
+  one `\*\` folder allowed: the newest version folder is run),
+  `service = '<name>'` (only `pc_profile::absent::DELETABLE_SERVICES`:
+  `sc stop` + `sc delete`; widen the list in code, under review, never in
+  a profile), `task = '\<path>'` (a trailing `*` matches the rest of a
+  name in that folder: Edge's task names end in a GUID). The check reports
+  each one found (WARN + tray count, every 10 min, so a Windows upgrade
+  bringing it back shows); `apply` removes exactly what was found and
+  prints each removal; an exe still there after its uninstaller is a
+  FAILED line. Tasks are read from `System32\Tasks` (no process), so the
+  bridge's in-process check covers absences too. A site profile with
+  `[[absent]]` needs the dasio that knows it: an older one refuses the
+  whole profile.
+- The baseline removes Edge (`setup.exe --uninstall --msedge
+  --system-level --force-uninstall`), EdgeUpdate (`/uninstall`), its
+  services edgeupdate / edgeupdatem / MicrosoftEdgeElevationService and
+  its two task families. On dsg 16.11 EdgeUpdate's `/uninstall` left its
+  exe; `EdgeWebView` (WebView2) was still installed there, which may keep
+  it (not proven). Read that FAILED line's PC before re-running apply.
