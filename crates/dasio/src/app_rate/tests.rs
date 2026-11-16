@@ -533,3 +533,25 @@ fn the_converted_path_sets_the_device_block_s_start_for_the_wait() {
         }
     }
 }
+
+#[test]
+fn a_fifo_s_front_moves_out_in_order_across_the_ring_s_wrap() {
+    // A ring of 8 whose 6 frames wrap past its end: 2 at the back of the
+    // buffer, 4 at its front.
+    let mut q: VecDeque<f64> = VecDeque::with_capacity(8);
+    q.extend([0.0; 6]);
+    for _ in 0..6 {
+        q.pop_front();
+    }
+    q.extend([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    assert!(!q.as_slices().1.is_empty(), "the frames wrap the ring");
+    let mut dst = [0.0; 4];
+    take_front(&mut q, &mut dst);
+    assert_eq!(dst, [1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(q.iter().copied().collect::<Vec<_>>(), [5.0, 6.0]);
+    // Past what it holds: the rest is silence, counted.
+    let mut dst = [9.0; 3];
+    assert_eq!(drain_into(&mut q, &mut dst), 1);
+    assert_eq!(dst, [5.0, 6.0, 0.0]);
+    assert!(q.is_empty());
+}
