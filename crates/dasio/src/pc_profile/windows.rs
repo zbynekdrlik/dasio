@@ -6,7 +6,8 @@
 use std::path::Path;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_SUCCESS, HANDLE, INVALID_HANDLE_VALUE,
+    CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_SUCCESS, HANDLE,
+    INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
@@ -20,10 +21,12 @@ use windows_sys::Win32::System::Registry::{
 use windows_sys::Win32::System::Threading::{
     ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, GetPriorityClass,
     GetProcessAffinityMask, HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
-    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, REALTIME_PRIORITY_CLASS,
+    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    PROCESS_TERMINATE, QueryFullProcessImageNameW, REALTIME_PRIORITY_CLASS, TerminateProcess,
+    WaitForSingleObject,
 };
 
-use super::absent::{self, AbsentEntry, Removal, Target};
+use super::absent::{self, AbsentEntry, Fallback, Removal, Step, Target};
 use super::{Action, ProcState, Profile, Reader, Value, get_ini, set_ini};
 
 const NET_CLASS: &str =
@@ -424,7 +427,11 @@ fn remove(r: &Removal) -> Result<(), String> {
             }
             system32_tool("schtasks", &["/delete", "/tn", t.as_str(), "/f"])
         }
-        Removal::Exe { exe, uninstall } => {
+        Removal::Exe {
+            exe,
+            uninstall,
+            fallback,
+        } => {
             if !file_there(exe)? {
                 return Ok(());
             }
@@ -436,15 +443,120 @@ fn remove(r: &Removal) -> Result<(), String> {
             let status = run_bounded(&prog, args)?;
             // An uninstaller's exit code says little (some end non-zero
             // after a good uninstall): the exe gone is what counts.
+            if !file_there(exe)? {
+                return Ok(());
+            }
+            let left = format!(
+                "ran {prog} {} ({status}): {exe} is still there",
+                args.join(" ")
+            );
+            let Some(fb) = fallback else {
+                return Err(left);
+            };
+            // EdgeUpdate's /uninstall keeps itself while WebView2 is
+            // installed (dasio#128, dsg + mbc 16.11.2026).
+            println!("fallback for {exe}: {left}");
+            run_fallback(fb).map_err(|e| format!("{left}; fallback: {e}"))?;
             if file_there(exe)? {
-                return Err(format!(
-                    "ran {prog} {} ({status}): {exe} is still there",
-                    args.join(" ")
-                ));
+                return Err(format!("{left}; after the fallback too"));
             }
             Ok(())
         }
     }
+}
+
+/// The fallback's steps, each printed: the named processes running from
+/// the folder stopped, then the folder deleted. The folder is checked
+/// against [`absent::REMOVABLE_DIRS`] again before the delete.
+fn run_fallback(fb: &Fallback) -> Result<(), String> {
+    for step in fb.steps() {
+        match step {
+            Step::Stop { name, dir } => stop_inside(&name, &dir)?,
+            Step::RemoveDir(dir) => {
+                if !absent::removable(&dir) {
+                    return Err(format!(
+                        "{dir}: not a folder dasio deletes ({:?})",
+                        absent::REMOVABLE_DIRS
+                    ));
+                }
+                match std::fs::remove_dir_all(&dir) {
+                    Ok(()) => println!("fallback: deleted {dir}"),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        println!("fallback: {dir} was already gone")
+                    }
+                    Err(e) => return Err(format!("deleting {dir}: {e}")),
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// How long a stopped process may take to exit.
+const STOP_WAIT_MS: u32 = 10_000;
+
+/// Stops every process named `name` whose image lies inside `dir`; one
+/// elsewhere is left (and printed). A process that cannot be opened or
+/// stopped is an error: its folder could not be deleted anyway.
+fn stop_inside(name: &str, dir: &str) -> Result<(), String> {
+    for pid in find_processes(name)? {
+        // SAFETY: a handle for the query, the stop and the wait, closed
+        // below.
+        let h = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE,
+                0,
+                pid,
+            )
+        };
+        if h.is_null() {
+            // Ended since the snapshot, or not ours to open.
+            return Err(format!(
+                "{name} pid {pid}: cannot open it ({})",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let r = stop_one(h, name, pid, dir);
+        // SAFETY: the handle opened above, closed once.
+        unsafe { CloseHandle(h) };
+        r?;
+    }
+    Ok(())
+}
+
+/// Stops the process `h` when its image lies inside `dir`.
+fn stop_one(h: HANDLE, name: &str, pid: u32, dir: &str) -> Result<(), String> {
+    let mut buf = [0u16; 1024];
+    let mut len = buf.len() as u32;
+    // SAFETY: a valid handle, a buffer of `len` UTF-16 units.
+    let ok =
+        unsafe { QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) };
+    if ok == 0 {
+        return Err(format!(
+            "{name} pid {pid}: its path is unreadable ({})",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let image = String::from_utf16_lossy(&buf[..len as usize]);
+    if !absent::inside(dir, &image) {
+        println!("fallback: left {name} pid {pid} ({image}): not inside {dir}");
+        return Ok(());
+    }
+    // SAFETY: a valid handle opened with PROCESS_TERMINATE.
+    if unsafe { TerminateProcess(h, 1) } == 0 {
+        return Err(format!(
+            "{name} pid {pid} ({image}): not stopped ({})",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: a valid handle opened with PROCESS_SYNCHRONIZE.
+    if unsafe { WaitForSingleObject(h, STOP_WAIT_MS) } != WAIT_OBJECT_0 {
+        return Err(format!(
+            "{name} pid {pid} ({image}): still running {STOP_WAIT_MS} ms after the stop"
+        ));
+    }
+    println!("fallback: stopped {name} pid {pid} ({image})");
+    Ok(())
 }
 
 /// Runs `prog args` and waits at most [`UNINSTALL_LIMIT`]; past it the
@@ -646,26 +758,33 @@ fn find_nic_class(guid: &str) -> Option<String> {
 
 /// The pid of the first process with image `exe` (case ignored).
 fn find_process(exe: &str) -> Option<u32> {
+    find_processes(exe).ok()?.into_iter().next()
+}
+
+/// The ids of every process whose exe file name is `exe` (case ignored).
+fn find_processes(exe: &str) -> Result<Vec<u32>, String> {
     // SAFETY: a process snapshot, closed below.
     let snap: HANDLE = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snap == INVALID_HANDLE_VALUE {
-        return None;
+        return Err(format!(
+            "the process list is unreadable ({})",
+            std::io::Error::last_os_error()
+        ));
     }
     // SAFETY: a zeroed entry with its size set, as the API wants.
     let mut e: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
     e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-    let mut pid = None;
+    let mut pids = Vec::new();
     // SAFETY: a valid snapshot and entry.
     let mut ok = unsafe { Process32FirstW(snap, &mut e) } != 0;
     while ok {
         if from_wide(&e.szExeFile).eq_ignore_ascii_case(exe) {
-            pid = Some(e.th32ProcessID);
-            break;
+            pids.push(e.th32ProcessID);
         }
         // SAFETY: as above.
         ok = unsafe { Process32NextW(snap, &mut e) } != 0;
     }
     // SAFETY: the snapshot opened above.
     unsafe { CloseHandle(snap) };
-    pid
+    Ok(pids)
 }

@@ -5,7 +5,12 @@
 //! 10 min); `apply` removes exactly what the entry names:
 //! - `exe = '<full path>'` with `uninstall = ['<uninstaller>', 'args'...]`:
 //!   runs that uninstaller (its path may hold one `*` folder, e.g. Edge's
-//!   version folder: the newest version found is run);
+//!   version folder: the newest version found is run); when the exe is
+//!   still there after it, an optional fallback stops the named processes
+//!   running from the exe's own folder and deletes that folder, only one on
+//!   [`REMOVABLE_DIRS`] (`remove_dir`, `stop_processes`: EdgeUpdate's
+//!   `/uninstall` keeps itself while WebView2 is installed, dsg + mbc
+//!   16.11.2026);
 //! - `service = '<name>'`: `sc stop` + `sc delete`, only for a service on
 //!   [`DELETABLE_SERVICES`] (a parse error otherwise);
 //! - `task = '<path as schtasks shows it>'`: `schtasks /delete`; a trailing
@@ -26,6 +31,13 @@ use super::{Problem, Reader};
 pub const DELETABLE_SERVICES: [&str; 3] =
     ["edgeupdate", "edgeupdatem", "MicrosoftEdgeElevationService"];
 
+/// The folders an exe entry's fallback may delete (`remove_dir`; a delete
+/// cannot be undone, so the list is in code, under review, never in a
+/// profile): Edge's updater, whose `/uninstall` leaves itself while
+/// WebView2 is installed (dasio#128, dsg + mbc 16.11.2026). WebView2's own
+/// folder is not on it: it stays (owner 16.11.2026).
+pub const REMOVABLE_DIRS: [&str; 1] = [r"C:\Program Files (x86)\Microsoft\EdgeUpdate"];
+
 /// Something that must not exist on the PC.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -43,6 +55,14 @@ pub struct AbsentEntry {
     /// The program's own uninstaller and its arguments (`exe` only).
     #[serde(default)]
     pub uninstall: Option<Vec<String>>,
+    /// The exe's own folder, deleted when the uninstaller left the exe
+    /// (`exe` only, a folder on [`REMOVABLE_DIRS`]).
+    #[serde(default)]
+    pub remove_dir: Option<String>,
+    /// Exe file names stopped before `remove_dir` is deleted, each only
+    /// while it runs from inside that folder (`remove_dir` only).
+    #[serde(default)]
+    pub stop_processes: Option<Vec<String>>,
     #[serde(default)]
     pub why: String,
 }
@@ -96,6 +116,69 @@ pub fn deletable(service: &str) -> bool {
         .any(|s| s.eq_ignore_ascii_case(service))
 }
 
+/// Whether `dir` is on [`REMOVABLE_DIRS`] (case ignored, as the file
+/// system).
+pub fn removable(dir: &str) -> bool {
+    REMOVABLE_DIRS.iter().any(|d| d.eq_ignore_ascii_case(dir))
+}
+
+/// The folder a full path is in: `C:\a\b.exe` gives `C:\a`.
+pub fn parent_dir(path: &str) -> Option<&str> {
+    path.rsplit_once('\\').map(|(dir, _)| dir)
+}
+
+/// Whether the file `path` lies inside the folder `dir` (case ignored), at
+/// any depth, with no `..` that could leave it.
+pub fn inside(dir: &str, path: &str) -> bool {
+    let head = path.get(..dir.len());
+    let Some(rest) = head
+        .filter(|h| h.eq_ignore_ascii_case(dir))
+        .and_then(|_| path[dir.len()..].strip_prefix('\\'))
+    else {
+        return false;
+    };
+    !rest
+        .split('\\')
+        .any(|p| p.is_empty() || p == "." || p == "..")
+}
+
+/// A bare exe file name (`MicrosoftEdgeUpdate.exe`): no folder, no `*`.
+fn exe_name(name: &str) -> bool {
+    name.len() > 4
+        && name.to_ascii_lowercase().ends_with(".exe")
+        && !name.contains(['\\', '/', '*', ':'])
+}
+
+/// Why the fallback fields of exe entry `e` are wrong; `Ok` when they are
+/// fine or absent.
+fn validate_fallback(exe: &str, e: &AbsentEntry) -> Result<(), String> {
+    if let Some(dir) = &e.remove_dir {
+        if !removable(dir) {
+            return Err(format!(
+                "absent exe {exe}: dasio deletes only the folders {REMOVABLE_DIRS:?} (pc_profile::absent::REMOVABLE_DIRS), not {dir}"
+            ));
+        }
+        if !parent_dir(exe).is_some_and(|p| p.eq_ignore_ascii_case(dir)) {
+            return Err(format!(
+                "absent exe {exe}: remove_dir {dir} must be the exe's own folder"
+            ));
+        }
+    }
+    if let Some(names) = &e.stop_processes {
+        if e.remove_dir.is_none() {
+            return Err(format!(
+                "absent exe {exe}: stop_processes needs remove_dir (they stop only what runs from it)"
+            ));
+        }
+        if let Some(bad) = names.iter().find(|n| !exe_name(n)) {
+            return Err(format!(
+                "absent exe {exe}: stop_processes {bad:?}: give an exe file name, e.g. MicrosoftEdgeUpdate.exe, no folder, no *"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// A full Windows path: a drive letter, a colon, a backslash.
 fn full_path(p: &str) -> bool {
     let b = p.as_bytes();
@@ -110,6 +193,12 @@ pub fn validate(e: &AbsentEntry) -> Result<(), String> {
             [&e.exe, &e.service, &e.task]
         ));
     };
+    if !matches!(target, Target::Exe(_)) && (e.remove_dir.is_some() || e.stop_processes.is_some()) {
+        return Err(format!(
+            "{}: remove_dir and stop_processes are for exe only",
+            e.what()
+        ));
+    }
     match target {
         Target::Exe(exe) => {
             if !full_path(exe) || exe.contains('*') {
@@ -133,6 +222,7 @@ pub fn validate(e: &AbsentEntry) -> Result<(), String> {
                     "absent exe {exe}: the uninstaller {prog} may hold one * as a whole folder (\\*\\)"
                 ));
             }
+            validate_fallback(exe, e)?;
         }
         Target::Service(s) => {
             if e.uninstall.is_some() {
@@ -227,6 +317,40 @@ pub fn resolve_uninstaller(
         .find(|p| exists(p))
 }
 
+/// What `apply` does when an exe's uninstaller left the exe: stop the
+/// named processes running from `dir`, then delete `dir`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fallback {
+    /// A folder on [`REMOVABLE_DIRS`], the exe's own.
+    pub dir: String,
+    /// Exe file names to stop while they run from inside `dir`.
+    pub stop: Vec<String>,
+}
+
+/// One step of a [`Fallback`], in the order `apply` takes them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Step {
+    /// Stop every process of this exe name whose image is inside the
+    /// folder (a running exe keeps its folder from being deleted).
+    Stop { name: String, dir: String },
+    /// Delete the folder and everything in it.
+    RemoveDir(String),
+}
+
+impl Fallback {
+    /// The steps: each process stopped first, then the folder deleted.
+    pub fn steps(&self) -> Vec<Step> {
+        self.stop
+            .iter()
+            .map(|name| Step::Stop {
+                name: name.clone(),
+                dir: self.dir.clone(),
+            })
+            .chain([Step::RemoveDir(self.dir.clone())])
+            .collect()
+    }
+}
+
 /// One removal `apply` makes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Removal {
@@ -234,8 +358,13 @@ pub enum Removal {
     Service(String),
     /// `schtasks /delete` of a task, by its full path as found.
     Task(String),
-    /// The program's uninstaller, then a look that `exe` is gone.
-    Exe { exe: String, uninstall: Vec<String> },
+    /// The program's uninstaller, then a look that `exe` is gone; when it
+    /// is not, the fallback (if the entry names one) and a second look.
+    Exe {
+        exe: String,
+        uninstall: Vec<String>,
+        fallback: Option<Fallback>,
+    },
 }
 
 impl Removal {
@@ -244,8 +373,20 @@ impl Removal {
         match self {
             Removal::Service(s) => format!("the absence of service {s} (sc stop + sc delete)"),
             Removal::Task(t) => format!("the absence of task {t} (schtasks /delete)"),
-            Removal::Exe { exe, uninstall } => {
-                format!("the absence of {exe} (runs {})", uninstall.join(" "))
+            Removal::Exe {
+                exe,
+                uninstall,
+                fallback,
+            } => {
+                let then = fallback.as_ref().map_or(String::new(), |f| {
+                    let stop = if f.stop.is_empty() {
+                        String::new()
+                    } else {
+                        format!("stops {} inside it, ", f.stop.join(", "))
+                    };
+                    format!("; if that leaves the exe: {stop}deletes {}", f.dir)
+                });
+                format!("the absence of {exe} (runs {}{then})", uninstall.join(" "))
             }
         }
     }
@@ -286,6 +427,10 @@ pub fn plan(entries: &[AbsentEntry], r: &dyn Reader) -> Vec<Removal> {
                 Some(Target::Exe(exe)) => Removal::Exe {
                     exe: exe.to_string(),
                     uninstall: e.uninstall.clone().unwrap_or_default(),
+                    fallback: e.remove_dir.as_ref().map(|dir| Fallback {
+                        dir: dir.clone(),
+                        stop: e.stop_processes.clone().unwrap_or_default(),
+                    }),
                 },
                 None => continue,
             });

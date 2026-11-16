@@ -2,13 +2,15 @@
 //! on a dasio PC, reported while it does and removed by `apply`.
 
 use super::super::absent::{
-    DELETABLE_SERVICES, Target, resolve_uninstaller, split_star, task_folder, task_matches,
-    versions_newest_first,
+    DELETABLE_SERVICES, Fallback, REMOVABLE_DIRS, Step, Target, inside, parent_dir, removable,
+    resolve_uninstaller, split_star, task_folder, task_matches, versions_newest_first,
 };
 use super::super::*;
 use super::Pc;
 
 const EDGE: &str = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe";
+const UPDATE_DIR: &str = r"C:\Program Files (x86)\Microsoft\EdgeUpdate";
+const UPDATE: &str = r"C:\Program Files (x86)\Microsoft\EdgeUpdate\MicrosoftEdgeUpdate.exe";
 
 const ABSENT: &str = r#"
 name = "pc"
@@ -169,6 +171,7 @@ fn what_exists_is_a_problem_and_its_removal_is_planned() {
                     "--system-level".into(),
                     "--force-uninstall".into(),
                 ],
+                fallback: None,
             }),
             Action::Remove(Removal::Service("edgeupdate".into())),
             Action::Remove(Removal::Task(
@@ -366,4 +369,213 @@ fn an_unreadable_ini_file_is_one_problem_and_one_write() {
         })
         .collect();
     assert_eq!(writes, [r"C:\L\p.ini A", r"C:\M\q.ini A"]);
+}
+
+/// EdgeUpdate's entry with its fallback, as the baseline gives it.
+const UPDATE_ENTRY: &str = r"exe = 'C:\Program Files (x86)\Microsoft\EdgeUpdate\MicrosoftEdgeUpdate.exe'
+uninstall = ['C:\Program Files (x86)\Microsoft\EdgeUpdate\MicrosoftEdgeUpdate.exe', '/uninstall']
+remove_dir = 'C:\Program Files (x86)\Microsoft\EdgeUpdate'
+stop_processes = ['MicrosoftEdgeUpdate.exe', 'MicrosoftEdgeUpdateCore.exe']";
+
+#[test]
+fn an_exe_entrys_fallback_parses_and_is_planned_after_its_uninstaller() {
+    let p = one(UPDATE_ENTRY).unwrap();
+    let e = &p.absent[0];
+    assert_eq!(e.remove_dir.as_deref(), Some(UPDATE_DIR));
+    let pc = Pc {
+        files: vec![UPDATE.into()],
+        ..Pc::default()
+    };
+    let actions = plan(&p, &pc);
+    let fb = Fallback {
+        dir: UPDATE_DIR.into(),
+        stop: vec![
+            "MicrosoftEdgeUpdate.exe".into(),
+            "MicrosoftEdgeUpdateCore.exe".into(),
+        ],
+    };
+    assert_eq!(
+        actions,
+        vec![Action::Remove(Removal::Exe {
+            exe: UPDATE.into(),
+            uninstall: vec![UPDATE.into(), "/uninstall".into()],
+            fallback: Some(fb.clone()),
+        })]
+    );
+    assert_eq!(
+        describe(&actions[0]),
+        format!(
+            "the absence of {UPDATE} (runs {UPDATE} /uninstall; if that leaves the exe: stops MicrosoftEdgeUpdate.exe, MicrosoftEdgeUpdateCore.exe inside it, deletes {UPDATE_DIR})"
+        )
+    );
+    assert_eq!(takes_effect(&actions[0]), "nothing more");
+    // Every named process stopped first, in the entry's order, then the
+    // folder deleted: a running exe keeps its folder.
+    assert_eq!(
+        fb.steps(),
+        vec![
+            Step::Stop {
+                name: "MicrosoftEdgeUpdate.exe".into(),
+                dir: UPDATE_DIR.into(),
+            },
+            Step::Stop {
+                name: "MicrosoftEdgeUpdateCore.exe".into(),
+                dir: UPDATE_DIR.into(),
+            },
+            Step::RemoveDir(UPDATE_DIR.into()),
+        ]
+    );
+    // Without processes: only the folder; nothing found: nothing planned.
+    let bare = one(&format!(
+        "exe = '{UPDATE}'\nuninstall = ['{UPDATE}', '/uninstall']\nremove_dir = '{}'",
+        UPDATE_DIR.to_ascii_uppercase()
+    ))
+    .unwrap();
+    let Action::Remove(Removal::Exe {
+        fallback: Some(f), ..
+    }) = &plan(&bare, &pc)[0]
+    else {
+        panic!("no fallback planned");
+    };
+    assert_eq!(
+        f.steps(),
+        vec![Step::RemoveDir(UPDATE_DIR.to_ascii_uppercase())]
+    );
+    assert!(describe(&plan(&bare, &pc)[0]).ends_with(&format!(
+        "; if that leaves the exe: deletes {})",
+        UPDATE_DIR.to_ascii_uppercase()
+    )));
+    assert!(plan(&p, &Pc::default()).is_empty());
+}
+
+#[test]
+fn a_fallback_deletes_only_the_allowed_folder_of_its_own_exe() {
+    let exe_in = |dir: &str, extra: &str| {
+        format!("exe = '{dir}\\x.exe'\nuninstall = ['C:\\u.exe']\n{extra}")
+    };
+    let refused = [
+        // Not on the list, even as the exe's own folder.
+        (
+            exe_in(
+                r"C:\Program Files (x86)\Microsoft\EdgeWebView",
+                "remove_dir = 'C:\\Program Files (x86)\\Microsoft\\EdgeWebView'",
+            ),
+            "dasio deletes only the folders",
+        ),
+        (
+            exe_in(r"C:\Windows", "remove_dir = 'C:\\Windows'"),
+            "dasio deletes only the folders",
+        ),
+        // On the list, but not the exe's folder.
+        (
+            format!("exe = '{EDGE}'\nuninstall = ['C:\\u.exe']\nremove_dir = '{UPDATE_DIR}'"),
+            "must be the exe's own folder",
+        ),
+        (
+            format!(
+                "exe = '{UPDATE_DIR}\\sub\\x.exe'\nuninstall = ['C:\\u.exe']\nremove_dir = '{UPDATE_DIR}'"
+            ),
+            "must be the exe's own folder",
+        ),
+        (
+            format!(
+                "exe = '{UPDATE}'\nuninstall = ['C:\\u.exe']\nstop_processes = ['MicrosoftEdgeUpdate.exe']"
+            ),
+            "stop_processes needs remove_dir",
+        ),
+        (
+            "service = \"edgeupdate\"\nremove_dir = 'C:\\x'".to_string(),
+            "absent service edgeupdate: remove_dir and stop_processes are for exe only",
+        ),
+        (
+            "task = '\\x*'\nstop_processes = ['a.exe']".to_string(),
+            r"absent task \x*: remove_dir and stop_processes are for exe only",
+        ),
+    ];
+    for (body, want) in refused {
+        let e = one(&body).unwrap_err();
+        assert!(e.contains(want), "{body:?}: {e}");
+    }
+    for bad in [
+        r"C:\x\a.exe",
+        "x/a.exe",
+        "a*.exe",
+        "C:a.exe",
+        "a.dll",
+        ".exe",
+        "",
+    ] {
+        let body = format!(
+            "exe = '{UPDATE}'\nuninstall = ['C:\\u.exe']\nremove_dir = '{UPDATE_DIR}'\nstop_processes = ['ok.exe', '{bad}']"
+        );
+        let e = one(&body).unwrap_err();
+        assert_eq!(
+            e,
+            format!(
+                "absent exe {UPDATE}: stop_processes {bad:?}: give an exe file name, e.g. MicrosoftEdgeUpdate.exe, no folder, no *"
+            ),
+            "{bad:?}"
+        );
+    }
+    assert!(one(&format!(
+        "exe = '{UPDATE}'\nuninstall = ['C:\\u.exe']\nremove_dir = '{UPDATE_DIR}'\nstop_processes = ['A.EXE', 'b.exe']"
+    ))
+    .is_ok());
+    assert_eq!(
+        REMOVABLE_DIRS,
+        [UPDATE_DIR],
+        "widening the list deletes more than the baseline names: review it"
+    );
+    assert!(removable(UPDATE_DIR));
+    assert!(removable(&UPDATE_DIR.to_ascii_lowercase()));
+    assert!(!removable(r"C:\Program Files (x86)\Microsoft"));
+    assert!(!removable(r"C:\Program Files (x86)\Microsoft\EdgeUpdate\"));
+    assert_eq!(parent_dir(UPDATE), Some(UPDATE_DIR));
+    assert_eq!(parent_dir("x.exe"), None);
+}
+
+#[test]
+fn only_a_process_running_from_inside_the_folder_is_stopped() {
+    assert!(inside(UPDATE_DIR, UPDATE));
+    assert!(inside(UPDATE_DIR, &UPDATE.to_ascii_uppercase()));
+    assert!(inside(
+        UPDATE_DIR,
+        r"C:\Program Files (x86)\Microsoft\EdgeUpdate\1.3.195.61\MicrosoftEdgeUpdateCore.exe"
+    ));
+    for outside in [
+        UPDATE_DIR,
+        r"C:\Program Files (x86)\Microsoft\EdgeUpdate\",
+        r"C:\Program Files (x86)\Microsoft\EdgeUpdateX\MicrosoftEdgeUpdate.exe",
+        r"C:\Program Files (x86)\Microsoft\EdgeWebView\Application\MicrosoftEdgeUpdate.exe",
+        r"C:\Program Files (x86)\Microsoft\EdgeUpdate\..\EdgeWebView\a.exe",
+        r"C:\Program Files (x86)\Microsoft\EdgeUpdate\.\a.exe",
+        r"C:\Program Files (x86)\Microsoft\EdgeUpdate\\a.exe",
+        r"C:\Program Files (x86)\Microsoft\Edge",
+        r"D:\Program Files (x86)\Microsoft\EdgeUpdate\a.exe",
+        "",
+    ] {
+        assert!(!inside(UPDATE_DIR, outside), "{outside}");
+    }
+}
+
+#[test]
+fn the_baselines_edgeupdate_entry_deletes_its_folder_when_it_stays() {
+    let b = baseline().unwrap();
+    let e = b
+        .absent
+        .iter()
+        .find(|e| e.target() == Some(Target::Exe(UPDATE)))
+        .unwrap();
+    assert_eq!(e.remove_dir.as_deref(), Some(UPDATE_DIR));
+    assert_eq!(
+        e.stop_processes.as_deref(),
+        Some(["MicrosoftEdgeUpdate.exe".to_string()].as_slice())
+    );
+    // Edge's own entry has no fallback: WebView2 shares its parent.
+    let edge = b
+        .absent
+        .iter()
+        .find(|e| e.target() == Some(Target::Exe(EDGE)))
+        .unwrap();
+    assert_eq!(edge.remove_dir, None);
 }

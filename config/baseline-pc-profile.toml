@@ -1618,6 +1618,10 @@ why = "Microsoft Edge: owner 16.11.2026: no browser and no updater on a dasio PC
 [[absent]]
 exe = 'C:\Program Files (x86)\Microsoft\EdgeUpdate\MicrosoftEdgeUpdate.exe'
 uninstall = ['C:\Program Files (x86)\Microsoft\EdgeUpdate\MicrosoftEdgeUpdate.exe', '/uninstall']
+# Its /uninstall exits 0 but keeps itself while WebView2 is installed (dsg +
+# mbc 16.11.2026): then apply stops it and deletes its folder (dasio#128).
+remove_dir = 'C:\Program Files (x86)\Microsoft\EdgeUpdate'
+stop_processes = ['MicrosoftEdgeUpdate.exe']
 why = "Edge's updater (it re-installs Edge and runs as a service): owner 16.11.2026: no browser and no updater on a dasio PC, removed, not only disabled, so nothing starts by chance; re-removed after a Windows upgrade (dasio#128)"
 
 [[absent]]
