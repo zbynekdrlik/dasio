@@ -27,13 +27,23 @@
 //!   every 2 h to daily 04:00); checked only, never applied: the task is
 //!   another tool's install.
 //!
+//! Every PC is held to the built-in baseline merged with its own profile
+//! ([`baseline`](self::baseline), dasio#128); the baseline's CPU masks are
+//! computed from the PC's CPU count ([`layout`](self::layout)), and its
+//! `must = true` items stop dasio when missing.
+//!
 //! This part is portable and tested everywhere; reading and writing the
 //! PC is [`windows`](self::windows).
 
 use serde::Deserialize;
 
+mod baseline;
+pub mod layout;
 #[cfg(windows)]
 pub mod windows;
+
+pub use baseline::{BASELINE, MUST_HAVE, baseline, baseline_only, load, merge, must_have_failure};
+pub use layout::{Layout, resolve};
 
 /// Where the service looks for the profile.
 pub const DEFAULT_PATH: &str = r"C:\ProgramData\dasio\pc-profile.toml";
@@ -50,6 +60,10 @@ pub struct Profile {
     /// `{nic_device}`.
     #[serde(default)]
     pub nic_guid: Option<String>,
+    /// How many dasio instances the PC runs, for the CPU layout
+    /// ([`layout`]); 1 when not given.
+    #[serde(default)]
+    pub instances: Option<usize>,
     #[serde(default)]
     pub registry: Vec<RegEntry>,
     #[serde(default)]
@@ -111,6 +125,14 @@ pub struct RegEntry {
     /// a driver's `DriverVersion`), which only installing the thing fixes.
     #[serde(default)]
     pub check_only: bool,
+    /// The value comes from the PC's CPU layout instead of being given:
+    /// one of [`layout::COMPUTED`] (dasio#128).
+    #[serde(default)]
+    pub computed: Option<String>,
+    /// dasio does not run without it (dasio#128): the service ends, the
+    /// check exits 2, `install.ps1` refuses.
+    #[serde(default)]
+    pub must: bool,
     /// Why (the evidence): shown with a mismatch.
     #[serde(default)]
     pub why: String,
@@ -165,6 +187,9 @@ pub struct BcdEntry {
     pub name: String,
     /// Its value as bcdedit lists it, e.g. `Yes`.
     pub value: String,
+    /// dasio does not run without it (dasio#128), as [`RegEntry::must`].
+    #[serde(default)]
+    pub must: bool,
     #[serde(default)]
     pub why: String,
 }
@@ -258,10 +283,15 @@ pub struct Problem {
     pub found: String,
     pub want: String,
     pub why: String,
+    /// A must-have item (dasio#128): its text starts with [`MUST_HAVE`].
+    pub must: bool,
 }
 
 impl std::fmt::Display for Problem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.must {
+            f.write_str(MUST_HAVE)?;
+        }
         write!(
             f,
             "{}: {} (the profile wants {})",
@@ -279,139 +309,28 @@ pub fn parse(text: &str) -> Result<Profile, String> {
     parse_with(text, true)
 }
 
-/// The baseline every dasio PC gets (dasio#128): `config/baseline-pc-profile.toml`,
-/// built into dasio. Its Dante NIC entries take the PC's `nic_guid`.
-pub fn baseline() -> Result<Profile, String> {
-    parse_with(BASELINE, false).map_err(|e| format!("the built-in baseline: {e}"))
-}
-
-/// The baseline's text, as shipped.
-pub const BASELINE: &str = include_str!("../../../config/baseline-pc-profile.toml");
-
-/// What a PC is held to: the baseline and its own `site` profile. The
-/// site's entry wins over the baseline's same entry (registry key and name,
-/// ini file and key, process, drive, bcd element, task); the rest is added.
-/// Without the site's `nic_guid`, the baseline's Dante NIC entries are
-/// left out (no NIC to read).
-pub fn merge(base: &Profile, site: &Profile) -> Profile {
-    let nic = |k: &str| k.contains("{nic_class}") || k.contains("{nic_device}");
-    let mut out = site.clone();
-    let mut registry: Vec<RegEntry> =
-        base.registry
-            .iter()
-            .filter(|b| site.nic_guid.is_some() || !nic(&b.key))
-            .filter(|b| {
-                !site.registry.iter().any(|s| {
-                    s.key.eq_ignore_ascii_case(&b.key) && s.name.eq_ignore_ascii_case(&b.name)
-                })
-            })
-            .cloned()
-            .collect();
-    registry.extend(site.registry.iter().cloned());
-    out.registry = registry;
-    let mut ini: Vec<IniEntry> = base
-        .ini
-        .iter()
-        .filter(|b| {
-            !site
-                .ini
-                .iter()
-                .any(|s| s.file.eq_ignore_ascii_case(&b.file) && s.key == b.key)
-        })
-        .cloned()
-        .collect();
-    ini.extend(site.ini.iter().cloned());
-    out.ini = ini;
-    let mut process: Vec<ProcEntry> = base
-        .process
-        .iter()
-        .filter(|b| {
-            !site
-                .process
-                .iter()
-                .any(|s| s.exe.eq_ignore_ascii_case(&b.exe))
-        })
-        .cloned()
-        .collect();
-    process.extend(site.process.iter().cloned());
-    out.process = process;
-    let mut disk: Vec<DiskEntry> = base
-        .disk
-        .iter()
-        .filter(|b| {
-            !site
-                .disk
-                .iter()
-                .any(|s| s.drive.eq_ignore_ascii_case(&b.drive))
-        })
-        .cloned()
-        .collect();
-    disk.extend(site.disk.iter().cloned());
-    out.disk = disk;
-    let mut bcd: Vec<BcdEntry> = base
-        .bcd
-        .iter()
-        .filter(|b| {
-            !site
-                .bcd
-                .iter()
-                .any(|s| s.name.eq_ignore_ascii_case(&b.name))
-        })
-        .cloned()
-        .collect();
-    bcd.extend(site.bcd.iter().cloned());
-    out.bcd = bcd;
-    let mut task: Vec<TaskEntry> = base
-        .task
-        .iter()
-        .filter(|b| {
-            !site
-                .task
-                .iter()
-                .any(|s| s.name.eq_ignore_ascii_case(&b.name))
-        })
-        .cloned()
-        .collect();
-    task.extend(site.task.iter().cloned());
-    out.task = task;
-    out
-}
-
-/// What a PC is held to when it has no site profile: the baseline alone,
-/// without its Dante NIC entries.
-pub fn baseline_only(base: &Profile) -> Profile {
-    let empty = Profile {
-        name: "baseline only".into(),
-        nic_guid: None,
-        registry: Vec::new(),
-        ini: Vec::new(),
-        process: Vec::new(),
-        disk: Vec::new(),
-        bcd: Vec::new(),
-        task: Vec::new(),
-    };
-    merge(base, &empty)
-}
-
-/// What the PC at `path`'s profile is held to: the baseline merged with
-/// the site profile at `path`, or the baseline alone when there is no
-/// file there (dasio#128).
-pub fn load(path: &std::path::Path) -> Result<Profile, String> {
-    let base = baseline()?;
-    match std::fs::read_to_string(path) {
-        Ok(text) => Ok(merge(
-            &base,
-            &parse(&text).map_err(|e| format!("{}: {e}", path.display()))?,
-        )),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(baseline_only(&base)),
-        Err(e) => Err(format!("{}: {e}", path.display())),
-    }
-}
-
 fn parse_with(text: &str, need_nic_guid: bool) -> Result<Profile, String> {
     let p: Profile = toml::from_str(text).map_err(|e| e.to_string())?;
+    if p.instances == Some(0) {
+        return Err("instances must be 1 or more".into());
+    }
     for r in &p.registry {
-        if want_reg(r).is_none() {
+        if let Some(c) = &r.computed {
+            if !layout::COMPUTED.contains(&c.as_str()) {
+                return Err(format!(
+                    "registry {}\\{}: computed {c} is not one of {:?}",
+                    r.key,
+                    r.name,
+                    layout::COMPUTED
+                ));
+            }
+            if want_reg(r).is_some() {
+                return Err(format!(
+                    "registry {}\\{}: give computed or a value, not both",
+                    r.key, r.name
+                ));
+            }
+        } else if want_reg(r).is_none() {
             return Err(format!(
                 "registry {}\\{}: give exactly one of dword, string, binary (binary as hex), multi_sz, qword",
                 r.key, r.name
@@ -426,9 +345,12 @@ fn parse_with(text: &str, need_nic_guid: bool) -> Result<Profile, String> {
     }
     for e in &p.process {
         if let Some(a) = &e.affinity
-            && parse_mask(a).is_none()
+            && !layout::affinity_ok(a)
         {
-            return Err(format!("process {}: affinity {a} is not a hex mask", e.exe));
+            return Err(format!(
+                "process {}: affinity {a} is not a hex mask, {{system}}, {{dasio:N}} or {{daw}}",
+                e.exe
+            ));
         }
         if let Some(c) = &e.priority
             && !PRIORITIES.contains(&c.as_str())
@@ -567,6 +489,7 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
             found: "not found (or its driver service unreadable)".into(),
             want: "the adapter with that NetCfgInstanceId".into(),
             why: "the baseline's NIC settings need it (dasio#128)".into(),
+            must: p.registry.iter().any(|e| e.must && e.nic_service.is_some()),
         });
     }
     for e in &p.registry {
@@ -587,6 +510,7 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
             found: found_text,
             want: show(&want),
             why: e.why.clone(),
+            must: e.must,
         });
     }
     for e in &p.ini {
@@ -601,6 +525,7 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
             found,
             want: format!("\"{}\"", e.value),
             why: e.why.clone(),
+            must: false,
         });
     }
     for e in &p.process {
@@ -613,6 +538,7 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
                 found: format!("0x{:X}", s.affinity),
                 want: format!("0x{want:X}"),
                 why: e.why.clone(),
+                must: false,
             });
         }
         if let Some(want) = &e.priority
@@ -623,6 +549,7 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
                 found: s.priority.clone(),
                 want: want.clone(),
                 why: e.why.clone(),
+                must: false,
             });
         }
     }
@@ -641,6 +568,7 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
             found,
             want: format!("at least {} GB", e.min_free_gb),
             why: e.why.clone(),
+            must: false,
         });
     }
     if !p.bcd.is_empty() {
@@ -659,6 +587,7 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
                 found: text,
                 want: format!("\"{}\"", e.value.trim()),
                 why: e.why.clone(),
+                must: e.must,
             });
         }
     }
@@ -672,6 +601,7 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
                     found: "absent".into(),
                     want: "the task".into(),
                     why: e.why.clone(),
+                    must: false,
                 });
                 continue;
             }
@@ -681,6 +611,7 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
                     found: format!("unreadable ({err})"),
                     want: "the task".into(),
                     why: e.why.clone(),
+                    must: false,
                 });
                 continue;
             }
@@ -694,6 +625,7 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
                 found: on(state.enabled).into(),
                 want: on(want).into(),
                 why: e.why.clone(),
+                must: false,
             });
         }
         if let Some(want) = &e.triggers
@@ -704,6 +636,7 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
                 found: format!("{:?}", state.triggers),
                 want: format!("{want:?}"),
                 why: e.why.clone(),
+                must: false,
             });
         }
     }

@@ -19,6 +19,9 @@ pub(crate) struct ProfileWatch {
     own: usize,
     busy: Arc<AtomicBool>,
     last: Arc<Mutex<Option<Vec<String>>>>,
+    /// Why the device must end: the last check found a must-have item
+    /// missing (dasio#128).
+    must: Arc<Mutex<Option<String>>>,
 }
 
 impl ProfileWatch {
@@ -27,7 +30,14 @@ impl ProfileWatch {
             own,
             busy: Arc::new(AtomicBool::new(false)),
             last: Arc::new(Mutex::new(None)),
+            must: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Why the device must end, when the last check found a must-have item
+    /// of the baseline missing (dasio#128); the loop ends the device on it.
+    pub(crate) fn must_have(&self) -> Option<String> {
+        self.must.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Starts a check (none while one runs); the count lands in `problems`
@@ -52,10 +62,11 @@ impl ProfileWatch {
         if self.busy.swap(true, Ordering::AcqRel) {
             return;
         }
-        let (own, busy, last, problems) = (
+        let (own, busy, last, must, problems) = (
             self.own,
             Arc::clone(&self.busy),
             Arc::clone(&self.last),
+            Arc::clone(&self.must),
             Arc::clone(problems),
         );
         let spawned = std::thread::Builder::new()
@@ -65,7 +76,13 @@ impl ProfileWatch {
                 // or not (dasio#128).
                 let found = check(own);
                 let n = match found {
-                    Ok(found) => record(&last, found),
+                    Ok(found) => {
+                        if let crate::pc_profile::ChildCheck::Problems(p) = &found {
+                            *must.lock().unwrap_or_else(|e| e.into_inner()) =
+                                crate::pc_profile::must_have_failure(p);
+                        }
+                        record(&last, found)
+                    }
                     Err(e) => {
                         warn!(%e, "the PC profile check did not run");
                         u32::MAX
@@ -115,7 +132,6 @@ fn record(last: &Mutex<Option<Vec<String>>>, found: crate::pc_profile::ChildChec
 /// the entries whose reading starts a process
 /// ([`crate::pc_profile::in_process`]).
 fn in_process_check(_own: usize) -> Result<crate::pc_profile::ChildCheck, String> {
-    use crate::pc_profile::{ChildCheck, check, in_process, load, windows::Pc};
     use windows_sys::Win32::System::Threading::{
         GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_LOWEST,
     };
@@ -123,15 +139,42 @@ fn in_process_check(_own: usize) -> Result<crate::pc_profile::ChildCheck, String
     if unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST) } == 0 {
         warn!(err = %std::io::Error::last_os_error(), "the PC profile check runs at normal priority");
     }
+    Ok(in_process_problems())
+}
+
+/// The profile's problems as read in this process, without the entries
+/// whose reading starts a process.
+fn in_process_problems() -> crate::pc_profile::ChildCheck {
+    use crate::pc_profile::{
+        ChildCheck, check, in_process, load,
+        windows::{Pc, cpu_count},
+    };
     let path = std::path::Path::new(crate::pc_profile::DEFAULT_PATH);
-    let p = match load(path) {
+    let p = match load(path, cpu_count()) {
         Ok(p) => in_process(&p),
-        Err(e) => return Ok(ChildCheck::NoProfile(e)),
+        Err(e) => return ChildCheck::NoProfile(e),
     };
     let pc = Pc::new(&p);
-    Ok(ChildCheck::Problems(
-        check(&p, &pc).iter().map(ToString::to_string).collect(),
-    ))
+    ChildCheck::Problems(check(&p, &pc).iter().map(ToString::to_string).collect())
+}
+
+/// Before the device starts (dasio#128): a must-have item of the baseline
+/// missing ends the start with its name. In this process: nothing is
+/// loaded yet (no ASIO driver, no media thread). A profile that cannot be
+/// read is left to the periodic check, which logs it.
+pub(crate) fn must_have_at_start() -> Result<(), String> {
+    match in_process_problems() {
+        crate::pc_profile::ChildCheck::Problems(p) => {
+            match crate::pc_profile::must_have_failure(&p) {
+                Some(why) => {
+                    tracing::error!(%why, "the device does not start");
+                    Err(why)
+                }
+                None => Ok(()),
+            }
+        }
+        crate::pc_profile::ChildCheck::NoProfile(_) => Ok(()),
+    }
 }
 
 /// Runs `dasio pc-profile check` (this exe) at normal priority, without a

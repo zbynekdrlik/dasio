@@ -25,8 +25,8 @@ paths:
   first, then `netcfg -u dasio_pacer`, then `install.ps1 -Adapter <NIC>
   -RxdCpu <n>`, then start the services again.
 - `install.ps1 -RxdCpu` writes the service's Parameters (RxdEnable,
-  RxdCpu). Give the FOH PC's current CPU, read from
-  `HKLM\SYSTEM\CurrentControlSet\Services\dasiopacer\Parameters`.
+  RxdCpu). Give the CPU layout's rxd CPU (`dasio pc-profile layout`: the
+  last system CPU, FOH 3, dsg 0); dasio's baseline checks and sets it.
 - Run the whole sequence from one scheduled task (Interactive, Highest):
   the MCP shell's call can end while the NIC rebinds.
 - Check afterwards: the sys file's hash, `rxd.ps1 status`, and `ktx.ps1

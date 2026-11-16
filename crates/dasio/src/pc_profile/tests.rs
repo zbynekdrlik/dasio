@@ -2,6 +2,9 @@ use std::collections::HashMap;
 
 use super::*;
 
+mod layout;
+mod must;
+
 /// A PC as a test sets it up: the reader the check sees.
 #[derive(Default)]
 struct Pc {
@@ -925,13 +928,18 @@ fn the_shipped_baseline_parses_and_holds_the_must_haves() {
             .iter()
             .any(|e| e.nic_service.as_deref() == Some("rtcx21") && e.check_only)
     );
-    // The filter's deferred receive is on everywhere; the CPU is per PC.
+    // The filter's deferred receive is on everywhere; its CPU comes from
+    // the PC's CPU layout (dasio#128).
     assert!(
         b.registry
             .iter()
             .any(|e| e.name == "RxdEnable" && e.dword == Some(1))
     );
-    assert!(!b.registry.iter().any(|e| e.name == "RxdCpu"));
+    assert!(
+        b.registry
+            .iter()
+            .any(|e| e.name == "RxdCpu" && e.computed.as_deref() == Some("rxd_cpu"))
+    );
 }
 
 fn site(text: &str) -> Profile {
@@ -1081,20 +1089,22 @@ fn load_takes_the_baseline_alone_without_a_file_and_refuses_an_unreadable_one() 
     let dir = std::env::temp_dir().join(format!("dasio-load-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let base = baseline().unwrap();
-    let missing = load(&dir.join("none.toml")).unwrap();
-    assert_eq!(missing, baseline_only(&base));
+    let missing = load(&dir.join("none.toml"), 32).unwrap();
+    let mut alone = baseline_only(&base);
+    resolve(&mut alone, 32).unwrap();
+    assert_eq!(missing, alone);
     let file = dir.join("pc.toml");
     std::fs::write(
         &file,
         "name = \"pc\"\n[[registry]]\nkey = 'HKLM\\Q'\nname = \"R\"\ndword = 7\n",
     )
     .unwrap();
-    let m = load(&file).unwrap();
+    let m = load(&file, 32).unwrap();
     assert_eq!(m.name, "pc");
     assert!(m.registry.iter().any(|e| e.name == "R"));
     assert!(m.registry.len() > 1, "the baseline's entries are in too");
     // A directory where the file should be: an error, not the baseline.
-    assert!(load(&dir).is_err());
+    assert!(load(&dir, 32).is_err());
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

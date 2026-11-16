@@ -1,0 +1,224 @@
+//! Must-have items of the baseline (dasio#128): the device does not run
+//! without them.
+
+use super::super::*;
+use super::Pc;
+
+const MUSTS: &str = r#"
+name = "b"
+
+[[registry]]
+key = '{nic_class}'
+name = "*InterruptModeration"
+string = "0"
+nic_service = "rt640x64"
+must = true
+
+[[registry]]
+key = '{nic_class}'
+name = "*WakeOnPattern"
+string = "0"
+nic_service = "rt640x64"
+
+[[registry]]
+key = 'HKLM\A'
+name = "X"
+dword = 1
+
+[[bcd]]
+name = "testsigning"
+value = "Yes"
+must = true
+"#;
+
+fn realtek() -> Pc {
+    Pc {
+        nic_service: Some("rt640x64".into()),
+        ..Pc::default()
+    }
+}
+
+fn texts(p: &[Problem]) -> Vec<String> {
+    p.iter().map(ToString::to_string).collect()
+}
+
+#[test]
+fn a_must_have_problem_says_so_and_the_rest_do_not() {
+    let base = parse_with(MUSTS, false).unwrap();
+    let p = merge(
+        &base,
+        &parse("name = \"pc\"\nnic_guid = \"{G}\"\n").unwrap(),
+    );
+    let found = check(&p, &realtek());
+    let must: Vec<bool> = found.iter().map(|x| x.must).collect();
+    // InterruptModeration, WakeOnPattern, X, testsigning.
+    assert_eq!(must, [true, false, false, true], "{found:?}");
+    let t = texts(&found);
+    assert!(t[0].starts_with("must-have: registry {nic_class}\\*InterruptModeration: absent"));
+    assert!(t[1].starts_with("registry {nic_class}\\*WakeOnPattern"));
+    assert!(t[3].starts_with("must-have: bcd testsigning: absent"));
+}
+
+#[test]
+fn must_have_failure_names_every_must_have_item_and_nothing_else() {
+    let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    assert_eq!(must_have_failure(&s(&["registry A: absent"])), None);
+    assert_eq!(must_have_failure(&[]), None);
+    let why = must_have_failure(&s(&[
+        "must-have: registry A: absent",
+        "registry B: absent",
+        "must-have: bcd testsigning: \"No\"",
+    ]))
+    .unwrap();
+    assert_eq!(
+        why,
+        "the PC misses 2 must-have item(s) of dasio's baseline (dasio#128): registry A: absent; bcd testsigning: \"No\"; set them (dasio pc-profile apply, then restart the Dante NIC) and start dasio again"
+    );
+}
+
+#[test]
+fn a_site_value_for_a_must_have_item_stays_must_have() {
+    let base = parse_with(MUSTS, false).unwrap();
+    let pc = parse(
+        "name = \"pc\"\nnic_guid = \"{G}\"\n[[registry]]\nkey = '{NIC_CLASS}'\nname = \"*interruptmoderation\"\nstring = \"1\"\n[[registry]]\nkey = 'HKLM\\A'\nname = \"X\"\ndword = 2\n[[bcd]]\nname = \"TESTSIGNING\"\nvalue = \"Yes\"\n",
+    )
+    .unwrap();
+    let m = merge(&base, &pc);
+    let im = m
+        .registry
+        .iter()
+        .find(|e| e.name == "*interruptmoderation")
+        .unwrap();
+    assert!(im.must && im.string.as_deref() == Some("1"));
+    let x = m.registry.iter().find(|e| e.name == "X").unwrap();
+    assert!(!x.must, "a plain baseline entry stays plain");
+    assert!(m.bcd[0].must, "the site's testsigning stays must-have");
+    // A site value for a plain baseline bcd element stays plain.
+    let plain = parse_with(
+        "name = \"b\"\n[[bcd]]\nname = \"disabledynamictick\"\nvalue = \"Yes\"\n",
+        false,
+    )
+    .unwrap();
+    let m2 = merge(
+        &plain,
+        &parse("name = \"pc\"\n[[bcd]]\nname = \"disabledynamictick\"\nvalue = \"No\"\n").unwrap(),
+    );
+    assert_eq!(m2.bcd.len(), 1);
+    assert!(!m2.bcd[0].must);
+    // A site's own must-have item stays one with no baseline twin.
+    let own = merge(
+        &base,
+        &parse(
+            "name = \"pc\"\n[[registry]]\nkey = 'HKLM\\Z'\nname = \"Z\"\ndword = 1\nmust = true\n",
+        )
+        .unwrap(),
+    );
+    assert!(own.registry.iter().any(|e| e.name == "Z" && e.must));
+}
+
+#[test]
+fn a_missing_dante_nic_is_must_have_only_with_must_have_nic_items() {
+    let base = parse_with(MUSTS, false).unwrap();
+    let p = merge(
+        &base,
+        &parse("name = \"pc\"\nnic_guid = \"{G}\"\n").unwrap(),
+    );
+    let found = check(&p, &Pc::default());
+    assert!(found[0].what.starts_with("the Dante NIC {G}"));
+    assert!(found[0].must);
+    let plain = parse_with(
+        "name = \"b\"\nnic_guid = \"{G}\"\n[[registry]]\nkey = '{nic_class}'\nname = \"*EEE\"\nstring = \"0\"\nnic_service = \"rt640x64\"\n",
+        false,
+    )
+    .unwrap();
+    let found = check(&plain, &Pc::default());
+    assert!(found[0].what.starts_with("the Dante NIC {G}") && !found[0].must);
+    // A must-have item that is not a NIC family's does not make it one.
+    let other = parse_with(
+        "name = \"b\"\nnic_guid = \"{G}\"\n[[registry]]\nkey = 'HKLM\\A'\nname = \"X\"\ndword = 1\nmust = true\n[[registry]]\nkey = '{nic_class}'\nname = \"*EEE\"\nstring = \"0\"\nnic_service = \"rt640x64\"\n",
+        false,
+    )
+    .unwrap();
+    let found = check(&other, &Pc::default());
+    assert!(found[0].what.starts_with("the Dante NIC {G}") && !found[0].must);
+}
+
+#[test]
+fn a_set_must_have_item_is_no_problem() {
+    let base = parse_with(MUSTS, false).unwrap();
+    let p = merge(
+        &base,
+        &parse("name = \"pc\"\nnic_guid = \"{G}\"\n").unwrap(),
+    );
+    let mut pc = realtek();
+    pc.reg.insert(
+        ("{nic_class}".into(), "*InterruptModeration".into()),
+        Value::String("0".into()),
+    );
+    pc.bcd = vec![("testsigning".into(), "Yes".into())];
+    let t = texts(&check(&p, &pc));
+    assert_eq!(must_have_failure(&t), None, "{t:?}");
+    assert_eq!(t.len(), 2, "the two plain entries: {t:?}");
+}
+
+#[test]
+fn the_shipped_baseline_s_must_haves_are_the_nic_s_timing_and_test_signing() {
+    let b = baseline().unwrap();
+    let must = |name: &str| b.registry.iter().find(|e| e.name == name).unwrap().must;
+    for n in [
+        "*InterruptModeration",
+        "*EEE",
+        "*FlowControl",
+        "*LsoV2IPv4",
+        "*ReceiveBuffers",
+        "*RSS",
+        "EnableGreenEthernet",
+    ] {
+        assert!(must(n), "{n}");
+    }
+    // A wake setting, the driver's version and Windows settings are WARN.
+    for n in ["*WakeOnPattern", "DriverVersion", "MMCSS", "RxdEnable"] {
+        if let Some(e) = b.registry.iter().find(|e| e.name == n) {
+            assert!(!e.must, "{n}");
+        }
+    }
+    assert!(
+        b.registry
+            .iter()
+            .filter(|e| e.must)
+            .all(|e| e.nic_service.is_some())
+    );
+    assert!(b.bcd.iter().any(|e| e.name == "testsigning" && e.must));
+    assert!(
+        !b.bcd
+            .iter()
+            .any(|e| e.name == "disabledynamictick" && e.must)
+    );
+}
+
+/// The service's loops (Windows glue, not compiled here) end the device on
+/// a must-have problem, and the start checks before the device starts.
+#[test]
+fn the_service_stops_on_a_must_have_item() {
+    let src = |f: &str| {
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(f)).unwrap()
+    };
+    let run = src("src/run.rs");
+    let gate = run
+        .find("profile::must_have_at_start()?")
+        .expect("the start gate");
+    let bridge = run
+        .find("crate::run_bridge::run(")
+        .expect("the bridge dispatch");
+    assert!(gate < bridge, "the gate runs before both kinds start");
+    for f in ["src/run.rs", "src/run_bridge.rs"] {
+        let s = src(f);
+        assert_eq!(
+            s.matches("let Some(e) = profile.must_have()").count(),
+            1,
+            "{f} ends the device on a must-have problem once"
+        );
+    }
+    let watch = src("src/run/profile.rs");
+    assert!(watch.contains("crate::pc_profile::must_have_failure(p)"));
+}

@@ -40,6 +40,12 @@ pub fn run(
 ) -> Result<(), String> {
     let spare = tuning.spare;
     let (cfg, kind) = device_config(&config, ip)?;
+    // The baseline's must-have items (dasio#128): none missing, or no
+    // start. Only the test clock (CI) runs without them, as without the
+    // filter.
+    if tuning.kernel_tx {
+        profile::must_have_at_start()?;
+    }
     // A bridge to a local ASIO driver (dasio#106) runs its own loop.
     if let crate::kind::Kind::Bridge(bridge) = kind {
         return crate::run_bridge::run(instance, bridge, cfg, ip, clock, tuning, stop_asked);
@@ -284,6 +290,14 @@ pub fn run(
         // start checks the binding again.
         if tuning.kernel_tx && crate::kernel_tx::windows::unbound() {
             let e = "dasio's NDIS filter is no longer bound to the device's adapter: the device ends (dasio does not run without it)".to_string();
+            error!(why = %e, "the device ends");
+            break Some(e);
+        }
+        // A must-have item of the baseline went missing (dasio#128): the
+        // device ends, the SCM restarts it and its start names it again.
+        if tuning.kernel_tx
+            && let Some(e) = profile.must_have()
+        {
             error!(why = %e, "the device ends");
             break Some(e);
         }

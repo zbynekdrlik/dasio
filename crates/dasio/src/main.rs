@@ -18,7 +18,7 @@ fn usage() -> ExitCode {
          dasio stop --instance <n>\n       \
          dasio probe --instance <n> [--seconds <s>] [--affinity <hex mask>] [--rate <Hz>]\n       \
          dasio jitter --cpus <n,n,..> --seconds <s>\n       \
-         dasio pc-profile check|apply [--profile <file>] [--plan]\n       \
+         dasio pc-profile check|apply|layout [--profile <file>] [--plan]\n       \
          dasio unregister --instance <n> [--name <shown to DAWs>]"
     );
     ExitCode::from(2)
@@ -76,14 +76,16 @@ fn main() -> ExitCode {
         };
     }
     if cmd == "pc-profile" {
-        // `dasio pc-profile check|apply [--profile <file>] [--plan]`
-        // (dasio#5): the PC's Windows settings against its profile.
+        // `dasio pc-profile check|apply|layout [--profile <file>] [--plan]`
+        // (dasio#5): the PC's Windows settings against its profile; exit
+        // 1 on a problem, 2 on a must-have one (dasio#128).
         let path =
             flag(&args, "--profile").unwrap_or_else(|| dasio::pc_profile::DEFAULT_PATH.into());
         let plan_only = args.iter().any(|a| a == "--plan");
         return match args.get(1).map(String::as_str) {
             Some("check") => pc_profile(&path, false, true),
             Some("apply") => pc_profile(&path, true, plan_only),
+            Some("layout") => pc_layout(&path),
             _ => usage(),
         };
     }
@@ -358,9 +360,12 @@ fn run(
 /// (unless `plan_only`) and checks again. Exit 1 on any problem left.
 #[cfg(windows)]
 fn pc_profile(path: &str, apply: bool, plan_only: bool) -> ExitCode {
-    use dasio::pc_profile::{Action, check, load, plan, takes_effect, windows::Pc};
+    use dasio::pc_profile::{
+        Action, check, load, must_have_failure, plan, takes_effect,
+        windows::{Pc, cpu_count},
+    };
     // The built-in baseline (dasio#128) with this PC's own profile.
-    let p = match load(std::path::Path::new(path)) {
+    let p = match load(std::path::Path::new(path), cpu_count()) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("dasio: the profile {path}: {e}");
@@ -416,12 +421,49 @@ fn pc_profile(path: &str, apply: bool, plan_only: bool) -> ExitCode {
             p.name,
             problems.len()
         );
-        ExitCode::FAILURE
+        let texts: Vec<String> = problems.iter().map(ToString::to_string).collect();
+        match must_have_failure(&texts) {
+            // install.ps1 refuses on 2 (dasio#128).
+            Some(why) => {
+                println!("MUST-HAVE {why}");
+                ExitCode::from(2)
+            }
+            None => ExitCode::FAILURE,
+        }
     }
 }
 
 #[cfg(not(windows))]
 fn pc_profile(_path: &str, _apply: bool, _plan_only: bool) -> ExitCode {
+    eprintln!("dasio: Windows only");
+    ExitCode::FAILURE
+}
+
+/// The CPU layout this PC's profile is held to (dasio#128), for its
+/// Process Lasso rules.
+#[cfg(windows)]
+fn pc_layout(path: &str) -> ExitCode {
+    use dasio::pc_profile::{Layout, load, windows::cpu_count};
+    let cpus = cpu_count();
+    match load(std::path::Path::new(path), cpus) {
+        Ok(p) => {
+            let l = Layout::of(cpus, p.instances.unwrap_or(1));
+            println!(
+                "{cpus} CPUs, {} dasio instance(s): {}",
+                l.instances,
+                l.describe()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("dasio: the profile {path}: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn pc_layout(_path: &str) -> ExitCode {
     eprintln!("dasio: Windows only");
     ExitCode::FAILURE
 }
