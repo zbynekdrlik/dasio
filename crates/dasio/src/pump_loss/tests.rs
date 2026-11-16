@@ -35,12 +35,16 @@ fn lost(late_us: u64, device_us: u64) -> Lost {
 }
 
 #[test]
-fn a_late_wake_s_skipped_blocks_are_the_environment_s_from_the_next_look() {
+fn a_late_wake_s_skipped_blocks_are_the_environment_s_in_their_own_look() {
     let mut t = started();
-    // CI 43779634868: the pump woke 11 ms late and skipped 33 blocks. Held
-    // for one look: its cause may still be on its way.
-    assert_eq!(t.take(counts(33, 0, 1, 1), ring(1, &[LATE])), lost(0, 0));
-    // 33 blocks of 333 333 ns.
+    // CI 43779634868: the pump woke 11 ms late and skipped 33 blocks of
+    // 333 333 ns. dstack counts the cause before the blocks, so this look
+    // judges them (dstack #332).
+    assert_eq!(
+        t.take(counts(33, 0, 1, 1), ring(1, &[LATE])),
+        lost(10_999, 0)
+    );
+    // The next look adds nothing.
     assert_eq!(
         t.take(counts(33, 0, 1, 1), ring(1, &[LATE])),
         lost(10_999, 0)
@@ -48,16 +52,52 @@ fn a_late_wake_s_skipped_blocks_are_the_environment_s_from_the_next_look() {
 }
 
 #[test]
-fn a_held_look_is_the_device_s_when_the_next_shows_another_cause() {
+fn a_cause_seen_before_its_blocks_is_judged_with_them_in_the_next_look() {
     let mut t = started();
-    // The re-anchor's blocks came before its cause (dstack counts the
-    // skipped blocks first): this look sees one late re-bootstrap only.
-    assert_eq!(t.take(counts(20, 0, 1, 1), ring(1, &[LATE])), lost(0, 0));
-    // The re-anchor shows now, with no blocks left: the held look was not
-    // the late wake's alone.
+    // The look fell between the cause's count and the blocks': nothing
+    // is judged yet.
+    assert_eq!(t.take(counts(0, 0, 1, 1), ring(1, &[LATE])), lost(0, 0));
+    // The blocks with no new cause: the late wake's, from the look before.
+    assert_eq!(
+        t.take(counts(33, 0, 1, 1), ring(1, &[LATE])),
+        lost(10_999, 0)
+    );
+    // The same for a re-anchor: its blocks are the device's.
+    let mut t = started();
+    assert_eq!(t.take(counts(0, 0, 1, 0), ring(0, &[])), lost(0, 0));
+    assert_eq!(t.take(counts(20, 0, 1, 0), ring(0, &[])), lost(0, 6_666));
+    // And a late wake beside a re-anchor whose blocks came later: the
+    // device's.
+    let mut t = started();
+    assert_eq!(t.take(counts(0, 0, 2, 1), ring(1, &[LATE])), lost(0, 0));
     assert_eq!(
         t.take(counts(20, 0, 2, 1), ring(1, &[LATE])),
         lost(0, 6_666)
+    );
+}
+
+#[test]
+fn a_re_bootstrap_that_skips_no_block_defers_one_look_only() {
+    let mut t = started();
+    // A re-time that skipped nothing: deferred once, then judged (no
+    // blocks, nothing lost).
+    assert_eq!(t.take(counts(0, 0, 1, 0), ring(0, &[])), lost(0, 0));
+    assert_eq!(t.take(counts(0, 0, 1, 0), ring(0, &[])), lost(0, 0));
+    // A late wake later is judged on its own: the re-time is behind the
+    // baseline now.
+    assert_eq!(
+        t.take(counts(10, 0, 2, 1), ring(1, &[LATE])),
+        lost(3_333, 0)
+    );
+    // Two looks in a row with a cause and no blocks: the second judges.
+    let mut t = started();
+    assert_eq!(t.take(counts(0, 0, 1, 0), ring(0, &[])), lost(0, 0));
+    assert_eq!(t.take(counts(0, 0, 2, 1), ring(1, &[LATE])), lost(0, 0));
+    // Its late re-bootstrap had no blocks in its look: the blocks that
+    // come now have no cause of their own, the device's.
+    assert_eq!(
+        t.take(counts(10, 0, 2, 1), ring(1, &[LATE])),
+        lost(0, 3_333)
     );
 }
 
@@ -94,7 +134,6 @@ fn an_overrun_in_the_look_before_makes_the_next_look_s_blocks_the_device_s() {
     );
     // A look with no overrun since: a late wake is the environment's again.
     let two = [LATE, LATE];
-    assert_eq!(t.take(counts(20, 1, 2, 2), ring(2, &two)), lost(0, 3_333));
     assert_eq!(
         t.take(counts(20, 1, 2, 2), ring(2, &two)),
         lost(3_333, 3_333)
@@ -128,7 +167,6 @@ fn a_wake_measured_short_of_the_margin_is_no_evidence() {
         rebootstrap: true,
     };
     let both = [short, at];
-    t.take(counts(20, 0, 2, 2), ring(2, &both));
     assert_eq!(
         t.take(counts(20, 0, 2, 2), ring(2, &both)),
         lost(3_333, 3_333)
@@ -155,7 +193,6 @@ fn a_torn_read_is_the_device_s_and_its_wakes_are_read_next() {
     // The next look reads both wakes once: the first re-bootstrap's and
     // the second's.
     let two = [LATE, LATE];
-    t.take(counts(20, 0, 2, 2), ring(2, &two));
     assert_eq!(
         t.take(counts(20, 0, 2, 2), ring(2, &two)),
         lost(3_333, 3_333)
@@ -182,7 +219,6 @@ fn wakes_past_what_was_read_are_the_device_s_then_the_looks_start_even() {
     // Three new wakes, only the last two read (a ring overrun).
     let two = [LATE, LATE];
     assert_eq!(t.take(counts(30, 0, 3, 3), ring(3, &two)), lost(0, 9_999));
-    t.take(counts(40, 0, 4, 4), ring(4, &[LATE]));
     assert_eq!(
         t.take(counts(40, 0, 4, 4), ring(4, &[LATE])),
         lost(3_333, 9_999)
@@ -193,14 +229,16 @@ fn wakes_past_what_was_read_are_the_device_s_then_the_looks_start_even() {
 fn every_new_wake_read_counts_when_they_fill_the_read() {
     let mut t = started();
     let two = [LATE, LATE];
-    t.take(counts(20, 0, 2, 2), ring(2, &two));
     assert_eq!(t.take(counts(20, 0, 2, 2), ring(2, &two)), lost(6_666, 0));
 }
 
 #[test]
 fn only_the_new_wakes_count() {
     let mut t = started();
-    t.take(counts(10, 0, 1, 1), ring(1, &[LATE]));
+    assert_eq!(
+        t.take(counts(10, 0, 1, 1), ring(1, &[LATE])),
+        lost(3_333, 0)
+    );
     // The ring still holds the old wake; the new one fell short: no
     // evidence for the second re-bootstrap.
     let short = Wake {
@@ -219,7 +257,6 @@ fn a_wake_read_before_its_re_bootstrap_was_counted_carries_to_the_next_look() {
     // The ring already holds the wake whose re-bootstrap the counts (read
     // first) did not show yet.
     assert_eq!(t.take(Counts::default(), ring(1, &[LATE])), lost(0, 0));
-    t.take(counts(10, 0, 1, 1), ring(1, &[LATE]));
     assert_eq!(
         t.take(counts(10, 0, 1, 1), ring(1, &[LATE])),
         lost(3_333, 0)
@@ -234,7 +271,6 @@ fn a_look_with_more_wakes_measured_than_counted_is_late() {
     // count, the look is late.
     t.take(Counts::default(), ring(1, &[LATE]));
     let two = [LATE, LATE];
-    assert_eq!(t.take(counts(10, 0, 1, 1), ring(2, &two)), lost(0, 0));
     assert_eq!(t.take(counts(10, 0, 1, 1), ring(2, &two)), lost(3_333, 0));
 }
 
@@ -244,7 +280,6 @@ fn a_ring_gone_back_is_learnt_again() {
     t.take(Counts::default(), ring(5, &[LATE]));
     // A new engine's ring: learnt, its blocks no one's.
     assert_eq!(t.take(counts(10, 0, 1, 1), ring(1, &[LATE])), lost(0, 0));
-    t.take(counts(20, 0, 2, 2), ring(2, &[LATE, LATE]));
     assert_eq!(
         t.take(counts(20, 0, 2, 2), ring(2, &[LATE, LATE])),
         lost(3_333, 0)
@@ -256,7 +291,6 @@ fn the_first_look_only_learns() {
     let mut t = tracker();
     assert_eq!(t.take(counts(500, 3, 9, 9), ring(9, &[])), lost(0, 0));
     // Its late re-bootstraps count as measured: the next look's own decides.
-    t.take(counts(510, 3, 10, 10), ring(10, &[LATE]));
     assert_eq!(
         t.take(counts(510, 3, 10, 10), ring(10, &[LATE])),
         lost(3_333, 0)
@@ -267,7 +301,6 @@ fn the_first_look_only_learns() {
 fn a_first_look_without_a_read_reads_the_ring_from_its_start() {
     let mut t = tracker();
     t.take(counts(0, 0, 0, 0), None);
-    t.take(counts(10, 0, 1, 1), ring(1, &[LATE]));
     assert_eq!(
         t.take(counts(10, 0, 1, 1), ring(1, &[LATE])),
         lost(3_333, 0)
@@ -290,19 +323,28 @@ fn counts_that_went_down_are_learnt_again() {
 }
 
 #[test]
-fn relearning_forgets_an_overrun_and_gives_a_held_look_to_the_device() {
+fn relearning_forgets_an_overrun_a_deferral_and_the_ring() {
     let mut t = started();
     t.take(counts(0, 1, 0, 0), ring(0, &[]));
-    // A new engine: all counts back to 0.
+    // A new engine: all counts back to 0; the overrun before it is gone.
     t.take(Counts::default(), ring(0, &[]));
-    assert_eq!(t.take(counts(10, 0, 1, 1), ring(1, &[LATE])), lost(0, 0));
-    // Counts down again while that look was held: the device's.
-    assert_eq!(t.take(Counts::default(), None), lost(0, 3_333));
-    // A relearn without a read starts the ring at 0.
-    t.take(counts(10, 0, 1, 1), ring(1, &[LATE]));
     assert_eq!(
         t.take(counts(10, 0, 1, 1), ring(1, &[LATE])),
-        lost(3_333, 3_333)
+        lost(3_333, 0)
+    );
+    // A look deferred (a cause, no blocks), then a new engine: the
+    // relearn drops the deferral, so the next look with a cause and no
+    // blocks defers again rather than judging.
+    assert_eq!(
+        t.take(counts(10, 0, 2, 1), ring(1, &[LATE])),
+        lost(3_333, 0)
+    );
+    // A relearn without a read starts the ring at 0.
+    assert_eq!(t.take(Counts::default(), None), lost(3_333, 0));
+    assert_eq!(t.take(counts(0, 0, 1, 1), ring(1, &[LATE])), lost(3_333, 0));
+    assert_eq!(
+        t.take(counts(10, 0, 1, 1), ring(1, &[LATE])),
+        lost(6_666, 0)
     );
 }
 
@@ -352,7 +394,6 @@ fn the_tracker_s_units_follow_its_rate() {
         rebootstrap: true,
     };
     let both = [short, at];
-    t.take(counts(6, 0, 2, 2), ring(2, &both));
     assert_eq!(
         t.take(counts(6, 0, 2, 2), ring(2, &both)),
         lost(3_999, 3_999)

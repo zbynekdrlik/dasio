@@ -15,14 +15,21 @@
 //!
 //! A look's new blocks are the environment's only when, since the look
 //! before: at least one re-bootstrap for lateness and none of another
-//! cause (in this look and the next: dstack adds the skipped blocks before
-//! it counts their cause), no block overran in this look's window or the
-//! one before (a long block of the device's own puts the pump behind for
-//! its next wake), every late re-bootstrap counted so far has its own late
-//! wake in the ring measured at or past W, and the ring's new wakes were
-//! all read. Anything else is the device's. (dstack flags a wake late only
-//! past W, so the margin check restates its rule: the gate is that each
-//! late re-bootstrap's wake was read.)
+//! cause, no block overran in this look's window or the one before (a long
+//! block of the device's own puts the pump behind for its next wake), every
+//! late re-bootstrap counted so far has its own late wake in the ring
+//! measured at or past W, and the ring's new wakes were all read. Anything
+//! else is the device's. (dstack flags a wake late only past W, so the
+//! margin check restates its rule: the gate is that each late
+//! re-bootstrap's wake was read.)
+//!
+//! dstack counts a re-bootstrap's cause BEFORE it adds the skipped blocks
+//! to `missed` (Release), and its `PumpView` loads `missed` first (Acquire)
+//! (dstack #332): a look that sees skipped blocks sees their cause too, so
+//! a look's blocks count in that look. A look can still fall between the
+//! two and see a cause with none of its blocks: such a look judges
+//! nothing, and the next look judges both windows together (one look at
+//! most, as a re-bootstrap may skip no block).
 //!
 //! A runner stall that lands inside a block's processing reads as an
 //! overrun: the device's, as the pump cannot tell its wall time from its
@@ -89,11 +96,9 @@ pub struct Tracker {
     /// settled up to the count after every read that moved `seen_end`.
     measured: u64,
     overran_before: bool,
-    /// The last look's blocks judged late, held until the next look shows
-    /// no re-bootstrap of another cause: dstack adds a re-bootstrap's
-    /// skipped blocks before its cause, so a look can see the blocks of a
-    /// re-anchor before the re-anchor itself.
-    pending_ns: u64,
+    /// The last look judged nothing (a re-bootstrap counted, none of its
+    /// blocks yet): this one judges both windows, and may not defer again.
+    deferred: bool,
     late_ns: u64,
     device_ns: u64,
 }
@@ -110,7 +115,7 @@ impl Tracker {
             seen_end: 0,
             measured: 0,
             overran_before: false,
-            pending_ns: 0,
+            deferred: false,
             late_ns: 0,
             device_ns: 0,
         }
@@ -119,8 +124,8 @@ impl Tracker {
     /// One look: the pump's counts `now` (read first) and its late wakes
     /// (`None` for a torn read). The first look, one whose counts went
     /// down and one whose ring went back (a new engine) only learn them.
-    /// Returns the totals; a look's late blocks count from the next look
-    /// on (see `pending_ns`).
+    /// Returns the totals, this look's blocks in them (a look that saw a
+    /// re-bootstrap but none of its blocks judges nothing, see `deferred`).
     pub fn take(&mut self, now: Counts, wakes: Option<Wakes>) -> Lost {
         let before = self.last.replace(now);
         let ring_back = wakes.is_some_and(|w| w.end < self.seen_end);
@@ -134,9 +139,18 @@ impl Tracker {
             self.seen_end = wakes.map_or(0, |w| w.end);
             self.measured = now.rebootstraps_late;
             self.overran_before = false;
-            self.device_ns += std::mem::take(&mut self.pending_ns);
+            self.deferred = false;
             return self.lost();
         };
+        // A re-bootstrap counted and none of its blocks yet (dstack adds
+        // them right after the cause): the next look judges this window
+        // with its own, from the same baseline.
+        if !self.deferred && now.rebootstraps > before.rebootstraps && now.missed == before.missed {
+            self.deferred = true;
+            self.last = Some(before);
+            return self.lost();
+        }
+        self.deferred = false;
         let mut read = false;
         if let Some(w) = wakes {
             let new = w.end - self.seen_end;
@@ -154,12 +168,6 @@ impl Tracker {
         let overran = now.overruns > before.overruns;
         let only_late = now.rebootstraps - before.rebootstraps
             == now.rebootstraps_late - before.rebootstraps_late;
-        let held = std::mem::take(&mut self.pending_ns);
-        if only_late {
-            self.late_ns += held;
-        } else {
-            self.device_ns += held;
-        }
         let late = read
             && only_late
             && now.rebootstraps_late > before.rebootstraps_late
@@ -168,7 +176,7 @@ impl Tracker {
             && self.measured >= now.rebootstraps_late;
         let ns = (now.missed - before.missed) * self.block_ns;
         if late {
-            self.pending_ns = ns;
+            self.late_ns += ns;
         } else {
             self.device_ns += ns;
         }

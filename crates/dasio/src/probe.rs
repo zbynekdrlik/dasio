@@ -430,9 +430,10 @@ pub fn probe_at(instance: u32, seconds: u64, stall_ms: u64, rate: u32) -> Result
     }
     let end = Instant::now() + Duration::from_secs(seconds);
     // The pump's lost time counts from the second device tick after the
-    // start, to the end of the run (dasio#114): a look's late blocks
-    // publish one tick after the look, so every late block published from
-    // there on was lost after the start.
+    // start, to the end of the run (dasio#114): the first tick's look may
+    // have run before the start, the second's ran after it, and a look
+    // publishes the blocks it judged at its own tick, so every block
+    // published from there on was lost after the start.
     let lost_before = pump_lost_after_ticks(instance, 2);
     while Instant::now() < end && RUNNING.load(Ordering::Acquire) == 1 {
         std::thread::sleep(Duration::from_millis(100));
