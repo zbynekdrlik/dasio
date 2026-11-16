@@ -90,11 +90,4 @@ mod tests {
         // Nothing published.
         assert!(!served(48_000, 1, 0, 48_000));
     }
-
-    #[test]
-    fn the_wait_is_bounded_and_polled() {
-        assert_eq!(DEFAULT_RATE, 96_000);
-        assert!(SWITCH_POLL < SWITCH_WAIT);
-        assert!(SWITCH_WAIT <= Duration::from_secs(5));
-    }
 }

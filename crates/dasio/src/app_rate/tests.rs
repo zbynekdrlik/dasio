@@ -258,8 +258,8 @@ fn a_jump_in_the_starts_starts_the_fifos_again() {
     // Without media times nothing is checked.
     let mut free = Reblock::new(Echo::default(), 16, 0, 1, 1, 24);
     for _ in 0..4 {
-        let input = vec![0.5; 16];
-        let mut o = vec![0.0; 16];
+        let input = [0.5; 16];
+        let mut o = [0.0; 16];
         free.process(&mut Block::new(16, &input, &mut o));
     }
     assert_eq!(free.restarts().load(Ordering::Relaxed), 0);
@@ -284,8 +284,8 @@ fn a_channel_the_block_lacks_gathers_silence() {
     // both keep the same frames (no short drain).
     let mut r = Reblock::new(Echo::default(), 16, 0, 2, 2, 24);
     for b in 0..4u64 {
-        let input = vec![0.5; 16];
-        let mut o = vec![0.0; 2 * 16];
+        let input = [0.5; 16];
+        let mut o = [0.0; 2 * 16];
         r.process(&mut Block::new(16, &input, &mut o).at(b * 16));
         assert_eq!(&o[..16], &[0.5; 16][..]);
         assert_eq!(&o[16..], &[0.0; 16][..]);
@@ -356,6 +356,30 @@ fn the_device_s_rate_is_the_bridge_alone_without_delay() {
     assert_eq!(conversion_ns(&plan).unwrap(), (0, 0));
 }
 
+/// Counts the discontinuities it gets (shared, so the test reads them
+/// through the converters' box).
+struct Resets(std::sync::Arc<AtomicU64>);
+
+impl Process for Resets {
+    fn process(&mut self, _block: &mut Block<'_>) {}
+
+    fn discontinuity(&mut self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[test]
+fn a_discontinuity_reaches_the_bridge_on_either_path() {
+    for rate in [96_000, 48_000, 44_100] {
+        let plan = Plan::new(96_000, rate, 32).unwrap();
+        let seen = std::sync::Arc::new(AtomicU64::new(0));
+        let (mut s, _) = Served::new(Resets(std::sync::Arc::clone(&seen)), &plan, 1, 1).unwrap();
+        s.discontinuity();
+        s.discontinuity();
+        assert_eq!(seen.load(Ordering::Relaxed), 2, "{rate} Hz");
+    }
+}
+
 #[test]
 fn a_converted_path_counts_nothing_dry_in_steady_running() {
     for rate in [48_000, 44_100] {
@@ -363,11 +387,10 @@ fn a_converted_path_counts_nothing_dry_in_steady_running() {
         let (mut s, counters) = Served::new(Echo::default(), &plan, 2, 2).unwrap();
         assert!(matches!(s, Served::Converted(_)));
         for b in 0..300u64 {
-            let input = vec![0.25; 2 * 32];
-            let mut o = vec![0.0; 2 * 32];
+            let input = [0.25; 2 * 32];
+            let mut o = [0.0; 2 * 32];
             s.process(&mut Block::new(32, &input, &mut o).at(b * 32));
         }
         assert_eq!(counters.read(), (0, 0, 0), "{rate}");
-        s.discontinuity();
     }
 }

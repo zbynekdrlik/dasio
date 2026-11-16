@@ -13,7 +13,7 @@ use dstack::stream::{self, Map, Pump, PumpStats, Timing};
 use shm::{Shape, Shared};
 use tracing::{info, warn};
 
-use crate::app_rate::{Counters, Plan, Served, conversion_ns};
+use crate::app_rate::{Counters, Plan, Served, conversion_ns, switch_to};
 use crate::bridge::{Bridge, SharedLink};
 use crate::turnaround::{Stamps, Turnaround};
 
@@ -74,6 +74,57 @@ impl Serving {
 }
 
 impl Base<'_> {
+    /// Follows the rate the DAW asks (the driver writes it into the
+    /// instance's directory): another supported rate ends `serving` and
+    /// serves the next one at it; whether it did. A rate that cannot be
+    /// served (an unsupported one, or a serve that fails) is warned once in
+    /// `refused` and not tried again; a failed serve falls back to the
+    /// device's own rate, so the device never ends over a rate. Only a
+    /// failure at its own rate is an error.
+    pub fn follow(&self, serving: &mut Serving, refused: &mut u32) -> Result<bool, String> {
+        let asked = serving.current.shared.requested_rate();
+        let now = serving.current.plan;
+        if asked == *refused {
+            return Ok(false);
+        }
+        let Some(next) = switch_to(asked, &now) else {
+            if asked != 0 && asked != now.app_rate {
+                *refused = asked;
+                warn!(
+                    asked,
+                    serving = now.app_rate,
+                    "the DAW asked a sample rate the device cannot serve: it keeps its rate"
+                );
+            }
+            return Ok(false);
+        };
+        info!(
+            from = now.app_rate,
+            to = next.app_rate,
+            app_block = next.app_block,
+            "the DAW asked another sample rate: the shared memory is served again at it"
+        );
+        serving.end();
+        match self.serve(next) {
+            Ok(s) => {
+                *serving = s;
+                *refused = 0;
+            }
+            Err(e) => {
+                *refused = asked;
+                warn!(
+                    err = %e,
+                    asked,
+                    "the asked sample rate could not be served: the device's own rate again"
+                );
+                let own = Plan::new(now.device_rate, now.device_rate, now.device_block)
+                    .ok_or("the device's own rate cannot serve the driver")?;
+                *serving = self.serve(own)?;
+            }
+        }
+        Ok(true)
+    }
+
     /// Serves the shared memory at `plan`'s rate: a section of the app's
     /// block (a new session when its shape is another), the bridge behind
     /// the conversion, and the pump and the turnaround watcher started.
@@ -175,4 +226,43 @@ impl Base<'_> {
             watcher: Some(watcher),
         })
     }
+}
+
+/// dtray's line for the instance (dstack's app status) from the serving
+/// now (`current`): the header's numbers, the bridge's counters, the late
+/// blocks of the last minute and the PC profile's problems
+/// (`u32::MAX`: none).
+pub(super) fn app_status(
+    media: &dstack::daemon::media::Media,
+    current: Arc<Mutex<Current>>,
+    late_per_min: Arc<AtomicU64>,
+    pc_problems: Arc<std::sync::atomic::AtomicU32>,
+    spare: u32,
+    kernel_tx: bool,
+) {
+    media.set_app_status(move || {
+        let Ok(c) = current.lock() else {
+            return String::new();
+        };
+        let h = c.shared.header();
+        crate::app_status::json(&crate::app_status::Facts {
+            attached: h.host_attached.load(Ordering::Relaxed) != 0,
+            block: c.plan.app_block,
+            sample_rate: c.plan.app_rate,
+            latency_in: c.latency.0,
+            latency_out: c.latency.1,
+            spare_blocks: spare,
+            late_blocks: h.late.load(Ordering::Relaxed),
+            driver_missed: h.missed.load(Ordering::Relaxed),
+            stale: c.stale.load(Ordering::Relaxed),
+            waited: c.waited.load(Ordering::Relaxed),
+            heartbeat_ms: h.heartbeat_ms.load(Ordering::Relaxed),
+            late_per_min: late_per_min.load(Ordering::Relaxed),
+            pc_problems: match pc_problems.load(Ordering::Relaxed) {
+                u32::MAX => None,
+                n => Some(n),
+            },
+            tx: super::tx_path(kernel_tx),
+        })
+    });
 }

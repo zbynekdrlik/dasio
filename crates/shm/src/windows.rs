@@ -63,8 +63,8 @@ fn name(instance: u32, what: &str) -> Vec<u16> {
 }
 
 /// The header's shape in `mapping`, read through a header-sized view:
-/// whether it carries our magic and version, and its shape.
-fn peek_shape(mapping: &Handle) -> io::Result<(bool, Option<Shape>)> {
+/// whether it carries our magic and version, its shape and its rate.
+fn peek_shape(mapping: &Handle) -> io::Result<(bool, Option<Shape>, u32)> {
     // SAFETY: a valid mapping handle; the header's bytes.
     let peek = unsafe {
         MapViewOfFile(
@@ -87,9 +87,10 @@ fn peek_shape(mapping: &Handle) -> io::Result<(bool, Option<Shape>)> {
         h.tx.load(Ordering::Relaxed),
         h.block.load(Ordering::Relaxed),
     );
+    let rate = h.rate.load(Ordering::Relaxed);
     // SAFETY: the view mapped just above.
     unsafe { UnmapViewOfFile(peek) };
-    Ok((ok, shape))
+    Ok((ok, shape, rate))
 }
 
 /// Full access for Authenticated Users, SYSTEM and Administrators.
@@ -275,6 +276,14 @@ pub fn requested_rate(instance: u32) -> io::Result<u32> {
     }
 }
 
+/// The driver side without a device's section: the DAW asks for `rate`
+/// Hz through the instance's directory, kept for the device's next
+/// session. `NotFound` while no directory exists.
+pub fn request_rate(instance: u32, rate: u32) -> io::Result<()> {
+    Directory::open(instance)?.request_rate(rate);
+    Ok(())
+}
+
 /// Sessions this process made (a test makes several devices in one process).
 static SESSIONS: AtomicU32 = AtomicU32::new(0);
 
@@ -331,8 +340,12 @@ impl Shared {
                 )
             };
             match handle(m) {
+                // Taken over only at the same shape and rate: a driver
+                // holding it sees no new session, so another rate at the
+                // same block (44.1 and 48 kHz on a 16-sample device
+                // block) must make a fresh one (dasio#107).
                 Ok(m) => match peek_shape(&m)? {
-                    (true, Some(s)) if s == shape => Some(m),
+                    (true, Some(s), r) if s == shape && r == rate => Some(m),
                     _ => None,
                 },
                 Err(_) => None,
@@ -404,7 +417,7 @@ impl Shared {
                 section_name(instance, session).as_ptr(),
             )
         })?;
-        let (ok, shape) = peek_shape(&mapping)?;
+        let (ok, shape, _) = peek_shape(&mapping)?;
         let shape = match (ok, shape) {
             (true, Some(s)) => s,
             _ => {

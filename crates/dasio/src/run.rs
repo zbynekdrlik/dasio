@@ -57,9 +57,8 @@ pub fn run(
     let timing = crate::timing(&cfg);
     let stats = Arc::new(PumpStats::new(timing, cfg.sample_rate));
     media.attach_engine(Arc::clone(&stats));
-    // dtray's line for this instance (dstack's app status): the header's
-    // numbers, the bridge's counters, the late blocks of the last minute
-    // (kept by the loop below).
+    // The late blocks of the last minute (kept by the loop below) for
+    // dtray's line ([`serve::app_status`]).
     let late_per_min = Arc::new(std::sync::atomic::AtomicU64::new(0));
     // The PC profile's problems (dasio#5); u32::MAX while there is none.
     let pc_problems = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
@@ -87,38 +86,14 @@ pub fn run(
     // What dtray's line and the CPU sampler read: the serving now (a rate
     // the DAW asks serves a new section).
     let current = Arc::new(Mutex::new(serving.current.clone()));
-    {
-        let (current, late_per_min, pc_problems) = (
-            Arc::clone(&current),
-            Arc::clone(&late_per_min),
-            Arc::clone(&pc_problems),
-        );
-        media.set_app_status(move || {
-            let Ok(c) = current.lock() else {
-                return String::new();
-            };
-            let h = c.shared.header();
-            crate::app_status::json(&crate::app_status::Facts {
-                attached: h.host_attached.load(Ordering::Relaxed) != 0,
-                block: c.plan.app_block,
-                sample_rate: c.plan.app_rate,
-                latency_in: c.latency.0,
-                latency_out: c.latency.1,
-                spare_blocks: spare,
-                late_blocks: h.late.load(Ordering::Relaxed),
-                driver_missed: h.missed.load(Ordering::Relaxed),
-                stale: c.stale.load(Ordering::Relaxed),
-                waited: c.waited.load(Ordering::Relaxed),
-                heartbeat_ms: h.heartbeat_ms.load(Ordering::Relaxed),
-                late_per_min: late_per_min.load(Ordering::Relaxed),
-                pc_problems: match pc_problems.load(Ordering::Relaxed) {
-                    u32::MAX => None,
-                    n => Some(n),
-                },
-                tx: tx_path(tuning.kernel_tx),
-            })
-        });
-    }
+    serve::app_status(
+        &media,
+        Arc::clone(&current),
+        Arc::clone(&late_per_min),
+        Arc::clone(&pc_problems),
+        spare,
+        tuning.kernel_tx,
+    );
     let asked = Arc::new(AtomicBool::new(false));
     let device = prepared
         .start(Signals::Report(Arc::clone(&asked)))
@@ -149,7 +124,7 @@ pub fn run(
     .map_err(|e| format!("the CPU sampler: {e}"))?;
     let mut cpu_snap_lost = false;
     let mut profile_at: Option<Instant> = None;
-    // A rate asked that cannot be served, warned once each.
+    // A rate asked that cannot be served: warned once, not tried again.
     let mut refused_rate = 0u32;
     let why = loop {
         // The serving now: a new one after a rate the DAW asked.
@@ -159,6 +134,7 @@ pub fn run(
             Arc::clone(&serving.current.waited),
         );
         let h = shared.header();
+        let (converter_dry, reblock_dry, reblock_restarts) = serving.counters.read();
         h.heartbeat_ms
             .store(start.elapsed().as_millis() as u64, Ordering::Release);
         let now = Instant::now();
@@ -226,9 +202,9 @@ pub fn run(
                 // The app's rate and its conversion (dasio#107): frames
                 // played as silence by a dry FIFO, and reblock restarts.
                 app_rate = serving.current.plan.app_rate,
-                converter_dry = serving.counters.read().0,
-                reblock_dry = serving.counters.read().1,
-                reblock_restarts = serving.counters.read().2,
+                converter_dry,
+                reblock_dry,
+                reblock_restarts,
                 "counts"
             );
             // The DAW's turnaround since the last counts (see turnaround).
@@ -306,41 +282,19 @@ pub fn run(
             break Some(e);
         }
         // The DAW asked another rate (the driver's setSampleRate waits for
-        // a section at it): the shared memory is served again at it, the
-        // Dante device runs on (dasio#107).
-        let asked_rate = shared.requested_rate();
-        match crate::app_rate::switch_to(asked_rate, &serving.current.plan) {
-            Some(next) => {
-                info!(
-                    from = serving.current.plan.app_rate,
-                    to = next.app_rate,
-                    app_block = next.app_block,
-                    "the DAW asked another sample rate: the shared memory is served again at it"
-                );
-                serving.end();
-                match base.serve(next) {
-                    Ok(s) => serving = s,
-                    Err(e) => {
-                        error!(why = %e, "the device ends");
-                        break Some(e);
-                    }
-                }
+        // a section at it): served again at it, the Dante device runs on
+        // (dasio#107).
+        match base.follow(&mut serving, &mut refused_rate) {
+            Ok(true) => {
                 if let Ok(mut c) = current.lock() {
                     *c = serving.current.clone();
                 }
             }
-            None if asked_rate != 0
-                && asked_rate != serving.current.plan.app_rate
-                && asked_rate != refused_rate =>
-            {
-                refused_rate = asked_rate;
-                warn!(
-                    asked = asked_rate,
-                    serving = serving.current.plan.app_rate,
-                    "the DAW asked a sample rate the device cannot serve: it keeps its rate"
-                );
+            Ok(false) => {}
+            Err(e) => {
+                error!(why = %e, "the device ends");
+                break Some(e);
             }
-            None => {}
         }
         std::thread::sleep(Duration::from_millis(100));
     };

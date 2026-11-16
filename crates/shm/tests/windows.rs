@@ -198,3 +198,29 @@ fn a_rate_the_driver_asks_reaches_the_device_through_the_directory() {
     let reopened = Shared::open(97).unwrap();
     assert_eq!(reopened.shape().block, 16);
 }
+
+#[test]
+fn another_rate_at_the_same_block_makes_a_fresh_section() {
+    // 44.1 and 48 kHz on a 16-sample device block are both 8 app frames:
+    // the shape alone cannot tell them apart, the rate does.
+    let shape = Shape::app(1, 1, 8).unwrap();
+    let first = Shared::create(98, shape, 48_000, (40, 60)).unwrap();
+    let held = Shared::open(98).unwrap();
+    drop(first);
+    let next = Shared::create(98, shape, 44_100, (40, 60)).unwrap();
+    assert_ne!(next.session(), held.session());
+    assert_eq!(held.published_session(), next.session());
+    // The same shape and rate again: taken over, no new session.
+    drop(next);
+    let held2 = Shared::open(98).unwrap();
+    let again = Shared::create(98, shape, 44_100, (40, 60)).unwrap();
+    assert_eq!(again.session(), held2.session());
+    // Without a device's section the driver's ask still reaches the
+    // directory while one exists.
+    shm::request_rate(98, 48_000).unwrap();
+    assert_eq!(again.requested_rate(), 48_000);
+    assert_eq!(
+        shm::request_rate(99, 48_000).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+}

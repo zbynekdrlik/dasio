@@ -65,7 +65,8 @@ impl Plan {
         let app_block = u32::try_from(app_block.div_ceil(u64::from(device_rate))).ok()?;
         shm::Shape::app(0, 0, app_block)?;
         let exact = app_rate == device_rate
-            || (2 * app_rate == device_rate && device_block.is_multiple_of(2));
+            || (2 * u64::from(app_rate) == u64::from(device_rate)
+                && device_block.is_multiple_of(2));
         Some(Plan {
             device_rate,
             app_rate,
@@ -121,7 +122,10 @@ impl Plan {
     /// (`device`, samples at its rate: B + P in, B + W + TX latency +
     /// spare blocks out, [`crate::latencies`]) at the app's rate, plus the
     /// converter's delay each way (`conversion_ns`, RX then TX:
-    /// [`dlink::rated::delay_ns`]) and the reblock's share.
+    /// [`dlink::rated::delay_ns`]) and the reblock's share. Exact at 48 kHz;
+    /// at 44.1 kHz the round trip is exact to a sample or two (the pulse
+    /// test measures it) and the in/out split of the reblock's share is
+    /// its mean, as the residue varies block to block.
     pub fn latencies(&self, device: (u32, u32), conversion_ns: (u64, u64)) -> (u32, u32) {
         if !self.converts() {
             return device;
@@ -143,7 +147,10 @@ impl Plan {
     /// How long after a DAW block's start the bridge may wait for its
     /// answer, app samples: the device's offset (`device_offset`, its
     /// samples, [`crate::wait_offset`]) at the app's rate, rounded down,
-    /// so the wait never passes the device block's own deadline.
+    /// so the wait never passes the device block's own deadline. At 44.1
+    /// kHz a DAW block starts up to a block before the device block that
+    /// completes it, so its wait ends up to that much early (more late
+    /// blocks under load, never a late output); at 48 kHz none.
     pub fn wait_offset(&self, device_offset: u64) -> u64 {
         (u128::from(device_offset) * u128::from(self.app_rate)
             / u128::from(self.device_rate.max(1))) as u64

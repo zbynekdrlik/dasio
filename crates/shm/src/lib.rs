@@ -272,7 +272,7 @@ impl Shape {
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::{Shared, qpc_ns, requested_rate};
+pub use windows::{Shared, qpc_ns, request_rate, requested_rate};
 
 #[cfg(test)]
 mod tests;
