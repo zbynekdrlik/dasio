@@ -85,6 +85,8 @@ pub fn run(
         .ok_or("the bridge's pump side was taken already")?;
     let (to_stats, from_stats, to_fifo) =
         (b.to_asio_stats(), b.from_asio_stats(), b.to_asio_fifo());
+    // The from-ASIO block age (dstack #325, dasio#120).
+    let age = b.from_asio_age();
     let shared = Arc::new(Mutex::new(b));
     let map = Map {
         rx: (0..cfg.rx.len()).collect(),
@@ -125,12 +127,13 @@ pub fn run(
     let pc_problems = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
     {
         let kernel_tx = tuning.kernel_tx;
-        let (status, to_stats, from_stats, driver, pc_problems) = (
+        let (status, to_stats, from_stats, driver, pc_problems, age) = (
             Arc::clone(&status),
             Arc::clone(&to_stats),
             Arc::clone(&from_stats),
             bridge.driver.clone(),
             Arc::clone(&pc_problems),
+            Arc::clone(&age),
         );
         media.set_app_status(move || {
             let s = lock(&status).clone();
@@ -144,6 +147,7 @@ pub fn run(
                     n => Some(n),
                 },
                 crate::run::tx_path(kernel_tx),
+                age.report(),
             ))
         });
     }
@@ -183,6 +187,10 @@ pub fn run(
             profile.start_in_process(&pc_problems);
         }
         if counts.due(now) {
+            // The TX flows' receivers against the from-ASIO block age: here,
+            // never in the pump or the driver's callback (it locks the TX
+            // table); dstack WARNs at most once an hour.
+            crate::app_status::from_asio_age_tick(&age, || media.tx.receiver_latencies());
             let s = lock(&status).clone();
             let v = stats.view();
             info!(
