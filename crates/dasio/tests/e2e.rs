@@ -368,6 +368,25 @@ fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_a
         r.late,
         r.gap_blocks
     );
+    // A host at 44.1 kHz: not an exact ratio, so the device converts
+    // through the sinc and gives the DAW fixed blocks of
+    // ceil(B * 441 / 960) frames out of its 58.8-frame periods (the
+    // reblock, one DAW block of prime). Impulses sit at whole seconds, a
+    // whole sample at both rates, so each meets the converter at the same
+    // phase and comes back at one fixed round trip within the latencies
+    // the driver reports at 44.1 kHz.
+    let r = round_trip_at(FIRST, 4, 0, 44_100);
+    assert_eq!(
+        u64::from(r.block),
+        (u64::from(device_block) * 441).div_ceil(960),
+        "44.1 kHz: the device block's period, rounded up"
+    );
+    assert!(
+        r.late <= r.gap_blocks,
+        "44.1 kHz: {} late blocks, {} explained by the host's gaps",
+        r.late,
+        r.gap_blocks
+    );
     // And back at 96 kHz: the device serves its own rate again.
     let r = round_trip(FIRST, 3);
     assert_eq!(r.block, device_block, "96 kHz again: the device's block");

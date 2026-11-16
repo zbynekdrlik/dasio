@@ -174,7 +174,8 @@ fn an_app_at_its_own_rate_never_allocates_either() {
         let plan = Plan::new(96_000, rate, FRAMES as u32).unwrap();
         let (b, k) = bridge_of(0, plan.app_block as usize);
         // Every buffer of the converters and the reblock is made here.
-        let (mut served, counters) = Served::new(b, &plan, CHANNELS, CHANNELS).unwrap();
+        let wait_from = b.wait_from();
+        let (mut served, counters) = Served::new(b, &plan, CHANNELS, CHANNELS, wait_from).unwrap();
         reset_violation_count();
         assert_no_alloc(|| {
             let mut start = 0u64;
