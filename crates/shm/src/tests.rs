@@ -278,3 +278,35 @@ fn a_torn_or_foreign_read_never_pairs() {
     assert_eq!(paired(5, m(5), 0, m(5)), None);
     assert_eq!(paired(0, m(0), 1, m(0)), None);
 }
+
+#[test]
+fn an_app_shape_takes_any_block_up_to_the_most_an_app_runs() {
+    // 44.1 kHz on a 128-sample device block: 59; 48 kHz on 16: 8.
+    for block in [1, 8, 15, 59, 256, MAX_APP_BLOCK] {
+        assert_eq!(
+            Shape::app(2, 2, block),
+            Some(Shape {
+                rx: 2,
+                tx: 2,
+                block
+            })
+        );
+    }
+    assert!(Shape::app(2, 2, 0).is_none());
+    assert!(Shape::app(2, 2, MAX_APP_BLOCK + 1).is_none());
+    assert!(Shape::app(MAX_CHANNELS + 1, 2, 32).is_none());
+    assert!(Shape::app(2, MAX_CHANNELS + 1, 32).is_none());
+    assert!(Shape::app(MAX_CHANNELS, MAX_CHANNELS, 32).is_some());
+    // The device's own blocks stay the pump's only.
+    assert!(Shape::new(2, 2, 59).is_none());
+}
+
+#[test]
+fn an_app_rate_is_one_of_the_supported_whole_rates() {
+    assert_eq!(app_rate(44_100.0), Some(44_100));
+    assert_eq!(app_rate(48_000.0), Some(48_000));
+    assert_eq!(app_rate(96_000.0), Some(96_000));
+    for other in [0.0, 22_050.0, 88_200.0, 192_000.0, 48_000.5, -48_000.0] {
+        assert_eq!(app_rate(other), None, "{other}");
+    }
+}

@@ -17,9 +17,10 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 /// `"DASI"`.
 pub const MAGIC: u32 = u32::from_le_bytes(*b"DASI");
 /// The layout's version. 4: one section per device session, found through
-/// the instance's directory (`scripts/install.ps1`'s `$ShmProtocol` is the
-/// same number: a held driver of another protocol makes it refuse).
-pub const VERSION: u32 = 4;
+/// the instance's directory; 5: the directory carries the DAW's asked
+/// sample rate (dasio#107). `scripts/install.ps1`'s `$ShmProtocol` is the
+/// same number: a held driver of another protocol makes it refuse.
+pub const VERSION: u32 = 5;
 /// [`Header::start`] of a block with no media time (no clock).
 pub const NO_START: u64 = u64::MAX;
 /// Every buffer starts on this boundary.
@@ -28,6 +29,19 @@ pub const ALIGN: usize = 64;
 pub const MAX_CHANNELS: u32 = 64;
 /// The blocks the device can run (its pump's).
 pub const BLOCKS: [u32; 5] = [16, 32, 64, 128, 256];
+/// The longest block a section may carry: an app's block at its own rate
+/// ([`Shape::app`]; the device's block at most 256 at 96 kHz, an app's
+/// at most that, dasio#107).
+pub const MAX_APP_BLOCK: u32 = 512;
+/// The sample rates an app may open an instance at (dasio#107): the
+/// device stays at the network's 96 kHz and converts for the others.
+pub const APP_RATES: [u32; 3] = [44_100, 48_000, 96_000];
+
+/// `rate` as one of [`APP_RATES`] (a whole number of Hz); `None` for any
+/// other.
+pub fn app_rate(rate: f64) -> Option<u32> {
+    APP_RATES.into_iter().find(|&r| f64::from(r) == rate)
+}
 
 /// The start of the mapping.
 #[repr(C, align(64))]
@@ -216,6 +230,14 @@ impl Shape {
         })
     }
 
+    /// A section's shape for an app's block (at the app's rate, dasio#107):
+    /// any block from 1 to [`MAX_APP_BLOCK`]. `None` past
+    /// [`MAX_CHANNELS`] or outside that.
+    pub fn app(rx: u32, tx: u32, block: u32) -> Option<Shape> {
+        (rx <= MAX_CHANNELS && tx <= MAX_CHANNELS && (1..=MAX_APP_BLOCK).contains(&block))
+            .then_some(Shape { rx, tx, block })
+    }
+
     /// One buffer's bytes, rounded up to [`ALIGN`].
     fn buffer_bytes(self) -> usize {
         (self.block as usize * 4).next_multiple_of(ALIGN)
@@ -250,7 +272,7 @@ impl Shape {
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::{Shared, qpc_ns};
+pub use windows::{Shared, qpc_ns, requested_rate};
 
 #[cfg(test)]
 mod tests;

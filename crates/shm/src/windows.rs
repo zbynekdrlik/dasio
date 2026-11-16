@@ -82,7 +82,7 @@ fn peek_shape(mapping: &Handle) -> io::Result<(bool, Option<Shape>)> {
     let h = unsafe { &*(peek.Value as *const Header) };
     let ok =
         h.magic.load(Ordering::Acquire) == MAGIC && h.version.load(Ordering::Relaxed) == VERSION;
-    let shape = Shape::new(
+    let shape = Shape::app(
         h.rx.load(Ordering::Relaxed),
         h.tx.load(Ordering::Relaxed),
         h.block.load(Ordering::Relaxed),
@@ -163,6 +163,12 @@ struct Dir {
     /// was padding: drivers before 0.1.52 leave it 0.
     host_pid: AtomicU32,
     session: AtomicU64,
+    /// The sample rate the DAW asked (`setSampleRate`, dasio#107), Hz; 0
+    /// while none asked. The device serves the next session at it. Here,
+    /// not in a section's header: the directory outlives the sessions, so
+    /// a device restarted under a DAW at 48 kHz comes back at 48 kHz.
+    requested_rate: AtomicU32,
+    _pad: AtomicU32,
 }
 
 const DIR_MAGIC: u32 = u32::from_le_bytes(*b"DSDR");
@@ -232,6 +238,14 @@ impl Directory {
         }
     }
 
+    fn requested_rate(&self) -> u32 {
+        self.dir().requested_rate.load(Ordering::Acquire)
+    }
+
+    fn request_rate(&self, rate: u32) {
+        self.dir().requested_rate.store(rate, Ordering::Release);
+    }
+
     fn publish(&self, session: u64) {
         let d = self.dir();
         d.session.store(session, Ordering::Release);
@@ -247,6 +261,17 @@ impl Drop for Directory {
                 Value: self.view.as_ptr().cast(),
             })
         };
+    }
+}
+
+/// The sample rate a DAW asked instance `instance` for (dasio#107), Hz; 0
+/// while none asked or no directory exists yet (no driver and no device
+/// ever opened it): the device reads it before it makes its section.
+pub fn requested_rate(instance: u32) -> io::Result<u32> {
+    match Directory::open(instance) {
+        Ok(d) => Ok(d.requested_rate()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(0),
+        Err(e) => Err(e),
     }
 }
 
@@ -406,6 +431,17 @@ impl Shared {
     /// The driver side: `pid` has the buffers now (0: nobody).
     pub fn set_host_pid(&self, pid: u32) {
         self.dir.dir().host_pid.store(pid, Ordering::Release);
+    }
+
+    /// The sample rate the DAW asked (0: none), read by the device.
+    pub fn requested_rate(&self) -> u32 {
+        self.dir.requested_rate()
+    }
+
+    /// The driver side: the DAW asks for `rate` Hz; the device serves a
+    /// new session at it ([`published_session`](Self::published_session)).
+    pub fn request_rate(&self, rate: u32) {
+        self.dir.request_rate(rate);
     }
 
     /// The session the device publishes now: another one than

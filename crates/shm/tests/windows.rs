@@ -176,3 +176,25 @@ fn any_signed_in_user_reaches_the_objects() {
         assert!(sddl.contains(";;;AU)"), "{what}: {sddl}");
     }
 }
+
+#[test]
+fn a_rate_the_driver_asks_reaches_the_device_through_the_directory() {
+    // No directory yet: no rate asked.
+    assert_eq!(shm::requested_rate(97).unwrap(), 0);
+    let device = Shared::create(97, Shape::new(1, 1, 32).unwrap(), 96_000, (56, 40)).unwrap();
+    let driver = Shared::open(97).unwrap();
+    assert_eq!(device.requested_rate(), 0);
+    driver.request_rate(48_000);
+    assert_eq!(device.requested_rate(), 48_000);
+    assert_eq!(shm::requested_rate(97).unwrap(), 48_000);
+    // The next session (another shape: the app's block) keeps the
+    // directory, and with it the asked rate.
+    drop(device);
+    let next = Shared::create(97, Shape::app(1, 1, 16).unwrap(), 48_000, (40, 60)).unwrap();
+    assert_eq!(next.requested_rate(), 48_000);
+    assert_eq!(next.header().rate.load(Ordering::Relaxed), 48_000);
+    assert_ne!(next.session(), driver.session());
+    assert_eq!(driver.published_session(), next.session());
+    let reopened = Shared::open(97).unwrap();
+    assert_eq!(reopened.shape().block, 16);
+}
