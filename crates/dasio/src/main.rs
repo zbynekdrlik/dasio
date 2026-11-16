@@ -449,12 +449,8 @@ fn pc_profile(_path: &str, _apply: bool, _plan_only: bool) -> ExitCode {
 /// those).
 #[cfg(windows)]
 fn pc_layout(path: &str) -> ExitCode {
-    use dasio::pc_profile::{Layout, parse, windows::cpu_count};
-    let instances = match std::fs::read_to_string(path) {
-        Ok(text) => parse(&text).map(|p| p.instances.unwrap_or(1)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(1),
-        Err(e) => Err(e.to_string()),
-    };
+    use dasio::pc_profile::{Layout, site_instances, windows::cpu_count};
+    let instances = site_instances(std::path::Path::new(path));
     match cpu_count().and_then(|cpus| instances.map(|n| (cpus, n))) {
         Ok((cpus, instances)) => {
             let l = Layout::of(cpus, instances);

@@ -46,6 +46,14 @@ pub fn run(
     if tuning.kernel_tx {
         profile::must_have_at_start()?;
     }
+    // dasio's reserved CPUs as the process's default CPU sets, so only
+    // dasio's threads run there (dasio#120); a WARN when they are not
+    // reserved. The process default applies to every thread without its
+    // own CPU sets, the ones started later too.
+    crate::cpu_sets::windows::assign_at_start(
+        instance,
+        matches!(kind, crate::kind::Kind::Bridge(_)),
+    );
     // A bridge to a local ASIO driver (dasio#106) runs its own loop.
     if let crate::kind::Kind::Bridge(bridge) = kind {
         return crate::run_bridge::run(instance, bridge, cfg, ip, clock, tuning, stop_asked);
@@ -787,7 +795,11 @@ pub(crate) fn place_helpers(own: usize) {
         let (mut process, mut system) = (0usize, 0usize);
         // SAFETY: this process's pseudo handle and two writable masks.
         unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut process, &mut system) };
-        let helpers = crate::helper_cpus(process, own);
+        // Within the CPUs the start reserved for the process (dasio#120).
+        let helpers = crate::cpu_sets::helpers_within(
+            crate::helper_cpus(process, own) as u64,
+            crate::cpu_sets::assigned(),
+        ) as usize;
         if helpers != 0 {
             // SAFETY: this thread's pseudo handle.
             unsafe { SetThreadAffinityMask(GetCurrentThread(), helpers) };
@@ -858,45 +870,15 @@ pub(crate) fn place_helpers(own: usize) {
 /// placer's next pass (band, 5.11.2026). The media threads' affinity masks
 /// take precedence over CPU sets.
 fn default_cpu_sets(helpers: usize) {
-    use windows_sys::Win32::System::SystemInformation::{
-        GetSystemCpuSetInformation, SYSTEM_CPU_SET_INFORMATION,
-    };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessDefaultCpuSets};
-    let mut len = 0u32;
-    // SAFETY: a size query (no buffer).
-    unsafe {
-        GetSystemCpuSetInformation(std::ptr::null_mut(), 0, &mut len, std::ptr::null_mut(), 0)
-    };
-    let mut buf = vec![0u8; len as usize];
-    // SAFETY: a buffer of `len` bytes.
-    if unsafe {
-        GetSystemCpuSetInformation(
-            buf.as_mut_ptr().cast(),
-            len,
-            &mut len,
-            std::ptr::null_mut(),
-            0,
-        )
-    } == 0
-    {
-        warn!(err = %std::io::Error::last_os_error(), "the CPU sets could not be read");
-        return;
-    }
-    let mut sets = Vec::new();
-    let mut at = 0usize;
-    while at + std::mem::size_of::<SYSTEM_CPU_SET_INFORMATION>() <= len as usize {
-        // SAFETY: an entry Windows wrote at `at`; read unaligned.
-        let e: SYSTEM_CPU_SET_INFORMATION =
-            unsafe { std::ptr::read_unaligned(buf.as_ptr().add(at).cast()) };
-        if e.Size == 0 {
-            break;
+    let sets = match crate::cpu_sets::windows::read() {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(err = %e, "the helper CPUs' default CPU sets were not set");
+            return;
         }
-        // SAFETY: entries of type CpuSetInformation (0), the only type.
-        let c = unsafe { e.Anonymous.CpuSet };
-        sets.push((c.Group, c.LogicalProcessorIndex, c.Id));
-        at += e.Size as usize;
-    }
-    let ids = crate::cpu_set_ids(helpers, &sets);
+    };
+    let ids = crate::cpu_sets::ids_for(helpers as u64, &sets);
     // SAFETY: this process's pseudo handle and `ids.len()` ids.
     if unsafe { SetProcessDefaultCpuSets(GetCurrentProcess(), ids.as_ptr(), ids.len() as u32) } == 0
     {

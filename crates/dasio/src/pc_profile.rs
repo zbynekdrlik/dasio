@@ -306,6 +306,18 @@ impl std::fmt::Display for Problem {
     }
 }
 
+/// The dasio instances the site profile at `path` names (`instances`,
+/// default 1; no profile: 1), for the CPU layout (dasio#128, #120). From
+/// the site file alone, so a layout whose placeholders do not fit still
+/// reads.
+pub fn site_instances(path: &std::path::Path) -> Result<usize, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => parse(&text).map(|p| p.instances.unwrap_or(1)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(1),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// Reads a PC's profile; the error names what is wrong in it.
 pub fn parse(text: &str) -> Result<Profile, String> {
     parse_with(text, true)
