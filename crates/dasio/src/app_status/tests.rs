@@ -144,6 +144,7 @@ fn bridge_running() -> BridgeFacts {
         resets: 1,
         pc_problems: Some(0),
         tx: TxPath::default(),
+        from_asio_age: None,
     }
 }
 
@@ -158,7 +159,15 @@ fn the_bridge_facts_come_from_the_runner_s_status() {
         resets: 4,
         ..Default::default()
     };
-    let f = BridgeFacts::of("Test ASIO", &waiting, 7, 9, Some(2), TxPath::Udp);
+    let f = BridgeFacts::of(
+        "Test ASIO",
+        &waiting,
+        7,
+        9,
+        Some(2),
+        TxPath::Udp,
+        Some(AGE_128_96K),
+    );
     assert_eq!(
         f,
         BridgeFacts {
@@ -174,13 +183,14 @@ fn the_bridge_facts_come_from_the_runner_s_status() {
             resets: 4,
             pc_problems: Some(2),
             tx: TxPath::Udp,
+            from_asio_age: Some(AGE_128_96K),
         }
     );
     let running = dstack_asio::Status {
         state: dstack_asio::RunState::Running,
         ..Default::default()
     };
-    let f = BridgeFacts::of("Test ASIO", &running, 0, 0, None, TxPath::default());
+    let f = BridgeFacts::of("Test ASIO", &running, 0, 0, None, TxPath::default(), None);
     assert!(f.running);
     assert_eq!((f.reason, f.reason_code), (None, None));
 }
@@ -367,4 +377,146 @@ fn a_bridge_shows_its_tx_path_and_warns_on_missed_frames() {
     };
     assert!(bridge_line(&udp).ends_with(" · resets 1 · UDP TX (test clock)"));
     assert_eq!(bridge_state(&udp), "ok");
+}
+
+/// dsg's case (dasio#120): 128-frame calls at 96 kHz (1333 us), the pump
+/// taking 200 us after the hand-over, a pump block of 1333 us on top.
+const AGE_128_96K: AgeReport = AgeReport {
+    block_age_us: 1_533,
+    block_age_max_us: 1_600,
+    min_receiver_latency_us: 2_933,
+};
+
+#[test]
+fn the_bridge_json_carries_the_from_asio_block_age_while_it_has_one() {
+    // dstack #325, dasio#120: the three keys with the report's values.
+    let j = bridge_json(&BridgeFacts {
+        from_asio_age: Some(AGE_128_96K),
+        ..bridge_running()
+    });
+    assert!(j.starts_with('{') && j.ends_with('}'), "{j}");
+    assert!(
+        j.contains(concat!(
+            "\"pc_profile_problems\":0,\"from_asio_block_age_us\":1533,",
+            "\"from_asio_block_age_max_us\":1600,",
+            "\"from_asio_min_receiver_latency_us\":2933,\"kernel_tx\":true,"
+        )),
+        "{j}"
+    );
+    // No report (no take yet, or the driver stopped 1-2 min ago): the keys
+    // are left out, never a 0 that reads as a fast driver.
+    let none = bridge_json(&bridge_running());
+    assert!(!none.contains("from_asio_block_age"), "{none}");
+    assert!(!none.contains("from_asio_min_receiver_latency"), "{none}");
+    assert!(
+        none.contains("\"pc_profile_problems\":0,\"kernel_tx\":true,"),
+        "{none}"
+    );
+}
+
+/// A [`BlockAge`] for a 1333 us pump block on a clock the test sets, ns.
+fn age_on_fake_clock() -> (
+    std::sync::Arc<std::sync::atomic::AtomicI64>,
+    std::sync::Arc<BlockAge>,
+) {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    let t = Arc::new(AtomicI64::new(0));
+    let read = Arc::clone(&t);
+    let clock: dlink::bridge::Clock = Arc::new(move || read.load(Ordering::Relaxed));
+    (t, Arc::new(BlockAge::new(1_333_333, clock)))
+}
+
+#[test]
+fn the_age_tick_reads_no_receivers_before_the_first_take() {
+    // No driver serving: the status loop takes no lock on the TX table.
+    let (_, age) = age_on_fake_clock();
+    let mut read = false;
+    let warned = from_asio_age_tick(&age, || {
+        read = true;
+        vec![("rx".into(), 1_000_000)]
+    });
+    assert_eq!(warned, None);
+    assert!(!read, "the receivers were read without an age report");
+}
+
+#[test]
+fn the_age_tick_warns_about_a_1_ms_receiver_once_an_hour() {
+    use std::sync::atomic::Ordering;
+    let (t, age) = age_on_fake_clock();
+    t.store(5_000_000, Ordering::Relaxed);
+    age.handed(128, 96_000);
+    t.store(5_200_000, Ordering::Relaxed);
+    age.taken();
+    let receivers = || {
+        vec![
+            ("stage-rack".to_string(), 1_000_000),
+            ("unknown".to_string(), 0),
+            ("foh".to_string(), 5_000_000),
+        ]
+    };
+    let text = from_asio_age_tick(&age, receivers).expect("a 1 ms receiver warns");
+    assert!(text.contains("stage-rack at 1000 us"), "{text}");
+    assert!(!text.contains("foh") && !text.contains("unknown"), "{text}");
+    // The next counts tick, 10 s later: the receivers are read, no new
+    // warning.
+    t.store(10_005_200_000, Ordering::Relaxed);
+    let mut read = false;
+    let again = from_asio_age_tick(&age, || {
+        read = true;
+        receivers()
+    });
+    assert_eq!(again, None);
+    assert!(read);
+    // An hour after the warning, with blocks still taken: it warns again.
+    let hour_later = 5_200_000 + 3_600_000_000_000;
+    t.store(hour_later - 200_000, Ordering::Relaxed);
+    age.handed(128, 96_000);
+    t.store(hour_later, Ordering::Relaxed);
+    age.taken();
+    assert!(from_asio_age_tick(&age, receivers).is_some());
+    // Receivers at or above the need (2866 us: 1533 us of age + a 1333 us
+    // pump block): nothing.
+    let (t, age) = age_on_fake_clock();
+    t.store(5_000_000, Ordering::Relaxed);
+    age.handed(128, 96_000);
+    t.store(5_200_000, Ordering::Relaxed);
+    age.taken();
+    assert_eq!(
+        from_asio_age_tick(&age, || vec![
+            ("at-need".into(), 2_866_000),
+            ("foh".into(), 3_000_000)
+        ]),
+        None
+    );
+}
+
+#[test]
+fn the_bridge_s_status_loop_checks_the_receivers_once_a_counts_tick() {
+    // dstack #325: the check runs in the status loop, never in the pump
+    // or the driver's callback (it locks the TX table and allocates).
+    let src = include_str!("../run_bridge.rs");
+    let calls: Vec<usize> = src
+        .match_indices("from_asio_age_tick(")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(calls.len(), 1, "one call in run_bridge.rs");
+    let tick = src.find("if counts.due(now) {").expect("the counts tick");
+    let tick_end = src[tick..].find("\"bridge counts\"").expect("its log line") + tick;
+    assert!(
+        (tick..tick_end).contains(&calls[0]),
+        "the call is not inside the counts tick"
+    );
+    let callback = src
+        .find("let make: MakeProcess")
+        .expect("the driver's side");
+    assert!(
+        calls[0] < callback,
+        "the call is in run(), not in the driver's side"
+    );
+    assert_eq!(
+        src.matches("warn_low_receivers").count(),
+        0,
+        "only through the tick"
+    );
 }
