@@ -300,6 +300,48 @@ fn a_converted_path_counts_nothing_dry_in_steady_running() {
     }
 }
 
+/// Writes 0.5 to its outputs for its first `loud` calls, then leaves them
+/// alone, as the bridge does with no DAW attached or deep in a gap.
+struct Quiet {
+    loud: u32,
+}
+
+impl Process for Quiet {
+    fn process(&mut self, block: &mut Block<'_>) {
+        if self.loud == 0 {
+            return;
+        }
+        self.loud -= 1;
+        for c in 0..block.outputs() {
+            block.output(c).fill(0.5);
+        }
+    }
+}
+
+#[test]
+fn a_block_the_bridge_leaves_alone_plays_silence_on_either_path() {
+    // The pump zeroes the outputs before each block, and the bridge writes
+    // nothing where it has nothing to play (no DAW, a gap's later blocks).
+    // Behind the converters it must be the same: never the last block
+    // again.
+    for rate in [96_000, 48_000, 44_100] {
+        let plan = Plan::new(96_000, rate, 32).unwrap();
+        let (mut s, _) = Served::new(Quiet { loud: 20 }, &plan, 1, 1, WaitFrom::default()).unwrap();
+        let input = [0.0; 32];
+        let mut tail = 0.0f64;
+        // 20 loud calls, then the filters' tail (well under 100 blocks),
+        // then 100 blocks that must be silent.
+        for b in 0..300u64 {
+            let mut o = [0.0; 32];
+            s.process(&mut Block::new(32, &input, &mut o).at(b * 32));
+            if b >= 200 {
+                tail = o.iter().fold(tail, |m, y| m.max(y.abs()));
+            }
+        }
+        assert!(tail < 1e-9, "{rate} Hz: the last block again ({tail})");
+    }
+}
+
 /// A DAW on a scripted media clock (app samples, one sample a read): once
 /// the clock reaches `at` it has answered every block before the newest one
 /// handed over (the one the bridge waits for, without a spare block).
