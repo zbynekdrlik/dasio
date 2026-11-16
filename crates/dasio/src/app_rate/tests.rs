@@ -253,6 +253,18 @@ fn the_device_s_rate_is_the_bridge_alone_without_delay() {
     assert_eq!(conversion_ns(&plan).unwrap(), (0, 0));
 }
 
+#[test]
+fn the_counters_read_the_converter_s_dry_frames() {
+    let dry = std::sync::Arc::new(AtomicU64::new(7));
+    let counters = Counters {
+        converter_dry: Some(std::sync::Arc::clone(&dry)),
+    };
+    assert_eq!(counters.read(), 7);
+    dry.fetch_add(5, Ordering::Relaxed);
+    assert_eq!(counters.read(), 12);
+    assert_eq!(Counters::default().read(), 0);
+}
+
 /// Counts the discontinuities it gets (shared, so the test reads them
 /// through the converters' box).
 struct Resets(std::sync::Arc<AtomicU64>);
