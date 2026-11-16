@@ -226,10 +226,15 @@ fn round_trip_stalled(instance: u32, seconds: u64, stall_ms: u64) -> dasio::prob
         "instance {instance}: {} switches in {seconds} s at block {block}: more than the device drove",
         r.switches
     );
+    // The device drives the host. The probe's watchdog figures say whether
+    // the whole guest stopped meanwhile (dasio#114).
     assert!(
         r.switches >= seconds * 96_000 / block * 9 / 10,
-        "instance {instance}: the device drives the host: {} switches in {seconds} s at block {block}",
-        r.switches
+        "instance {instance}: the device drives the host: {} switches in {seconds} s at block {block} ({} blocks in {} VM stalls, longest {} us)",
+        r.switches,
+        r.vm_stall_blocks,
+        r.vm_stalls,
+        r.vm_stall_max_us
     );
     // One impulse at each whole second inside the samples the host's
     // timeline ran (the impulse at 1 s the first): a probe a few blocks
@@ -315,15 +320,20 @@ fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_a
     // ms gap, CI 41130881044; a 763 us one at block 32, CI 41340984953,
     // past the 667 us work margin). Each host gap over 1.5 blocks may cost
     // at most the blocks it spans; any other late block fails (the attach
-    // defect b0233cd fixed read late 3 with no gap). Real-time timing is
-    // the FOH PC's gate (HIL, soak).
+    // defect b0233cd fixed read late 3 with no gap). A watchdog cannot
+    // tighten this: the runner also stalls the pump's CPU alone (CI
+    // 43779634868, dasio#114). Real-time timing is the FOH PC's gate (HIL,
+    // soak).
     assert!(
         r.late <= r.gap_blocks,
-        "{} late blocks, {} explained by the host's gaps (longest {} us, {} over 1 ms)",
+        "{} late blocks, {} explained by the host's gaps ({} in VM stalls, longest gap {} us, {} over 1 ms; {} VM stalls, longest {} us)",
         r.late,
         r.gap_blocks,
+        r.vm_gap_blocks,
         r.max_gap_us,
-        r.gaps_over_1ms
+        r.gaps_over_1ms,
+        r.vm_stalls,
+        r.vm_stall_max_us
     );
 
     // A host that loses its CPU while an impulse is on its way (CI

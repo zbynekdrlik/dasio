@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 use dasio_driver::abi::*;
 use dasio_driver::ident::clsid;
 
+use crate::vm_stall;
+
 /// What a run measured.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Report {
@@ -46,9 +48,18 @@ pub struct Report {
     pub rx_peaks: Vec<(i32, u64)>,
     /// Impulses that never came back while the host itself lost its CPU
     /// on their way (a switch over 1 ms late between their emit and the
-    /// next): a shared runner's VM stopping the whole guest, not the
-    /// device (dasio#114). Any other lost impulse is the device's.
+    /// next): a shared runner's VM, not the device (dasio#114). Any other
+    /// lost impulse is the device's.
     pub lost_in_host_gap: u64,
+    /// Diagnostics, not a rule (dasio#114): the watchdog's stalls (wakes
+    /// over 1 ms late on its own timer, unpinned) and the longest, µs; the
+    /// `gap_blocks` of host gaps a stall overlaps; the blocks the stalls
+    /// span. A whole guest stopping shows here and in the gaps; a stall of
+    /// the pump's CPU alone (CI 43779634868) only in the gaps.
+    pub vm_stalls: u64,
+    pub vm_stall_max_us: u64,
+    pub vm_gap_blocks: u64,
+    pub vm_stall_blocks: u64,
 }
 
 /// The onset of an arrival: a quarter of the impulse.
@@ -69,9 +80,10 @@ struct State {
     stalled: bool,
     next_emit: u64,
     last_emit: Option<u64>,
-    /// `GAPS_OVER_1MS` when `last_emit` left.
-    gaps_at_emit: u64,
-    lost_in_host_gap: u64,
+    /// When `last_emit` left, µs since the probe's start.
+    last_emit_us: u64,
+    /// Each lost impulse's way: its emit to the next emit, µs.
+    lost: Vec<(u64, u64)>,
     round_trips: Vec<u64>,
     emitted: u64,
     skipped: u64,
@@ -88,6 +100,21 @@ static GAP_BLOCKS: AtomicU64 = AtomicU64::new(0);
 static BLOCK_US: AtomicU64 = AtomicU64::new(0);
 static LAST_SWITCH: Mutex<Option<Instant>> = Mutex::new(None);
 static RUNNING: AtomicU32 = AtomicU32::new(0);
+/// The probe's start: every span is µs since it.
+static T0: Mutex<Option<Instant>> = Mutex::new(None);
+/// The host's gaps over 1.5 blocks: `((start, end), blocks)`.
+static GAPS: Mutex<Vec<((u64, u64), u64)>> = Mutex::new(Vec::new());
+/// When each host gap over 1 ms ended (its switch came), µs.
+static OVER_1MS_ENDS: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+/// The watchdog runs while this is 1.
+static WATCHING: AtomicU32 = AtomicU32::new(0);
+
+/// µs from the probe's start to `t` (0 before the start).
+fn since_start(t: Instant) -> u64 {
+    T0.lock()
+        .unwrap()
+        .map_or(0, |t0| t.saturating_duration_since(t0).as_micros() as u64)
+}
 
 /// The DAW's callback with the driver's time info, as Ableton takes it:
 /// the block's sample position is the host's timeline.
@@ -115,13 +142,18 @@ unsafe fn timed(half: i32, direct: ASIOBool, pos: Option<u64>) {
         if let Some(t) = *last {
             let gap = entered.duration_since(t).as_micros() as u64;
             MAX_GAP_US.fetch_max(gap, Ordering::Relaxed);
+            // Pre-sized at the start: no allocation in the switch until
+            // their capacity runs out.
             if gap > 1000 {
                 GAPS_OVER_1MS.fetch_add(1, Ordering::Relaxed);
+                OVER_1MS_ENDS.lock().unwrap().push(since_start(entered));
             }
-            GAP_BLOCKS.fetch_add(
-                blocks_in_gap(gap, BLOCK_US.load(Ordering::Relaxed)),
-                Ordering::Relaxed,
-            );
+            let blocks = blocks_in_gap(gap, BLOCK_US.load(Ordering::Relaxed));
+            GAP_BLOCKS.fetch_add(blocks, Ordering::Relaxed);
+            if blocks > 0 {
+                let span = (since_start(t), since_start(entered));
+                GAPS.lock().unwrap().push((span, blocks));
+            }
         }
         *last = Some(entered);
     }
@@ -188,13 +220,13 @@ unsafe fn switch_body(half: i32, _direct: ASIOBool, pos: Option<u64>) {
         }
     }
     if s.next_emit >= s.position && s.next_emit < s.position + n as u64 {
-        // The impulse before never came back: the host's, when the host
-        // lost its CPU on its way.
-        let gaps = GAPS_OVER_1MS.load(Ordering::Relaxed);
-        if s.last_emit.is_some() && gaps > s.gaps_at_emit {
-            s.lost_in_host_gap += 1;
+        // The impulse before never came back: its way, for the watchdog's
+        // stalls to explain or not (at the end).
+        let now = since_start(Instant::now());
+        if s.last_emit.is_some() {
+            s.lost.push((s.last_emit_us, now));
         }
-        s.gaps_at_emit = gaps;
+        s.last_emit_us = now;
         s.last_emit = Some(s.next_emit);
         s.emitted += 1;
         s.next_emit += 96_000;
@@ -303,6 +335,9 @@ pub fn probe_stalled(instance: u32, seconds: u64, stall_ms: u64) -> Result<Repor
         GAP_BLOCKS.store(0, Ordering::Relaxed);
         BLOCK_US.store(pref as u64 * 1_000_000 / 96_000, Ordering::Relaxed);
         *LAST_SWITCH.lock().unwrap() = None;
+        *GAPS.lock().unwrap() = Vec::with_capacity(4096);
+        *OVER_1MS_ENDS.lock().unwrap() = Vec::with_capacity(4096);
+        *T0.lock().unwrap() = Some(Instant::now());
         *STATE.lock().unwrap() = Some(State {
             bufs: infos
                 .iter()
@@ -316,8 +351,8 @@ pub fn probe_stalled(instance: u32, seconds: u64, stall_ms: u64) -> Result<Repor
             stalled: false,
             next_emit: 96_000,
             last_emit: None,
-            gaps_at_emit: 0,
-            lost_in_host_gap: 0,
+            last_emit_us: 0,
+            lost: Vec::with_capacity(64),
             round_trips: Vec::new(),
             emitted: 0,
             skipped: 0,
@@ -327,9 +362,28 @@ pub fn probe_stalled(instance: u32, seconds: u64, stall_ms: u64) -> Result<Repor
             .map(|sh| sh.header().missed.load(Ordering::Relaxed))
             .unwrap_or(0);
         RUNNING.store(1, Ordering::Release);
-        if (v.start)(d) != ASE_OK {
-            return Err("start refused".into());
+    }
+    // Ends the driver as a host does on a failed start: its buffers and
+    // its reference.
+    let abandon = |why: String| {
+        RUNNING.store(0, Ordering::Release);
+        // SAFETY: the driver made and its buffers created above.
+        unsafe {
+            (v.disposeBuffers)(d);
+            (v.Release)(d);
         }
+        STATE.lock().unwrap().take();
+        Err(why)
+    };
+    let watchdog = match watchdog() {
+        Ok(w) => w,
+        Err(e) => return abandon(e),
+    };
+    // SAFETY: the driver's start, as a host calls it.
+    if unsafe { (v.start)(d) } != ASE_OK {
+        WATCHING.store(0, Ordering::Release);
+        let _ = watchdog.join();
+        return abandon("start refused".into());
     }
     let end = Instant::now() + Duration::from_secs(seconds);
     while Instant::now() < end && RUNNING.load(Ordering::Acquire) == 1 {
@@ -341,6 +395,10 @@ pub fn probe_stalled(instance: u32, seconds: u64, stall_ms: u64) -> Result<Repor
         (v.disposeBuffers)(d);
         (v.Release)(d);
     }
+    WATCHING.store(0, Ordering::Release);
+    let stalls = watchdog
+        .join()
+        .map_err(|_| "the watchdog thread panicked".to_string())??;
     if let Ok(shared) = shm::Shared::open(instance) {
         report.late = shared.header().late.load(Ordering::Relaxed);
         report.missed = shared
@@ -359,9 +417,89 @@ pub fn probe_stalled(instance: u32, seconds: u64, stall_ms: u64) -> Result<Repor
     report.emitted = s.emitted;
     report.skipped = s.skipped;
     report.round_trips = s.round_trips;
-    report.lost_in_host_gap = s.lost_in_host_gap;
     report.rx_peaks = s.peaks;
+    let gaps = std::mem::take(&mut *GAPS.lock().unwrap());
+    let ends = std::mem::take(&mut *OVER_1MS_ENDS.lock().unwrap());
+    report.lost_in_host_gap = vm_stall::ended_within(&s.lost, &ends);
+    report.vm_stalls = stalls.len() as u64;
+    report.vm_stall_max_us = stalls.iter().map(|&(a, b)| b - a).max().unwrap_or(0);
+    report.vm_gap_blocks = vm_stall::explained_blocks(&gaps, &stalls);
+    report.vm_stall_blocks = vm_stall::stall_blocks(&stalls, BLOCK_US.load(Ordering::Relaxed));
     Ok(report)
+}
+
+/// The watchdog thread: its stalls, or why it could not run.
+type Watchdog = std::thread::JoinHandle<Result<Vec<(u64, u64)>, String>>;
+
+/// The VM-stall watchdog (dasio#114): a thread at TIME_CRITICAL in this
+/// High-priority process, unpinned, waking each 1 ms on a high-resolution
+/// timer; a wake over 1 ms late is a stall of the whole guest. The probe's
+/// switches are driven by the device, so only this clock tells a VM stop
+/// (both late) from a device stall (only the switches). Runs while
+/// `WATCHING` is 1; returns its stalls, or why it could not run (the
+/// probe then fails: without it nothing could be told apart).
+fn watchdog() -> Result<Watchdog, String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_FAILED};
+    use windows_sys::Win32::System::Threading::{
+        CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, GetCurrentThread,
+        SetThreadPriority, SetWaitableTimer, THREAD_PRIORITY_TIME_CRITICAL, TIMER_ALL_ACCESS,
+        WaitForSingleObject,
+    };
+    WATCHING.store(1, Ordering::Release);
+    std::thread::Builder::new()
+        .name("probe-watchdog".into())
+        .spawn(|| {
+            // SAFETY: this thread's pseudo handle.
+            if unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) } == 0
+            {
+                return Err(format!(
+                    "the watchdog's priority: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            // SAFETY: plain call: no security attributes, no name.
+            let timer = unsafe {
+                CreateWaitableTimerExW(
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                    TIMER_ALL_ACCESS,
+                )
+            };
+            if timer.is_null() {
+                return Err(format!(
+                    "the watchdog's timer: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            // Pre-sized: the loop never allocates until it is full.
+            let mut stalls = Vec::with_capacity(4096);
+            // 1 ms, relative: negative, in 100 ns units.
+            let period: i64 = -10_000;
+            let mut result = Ok(());
+            while WATCHING.load(Ordering::Acquire) == 1 {
+                let due = since_start(Instant::now()) + 1_000;
+                // SAFETY: our timer and a due time that outlives the call;
+                // no completion routine, no resume.
+                let armed =
+                    unsafe { SetWaitableTimer(timer, &period, 0, None, core::ptr::null(), 0) } != 0;
+                // SAFETY: our timer, armed above; bounded, never INFINITE.
+                if !armed || unsafe { WaitForSingleObject(timer, 1_000) } == WAIT_FAILED {
+                    result = Err(format!(
+                        "the watchdog's wait: {}",
+                        std::io::Error::last_os_error()
+                    ));
+                    break;
+                }
+                if let Some(stall) = vm_stall::stall_of(due, since_start(Instant::now())) {
+                    stalls.push(stall);
+                }
+            }
+            // SAFETY: our timer, closed once.
+            unsafe { CloseHandle(timer) };
+            result.map(|()| stalls)
+        })
+        .map_err(|e| format!("the watchdog thread: {e}"))
 }
 
 /// This process at High priority, as a DAW runs (Ableton does).

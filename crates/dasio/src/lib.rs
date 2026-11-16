@@ -32,6 +32,7 @@ pub mod run;
 pub mod run_bridge;
 pub mod service;
 pub mod turnaround;
+pub mod vm_stall;
 
 /// How an instance runs beyond its device config (the service's flags).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
