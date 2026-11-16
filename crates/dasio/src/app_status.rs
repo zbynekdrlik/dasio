@@ -31,7 +31,7 @@ pub struct Facts {
     pub pc_problems: Option<u32>,
     /// How audio TX goes out (dasio#125).
     pub tx: TxPath,
-    /// The measured RX packet age at placement (dasio#128): information,
+    /// The measured RX packet age at arrival (dasio#128): information,
     /// never advice; `None` before a packet was placed.
     pub rx: Option<crate::rx_arrival::Report>,
 }
@@ -219,7 +219,7 @@ pub struct BridgeFacts {
     /// The from-ASIO figures (dstack #325, dasio#120); `None` while neither
     /// a block was taken nor a TX packet seen for 1-2 minutes.
     pub from_asio_age: Option<AgeReport>,
-    /// The measured RX packet age at placement (dasio#128): information,
+    /// The measured RX packet age at arrival (dasio#128): information,
     /// never advice; `None` before a packet was placed.
     pub rx: Option<crate::rx_arrival::Report>,
 }
@@ -348,14 +348,15 @@ fn escaped(t: &str) -> String {
 }
 
 /// The JSON object for a bridge instance's `set_app_status`: `line`,
-/// `state`, `kind` and every number (no DAW: `daw_attached` false).
+/// `state`, `kind` and every number (no DAW: `daw_attached` false); the
+/// RX arrival and its ASIO pull wait keys only once measured (dasio#128).
 pub fn bridge_json(f: &BridgeFacts) -> String {
     format!(
         concat!(
             "{{\"line\":\"{}\",\"state\":\"{}\",\"kind\":\"bridge\",\"daw_attached\":false,",
             "\"driver\":\"{}\",\"running\":{},\"reason\":\"{}\",\"rate\":{},",
             "\"buffer_frames\":{},\"to_asio_underruns\":{},\"from_asio_underruns\":{},",
-            "\"resets\":{},\"pc_profile_problems\":{},{}{}{}}}"
+            "\"resets\":{},\"pc_profile_problems\":{},{}{}{}{}}}"
         ),
         escaped(&bridge_line(f)),
         bridge_state(f),
@@ -370,6 +371,7 @@ pub fn bridge_json(f: &BridgeFacts) -> String {
         f.pc_problems.map_or(-1, i64::from),
         age_json(f.from_asio_age),
         crate::rx_arrival::json(f.rx),
+        crate::rx_arrival::pull_wait_json(f.rx),
         f.tx.json(),
     )
 }
