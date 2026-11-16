@@ -228,6 +228,12 @@ absent_ok = true
 why = "media TX's bound on frames out at the miniport, FOH's measured value (ndis-pacer rule)"
 
 [[registry]]
+key = 'HKLM\SYSTEM\CurrentControlSet\Services\dasiopacer\Parameters'
+name = "RxdEnable"
+dword = 1
+why = "deferred receive: TCP and discovery chatter leave the NIC's DPC (the NIC DPC stall fix, dasio#1; FOH since 5.11, dsg since 16.11); each PC's profile names its RxdCpu"
+
+[[registry]]
 key = '{nic_class}'
 name = "DriverVersion"
 string = "10.79.20.1003"
