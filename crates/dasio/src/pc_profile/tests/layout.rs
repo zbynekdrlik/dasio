@@ -106,6 +106,7 @@ fn placeholders_stand_for_the_layout_s_masks() {
 
 const COMPUTED: &str = r#"
 name = "pc"
+nic_guid = "{G}"
 instances = 2
 
 [[registry]]
