@@ -1624,6 +1624,12 @@ uninstall = ['C:\Program Files (x86)\Microsoft\Edge\Application\*\Installer\setu
 # --verbose-logging + --log-file: setup logs its own reason to
 # C:\ProgramData\dasio\msedge_installer.log when it still refuses (dasio#128).
 before_uninstall = ['HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdateDev\AllowUninstall']
+# Even so it refused ("Not a Windows caller", exit 532): setup allows the
+# uninstall only when its parent is dllhost.exe in Windows' own folder, so
+# apply runs it through a copy of System32's cmd.exe as
+# %SystemRoot%\SystemTemp\dllhost.exe, deleted after (FOH 17.11.2026: Edge
+# removed, its log "Uninstall allowed: Windows caller"; dasio#128).
+windows_caller = true
 why = "Microsoft Edge: owner 16.11.2026: no browser and no updater on a dasio PC, removed, not only disabled, so nothing starts by chance; re-removed after a Windows upgrade (dasio#128)"
 
 [[absent]]

@@ -448,6 +448,7 @@ fn remove(r: &Removal) -> Result<(), String> {
             exe,
             uninstall,
             before,
+            windows_caller,
             fallback,
         } => {
             if !file_there(exe)? {
@@ -459,7 +460,11 @@ fn remove(r: &Removal) -> Result<(), String> {
             let prog = absent::resolve_uninstaller(first, folder_names, |p| Path::new(p).is_file())
                 .ok_or_else(|| format!("{exe}: its uninstaller {first} was not found"))?;
             let mut ran = String::new();
-            for step in absent::exe_steps(args, before) {
+            // The caller's copy, while it exists; the uninstaller's error
+            // waits for its delete.
+            let mut caller: Option<String> = None;
+            let mut pending: Result<(), String> = Ok(());
+            for step in absent::exe_steps(args, before, *windows_caller) {
                 match step {
                     absent::ExeStep::Write(w) => {
                         // `plan` takes it from `absent::PRE_UNINSTALL_WRITES`
@@ -473,11 +478,48 @@ fn remove(r: &Removal) -> Result<(), String> {
                             w.data
                         );
                     }
+                    absent::ExeStep::CopyCaller => {
+                        let path = copy_caller().map_err(|e| format!("{exe}: {e}"))?;
+                        println!(
+                            "the uninstaller of {exe} runs through {path} (a copy of {})",
+                            absent::CALLER_SOURCE
+                        );
+                        caller = Some(path);
+                    }
                     absent::ExeStep::Uninstall(args) => {
-                        let status = run_bounded(&prog, &args)?;
-                        ran = format!("ran {prog} {} ({status})", args.join(" "));
+                        let mut cmd = match &caller {
+                            Some(path) => {
+                                use std::os::windows::process::CommandExt;
+                                let line = absent::caller_command(&prog, &args)?;
+                                let mut c = std::process::Command::new(path);
+                                c.raw_arg(line);
+                                c
+                            }
+                            None => {
+                                let mut c = std::process::Command::new(&prog);
+                                c.args(&args);
+                                c
+                            }
+                        };
+                        let what = format!("{prog} {}", args.join(" "));
+                        match run_bounded(&mut cmd, &what) {
+                            Ok(status) => ran = format!("ran {what} ({status})"),
+                            Err(e) => pending = Err(e),
+                        }
+                    }
+                    absent::ExeStep::DeleteCaller => {
+                        if let Some(path) = caller.take() {
+                            match std::fs::remove_file(&path) {
+                                Ok(()) => println!("deleted {path}"),
+                                Err(e) => {
+                                    let e = format!("deleting {path}: {e}");
+                                    pending = pending.and(Err(e));
+                                }
+                            }
+                        }
                     }
                     absent::ExeStep::Look => {
+                        pending.clone()?;
                         // An uninstaller's exit code says little (some end
                         // non-zero after a good uninstall): the exe gone is
                         // what counts.
@@ -597,28 +639,53 @@ fn image_path(pid: u32) -> Result<String, String> {
     Ok(String::from_utf16_lossy(&buf[..len as usize]))
 }
 
-/// Runs `prog args` and waits at most [`UNINSTALL_LIMIT`]; past it the
-/// process is killed and the error says so.
-fn run_bounded(prog: &str, args: &[String]) -> Result<std::process::ExitStatus, String> {
+/// Copies [`absent::CALLER_SOURCE`] to [`absent::caller_path`] and gives
+/// the copy's path. A file already there (not dasio's) is left alone and
+/// refused: it is never overwritten.
+fn copy_caller() -> Result<String, String> {
+    let root = std::env::var("SystemRoot").map_err(|e| format!("SystemRoot: {e}"))?;
+    let system_temp = Path::new(&format!(r"{root}\SystemTemp")).is_dir();
+    let path = absent::caller_path(&root, system_temp);
+    let source = format!(r"{root}\{}", absent::CALLER_SOURCE);
+    // create_new: the copy never replaces a file it did not make.
+    let mut to = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|e| format!("the Windows caller {path}: {e}"))?;
+    let copied =
+        std::fs::File::open(&source).and_then(|mut from| std::io::copy(&mut from, &mut to));
+    drop(to);
+    if let Err(e) = copied {
+        let _ = std::fs::remove_file(&path);
+        return Err(format!("copying {source} to {path}: {e}"));
+    }
+    Ok(path)
+}
+
+/// Runs `cmd` (`what` names it) and waits at most [`UNINSTALL_LIMIT`];
+/// past it the process is killed and the error says so.
+fn run_bounded(
+    cmd: &mut std::process::Command,
+    what: &str,
+) -> Result<std::process::ExitStatus, String> {
     use std::process::Stdio;
-    let mut child = std::process::Command::new(prog)
-        .args(args)
+    let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| format!("{prog}: {e}"))?;
+        .map_err(|e| format!("{what}: {e}"))?;
     let start = std::time::Instant::now();
     loop {
-        if let Some(status) = child.try_wait().map_err(|e| format!("{prog}: {e}"))? {
+        if let Some(status) = child.try_wait().map_err(|e| format!("{what}: {e}"))? {
             return Ok(status);
         }
         if start.elapsed() > UNINSTALL_LIMIT {
             let _ = child.kill();
             let _ = child.wait();
             return Err(format!(
-                "{prog} {}: still running after {} s, stopped",
-                args.join(" "),
+                "{what}: still running after {} s, stopped",
                 UNINSTALL_LIMIT.as_secs()
             ));
         }

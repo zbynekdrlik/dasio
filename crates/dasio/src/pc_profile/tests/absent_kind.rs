@@ -2,9 +2,10 @@
 //! on a dasio PC, reported while it does and removed by `apply`.
 
 use super::super::absent::{
-    DELETABLE_SERVICES, ExeStep, Fallback, PRE_UNINSTALL_WRITES, REMOVABLE_DIRS, Step, Target,
-    exe_steps, inside, parent_dir, pre_write, removable, resolve_uninstaller, split_star,
-    task_folder, task_matches, versions_newest_first,
+    CALLER_NAME, CALLER_SOURCE, DELETABLE_SERVICES, ExeStep, Fallback, PRE_UNINSTALL_WRITES,
+    REMOVABLE_DIRS, Step, Target, caller_command, caller_path, exe_steps, inside, parent_dir,
+    pre_write, removable, resolve_uninstaller, split_star, task_folder, task_matches,
+    versions_newest_first,
 };
 use super::super::*;
 use super::Pc;
@@ -173,6 +174,7 @@ fn what_exists_is_a_problem_and_its_removal_is_planned() {
                     "--force-uninstall".into(),
                 ],
                 before: vec![],
+                windows_caller: false,
                 fallback: None,
             }),
             Action::Remove(Removal::Service("edgeupdate".into())),
@@ -404,6 +406,7 @@ fn an_exe_entrys_fallback_parses_and_is_planned_after_its_uninstaller() {
             exe: UPDATE.into(),
             uninstall: vec![UPDATE.into(), "/uninstall".into()],
             before: vec![],
+            windows_caller: false,
             fallback: Some(fb.clone()),
         })]
     );
@@ -497,11 +500,11 @@ fn a_fallback_deletes_only_the_allowed_folder_of_its_own_exe() {
         ),
         (
             "service = \"edgeupdate\"\nremove_dir = 'C:\\x'".to_string(),
-            "absent service edgeupdate: remove_dir, stop_processes and before_uninstall are for exe only".to_string(),
+            "absent service edgeupdate: remove_dir, stop_processes, before_uninstall and windows_caller are for exe only".to_string(),
         ),
         (
             "task = '\\x*'\nstop_processes = ['a.exe']".to_string(),
-            r"absent task \x*: remove_dir, stop_processes and before_uninstall are for exe only".to_string(),
+            r"absent task \x*: remove_dir, stop_processes, before_uninstall and windows_caller are for exe only".to_string(),
         ),
     ];
     for (body, want) in refused {
@@ -665,7 +668,9 @@ fn only_edgeupdatedevs_allowuninstall_is_written_before_an_uninstaller() {
     ] {
         let err = one(&body).unwrap_err();
         assert!(
-            err.ends_with(": remove_dir, stop_processes and before_uninstall are for exe only"),
+            err.ends_with(
+                ": remove_dir, stop_processes, before_uninstall and windows_caller are for exe only"
+            ),
             "{err}"
         );
     }
@@ -688,6 +693,7 @@ fn the_write_comes_before_the_uninstaller_and_only_while_the_exe_is_there() {
             exe: EDGE.into(),
             uninstall: vec![r"C:\setup.exe".into(), "--uninstall".into()],
             before: vec![w],
+            windows_caller: false,
             fallback: None,
         })]
     );
@@ -697,7 +703,7 @@ fn the_write_comes_before_the_uninstaller_and_only_while_the_exe_is_there() {
     );
     let args = ["--uninstall".to_string(), "--msedge".to_string()];
     assert_eq!(
-        exe_steps(&args, &[w]),
+        exe_steps(&args, &[w], false),
         vec![
             ExeStep::Write(w),
             ExeStep::Uninstall(args.to_vec()),
@@ -705,7 +711,7 @@ fn the_write_comes_before_the_uninstaller_and_only_while_the_exe_is_there() {
         ]
     );
     assert_eq!(
-        exe_steps(&args, &[]),
+        exe_steps(&args, &[], false),
         vec![ExeStep::Uninstall(args.to_vec()), ExeStep::Look]
     );
 }
@@ -730,4 +736,165 @@ fn the_baselines_edge_entry_allows_its_uninstall_first() {
             .count(),
         1
     );
+}
+
+/// Edge's entry run through the Windows caller.
+fn edge_caller(uninstall: &str) -> Result<Profile, String> {
+    one(&format!(
+        "exe = '{EDGE}'\nuninstall = [{uninstall}]\nbefore_uninstall = ['{ALLOW}']\nwindows_caller = true"
+    ))
+}
+
+#[test]
+fn the_windows_caller_is_a_cmd_copy_named_dllhost_in_windows_own_folder() {
+    // Edge's setup: "Parent process: C:\Windows\SystemTemp\dllhost.exe",
+    // "Uninstall allowed: Windows caller" (FOH 17.11.2026).
+    assert_eq!(CALLER_SOURCE, r"System32\cmd.exe");
+    assert_eq!(CALLER_NAME, "dllhost.exe");
+    assert_eq!(
+        caller_path(r"C:\Windows", true),
+        r"C:\Windows\SystemTemp\dllhost.exe"
+    );
+    assert_eq!(
+        caller_path(r"C:\Windows", false),
+        r"C:\Windows\Temp\dllhost.exe"
+    );
+}
+
+#[test]
+fn the_callers_line_quotes_the_uninstaller_and_refuses_what_cmd_reads() {
+    let setup =
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\156.0.4314.58\Installer\setup.exe";
+    let args: Vec<String> = ["--uninstall", "--log-file=C:\\ProgramData\\dasio\\x.log"]
+        .map(String::from)
+        .to_vec();
+    assert_eq!(
+        caller_command(setup, &args).unwrap(),
+        format!(r#"/c ""{setup}" --uninstall --log-file=C:\ProgramData\dasio\x.log""#)
+    );
+    assert_eq!(
+        caller_command(r"C:\s.exe", &[]).unwrap(),
+        r#"/c ""C:\s.exe"""#
+    );
+    for c in ['"', '&', '|', '<', '>', '^', '%', '\n', '\r'] {
+        let bad = format!("a{c}b");
+        let want = format!(
+            "{bad:?} holds {c:?}, which cmd.exe reads itself (the Windows caller is cmd.exe)"
+        );
+        assert_eq!(caller_command(&bad, &[]).unwrap_err(), want);
+        assert_eq!(
+            caller_command(r"C:\s.exe", &["--x".into(), bad.clone()]).unwrap_err(),
+            want
+        );
+    }
+    for bad in ["a b", "", "a\tb"] {
+        assert_eq!(
+            caller_command(r"C:\s.exe", &["--x".into(), bad.into()]).unwrap_err(),
+            format!("{bad:?}: an argument through the Windows caller is one word, no spaces")
+        );
+    }
+}
+
+#[test]
+fn the_caller_is_copied_before_the_uninstaller_and_deleted_after_it() {
+    let p = edge_caller(r"'C:\Program Files (x86)\s\*\setup.exe', '--uninstall'").unwrap();
+    assert!(p.absent[0].windows_caller);
+    let w = &PRE_UNINSTALL_WRITES[0];
+    assert!(plan(&p, &Pc::default()).is_empty(), "Edge gone: nothing");
+    let pc = Pc {
+        files: vec![EDGE.into()],
+        ..Pc::default()
+    };
+    let actions = plan(&p, &pc);
+    assert_eq!(
+        actions,
+        vec![Action::Remove(Removal::Exe {
+            exe: EDGE.into(),
+            uninstall: vec![
+                r"C:\Program Files (x86)\s\*\setup.exe".into(),
+                "--uninstall".into()
+            ],
+            before: vec![w],
+            windows_caller: true,
+            fallback: None,
+        })]
+    );
+    assert_eq!(
+        describe(&actions[0]),
+        format!(
+            r#"the absence of {EDGE} (sets {ALLOW} = "", then runs C:\Program Files (x86)\s\*\setup.exe --uninstall through dllhost.exe (a copy of System32\cmd.exe))"#
+        )
+    );
+    let args = ["--uninstall".to_string()];
+    assert_eq!(
+        exe_steps(&args, &[w], true),
+        vec![
+            ExeStep::Write(w),
+            ExeStep::CopyCaller,
+            ExeStep::Uninstall(args.to_vec()),
+            ExeStep::DeleteCaller,
+            ExeStep::Look
+        ]
+    );
+    assert_eq!(
+        exe_steps(&args, &[], true),
+        vec![
+            ExeStep::CopyCaller,
+            ExeStep::Uninstall(args.to_vec()),
+            ExeStep::DeleteCaller,
+            ExeStep::Look
+        ]
+    );
+    // Off by default.
+    assert!(!edge_with(&format!("'{ALLOW}'")).unwrap().absent[0].windows_caller);
+}
+
+#[test]
+fn a_windows_caller_entry_refuses_what_cmd_would_read() {
+    assert_eq!(
+        edge_caller(r"'C:\s.exe', '--a&b'").unwrap_err(),
+        format!(
+            "absent exe {EDGE}: windows_caller: \"--a&b\" holds '&', which cmd.exe reads itself (the Windows caller is cmd.exe)"
+        )
+    );
+    assert_eq!(
+        edge_caller(r"'C:\s%x%.exe'").unwrap_err(),
+        format!(
+            "absent exe {EDGE}: windows_caller: \"C:\\\\s%x%.exe\" holds '%', which cmd.exe reads itself (the Windows caller is cmd.exe)"
+        )
+    );
+    assert_eq!(
+        edge_caller(r"'C:\s.exe', 'a b'").unwrap_err(),
+        format!(
+            "absent exe {EDGE}: windows_caller: \"a b\": an argument through the Windows caller is one word, no spaces"
+        )
+    );
+    // Without windows_caller the same arguments are the uninstaller's own.
+    assert!(one(&format!("exe = '{EDGE}'\nuninstall = ['C:\\s.exe', 'a b']")).is_ok());
+    for body in [
+        "service = \"edgeupdate\"\nwindows_caller = true",
+        "task = '\\x*'\nwindows_caller = true",
+    ] {
+        assert!(
+            one(body).unwrap_err().ends_with(
+                ": remove_dir, stop_processes, before_uninstall and windows_caller are for exe only"
+            ),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn the_baselines_edge_entry_runs_its_uninstaller_through_the_windows_caller() {
+    let b = baseline().unwrap();
+    let edge = b
+        .absent
+        .iter()
+        .find(|e| e.target() == Some(Target::Exe(EDGE)))
+        .unwrap();
+    assert!(edge.windows_caller);
+    // Only Edge's entry: EdgeUpdate's /uninstall needs none.
+    assert_eq!(b.absent.iter().filter(|e| e.windows_caller).count(), 1);
+    let cmd = edge.uninstall.as_ref().unwrap();
+    assert!(caller_command(&cmd[0], &cmd[1..]).is_ok());
 }
