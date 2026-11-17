@@ -196,7 +196,10 @@ paths:
   `Version`.
 - The two Abletons on FOH (band and master) never start on their own after
   a reboot. The dasio session starts both itself; the launch commands are in
-  its local memory (`foh-reboot-ableton-start`), not in the repo. Then it
+  its local memory (`foh-reboot-ableton-start`), not in the repo. It starts them
+  NOT elevated (through explorer.exe, never a direct start from the elevated
+  remote shell): an elevated Live blocks fohmixer's hub from its windows
+  (17.11.2026). Then it
   checks that the band Ableton is attached to its dasio instance
   (`attached=1` in the instance log) and that Lasso's affinities hold.
 
