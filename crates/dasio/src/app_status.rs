@@ -216,8 +216,9 @@ pub struct BridgeFacts {
     /// two periods (dstack v0.6.173, dasio#120; `LATE_BIN_KEYS`).
     pub late_bins: [u64; LATE_BINS],
     /// Each direction's converter delay, ns (dstack v0.6.174, dasio#120;
-    /// `Stats::converter_delay_ns`): 0 while that player does not exist
-    /// (the to-ASIO one before the driver's first open).
+    /// `Stats::converter_delay_ns`, the last player's): 0 until that
+    /// direction's first player was made (the to-ASIO one at the driver's
+    /// first open).
     pub to_asio_converter_delay_ns: u64,
     pub from_asio_converter_delay_ns: u64,
     /// The PC profile's problems, checked in process (dasio#120); `None`
@@ -351,7 +352,7 @@ fn us_of_ns(ns: u64) -> u64 {
 
 /// The bridge's converter delay keys for its status JSON (dstack
 /// v0.6.174, dasio#120), us, each followed by a comma: a direction's only
-/// while its player exists (never a 0 that reads as no delay).
+/// once its first player was made (never a 0 that reads as no delay).
 fn converter_json(to_asio_ns: u64, from_asio_ns: u64) -> String {
     [
         ("to_asio_converter_delay_us", to_asio_ns),
@@ -457,9 +458,9 @@ fn escaped(t: &str) -> String {
 /// The JSON object for a bridge instance's `set_app_status`: `line`,
 /// `state`, `kind` and every number (no DAW: `daw_attached` false), the
 /// driver callbacks' lateness bins and each direction's converter delay
-/// while its player exists (dasio#120); the RX arrival and its ASIO pull
-/// wait keys only once measured (dasio#128), the from-ASIO pull's only
-/// with channels from ASIO (dasio#120).
+/// once its first player was made (dasio#120); the RX arrival and its
+/// ASIO pull wait keys only once measured (dasio#128), the from-ASIO
+/// pull's only with channels from ASIO (dasio#120).
 pub fn bridge_json(f: &BridgeFacts) -> String {
     format!(
         concat!(

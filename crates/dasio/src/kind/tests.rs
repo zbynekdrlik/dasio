@@ -367,16 +367,9 @@ fn the_converter_length_is_held_to_32_to_256_in_steps_of_8() {
 #[test]
 fn dasio_s_converter_check_agrees_with_dstack_asio_s() {
     for taps in 0..=300_u32 {
-        // One channel each way keeps the 301 bridges small.
         let spec = Spec {
-            dante_rate: 96_000,
-            block_frames: 64,
-            to_asio: 1,
-            from_asio: 1,
-            app_buffer_ns: None,
-            to_asio_app_buffer_ns: None,
-            from_asio_app_buffer_ns: None,
             converter_taps: Some(taps),
+            ..bridge_of(FULL).spec(&device()).unwrap()
         };
         let dstack_takes = dstack_asio::bridge::Bridge::new(spec).is_ok();
         let dasio_takes = kind(&with_bridge(&format!(

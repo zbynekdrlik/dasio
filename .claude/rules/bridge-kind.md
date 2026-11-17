@@ -134,8 +134,13 @@ paths:
   taps 1.333 ms, 48 taps 0.250 ms (flat to 20 kHz), 32 taps 0.167 ms
   (-0.4 dB at 20 kHz). `bridge_json` carries `to_asio_converter_delay_us` /
   `from_asio_converter_delay_us` (dlink `Stats::converter_delay_ns`,
-  rounded; left out while 0: the to-ASIO player exists only after the
-  driver's first open), the counts line `*_converter_delay_ms`.
+  rounded, the last player's; left out until a direction's first player:
+  the to-ASIO one comes at the driver's first open), the counts line
+  `*_converter_delay_ms`. dtray v0.6.174 does not know the key yet (its
+  `[bridge]` read refuses unknown fields, dstack issue 387's open item):
+  on a PC with `converter_taps` set, dtray's settings window reads "Settings
+  not readable" until the tag moves past the release that teaches it; the
+  device itself reads the key.
 - The driver callback's lateness bins (dstack v0.6.173, dstack issue
   386): `bridge_json` writes `late_250us`..`late_2000us`
   (`dstack_asio::state::LATE_BIN_KEYS`, every bin, 0 included) before
