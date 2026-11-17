@@ -34,6 +34,12 @@ fn the_baseline_holds_every_non_site_key_of_the_foh_and_mbc_profiles() {
                 .any(|e| e.file.eq_ignore_ascii_case(file) && e.key == *key),
             ["bcd", name] => b.bcd.iter().any(|e| e.name.eq_ignore_ascii_case(name)),
             ["process", exe] => b.process.iter().any(|e| e.exe.eq_ignore_ascii_case(exe)),
+            // FOH's DriverVersion pin moved to the hardware-ID driver entry
+            // (dasio#128, 17.11.2026).
+            ["nic_driver", id] => b
+                .nic_driver
+                .iter()
+                .any(|e| e.hardware_ids.iter().any(|p| nic_driver::id_matches(p, id))),
             _ => panic!("fold-keys.txt: {line:?} is not kind|key|name, kind|file|key or kind|name"),
         };
         if !held {
@@ -50,11 +56,14 @@ fn the_baseline_holds_every_non_site_key_of_the_foh_and_mbc_profiles() {
 #[test]
 fn the_fold_fixture_is_whole() {
     // An emptied or cut fixture would pass the test above for nothing:
-    // 207 keys on 16.11.2026: 54 registry, 150 ini, 2 bcd, 1 process.
+    // 207 keys on 16.11.2026: 54 registry, 150 ini, 2 bcd, 1 process; on
+    // 17.11.2026 the registry DriverVersion pin became the nic_driver line
+    // (the same key, now by hardware ID: 53 registry + 1 nic_driver).
     let l = lines();
     assert!(l.len() >= 207, "{} keys", l.len());
     let count = |kind: &str| l.iter().filter(|x| x.starts_with(kind)).count();
-    assert!(count("registry|") >= 54, "{}", count("registry|"));
+    assert!(count("registry|") >= 53, "{}", count("registry|"));
+    assert_eq!(count("nic_driver|"), 1);
     assert!(count("ini|") >= 150, "{}", count("ini|"));
     assert_eq!(count("bcd|"), 2);
     assert_eq!(count("process|"), 1);

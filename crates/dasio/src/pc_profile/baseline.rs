@@ -126,6 +126,19 @@ pub fn merge(base: &Profile, site: &Profile) -> Profile {
         .collect();
     absent.extend(site.absent.iter().cloned());
     out.absent = absent;
+    let mut nic_driver: Vec<NicDriverEntry> = base
+        .nic_driver
+        .iter()
+        .filter(|b| {
+            !site
+                .nic_driver
+                .iter()
+                .any(|s| s.family.eq_ignore_ascii_case(&b.family))
+        })
+        .cloned()
+        .collect();
+    nic_driver.extend(site.nic_driver.iter().cloned());
+    out.nic_driver = nic_driver;
     out
 }
 
@@ -143,6 +156,7 @@ pub fn baseline_only(base: &Profile) -> Profile {
         bcd: Vec::new(),
         task: Vec::new(),
         absent: Vec::new(),
+        nic_driver: Vec::new(),
     };
     merge(base, &empty)
 }
@@ -152,17 +166,24 @@ pub fn baseline_only(base: &Profile) -> Profile {
 /// file there (dasio#128), its CPU masks computed for a PC of `cpus`
 /// logical CPUs ([`resolve`]).
 pub fn load(path: &std::path::Path, cpus: usize) -> Result<Profile, String> {
+    let mut p = load_merged(path)?;
+    resolve(&mut p, cpus)?;
+    Ok(p)
+}
+
+/// The baseline merged with the site profile at `path` (the baseline
+/// alone without a file there), its CPU masks not computed yet: what
+/// [`load`] starts from, and all `dasio pc-profile nic-driver` needs.
+pub fn load_merged(path: &std::path::Path) -> Result<Profile, String> {
     let base = baseline()?;
-    let mut p = match std::fs::read_to_string(path) {
+    Ok(match std::fs::read_to_string(path) {
         Ok(text) => merge(
             &base,
             &parse(&text).map_err(|e| format!("{}: {e}", path.display()))?,
         ),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => baseline_only(&base),
         Err(e) => return Err(format!("{}: {e}", path.display())),
-    };
-    resolve(&mut p, cpus)?;
-    Ok(p)
+    })
 }
 
 /// How a must-have problem's text starts (dasio#128): the service ends on

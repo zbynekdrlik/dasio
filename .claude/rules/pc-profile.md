@@ -50,6 +50,24 @@ paths:
   rxd's CPU on purpose (both are the NIC's receive work). After FOH's
   rollout (3 RSS CPUs, `*NumRssQueues` 4) read `Get-NetAdapterRss` back.
   A site profile naming these needs 0.1.120+.
+- **The Dante NIC's driver is a `[[nic_driver]]` entry** (dasio#128,
+  17.11.2026), by the NIC's hardware (`hardware_ids` prefixes of its PnP
+  hardware IDs, matched up to `&`/`\`), never by the driver bound now:
+  `version`, `provider` (checked, WARN + tray count), `inf`, `signer` (the
+  catalog's CN) and every `files` name + SHA256 (checked only by
+  `install.ps1 -NicDriver <folder>` through `dasio pc-profile nic-driver`,
+  which refuses any extra, missing or changed file and any other signer).
+  The baseline pins FOH's Realtek 10.79.20.1003 `rt640x64sta.inf` for
+  RTL8125 and RTL8168. Realtek serves only its newest release (10.79 is
+  gone from realtek.com and absent from the Update Catalog), so the folder
+  is a copy of FOH's package (`pnputil /export-driver <oem inf> <folder>`,
+  FOH's oem name read with `pnputil /enum-drivers`), put inside the bundle
+  folder. `-NicDriver` is opt-in only: the adapter restarts, someone on
+  site. pnputil keeps a newer driver Windows ranks higher (dsg's 10.80):
+  install.ps1 refuses after the read-back; remove that one first. A site
+  `[[nic_driver]]` with the same `family` wins (dsg measuring 10.80); it
+  needs 0.1.121+ on the PC. A new pinned package: read its files' SHA256
+  and the catalog's `Get-AuthenticodeSignature` on a PC running it.
 - **Reserved CPUs** (dasio#120): the baseline's `ReservedCpuSets`
   (`Session Manager\kernel`, `computed = "dasio_cpus"`, read at boot) keeps
   every thread off dasio's CPUs unless its process asks (CPU sets) or is

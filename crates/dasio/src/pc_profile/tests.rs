@@ -7,6 +7,7 @@ mod fold;
 mod hold;
 mod layout;
 mod must;
+mod nic_driver_kind;
 mod power;
 
 /// A PC as a test sets it up: the reader the check sees.
@@ -34,11 +35,16 @@ struct Pc {
     task_names: Vec<String>,
     /// `absent()` fails.
     absent_err: Option<String>,
+    /// The Dante NIC's hardware IDs.
+    hardware_ids: Vec<String>,
 }
 
 impl Reader for Pc {
     fn nic_service(&self) -> Option<String> {
         self.nic_service.clone()
+    }
+    fn nic_hardware_ids(&self) -> Vec<String> {
+        self.hardware_ids.clone()
     }
     fn absent(&self, e: &AbsentEntry) -> Result<Vec<String>, String> {
         if let Some(err) = &self.absent_err {
@@ -956,12 +962,15 @@ fn the_shipped_baseline_parses_and_holds_the_must_haves() {
         && e.name == "*InterruptModeration"
         && e.nic_service.as_deref() == Some("rt640x64")));
     assert!(b.registry.iter().any(|e| e.key.contains("{active_scheme}")));
-    // The inbox Realtek driver is reported, never silently skipped.
+    // The inbox Realtek driver is reported, never silently skipped: the
+    // driver entry goes by the NIC's hardware, whichever driver is bound
+    // (tests/nic_driver_kind.rs checks a RTL8168 on rtcx21).
     assert!(
-        b.registry
+        b.nic_driver
             .iter()
-            .any(|e| e.nic_service.as_deref() == Some("rtcx21") && e.check_only)
+            .any(|e| e.version == "10.79.20.1003" && e.inf == "rt640x64sta.inf")
     );
+    assert!(!b.registry.iter().any(|e| e.name == "DriverVersion"));
     // The filter's deferred receive is on everywhere; its CPU comes from
     // the PC's CPU layout (dasio#128).
     assert!(

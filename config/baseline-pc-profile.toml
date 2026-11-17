@@ -266,14 +266,6 @@ why = "Windows keeps every thread off dasio's CPUs unless its process asks for t
 
 [[registry]]
 key = '{nic_class}'
-name = "DriverVersion"
-string = "10.79.20.1003"
-nic_service = "rt640x64"
-check_only = true
-why = "Realtek 10.79 measured best with rxd + kernel TX; the inbox and 10.39 drivers were worse, dasio#1"
-
-[[registry]]
-key = '{nic_class}'
 name = "*EEE"
 string = "0"
 nic_service = "rt640x64"
@@ -493,14 +485,6 @@ key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\QoS\dstack Dante leg mDNS cap'
 name = "ThrottleRate"
 qword = 25000
 why = "dstack#288: caps this PC's own outgoing mDNS at 200 kbit/s (a QoS policy; ms_pacer stays bound on the Dante adapter); FOH 20:22, mbc 21:32 CET 15.11.2026"
-
-[[registry]]
-key = '{nic_class}'
-name = "DriverVersion"
-string = "10.79.20.1003"
-nic_service = "rtcx21"
-check_only = true
-why = "the Dante NIC runs Microsoft's inbox Realtek driver (rtcx21): install Realtek's rt640x64 10.79 as on FOH (dsg 15.11.2026 measured ~550 us later arrival than iem-mixer on the same flow, dasio#128)"
 
 [[bcd]]
 name = "disabledynamictick"
@@ -1664,3 +1648,33 @@ why = "Edge's updater task (its name ends in a GUID): owner 16.11.2026: no brows
 [[absent]]
 task = '\MicrosoftEdgeUpdateTaskMachineUA*'
 why = "Edge's updater task (its name ends in a GUID): owner 16.11.2026: no browser and no updater on a dasio PC, removed, not only disabled, so nothing starts by chance; re-removed after a Windows upgrade (dasio#128)"
+
+# The Dante NIC's driver package per NIC family (dasio#128), by the NIC's
+# hardware, whichever driver is bound now (an inbox rtcx21 on a RTL8168
+# reads as the wrong version and provider). Checked only (WARN + tray
+# count): `install.ps1 -NicDriver <folder>` installs it, after `dasio
+# pc-profile nic-driver` found the folder to be exactly these files (SHA256)
+# with the catalog signed by `signer`. Realtek no longer serves 10.79 (its
+# download page lists only the newest release, the Microsoft Update Catalog
+# has none, 17.11.2026), so the folder is a copy of FOH's package.
+[[nic_driver]]
+family = "Realtek PCIe (rt640x64)"
+hardware_ids = ['PCI\VEN_10EC&DEV_8125', 'PCI\VEN_10EC&DEV_8168']
+version = "10.79.20.1003"
+provider = "Realtek"
+inf = "rt640x64sta.inf"
+signer = "Microsoft Windows Hardware Compatibility Publisher"
+source = "FOH's driver store: pnputil /export-driver <its rt640x64sta.inf oem name> <folder> (10.79 is no longer on realtek.com)"
+why = "Realtek 10.79.20.1003 measured best with rxd + kernel TX on FOH (RTL8125); the inbox rtcx21 and 10.39 drivers were worse (dasio#1), dsg's inbox rtcx21 ~550 us later arrival than iem-mixer (RTL8168, dasio#128); the INF covers both"
+
+[[nic_driver.files]]
+name = "rt640x64sta.inf"
+sha256 = "BA0F860540FAE983DFDB803EC306C26128F43D4E1C5555B97521561A5840A9EC"
+
+[[nic_driver.files]]
+name = "rt640x64.cat"
+sha256 = "EA8CC8DED3C8CAAA3AECFB96B49FC4E819A8B0499450470A6A231C4E2437BBC5"
+
+[[nic_driver.files]]
+name = "rt640x64.sys"
+sha256 = "DBFD463C760F47862EC5682695BD96E3D3F71EFD7C21109FC5D3EA0927137117"

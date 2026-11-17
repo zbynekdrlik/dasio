@@ -19,6 +19,7 @@ fn usage() -> ExitCode {
          dasio probe --instance <n> [--seconds <s>] [--affinity <hex mask>] [--rate <Hz>]\n       \
          dasio jitter --cpus <n,n,..> --seconds <s>\n       \
          dasio pc-profile check|apply|layout [--profile <file>] [--plan]\n       \
+         dasio pc-profile nic-driver [--profile <file>] --hardware-id <id>... --file <name>=<sha256>... --signature <status> --signer <subject>\n       \
          dasio unregister --instance <n> [--name <shown to DAWs>]"
     );
     ExitCode::from(2)
@@ -86,6 +87,7 @@ fn main() -> ExitCode {
             Some("check") => pc_profile(&path, false, true),
             Some("apply") => pc_profile(&path, true, plan_only),
             Some("layout") => pc_layout(&path),
+            Some("nic-driver") => pc_nic_driver(&path, &args[2..]),
             _ => usage(),
         };
     }
@@ -441,6 +443,36 @@ fn pc_profile(path: &str, apply: bool, plan_only: bool) -> ExitCode {
 fn pc_profile(_path: &str, _apply: bool, _plan_only: bool) -> ExitCode {
     eprintln!("dasio: Windows only");
     ExitCode::FAILURE
+}
+
+/// `dasio pc-profile nic-driver --hardware-id <id>... --file
+/// <name>=<sha256>... --signature <status> --signer <subject>` (dasio#128,
+/// install.ps1's `-NicDriver`): whether the package install.ps1 read is the
+/// one the baseline (with the PC's own profile) pins for the Dante NIC's
+/// family; exit 0 with `INF`/`VERSION` lines, 2 refused.
+fn pc_nic_driver(path: &str, args: &[String]) -> ExitCode {
+    let p = match dasio::pc_profile::load_merged(std::path::Path::new(path)) {
+        Ok(p) => p,
+        Err(e) => {
+            println!("REFUSED the PC profile does not load: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    // `--profile <file>` is main's, not the decision's.
+    let mut rest = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--profile" {
+            it.next();
+        } else {
+            rest.push(a.clone());
+        }
+    }
+    let (lines, code) = dasio::pc_profile::nic_driver::command(&p.nic_driver, &rest);
+    for l in &lines {
+        println!("{l}");
+    }
+    ExitCode::from(code)
 }
 
 /// The CPU layout this PC's profile is held to (dasio#128), for its
