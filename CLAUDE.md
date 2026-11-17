@@ -7,7 +7,7 @@ Design: `docs/design/2026-10-29-dante-asio-design.md`; MVP plan: `docs/plans/202
 
 - Branches: `dev` and `main` only; PRs dev → main; merge commits.
 - No local cargo: GitHub CI (`ubuntu-latest`, `windows-latest`) builds and tests.
-- Version: `[workspace.package].version`; dev > main on PRs (`scripts/check_version.py`).
+- Version: `[workspace.package].version`; dev > main on PRs (`scripts/check_version.py`). Cargo.lock holds it three times (asio-driver, dasio, shm): bump all three, or CI's `cargo deny --locked` fails.
 - No site data in the repo: addresses, real device and channel names live only in the PC's config.
 - Dante: never change another device's subscriptions; tests subscribe our own device to itself.
 - Dante code comes from dstack (zbynekdrlik/dstack#1): `dstack` and `dstack-audio-io` are git deps pinned to a tag in `crates/dasio/Cargo.toml`. A Dante protocol bug goes there as a ticket; this repo only moves the tag.
