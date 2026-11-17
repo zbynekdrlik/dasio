@@ -852,5 +852,5 @@ fn the_bridge_instance_hands_the_from_asio_side_to_the_tx_thread() {
 }
 
 /// dstack v0.6.173 / v0.6.174's bridge figures (dasio#120): lateness bins,
-/// converter delays, the underrun tick.
+/// converter delays, the underrun tick; v0.6.176's network read of them.
 mod bridge_figures;

@@ -99,8 +99,16 @@ Owner rules from dasio#1. They hold for every change on a PC running dasio.
   limit kills it midway. On dsg, 16.11, the old service was already removed
   when it died, and the bridge stayed down until a rerun. Write the bundle's
   `deploy.ps1` (install.ps1 with output into `install.log`, then
-  `install.done`) and start it with a SYSTEM scheduled task (`schtasks
-  /create ... /ru SYSTEM /rl HIGHEST` + `/run`). Poll for `install.done`.
+  `install.done`) and start it with a SYSTEM scheduled task whose trigger
+  lies in the PAST: `Register-ScheduledTask -TaskName <task> -Action
+  (New-ScheduledTaskAction ...) -Trigger (New-ScheduledTaskTrigger -Once
+  -At (Get-Date).AddDays(-1)) -User SYSTEM -RunLevel Highest`, then
+  `Start-ScheduledTask` (no locale date format). Poll for `install.done`,
+  then `Unregister-ScheduledTask -TaskName <task> -Confirm:$false`. Never
+  `schtasks /create /sc once /st 23:59` + `/run`: that task fires again
+  that night. On dsg (17.11.2026 22:59Z) the b0127 and b0128 deploy tasks
+  both re-ran, `install.ps1` ran twice in parallel, and b0128's bundle
+  config replaced the live one (32 converter taps back to 48, dasio#120).
 - **Remote-shell gotchas (dsg, 17.11.2026):** `& script.ps1` is refused
   (script execution disabled): run a helper with `powershell -NoProfile
   -ExecutionPolicy Bypass -File <ps1>`. A config written with PS 5.1's
