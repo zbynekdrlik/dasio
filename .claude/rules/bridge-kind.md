@@ -92,3 +92,7 @@ paths:
   has not taken the last output yet` (was "...pump has not taken...").
   The counts line carries `from_asio_pull` (`None` without a pull).
   `app_status/tests.rs` guards this wiring as text.
+- A text guard over `run_bridge.rs` (`include_str!`) whose needle spans a
+  line break must normalise `\r\n` first: the Windows CI checkout has CRLF
+  lines, so a `"...\n        ..."` needle passes on Linux and fails the
+  Windows test and coverage jobs (PR 169, run 44055706009).
