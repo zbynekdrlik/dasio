@@ -254,7 +254,7 @@ paths:
   after 0.1.113 (the one shipping it): an older one refuses the whole
   profile.
 - The baseline removes Edge (`setup.exe --uninstall --msedge
-  --system-level --force-uninstall`), EdgeUpdate (`/uninstall`), its
+  --system-level --verbose-logging --force-uninstall`), EdgeUpdate (`/uninstall`), its
   services edgeupdate / edgeupdatem / MicrosoftEdgeElevationService and
   its two task families. EdgeUpdate's `/uninstall` exits 0 but keeps
   itself while WebView2 (`EdgeWebView`, which stays, owner 16.11) is
@@ -268,3 +268,19 @@ paths:
   (`fallback: deleted ...`) and looks again; the exe still there is a
   FAILED line. Its tasks and services go by their own entries, which run
   after it.
+- Edge's setup refuses `--uninstall --force-uninstall` on Windows 10 LTSC
+  (FOH 17.11.2026, EdgeUpdate's log: "Edge not uninstallable per regional
+  policy", though FOH's device region is SK and
+  `IntegratedServicesRegionPolicySet.json` lists SK: the EEA uninstall is
+  Windows 11's). So Edge's entry names `before_uninstall =
+  ['HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdateDev\AllowUninstall']`
+  (0.1.124+): `apply` writes it (REG_SZ "", the value the known removers
+  write) right before the uninstaller, only while the exe is there,
+  printing `before the uninstaller of ...: set ...`. Only a value on
+  `pc_profile::absent::PRE_UNINSTALL_WRITES` (key, name and data in code;
+  widen it under review, a parse error otherwise). The value stays after.
+  When Edge still stays, read setup's own reason in
+  `C:\Windows\SystemTemp\msedge_installer.log` (`--verbose-logging`;
+  without it setup logs nothing). Untried further steps the known removers
+  use: a placeholder `C:\Windows\SystemApps\Microsoft.MicrosoftEdge_8wekyb3d8bbwe\MicrosoftEdge.exe`,
+  a temporary EEA region; decide from that log, not by guessing.
