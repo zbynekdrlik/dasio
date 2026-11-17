@@ -797,7 +797,8 @@ fn the_bridge_instance_hands_the_from_asio_side_to_the_tx_thread() {
     // dstack v0.6.167's consumer port (dstack issue 364): the from-ASIO
     // pull taken before the pump's side, claimed by the TX thread before
     // the device starts, and the pump writes no TX channel.
-    let src = include_str!("../run_bridge.rs");
+    // A Windows checkout has CRLF lines: the needles below span lines.
+    let src = include_str!("../run_bridge.rs").replace("\r\n", "\n");
     let once = |needle: &str| {
         let found: Vec<usize> = src.match_indices(needle).map(|(i, _)| i).collect();
         assert_eq!(found.len(), 1, "{needle}: once in run_bridge.rs");
