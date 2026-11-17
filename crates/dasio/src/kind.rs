@@ -22,6 +22,9 @@
 //! # app_buffer_ns; dstack issue 382, dasio#120).
 //! to_asio_app_buffer_ns = 1333333
 //! from_asio_app_buffer_ns = 1666666
+//! # Both directions' converter length, taps (optional; 32 to 256 in
+//! # steps of 8, default 256; dstack issue 382, dasio#120).
+//! converter_taps = 48
 //! ```
 //!
 //! Every RX channel has its driver output and every TX channel its driver
@@ -31,20 +34,21 @@
 
 use dlink::bridge::AppBuffer;
 use dstack::device::DeviceConfig;
-use dstack_asio::bridge::Spec;
+use dstack_asio::bridge::{MAX_CONVERTER_TAPS, MIN_CONVERTER_TAPS, Spec};
 use dstack_asio::{Channels, Inputs};
 
 /// The device config's table that makes an instance a bridge.
 pub const CONFIG_BRIDGE: &str = "bridge";
 
 /// The keys of the `[bridge]` table.
-const KEYS: [&str; 6] = [
+const KEYS: [&str; 7] = [
     "driver",
     "to_asio",
     "from_asio",
     "app_buffer_ns",
     "to_asio_app_buffer_ns",
     "from_asio_app_buffer_ns",
+    "converter_taps",
 ];
 
 /// An instance's kind.
@@ -71,6 +75,8 @@ pub struct BridgeConfig {
     pub to_asio_app_buffer_ns: Option<u64>,
     /// The from-ASIO FIFO's own target, ns (`None`: `app_buffer_ns`).
     pub from_asio_app_buffer_ns: Option<u64>,
+    /// Both converters' sinc length, taps (`None`: dstack's 256).
+    pub converter_taps: Option<u32>,
 }
 
 /// The kind the device config in `text` names.
@@ -109,7 +115,37 @@ fn bridge(t: &toml::Table) -> Result<BridgeConfig, String> {
         app_buffer_ns: buffer_ns(t, "app_buffer_ns")?,
         to_asio_app_buffer_ns: buffer_ns(t, "to_asio_app_buffer_ns")?,
         from_asio_app_buffer_ns: buffer_ns(t, "from_asio_app_buffer_ns")?,
+        converter_taps: converter_taps(t)?,
     })
+}
+
+/// The converter length under `converter_taps`, taps (absent: `None`),
+/// held to what dstack-asio's `Bridge::new` takes (dstack issue 382):
+/// [`MIN_CONVERTER_TAPS`] to [`MAX_CONVERTER_TAPS`] in steps of
+/// [`dstack_resample::TAPS_STEP`].
+fn converter_taps(t: &toml::Table) -> Result<Option<u32>, String> {
+    const KEY: &str = "converter_taps";
+    let Some(v) = t.get(KEY) else {
+        return Ok(None);
+    };
+    let toml::Value::Integer(n) = v else {
+        return Err(format!(
+            "[{CONFIG_BRIDGE}] `{KEY}` must be a whole number of taps"
+        ));
+    };
+    match u32::try_from(*n) {
+        Ok(taps)
+            if (MIN_CONVERTER_TAPS..=MAX_CONVERTER_TAPS).contains(&taps)
+                && (taps as usize).is_multiple_of(dstack_resample::TAPS_STEP) =>
+        {
+            Ok(Some(taps))
+        }
+        _ => Err(format!(
+            "[{CONFIG_BRIDGE}] `{KEY}` = {n}: {MIN_CONVERTER_TAPS} to {MAX_CONVERTER_TAPS} \
+             in steps of {}",
+            dstack_resample::TAPS_STEP
+        )),
+    }
 }
 
 /// A FIFO target under `key`, ns (absent: `None`), held to the range the
@@ -197,6 +233,7 @@ impl BridgeConfig {
             app_buffer_ns: self.app_buffer_ns,
             to_asio_app_buffer_ns: self.to_asio_app_buffer_ns,
             from_asio_app_buffer_ns: self.from_asio_app_buffer_ns,
+            converter_taps: self.converter_taps,
         })
     }
 
@@ -211,8 +248,9 @@ impl BridgeConfig {
         }
     }
 
-    /// One line for the log and the tray: the driver, both maps and the
-    /// FIFO targets (a direction's own only when it sets one).
+    /// One line for the log and the tray: the driver, both maps, the FIFO
+    /// targets (a direction's own only when it sets one) and the converter
+    /// length when set.
     pub fn describe(&self) -> String {
         let list = |l: &[u32]| l.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
         let ns = |n: Option<u64>| n.map_or_else(|| "default".to_string(), |n| format!("{n} ns"));
@@ -230,6 +268,9 @@ impl BridgeConfig {
             if own.is_some() {
                 line.push_str(&format!(", {side} {}", ns(own)));
             }
+        }
+        if let Some(t) = self.converter_taps {
+            line.push_str(&format!(", converter {t} taps"));
         }
         line
     }

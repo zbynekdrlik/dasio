@@ -632,9 +632,11 @@ mod tests {
 
     #[test]
     fn dstack_reads_the_config_without_dasio_s_bridge_table() {
-        // The per-direction targets (dasio#120) are dasio's keys too.
+        // The per-direction targets and the converter length (dasio#120)
+        // are dasio's keys too.
         let bridge = "[bridge]\ndriver = \"Test ASIO\"\nto_asio = [1, 2]\n\
-                      to_asio_app_buffer_ns = 1333333\nfrom_asio_app_buffer_ns = 1666666\n";
+                      to_asio_app_buffer_ns = 1333333\nfrom_asio_app_buffer_ns = 1666666\n\
+                      converter_taps = 48\n";
         let written = DeviceConfig::from_toml(DEVICE).unwrap();
         // The table alone, then beside `iface` (dasio#106).
         for text in [
@@ -642,6 +644,11 @@ mod tests {
             format!("iface = \"Ethernet 3\"\n{DEVICE}\n{bridge}"),
         ] {
             assert!(DeviceConfig::from_toml(&text).is_err());
+            // dasio's kind reads them from the same text.
+            match crate::kind::kind(&text) {
+                Ok(crate::kind::Kind::Bridge(b)) => assert_eq!(b.converter_taps, Some(48)),
+                other => panic!("{other:?}"),
+            }
             let (cfg, from) = device_config(&text, || Some(SLOT_1)).unwrap();
             assert_eq!(from, SlotFrom::Picked);
             assert_eq!(cfg.name, written.name);

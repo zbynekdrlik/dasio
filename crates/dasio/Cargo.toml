@@ -7,14 +7,19 @@ publish = false
 description = "dasio's device process: one Dante device per instance, its audio through the shared memory to the ASIO driver"
 
 [dependencies]
-dstack-audio-io = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.172" }
-dstack = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.172" }
+dstack-audio-io = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.174" }
+dstack = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.174" }
 # The bridge instance kind (dasio#106): the ASIO host, its lifecycle and
 # the two sides of a Dante <-> ASIO bridge (dstack#243); dlink for the
 # bridge FIFO target's check (`AppBuffer`, dstack#247). azo, the host's
 # Windows layer, comes only on Windows.
-dstack-asio = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.172" }
-dlink = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.172" }
+dstack-asio = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.174" }
+dlink = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.174" }
+# The rate converter behind dlink's `Rated` and the bridge's players: the
+# `[bridge] converter_taps` check takes its step (`TAPS_STEP`, dstack issue
+# 382); the tests check an app rate's exact ratio against it and time it
+# alone (tests/bench_bridge.rs, dasio#107).
+dstack-resample = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.174" }
 shm = { path = "../shm" }
 asio-driver = { path = "../asio-driver" }
 serde = { version = "1.0", features = ["derive"] }
@@ -44,16 +49,12 @@ windows-service = "0.8.1"
 # The device's control-port slot (`slots::pick`, the rule dsend and dlisten
 # use, dasio#89). Windows only: it brings cpal, which on Linux needs ALSA's
 # headers, and only the device start (run.rs, Windows) calls it.
-dstack-endpoint = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.172" }
+dstack-endpoint = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.174" }
 
 [dev-dependencies]
 # The bridge's real-time proof (tests/rt_bridge.rs, dasio#28 E13): counts
 # allocations inside `assert_no_alloc` instead of aborting.
 assert_no_alloc = { version = "1.1.2", default-features = false, features = ["warn_debug", "warn_release"] }
-# The rate converter behind dlink's `Rated` (an ASIO app at its own rate,
-# dasio#107): the tests check the plan's exact ratio against it and time it
-# alone (tests/bench_bridge.rs).
-dstack-resample = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.172" }
 
 [lints.rust]
 # The rtsan CI job's cfg (dasio#28 E13).
