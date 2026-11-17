@@ -72,6 +72,10 @@ impl ProfileWatch {
         let spawned = std::thread::Builder::new()
             .name("pc-profile".into())
             .spawn(move || {
+                // This thread runs in the media process: at the lowest
+                // priority, for the hold and the bridge kind's check alike
+                // (the DAW kind's only waits for its child).
+                lowest_priority();
                 // What Windows turns back on by itself (UsoSvc at boot) is
                 // held off first, so the check that follows sees it held
                 // (dasio#158): in process, no child.
@@ -134,10 +138,8 @@ fn record(last: &Mutex<Option<Vec<String>>>, found: crate::pc_profile::ChildChec
     n
 }
 
-/// The check in this thread, at the lowest priority: the profile without
-/// the entries whose reading starts a process
-/// ([`crate::pc_profile::in_process`]).
-fn in_process_check(_own: usize) -> Result<crate::pc_profile::ChildCheck, String> {
+/// The calling thread (the check's) at the lowest priority.
+fn lowest_priority() {
     use windows_sys::Win32::System::Threading::{
         GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_LOWEST,
     };
@@ -145,6 +147,12 @@ fn in_process_check(_own: usize) -> Result<crate::pc_profile::ChildCheck, String
     if unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST) } == 0 {
         warn!(err = %std::io::Error::last_os_error(), "the PC profile check runs at normal priority");
     }
+}
+
+/// The check in this thread (already at the lowest priority): the profile
+/// without the entries whose reading starts a process
+/// ([`crate::pc_profile::in_process`]).
+fn in_process_check(_own: usize) -> Result<crate::pc_profile::ChildCheck, String> {
     Ok(in_process_problems(false))
 }
 

@@ -1,6 +1,6 @@
 //! The services the service holds off itself (dasio#158).
 
-use super::super::hold::{DISABLED, Fix, HELD, Held, decide, describe, start_name};
+use super::super::hold::{DISABLED, Fix, HELD, Held, decide, describe, not_held, start_name};
 use super::super::*;
 
 const USO: Held = Held {
@@ -106,38 +106,51 @@ fn the_log_line_names_what_was_done() {
         stop: true,
     };
     assert_eq!(
-        describe(&USO, &both, &Ok(())),
-        "UsoSvc held off (dasio#158, Windows sets it back by itself): \
+        describe(&USO, &both, &Ok(()), &Ok(())),
+        "UsoSvc held off (dasio#158): \
          start was 2 (automatic), set to 4 (disabled); it was running: stopped"
     );
     assert_eq!(
-        describe(&USO, &both, &Err("not stopped after 30 s".into())),
-        "UsoSvc held off (dasio#158, Windows sets it back by itself): \
-         start was 2 (automatic), set to 4 (disabled); it runs and did not stop: \
-         not stopped after 30 s"
+        describe(
+            &USO,
+            &both,
+            &Err("Access is denied. (os error 5)".into()),
+            &Err("still stopping after 30 s".into())
+        ),
+        "UsoSvc held off (dasio#158): \
+         start is 2 (automatic), not set to 4 (disabled): Access is denied. (os error 5); \
+         it runs and did not stop: still stopping after 30 s"
     );
     let start_only = Fix {
         was: Some(3),
         stop: false,
     };
+    // A stop result is not reported when no stop was asked.
     assert_eq!(
-        describe(&USO, &start_only, &Ok(())),
-        "UsoSvc held off (dasio#158, Windows sets it back by itself): \
-         start was 3 (manual), set to 4 (disabled)"
+        describe(&USO, &start_only, &Ok(()), &Err("x".into())),
+        "UsoSvc held off (dasio#158): start was 3 (manual), set to 4 (disabled)"
     );
     let stop_only = Fix {
         was: None,
         stop: true,
     };
+    // A set result is not reported when no set was asked.
     assert_eq!(
-        describe(&USO, &stop_only, &Ok(())),
-        "UsoSvc held off (dasio#158, Windows sets it back by itself): \
-         it was running: stopped"
+        describe(&USO, &stop_only, &Err("x".into()), &Ok(())),
+        "UsoSvc held off (dasio#158): it was running: stopped"
+    );
+}
+
+#[test]
+fn a_service_it_cannot_look_at_is_named() {
+    assert_eq!(
+        not_held(&USO, "its Start is unreadable: os error 5"),
+        "UsoSvc not held (dasio#158): its Start is unreadable: os error 5"
     );
 }
 
 /// The service's check thread holds them before every check, in process
-/// (both kinds, start and every 10 min).
+/// (both kinds, start and every 10 min), at the lowest priority.
 #[test]
 fn the_check_thread_holds_before_it_checks() {
     let watch = std::fs::read_to_string(
@@ -150,5 +163,9 @@ fn the_check_thread_holds_before_it_checks() {
         .expect("the check thread holds");
     let check = watch.find("let found = check(own);").expect("the check");
     assert!(hold < check, "held before the check");
+    let low = watch
+        .find("lowest_priority();")
+        .expect("the thread's priority");
+    assert!(low < hold, "lowered before the hold");
     assert_eq!(watch.matches("hold_services()").count(), 1);
 }

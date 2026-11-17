@@ -6,7 +6,9 @@
 //! runs [`decide`] for each [`HELD`] service right before every check (the
 //! first one after start, then every [`CHECK_EVERY_S`](super::CHECK_EVERY_S))
 //! and the Windows side sets the start type back and stops it, through the
-//! SCM API, in process (no child process: the bridge kind runs it too).
+//! SCM, in process (no child process: the bridge kind runs it too), at the
+//! thread's lowest priority. A reset after a check is undone at the next
+//! one: UsoSvc can run up to 10 min after it.
 //!
 //! Windows Update stays usable: dasio's planned runs (dasio#109, `wu.ps1`)
 //! use the Windows Update Agent API, served by `wuauserv` (manual start),
@@ -71,17 +73,28 @@ pub fn start_name(start: u32) -> &'static str {
     }
 }
 
-/// The log line for `fix` done to `held`; `stopped` is what the stop gave
-/// (`Ok` once stopped, `Err` naming why not), unused without a stop.
-pub fn describe(held: &Held, fix: &Fix, stopped: &Result<(), String>) -> String {
+/// The log line for `fix` done to `held`: `set` is what setting the start
+/// type back gave, `stopped` what the stop gave (`Ok`, or `Err` naming why
+/// not); each unused when `fix` does not ask for it.
+pub fn describe(
+    held: &Held,
+    fix: &Fix,
+    set: &Result<(), String>,
+    stopped: &Result<(), String>,
+) -> String {
     let mut parts = Vec::new();
     if let Some(was) = fix.was {
-        parts.push(format!(
-            "start was {was} ({}), set to {} ({})",
-            start_name(was),
-            held.start,
-            start_name(held.start)
-        ));
+        let (want, want_name) = (held.start, start_name(held.start));
+        parts.push(match set {
+            Ok(()) => format!(
+                "start was {was} ({}), set to {want} ({want_name})",
+                start_name(was)
+            ),
+            Err(e) => format!(
+                "start is {was} ({}), not set to {want} ({want_name}): {e}",
+                start_name(was)
+            ),
+        });
     }
     if fix.stop {
         parts.push(match stopped {
@@ -90,8 +103,13 @@ pub fn describe(held: &Held, fix: &Fix, stopped: &Result<(), String>) -> String 
         });
     }
     format!(
-        "{} held off (dasio#158, Windows sets it back by itself): {}",
+        "{} held off (dasio#158): {}",
         held.service,
         parts.join("; ")
     )
+}
+
+/// The log line when `held` could not even be looked at (`why`).
+pub fn not_held(held: &Held, why: &str) -> String {
+    format!("{} not held (dasio#158): {why}", held.service)
 }

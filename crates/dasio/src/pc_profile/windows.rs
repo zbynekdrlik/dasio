@@ -30,7 +30,7 @@ use super::{Action, ProcState, Profile, Reader, Value, get_ini, set_ini};
 const NET_CLASS: &str =
     r"SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}";
 
-pub(super) fn wide(s: &str) -> Vec<u16> {
+fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 
