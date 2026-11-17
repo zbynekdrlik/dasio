@@ -220,7 +220,7 @@ fn an_entry_missing_what_install_needs_is_refused_naming_it() {
 #[test]
 fn a_profile_with_a_broken_nic_driver_entry_does_not_load() {
     let text = format!(
-        "name = \"x\"\n[[nic_driver]]\nfamily = \"f\"\nhardware_ids = []\nversion = \"1\"\nprovider = \"p\"\ninf = \"a.inf\"\nsigner = \"s\"\nsource = \"there\"\n[[nic_driver.files]]\nname = \"a.inf\"\nsha256 = \"{INF}\"\n"
+        "name = \"x\"\n[[nic_driver]]\nfamily = \"f\"\nhardware_ids = []\nversion = \"1\"\nprovider = \"p\"\ninf = \"a.inf\"\nsigner = \"s\"\nsource = \"there\"\nwhy = \"w\"\n[[nic_driver.files]]\nname = \"a.inf\"\nsha256 = \"{INF}\"\n"
     );
     assert_eq!(
         parse(&text),
