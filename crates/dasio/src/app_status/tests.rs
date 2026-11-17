@@ -147,6 +147,7 @@ fn bridge_running() -> BridgeFacts {
         tx: TxPath::default(),
         from_asio_age: None,
         rx: None,
+        from_asio_pull: None,
     }
 }
 
@@ -187,6 +188,7 @@ fn the_bridge_facts_come_from_the_runner_s_status() {
             tx: TxPath::Udp,
             from_asio_age: Some(AGE_DSG),
             rx: None,
+            from_asio_pull: None,
         }
     );
     let running = dstack_asio::Status {
@@ -701,4 +703,132 @@ fn the_rx_arrival_mean_shows_and_only_a_bridge_names_its_asio_pull_wait() {
     assert_eq!(bridge_state(&bridge), "ok");
     // Before a measurement: none of the keys.
     assert!(!bridge_json(&bridge_running()).contains("pull_wait"));
+}
+
+fn pull(rebootstraps: u64, skipped: u64, writes_after_send: u64, faults: u64) -> TxFillView {
+    TxFillView {
+        blocks: 3_000,
+        rebootstraps,
+        skipped,
+        writes_after_send,
+        faults,
+    }
+}
+
+#[test]
+fn a_bridge_from_asio_carries_its_pull_s_counts_in_the_json() {
+    // dstack v0.6.167 (dasio#120): the TX thread fills the from-ASIO
+    // channels; its counts (dstack's `tx_pull`) are the from-ASIO side's
+    // health, beside the from-ASIO figures.
+    let j = bridge_json(&BridgeFacts {
+        from_asio_pull: Some(pull(1, 2, 3, 4)),
+        ..bridge_running()
+    });
+    assert!(
+        j.contains(concat!(
+            "\"pc_profile_problems\":0,\"from_asio_pull\":{\"blocks\":3000,\"rebootstraps\":1,",
+            "\"skipped\":2,\"writes_after_send\":3,\"faults\":4},\"kernel_tx\":true"
+        )),
+        "{j}"
+    );
+    assert!(j.ends_with('}'));
+    // A bridge with no channel from ASIO has no pull: no key.
+    assert!(!bridge_json(&bridge_running()).contains("from_asio_pull"));
+}
+
+#[test]
+fn a_clean_from_asio_pull_adds_nothing_to_the_line_nor_the_icon() {
+    let clean = BridgeFacts {
+        from_asio_pull: Some(pull(0, 0, 0, 0)),
+        ..bridge_running()
+    };
+    assert_eq!(bridge_line(&clean), bridge_line(&bridge_running()));
+    assert_eq!(bridge_state(&clean), "ok");
+}
+
+#[test]
+fn each_from_asio_pull_trouble_shows_in_the_line() {
+    // Each count alone shows the part (one test a side of the `||`).
+    for (p, text) in [
+        (
+            pull(1, 0, 0, 0),
+            " · from ASIO pull: 1 restarts, 0 skipped, 0 late writes, 0 faults",
+        ),
+        (
+            pull(0, 7, 0, 0),
+            " · from ASIO pull: 0 restarts, 7 skipped, 0 late writes, 0 faults",
+        ),
+        (
+            pull(0, 0, 2, 0),
+            " · from ASIO pull: 0 restarts, 0 skipped, 2 late writes, 0 faults",
+        ),
+        (
+            pull(0, 0, 0, 1),
+            " · from ASIO pull: 0 restarts, 0 skipped, 0 late writes, 1 faults",
+        ),
+    ] {
+        let f = BridgeFacts {
+            from_asio_pull: Some(p),
+            ..bridge_running()
+        };
+        assert!(
+            bridge_line(&f).contains(&format!(" · resets 1{text} · kernel TX")),
+            "{}",
+            bridge_line(&f)
+        );
+    }
+}
+
+#[test]
+fn only_a_faulted_from_asio_pull_warns() {
+    // A fault silences the from-ASIO channels for good: the icon warns. A
+    // restart, a skip or a late write is counted, not a state.
+    for (p, state) in [(pull(5, 9, 1, 0), "ok"), (pull(0, 0, 0, 1), "warn")] {
+        let f = BridgeFacts {
+            from_asio_pull: Some(p),
+            ..bridge_running()
+        };
+        assert_eq!(bridge_state(&f), state, "{p:?}");
+    }
+}
+
+#[test]
+fn the_bridge_instance_hands_the_from_asio_side_to_the_tx_thread() {
+    // dstack v0.6.167's consumer port (dstack issue 364): the from-ASIO
+    // pull taken before the pump's side, claimed by the TX thread before
+    // the device starts, and the pump writes no TX channel.
+    let src = include_str!("../run_bridge.rs");
+    let once = |needle: &str| {
+        let found: Vec<usize> = src.match_indices(needle).map(|(i, _)| i).collect();
+        assert_eq!(found.len(), 1, "{needle}: once in run_bridge.rs");
+        found[0]
+    };
+    let call = once("pull_from_driver(&mut b,");
+    let dante = once(".dante_side()");
+    let pump = once("Pump::new(");
+    let start = once("prepared\n        .start(");
+    let runner = src.find("spawn_runner(").expect("the runner's start");
+    assert!(call < dante, "the pull is taken before the pump's side");
+    assert!(call < start, "the fill is claimed before the device starts");
+    assert!(
+        call < runner,
+        "the pull is taken before the driver's first open"
+    );
+    let helper = src.find("\nfn pull_from_driver(").expect("the helper");
+    let take = once(".pull_from_asio()");
+    let fill = once("TxFill::new(");
+    let claim = once(".claim_fill(fill)");
+    assert!(
+        helper < take && take < fill && fill < claim,
+        "take, fill, then claim, in the helper"
+    );
+    let map = src[..pump]
+        .rfind("let map = Map {")
+        .expect("the pump's map");
+    assert!(
+        src[map..pump].contains("rx: vec![],\n        tx: vec![],"),
+        "the pump's map carries no channel"
+    );
+    // The pull's counts reach the status.
+    assert!(src.contains("from_asio_pull: from_pull.as_ref().map(|p| p.view()),"));
 }

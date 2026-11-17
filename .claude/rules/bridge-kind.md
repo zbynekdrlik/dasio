@@ -74,3 +74,20 @@ paths:
   read shows in `lateness_at_read_peak`), and the wait is the bridge's
   `rx_asio_pull_wait_mean_ns` / `rx_asio_pull_wait_peak_us` (dasio#128).
   `late` is judged against the drain gap either way.
+- The from-ASIO side is pulled too (dasio issue 120, dstack issue 364,
+  dstack v0.6.167): `run_bridge::pull_from_driver` (called before
+  `dante_side()`, so before `Pump::new`, the device's start and the
+  runner's first open) takes `Bridge::pull_from_asio()` and claims it as
+  `media.tx.claim_fill(TxFill::new(Box::new(from), engine_tx, timing,
+  cfg.encoding, rx))` (the pump's own timing; a `Refused` is a start
+  error, no pump fallback). The pump's map is `Map { rx: vec![], tx:
+  vec![] }` (one writer a ring). A bridge without from-ASIO channels skips
+  it (`pull_from_asio` refuses one). The fill's counts (dstack status
+  `tx_pull`) are the from-ASIO side's health: `bridge_json`'s
+  `from_asio_pull` object (only with channels from ASIO), the line's
+  ` · from ASIO pull: N restarts, N skipped, N late writes, N faults` (only
+  when one is above 0) and a warn icon only on a fault (the processor
+  panicked: silent for good). `from_asio_block_age_us` is now taken at the
+  TX thread's fill. A refused second driver open reads `the Dante device
+  has not taken the last output yet` (was "...pump has not taken...").
+  `app_status/tests.rs` guards this wiring as text.

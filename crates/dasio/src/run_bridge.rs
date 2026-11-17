@@ -25,6 +25,13 @@
 //! FIFO dry. The run loop looks at the pull on its own 250 ms timer
 //! ([`crate::to_asio_pull`]).
 //!
+//! **The from-ASIO side is pulled too** (dasio#120, dstack issue 364,
+//! v0.6.167): the from-ASIO player leaves the pump's side for a
+//! [`FromAsio`] the device's TX thread runs in whole blocks just before it
+//! sends, so a late pump no longer sends silence from the driver. The pump
+//! writes no channel at all; its side only takes the driver's handovers.
+//!
+//! [`FromAsio`]: dstack_asio::bridge::FromAsio
 //! [`DanteSide`]: dstack_asio::bridge::DanteSide
 //! [`AsioSide`]: dstack_asio::bridge::AsioSide
 
@@ -37,7 +44,8 @@ use std::time::{Duration, Instant};
 use dlink::bridge::RxPull;
 use dlink::bridge::pull::PullStats;
 use dstack::host::{self, Signals, Stopped};
-use dstack::stream::{self, Map, Pump, PumpStats};
+use dstack::media::tx::{TxFill, TxFillStats};
+use dstack::stream::{self, Map, Pump, PumpStats, Timing};
 use dstack_asio::bridge::Bridge;
 use dstack_asio::win::WinDevice;
 use dstack_asio::{Channels, MakeProcess, Opened, Process, Reason, Runner, Status};
@@ -93,6 +101,9 @@ pub fn run(
     // Before Pump::new, which would claim the RX rings itself.
     pull_to_driver(&mut b, &media, timing.playout, cfg.sample_rate)?;
     let pull_stats = b.to_asio_pull_stats();
+    // Before the pump's side, the device's start and the driver's first
+    // open (dstack v0.6.167): the TX thread fills the from-ASIO channels.
+    let from_pull = pull_from_driver(&mut b, &media, engine_tx, timing, cfg.encoding)?;
     let dante = b
         .dante_side()
         .ok_or("the bridge's pump side was taken already")?;
@@ -101,10 +112,11 @@ pub fn run(
     // The from-ASIO figures (dstack #325, dasio#120).
     let age = b.from_asio_age();
     let shared = Arc::new(Mutex::new(b));
-    // No RX channel for the pump: the driver's switch pulls them.
+    // No channel for the pump: the driver's switch pulls the RX, the TX
+    // thread fills the TX (one writer a ring).
     let map = Map {
         rx: vec![],
-        tx: engine_tx,
+        tx: vec![],
     };
     let pump = Pump::new(
         dante,
@@ -122,8 +134,8 @@ pub fn run(
     let device = prepared
         .start(Signals::Report(Arc::clone(&asked)))
         .map_err(|e| e.to_string())?;
-    // The driver after the pump runs: the from-ASIO player's handover
-    // needs the pump to take it.
+    // The driver after the pump and the device run: the to-ASIO player's
+    // handover needs the pump to take it, the from-ASIO one the TX thread.
     let runner_stop = Arc::new(AtomicBool::new(false));
     let (runner, status) = match spawn_runner(
         bridge.driver.clone(),
@@ -145,18 +157,20 @@ pub fn run(
     {
         let kernel_tx = tuning.kernel_tx;
         let rx_figures = rx_arrival.arrival();
-        let (status, to_stats, from_stats, driver, pc_problems, age) = (
+        let (status, to_stats, from_stats, driver, pc_problems, age, from_pull) = (
             Arc::clone(&status),
             Arc::clone(&to_stats),
             Arc::clone(&from_stats),
             bridge.driver.clone(),
             Arc::clone(&pc_problems),
             Arc::clone(&age),
+            from_pull.clone(),
         );
         media.set_app_status(move || {
             let s = lock(&status).clone();
             crate::app_status::bridge_json(&BridgeFacts {
                 rx: rx_figures.report(),
+                from_asio_pull: from_pull.as_ref().map(|p| p.view()),
                 ..BridgeFacts::of(
                     &driver,
                     &s,
@@ -232,6 +246,7 @@ pub fn run(
             );
             let s = lock(&status).clone();
             let v = stats.view();
+            let fill = from_pull.as_ref().map(|p| p.view()).unwrap_or_default();
             info!(
                 state = ?s.state,
                 reason = s.reason.as_ref().map(ToString::to_string).unwrap_or_default(),
@@ -256,6 +271,11 @@ pub fn run(
                 from_asio_underruns = from_stats.underruns(),
                 from_asio_ppm = from_stats.ppm(),
                 from_asio_target_ms = from_stats.target_ms(),
+                from_asio_pull_blocks = fill.blocks,
+                from_asio_pull_restarts = fill.rebootstraps,
+                from_asio_pull_skipped = fill.skipped,
+                from_asio_pull_writes_after_send = fill.writes_after_send,
+                from_asio_pull_faults = fill.faults,
                 blocks = v.blocks,
                 pump_late = v.late,
                 missed = v.missed,
@@ -356,6 +376,43 @@ fn pull_to_driver(
     .map_err(|e| format!("the to-ASIO pull: {e}"))?;
     b.pull_to_asio(pull)
         .map_err(|e| format!("the to-ASIO pull: {e}"))
+}
+
+/// Hands the from-ASIO side of `b` to the device's TX thread (dasio#120,
+/// dstack issue 364, v0.6.167): the pull taken out of the pump's side
+/// (before `dante_side` and the driver's first open) and claimed as the
+/// TX fill of `engine_tx` (one TX channel per from-ASIO channel, in TX
+/// order, `kind.rs`) at the pump's own `timing` and `bits`, before the
+/// device's start builds the TX thread. A refusal is a start error: the
+/// pull went with it, there is no pump path left to fall back to. A bridge
+/// with no channel from ASIO has nothing to pull: `None`. Returns the
+/// fill's counts (the status' `tx_pull`).
+fn pull_from_driver(
+    b: &mut Bridge,
+    media: &dstack::daemon::media::Media,
+    engine_tx: Vec<usize>,
+    timing: Timing,
+    bits: u8,
+) -> Result<Option<Arc<TxFillStats>>, String> {
+    if b.spec().from_asio == 0 {
+        return Ok(None);
+    }
+    let from = b
+        .pull_from_asio()
+        .map_err(|e| format!("the from-ASIO pull: {e}"))?;
+    let fill = TxFill::new(
+        Box::new(from),
+        engine_tx,
+        timing,
+        bits,
+        Arc::clone(&media.rx),
+    );
+    let stats = Arc::clone(fill.stats());
+    media
+        .tx
+        .claim_fill(fill)
+        .map_err(|r| format!("the from-ASIO pull: {}", r.reason))?;
+    Ok(Some(stats))
 }
 
 /// The run loop's look at the to-ASIO pull (dstack v0.6.155's
