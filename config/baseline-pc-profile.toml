@@ -353,6 +353,27 @@ why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
 
 [[registry]]
 key = '{nic_class}'
+name = "*RssBaseProcNumber"
+computed = "rss_base_cpu"
+nic_service = "rt640x64"
+why = "the Dante NIC's receive-side scaling on the system CPUs only, without CPU 0 (every timer DPC) when there are 2 or more: per-packet receive DPCs never on dasio's pump (dsg 16.11: to_asio underruns ~10/10 min -> 0, dasio#120); FOH 1-3, dsg 0 (the CPU layout, dasio#128)"
+
+[[registry]]
+key = '{nic_class}'
+name = "*RssMaxProcNumber"
+computed = "rss_max_cpu"
+nic_service = "rt640x64"
+why = "the Dante NIC's receive-side scaling on the system CPUs only, without CPU 0 (every timer DPC) when there are 2 or more: per-packet receive DPCs never on dasio's pump (dsg 16.11: to_asio underruns ~10/10 min -> 0, dasio#120); FOH 1-3, dsg 0 (the CPU layout, dasio#128)"
+
+[[registry]]
+key = '{nic_class}'
+name = "*MaxRssProcessors"
+computed = "rss_cpus"
+nic_service = "rt640x64"
+why = "the Dante NIC's receive-side scaling on the system CPUs only, without CPU 0 (every timer DPC) when there are 2 or more: per-packet receive DPCs never on dasio's pump (dsg 16.11: to_asio underruns ~10/10 min -> 0, dasio#120); FOH 1-3, dsg 0 (the CPU layout, dasio#128)"
+
+[[registry]]
+key = '{nic_class}'
 name = "*SpeedDuplex"
 string = "0"
 nic_service = "rt640x64"

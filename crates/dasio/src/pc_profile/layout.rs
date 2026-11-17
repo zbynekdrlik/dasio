@@ -16,12 +16,23 @@
 //! `computed = "dasio_cpus"` (a binary mask of every instance's CPUs, the
 //! kernel's `ReservedCpuSets`, dasio#120) or `computed = "rxd_cpu"` (a
 //! dword, the filter's `RxdCpu`) on a registry entry, and with `{system}`, `{dasio:N}` or `{daw}` as a process's
-//! affinity; [`resolve`] puts the values in.
+//! affinity; [`resolve`] puts the values in. The Dante NIC's receive-side
+//! scaling range ([`Layout::rss_span`]) comes as `computed =
+//! "rss_base_cpu"`, `"rss_max_cpu"` and `"rss_cpus"` (REG_SZ, like every
+//! NIC advanced property: `*RssBaseProcNumber`, `*RssMaxProcNumber`,
+//! `*MaxRssProcessors`).
 
 use super::{Profile, parse_mask};
 
 /// The names `computed` takes.
-pub const COMPUTED: [&str; 3] = ["system_cpus", "dasio_cpus", "rxd_cpu"];
+pub const COMPUTED: [&str; 6] = [
+    "system_cpus",
+    "dasio_cpus",
+    "rxd_cpu",
+    "rss_base_cpu",
+    "rss_max_cpu",
+    "rss_cpus",
+];
 
 /// The CPUs an affinity mask (a u64) can name: one processor group.
 const MAX_CPUS: usize = 64;
@@ -75,6 +86,23 @@ impl Layout {
     /// The deferred receive's CPU: the last system CPU.
     pub fn rxd_cpu(&self) -> u32 {
         (self.system - 1) as u32
+    }
+
+    /// The CPUs the Dante NIC's receive-side scaling may use, first and
+    /// last (dasio#128): the system CPUs, never dasio's or the DAW's, so
+    /// the per-packet receive DPCs stay off dasio's pump (dsg 16.11:
+    /// to_asio underruns ~10/10 min -> 0, dasio#120). Without CPU 0 when
+    /// there are two or more system CPUs: every timer DPC lands there
+    /// (mbc 17.11, dasio#24). FOH 32 = 1-3, mbc 12 = 1, dsg 4 = 0.
+    pub fn rss_span(&self) -> (u32, u32) {
+        let last = (self.system - 1) as u32;
+        (u32::from(self.system >= 2), last)
+    }
+
+    /// How many CPUs [`Layout::rss_span`] holds (`*MaxRssProcessors`).
+    pub fn rss_cpus(&self) -> u32 {
+        let (first, last) = self.rss_span();
+        last - first + 1
     }
 
     /// Instance `n`'s first CPU and the CPU after its last.
@@ -191,6 +219,9 @@ pub fn resolve(p: &mut Profile, cpus: usize) -> Result<(), String> {
             Some("system_cpus") => e.binary = Some(mask_hex(layout.system_mask())),
             Some("dasio_cpus") => e.binary = Some(mask_hex(layout.dasio_cpus_mask())),
             Some("rxd_cpu") => e.dword = Some(layout.rxd_cpu()),
+            Some("rss_base_cpu") => e.string = Some(layout.rss_span().0.to_string()),
+            Some("rss_max_cpu") => e.string = Some(layout.rss_span().1.to_string()),
+            Some("rss_cpus") => e.string = Some(layout.rss_cpus().to_string()),
             Some(other) => {
                 return Err(format!(
                     "registry {}\\{}: computed {other} is not one of {COMPUTED:?}",

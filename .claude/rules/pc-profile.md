@@ -34,6 +34,18 @@ paths:
   `{system}` / `{dasio:N}` / `{daw}` as a process affinity, `instances = N`
   (default 1) in the site profile. Never write a CPU mask by hand where the
   layout gives it.
+- **The Dante NIC's RSS range is computed too** (dasio#128, 17.11.2026):
+  `computed = "rss_base_cpu"` / `"rss_max_cpu"` / `"rss_cpus"` give
+  `*RssBaseProcNumber` / `*RssMaxProcNumber` / `*MaxRssProcessors` as
+  strings (`Layout::rss_span`): the system CPUs without CPU 0 (every timer
+  DPC, dasio#24) when there are 2 or more, else CPU 0 alone; never
+  dasio's or the DAW's (dsg's receive DPCs on its pump CPU: to_asio
+  underruns, dasio#120). FOH 1-3, mbc 1, dsg 0. Baseline entries are
+  `nic_service = "rt640x64"` only: mbc's USB Realtek (`rtu56cx22x64`) has
+  no RSS (`Get-NetAdapterRss` finds nothing), its receive DPCs are the
+  USB controller's. Not must-have; `apply` restarts the NIC. FOH's (0-3,
+  base 0) and dsg's hand entries in their site profiles win until the
+  rollout removes them. A site profile naming these needs 0.1.120+.
 - **Reserved CPUs** (dasio#120): the baseline's `ReservedCpuSets`
   (`Session Manager\kernel`, `computed = "dasio_cpus"`, read at boot) keeps
   every thread off dasio's CPUs unless its process asks (CPU sets) or is
