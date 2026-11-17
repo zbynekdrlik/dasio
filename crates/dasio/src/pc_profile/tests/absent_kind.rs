@@ -327,6 +327,11 @@ fn the_baseline_keeps_edge_and_its_updater_off_every_pc() {
     }
     assert!(has(Target::Task(r"\MicrosoftEdgeUpdateTaskMachineCore*")));
     assert!(has(Target::Task(r"\MicrosoftEdgeUpdateTaskMachineUA*")));
+    // Edge's MSI install adds it next to the two families (dsg 17.11.2026):
+    // it stayed after the EdgeUpdate folder was gone.
+    assert!(has(Target::Task(
+        r"\MicrosoftEdgeUpdateBrowserReplacementTask"
+    )));
     let edge = b
         .absent
         .iter()
