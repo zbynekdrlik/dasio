@@ -150,7 +150,8 @@ fn a_service_it_cannot_look_at_is_named() {
 }
 
 /// The service's check thread holds them before every check, in process
-/// (both kinds, start and every 10 min), at the lowest priority.
+/// (both kinds, start and every 10 min), off the media CPUs, at the lowest
+/// priority.
 #[test]
 fn the_check_thread_holds_before_it_checks() {
     let watch = std::fs::read_to_string(
@@ -167,5 +168,9 @@ fn the_check_thread_holds_before_it_checks() {
         .find("lowest_priority();")
         .expect("the thread's priority");
     assert!(low < hold, "lowered before the hold");
+    let off = watch
+        .find("off_media_cpus(own);")
+        .expect("the thread's CPUs");
+    assert!(off < hold, "off the media CPUs before the hold");
     assert_eq!(watch.matches("hold_services()").count(), 1);
 }

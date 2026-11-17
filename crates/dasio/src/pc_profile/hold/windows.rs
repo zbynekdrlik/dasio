@@ -34,15 +34,18 @@ fn hold(held: &Held) -> Option<String> {
         Ok(Some(v)) => return Some(not_held(held, &format!("its Start is not a DWORD: {v:?}"))),
         Err(e) => return Some(not_held(held, &format!("its Start is unreadable: {e}"))),
     };
-    let svc = match open(held.service) {
-        Ok(s) => s,
-        Err(e) => return Some(not_held(held, &e)),
-    };
-    let running = match state(&svc) {
+    // Read-only access first: a held service as it should be asks for no
+    // more.
+    let running = match open(held.service, ServiceAccess::QUERY_STATUS).and_then(|s| state(&s)) {
         Ok(s) => s != ServiceState::Stopped,
         Err(e) => return Some(not_held(held, &e)),
     };
     let fix = decide(held, Some(start), running)?;
+    let access = ServiceAccess::QUERY_STATUS | ServiceAccess::CHANGE_CONFIG | ServiceAccess::STOP;
+    let svc = match open(held.service, access) {
+        Ok(s) => s,
+        Err(e) => return Some(not_held(held, &e)),
+    };
     let set = if fix.was.is_some() {
         set_start(&svc, held.start)
     } else {
@@ -60,14 +63,11 @@ fn os(e: windows_service::Error) -> String {
     }
 }
 
-fn open(name: &str) -> Result<Service, String> {
+fn open(name: &str, access: ServiceAccess) -> Result<Service, String> {
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .map_err(|e| format!("the service manager does not open: {}", os(e)))?;
     manager
-        .open_service(
-            name,
-            ServiceAccess::QUERY_STATUS | ServiceAccess::CHANGE_CONFIG | ServiceAccess::STOP,
-        )
+        .open_service(name, access)
         .map_err(|e| format!("the service does not open: {}", os(e)))
 }
 
