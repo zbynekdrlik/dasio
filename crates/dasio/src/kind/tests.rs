@@ -54,6 +54,8 @@ fn the_bridge_table_reads_as_written() {
             to_asio: vec![3, 4],
             from_asio: vec![1, 2, 5],
             app_buffer_ns: Some(5_000_000),
+            to_asio_app_buffer_ns: None,
+            from_asio_app_buffer_ns: None,
         }
     );
 }
@@ -75,7 +77,75 @@ fn the_spec_is_the_devices_rate_block_and_counts() {
             to_asio: 2,
             from_asio: 3,
             app_buffer_ns: Some(5_000_000),
+            to_asio_app_buffer_ns: None,
+            from_asio_app_buffer_ns: None,
         })
+    );
+}
+
+/// dsg's shape (dasio#120): to-ASIO at its own target, from-ASIO at the
+/// shared default.
+const PER_DIRECTION: &str = r#"
+driver = "Test ASIO"
+to_asio = [3, 4]
+from_asio = [1, 2, 5]
+to_asio_app_buffer_ns = 1333333
+"#;
+
+#[test]
+fn each_direction_takes_its_own_target_into_the_spec() {
+    let b = bridge_of(PER_DIRECTION);
+    assert_eq!(b.app_buffer_ns, None);
+    assert_eq!(b.to_asio_app_buffer_ns, Some(1_333_333));
+    assert_eq!(b.from_asio_app_buffer_ns, None);
+    let spec = b.spec(&device()).unwrap();
+    assert_eq!(spec.app_buffer_ns, None);
+    assert_eq!(spec.to_asio_app_buffer_ns, Some(1_333_333));
+    assert_eq!(spec.from_asio_app_buffer_ns, None);
+    let b = bridge_of(&format!("{FULL}from_asio_app_buffer_ns = 2000000\n"));
+    let spec = b.spec(&device()).unwrap();
+    assert_eq!(spec.app_buffer_ns, Some(5_000_000));
+    assert_eq!(spec.to_asio_app_buffer_ns, None);
+    assert_eq!(spec.from_asio_app_buffer_ns, Some(2_000_000));
+}
+
+#[test]
+fn a_directions_target_is_held_to_dlinks_range_under_its_own_name() {
+    for key in ["to_asio_app_buffer_ns", "from_asio_app_buffer_ns"] {
+        for ok in [1_000_000_u64, 150_000_000] {
+            let b = bridge_of(&format!("driver = \"Test ASIO\"\n{key} = {ok}"));
+            let got = match key {
+                "to_asio_app_buffer_ns" => b.to_asio_app_buffer_ns,
+                _ => b.from_asio_app_buffer_ns,
+            };
+            assert_eq!(got, Some(ok), "{key}");
+        }
+        for bad in ["999999", "150000001", "0"] {
+            let e = refusal(&format!("driver = \"Test ASIO\"\n{key} = {bad}"));
+            assert!(e.starts_with(&format!("[bridge] {key}: ")), "{bad}: {e}");
+            assert!(e.contains("1 to 150 ms"), "{bad}: {e}");
+        }
+        let e = refusal(&format!("driver = \"Test ASIO\"\n{key} = -5"));
+        assert_eq!(e, format!("[bridge] `{key}` = -5: a negative time"));
+        let e = refusal(&format!("driver = \"Test ASIO\"\n{key} = 1.5"));
+        assert_eq!(e, format!("[bridge] `{key}` must be a whole number of ns"));
+    }
+}
+
+#[test]
+fn the_description_names_a_directions_own_target() {
+    assert_eq!(
+        bridge_of(PER_DIRECTION).describe(),
+        "bridge to \"Test ASIO\": RX -> outputs [3,4], inputs [1,2,5] -> TX, app buffer default, \
+         to ASIO 1333333 ns"
+    );
+    assert_eq!(
+        bridge_of(&format!(
+            "{FULL}to_asio_app_buffer_ns = 1333333\nfrom_asio_app_buffer_ns = 2000000\n"
+        ))
+        .describe(),
+        "bridge to \"Test ASIO\": RX -> outputs [3,4], inputs [1,2,5] -> TX, app buffer 5000000 ns, \
+         to ASIO 1333333 ns, from ASIO 2000000 ns"
     );
 }
 

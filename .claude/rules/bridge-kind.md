@@ -9,8 +9,9 @@ paths:
 # The bridge instance kind (dasio#106)
 
 - A `[bridge]` table in `device.toml` makes an instance a bridge to a local
-  ASIO driver (`driver`, `to_asio`, `from_asio`, optional `app_buffer_ns`;
-  channels 1-based, one per RX / TX channel). No table: the DAW kind.
+  ASIO driver (`driver`, `to_asio`, `from_asio`, optional `app_buffer_ns`,
+  `to_asio_app_buffer_ns`, `from_asio_app_buffer_ns`; channels 1-based, one
+  per RX / TX channel). No table: the DAW kind.
 - dasio's own keys (`iface`, `[bridge]`) are removed in
   `place::device_config` before dstack's `DeviceConfig` reads the file
   (deny_unknown_fields). A new dasio key goes there too, and dtray's
@@ -106,3 +107,14 @@ paths:
   from-ASIO converter call at the TX block, the sinc length), not a
   smaller value here. The `rx_asio_pull_wait` is no latency term (the
   read is by position, media - P).
+- Since dstack v0.6.172 (dstack issue 382) each direction takes its own
+  target: `[bridge] to_asio_app_buffer_ns` / `from_asio_app_buffer_ns`
+  (unset: `app_buffer_ns`, unset: the default), checked by `kind::buffer_ns`
+  against dlink's range under the key's own name. dtray's `Fields::read`
+  (dstack issue 387) learns these key names.
+- The ASRC seed (dstack v0.6.172): `asrc_seed::path` = the instance
+  folder's `asrc-seed-<driver>.toml` (driver name kept to `[A-Za-z0-9_-]`),
+  `Seed::read` + `Bridge::seed_from` before `spawn_runner`, and
+  `save_seed` (via `asrc_seed::Keeper`: only a changed seed, a failed write
+  retried, its error logged once) on the loop's 60 s `save` timer and once
+  after the device stops. `asrc_seed/tests.rs` guards this wiring as text.

@@ -31,10 +31,16 @@
 //! sends, so a late pump no longer sends silence from the driver. The pump
 //! writes no channel at all; its side only takes the driver's handovers.
 //!
+//! **The ASRC starts from the last run's lock** (dasio#120, dstack issue
+//! 382, v0.6.172): the instance folder's seed file ([`crate::asrc_seed`])
+//! is read before the driver's first open and written from the run loop
+//! when the bridge's seed changed (once a minute at most) and at the end.
+//!
 //! [`FromAsio`]: dstack_asio::bridge::FromAsio
 //! [`DanteSide`]: dstack_asio::bridge::DanteSide
 //! [`AsioSide`]: dstack_asio::bridge::AsioSide
 
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -46,12 +52,13 @@ use dlink::bridge::pull::PullStats;
 use dstack::host::{self, Signals, Stopped};
 use dstack::media::tx::{TxFill, TxFillStats};
 use dstack::stream::{self, Map, Pump, PumpStats, Timing};
-use dstack_asio::bridge::Bridge;
+use dstack_asio::bridge::{Bridge, Seed};
 use dstack_asio::win::WinDevice;
 use dstack_asio::{Channels, MakeProcess, Opened, Process, Reason, Runner, Status};
 use tracing::{error, info, warn};
 
 use crate::app_status::BridgeFacts;
+use crate::asrc_seed::{self, Keeper};
 use crate::kind::BridgeConfig;
 use crate::logfile::{COUNTS_EVERY, Every, STATUS_EVERY};
 use crate::run::profile::ProfileWatch;
@@ -68,11 +75,20 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Runs bridge instance `instance` (its `[bridge]` table `bridge`, its
-/// device config `cfg`) on `ip` with the media clock from `clock` until
-/// Ctrl+C, the instance's stop event, `stop_asked` or the device's end.
+/// The bridge instance being run: its number and its folder (its
+/// config's, where the ASRC seed file lives).
+pub struct Instance<'a> {
+    /// The instance number (`dasio-N`).
+    pub number: u32,
+    /// The instance's folder.
+    pub dir: &'a Path,
+}
+
+/// Runs bridge instance `at` (its `[bridge]` table `bridge`, its device
+/// config `cfg`) on `ip` with the media clock from `clock` until Ctrl+C,
+/// the instance's stop event, `stop_asked` or the device's end.
 pub fn run(
-    instance: u32,
+    at: Instance<'_>,
     bridge: BridgeConfig,
     cfg: dstack::device::DeviceConfig,
     ip: std::net::Ipv4Addr,
@@ -80,6 +96,7 @@ pub fn run(
     tuning: crate::Tuning,
     stop_asked: Arc<AtomicBool>,
 ) -> Result<(), String> {
+    let instance = at.number;
     // The map against the device's channels before the device starts.
     let spec = bridge.spec(&cfg)?;
     let channels = bridge.channels();
@@ -98,6 +115,18 @@ pub fn run(
     let stats = Arc::new(PumpStats::new(timing, cfg.sample_rate));
     media.attach_engine(Arc::clone(&stats));
     let mut b = Bridge::new(spec).map_err(|e| format!("the bridge: {e}"))?;
+    // The ASRC seed before the driver's first open (dstack v0.6.172).
+    let seed_path = asrc_seed::path(at.dir, &bridge.driver);
+    let (seed, bad, line) = asrc_seed::at_start(&Seed::read(&seed_path));
+    if bad {
+        warn!(path = %seed_path.display(), "{line}");
+    } else {
+        info!(path = %seed_path.display(), "{line}");
+    }
+    if let Some(s) = seed {
+        b.seed_from(s);
+    }
+    let mut keeper = Keeper::new(seed);
     // Before Pump::new, which would claim the RX rings itself.
     pull_to_driver(&mut b, &media, timing.playout, cfg.sample_rate)?;
     let pull_stats = b.to_asio_pull_stats();
@@ -210,6 +239,8 @@ pub fn run(
     let mut status_due = Every::new(STATUS_EVERY, start, true);
     // The look at the to-ASIO pull, on its own timer (dstack v0.6.155).
     let mut keep = Every::new(crate::to_asio_pull::KEEP_EVERY, start, false);
+    // The look for a new ASRC seed to keep (dasio#120).
+    let mut save = Every::new(asrc_seed::SAVE_EVERY, start, false);
     let profile = ProfileWatch::new(own);
     // The first check a minute in: after the helper placer has moved this
     // process's threads off the media CPUs (a thread on a media CPU takes
@@ -221,6 +252,9 @@ pub fn run(
         let now = Instant::now();
         if keep.due(now) {
             look_at_pull(&shared, pull_stats.as_deref());
+        }
+        if save.due(now) {
+            save_seed(&shared, &mut keeper, &seed_path);
         }
         if now >= profile_due {
             profile_due = now + Duration::from_secs(crate::pc_profile::CHECK_EVERY_S);
@@ -334,9 +368,27 @@ pub fn run(
         warn!("the ASIO driver's runner thread panicked");
     }
     stop_device(&stop, pump, device);
+    // The last lock for the next start.
+    save_seed(&shared, &mut keeper, &seed_path);
     match why {
         None => Ok(()),
         Some(e) => Err(e),
+    }
+}
+
+/// Writes the bridge's ASRC seed to `path` when it changed since the file
+/// was read or last written (dasio#120): from the run loop, never the
+/// driver's thread (a file write); a failed write is retried next time.
+fn save_seed(shared: &Mutex<Bridge>, keeper: &mut Keeper, path: &Path) {
+    let Some(s) = keeper.due(lock(shared).seed()) else {
+        return;
+    };
+    let result = s.write(path);
+    if result.is_ok() {
+        info!(path = %path.display(), "ASRC seed kept for the next start: {}", asrc_seed::describe(&s));
+    }
+    if let Some(e) = keeper.wrote(s, result) {
+        warn!(path = %path.display(), error = %e, "the ASRC seed could not be written: the next start may begin unseeded or from an older lock");
     }
 }
 

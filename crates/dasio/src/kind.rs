@@ -18,6 +18,10 @@
 //! # The FIFO target each way, ns (optional; default: the ASIO buffer
 //! # plus one pump block, dstack#247).
 //! app_buffer_ns = 5000000
+//! # One direction's own FIFO target, ns (optional; default:
+//! # app_buffer_ns; dstack issue 382, dasio#120).
+//! to_asio_app_buffer_ns = 1333333
+//! from_asio_app_buffer_ns = 1666666
 //! ```
 //!
 //! Every RX channel has its driver output and every TX channel its driver
@@ -34,7 +38,14 @@ use dstack_asio::{Channels, Inputs};
 pub const CONFIG_BRIDGE: &str = "bridge";
 
 /// The keys of the `[bridge]` table.
-const KEYS: [&str; 4] = ["driver", "to_asio", "from_asio", "app_buffer_ns"];
+const KEYS: [&str; 6] = [
+    "driver",
+    "to_asio",
+    "from_asio",
+    "app_buffer_ns",
+    "to_asio_app_buffer_ns",
+    "from_asio_app_buffer_ns",
+];
 
 /// An instance's kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +67,10 @@ pub struct BridgeConfig {
     pub from_asio: Vec<u32>,
     /// The FIFO target, ns (`None`: dstack's default).
     pub app_buffer_ns: Option<u64>,
+    /// The to-ASIO FIFO's own target, ns (`None`: `app_buffer_ns`).
+    pub to_asio_app_buffer_ns: Option<u64>,
+    /// The from-ASIO FIFO's own target, ns (`None`: `app_buffer_ns`).
+    pub from_asio_app_buffer_ns: Option<u64>,
 }
 
 /// The kind the device config in `text` names.
@@ -87,33 +102,38 @@ fn bridge(t: &toml::Table) -> Result<BridgeConfig, String> {
             ));
         }
     };
-    let app_buffer_ns = match t.get("app_buffer_ns") {
-        None => None,
-        Some(toml::Value::Integer(n)) => {
-            let Ok(n) = u64::try_from(*n) else {
-                return Err(format!(
-                    "[{CONFIG_BRIDGE}] `app_buffer_ns` = {n}: a negative time"
-                ));
-            };
-            // dlink's own check and text (the range the bridge's FIFO
-            // accepts, dstack#247).
-            if let Some(problem) = AppBuffer::new(0, 0).set(Some(n)).problem() {
-                return Err(format!("[{CONFIG_BRIDGE}] {problem}"));
-            }
-            Some(n)
-        }
-        Some(_) => {
-            return Err(format!(
-                "[{CONFIG_BRIDGE}] `app_buffer_ns` must be a whole number of ns"
-            ));
-        }
-    };
     Ok(BridgeConfig {
         driver,
         to_asio: channel_list(t, "to_asio", "output")?,
         from_asio: channel_list(t, "from_asio", "input")?,
-        app_buffer_ns,
+        app_buffer_ns: buffer_ns(t, "app_buffer_ns")?,
+        to_asio_app_buffer_ns: buffer_ns(t, "to_asio_app_buffer_ns")?,
+        from_asio_app_buffer_ns: buffer_ns(t, "from_asio_app_buffer_ns")?,
     })
+}
+
+/// A FIFO target under `key`, ns (absent: `None`), held to the range the
+/// bridge's FIFO accepts (dlink's own check and text, dstack#247).
+fn buffer_ns(t: &toml::Table, key: &str) -> Result<Option<u64>, String> {
+    match t.get(key) {
+        None => Ok(None),
+        Some(toml::Value::Integer(n)) => {
+            let Ok(n) = u64::try_from(*n) else {
+                return Err(format!("[{CONFIG_BRIDGE}] `{key}` = {n}: a negative time"));
+            };
+            match AppBuffer::new(0, 0).set(Some(n)).problem() {
+                // dlink names `app_buffer_ns`; the key read here is `key`.
+                Some(problem) => Err(format!(
+                    "[{CONFIG_BRIDGE}] {}",
+                    problem.replacen("app_buffer_ns", key, 1)
+                )),
+                None => Ok(Some(n)),
+            }
+        }
+        Some(_) => Err(format!(
+            "[{CONFIG_BRIDGE}] `{key}` must be a whole number of ns"
+        )),
+    }
 }
 
 /// The 1-based driver channels under `key` (absent: none), each once.
@@ -175,6 +195,8 @@ impl BridgeConfig {
             to_asio: self.to_asio.len(),
             from_asio: self.from_asio.len(),
             app_buffer_ns: self.app_buffer_ns,
+            to_asio_app_buffer_ns: self.to_asio_app_buffer_ns,
+            from_asio_app_buffer_ns: self.from_asio_app_buffer_ns,
         })
     }
 
@@ -189,17 +211,27 @@ impl BridgeConfig {
         }
     }
 
-    /// One line for the log and the tray: the driver and both maps.
+    /// One line for the log and the tray: the driver, both maps and the
+    /// FIFO targets (a direction's own only when it sets one).
     pub fn describe(&self) -> String {
         let list = |l: &[u32]| l.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
-        format!(
+        let ns = |n: Option<u64>| n.map_or_else(|| "default".to_string(), |n| format!("{n} ns"));
+        let mut line = format!(
             "bridge to \"{}\": RX -> outputs [{}], inputs [{}] -> TX, app buffer {}",
             self.driver,
             list(&self.to_asio),
             list(&self.from_asio),
-            self.app_buffer_ns
-                .map_or_else(|| "default".to_string(), |n| format!("{n} ns")),
-        )
+            ns(self.app_buffer_ns),
+        );
+        for (side, own) in [
+            ("to ASIO", self.to_asio_app_buffer_ns),
+            ("from ASIO", self.from_asio_app_buffer_ns),
+        ] {
+            if own.is_some() {
+                line.push_str(&format!(", {side} {}", ns(own)));
+            }
+        }
+        line
     }
 }
 
