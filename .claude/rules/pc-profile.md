@@ -45,7 +45,11 @@ paths:
   no RSS (`Get-NetAdapterRss` finds nothing), its receive DPCs are the
   USB controller's. Not must-have; `apply` restarts the NIC. FOH's (0-3,
   base 0) and dsg's hand entries in their site profiles win until the
-  rollout removes them. A site profile naming these needs 0.1.120+.
+  rollout removes them; a site overrides all three or none (a lone base
+  0 with the computed 3/3 reads 0-3 with 3 processors). The range holds
+  rxd's CPU on purpose (both are the NIC's receive work). After FOH's
+  rollout (3 RSS CPUs, `*NumRssQueues` 4) read `Get-NetAdapterRss` back.
+  A site profile naming these needs 0.1.120+.
 - **Reserved CPUs** (dasio#120): the baseline's `ReservedCpuSets`
   (`Session Manager\kernel`, `computed = "dasio_cpus"`, read at boot) keeps
   every thread off dasio's CPUs unless its process asks (CPU sets) or is

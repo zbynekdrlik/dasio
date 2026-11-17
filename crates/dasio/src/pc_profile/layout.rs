@@ -93,7 +93,9 @@ impl Layout {
     /// the per-packet receive DPCs stay off dasio's pump (dsg 16.11:
     /// to_asio underruns ~10/10 min -> 0, dasio#120). Without CPU 0 when
     /// there are two or more system CPUs: every timer DPC lands there
-    /// (mbc 17.11, dasio#24). FOH 32 = 1-3, mbc 12 = 1, dsg 4 = 0.
+    /// (mbc 17.11, dasio#24). FOH 32 = 1-3, mbc 12 = 1, dsg 4 = 0. It
+    /// holds the deferred receive's CPU (the last system CPU) on purpose:
+    /// both are the NIC's receive work, kept together off dasio's CPUs.
     pub fn rss_span(&self) -> (u32, u32) {
         let last = (self.system - 1) as u32;
         (u32::from(self.system >= 2), last)
