@@ -2,10 +2,9 @@
 //! on a dasio PC, reported while it does and removed by `apply`.
 
 use super::super::absent::{
-    CALLER_NAME, CALLER_SOURCE, DELETABLE_SERVICES, ExeStep, Fallback, PRE_UNINSTALL_WRITES,
-    REMOVABLE_DIRS, Step, Target, caller_command, caller_path, exe_steps, inside, parent_dir,
-    pre_write, removable, resolve_uninstaller, split_star, task_folder, task_matches,
-    versions_newest_first,
+    DELETABLE_SERVICES, ExeStep, Fallback, PRE_UNINSTALL_WRITES, REMOVABLE_DIRS, Step, Target,
+    exe_steps, inside, parent_dir, pre_write, removable, resolve_uninstaller, split_star,
+    task_folder, task_matches, versions_newest_first,
 };
 use super::super::*;
 use super::Pc;
