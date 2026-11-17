@@ -358,12 +358,21 @@ fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_a
     // 41375781285: a 57 ms runner gap, one round trip of 640 among 1120):
     // the driver's sample position counts the blocks it missed, as a sound
     // card's does, so the DAW's timeline keeps the round trip it reports.
+    // The stall itself is measured (dasio#162): the blocks the pump
+    // published while the host stalled must be counted missed. A stall
+    // the pump did not run through (CI 43983426049: the runner took its
+    // CPU for 4.8 ms, 15 blocks lost to that late wake, none to the
+    // device) had nothing to miss; only the device's own late-wake figures
+    // excuse it, never a loss of its own.
     let r = round_trip_stalled(FIRST, 4, 5);
-    assert!(
-        r.missed > 0,
-        "the 5 ms host stall missed no block (max gap {} us)",
-        r.max_gap_us
-    );
+    match dasio::host_stall::verdict(&r.stall()) {
+        Ok(dasio::host_stall::Verdict::Exercised) => {}
+        Ok(dasio::host_stall::Verdict::PumpCpuTaken) => eprintln!(
+            "the 5 ms host stall: the runner took the pump's CPU over it ({} published, {} lost to late wakes)",
+            r.stall_published, r.stall_lost_late_blocks
+        ),
+        Err(e) => panic!("{e} (max gap {} us)", r.max_gap_us),
+    }
 
     // A host at 48 kHz on the same 96 kHz device (dasio#107): the device
     // serves a section at 48 kHz (half the block, the same period), and

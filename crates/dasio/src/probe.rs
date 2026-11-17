@@ -71,6 +71,36 @@ pub struct Report {
     /// may excuse missing switches.
     pub pump_lost_late_blocks: u64,
     pub pump_lost_device_blocks: u64,
+    /// The injected stall (dasio#162), all 0 without one: the device
+    /// blocks published while the host stalled (its seq after less
+    /// before).
+    pub stall_published: u64,
+    /// The stall's asked and measured length, µs.
+    pub stall_asked_us: u64,
+    pub stall_us: u64,
+    /// The blocks the driver counted missed for the stall (at the first
+    /// switch after it).
+    pub stall_missed: u64,
+    /// The pump's lost time by cause from the stall's start to
+    /// [`STALL_LOOKS`] device ticks after it, in the host's whole blocks.
+    pub stall_lost_late_blocks: u64,
+    pub stall_lost_device_blocks: u64,
+}
+
+impl Report {
+    /// The injected stall's figures, for [`crate::host_stall::verdict`].
+    pub fn stall(&self) -> crate::host_stall::Stall {
+        crate::host_stall::Stall {
+            published: self.stall_published,
+            asked_us: self.stall_asked_us,
+            stall_us: self.stall_us,
+            block: self.block,
+            rate: self.rate,
+            missed: self.stall_missed,
+            lost_late_blocks: self.stall_lost_late_blocks,
+            lost_device_blocks: self.stall_lost_device_blocks,
+        }
+    }
 }
 
 /// The onset of an arrival: a quarter of the impulse.
@@ -91,6 +121,8 @@ struct State {
     /// impulse left (while it is on its way): 0 for none.
     stall_ms: u64,
     stalled: bool,
+    /// The device's figures around the stall; `None` without a stall.
+    watch: Option<StallWatch>,
     next_emit: u64,
     last_emit: Option<u64>,
     /// When `last_emit` left, µs since the probe's start.
@@ -101,6 +133,99 @@ struct State {
     emitted: u64,
     skipped: u64,
     peaks: Vec<(i32, u64)>,
+}
+
+/// The device ticks (100 ms each) after the stall's start its lost time
+/// is read at: a look publishes the blocks it judged at its own tick, or
+/// at the next one when it saw a re-bootstrap before its blocks
+/// (`pump_loss`), and the look in progress at the stall is the first.
+pub const STALL_LOOKS: u32 = 3;
+
+/// The device's header figures at a moment: its published seq, the
+/// driver's missed count, the pump's lost time (late, device), µs.
+#[derive(Clone, Copy)]
+struct Figures {
+    seq: u64,
+    missed: u64,
+    late_us: u64,
+    device_us: u64,
+}
+
+/// The device's figures around the injected stall (dasio#162), read in
+/// the switches (atomics only).
+struct StallWatch {
+    device: shm::Shared,
+    /// At the stall's start; `None` before it.
+    at: Option<Figures>,
+    published: u64,
+    stall_us: u64,
+    /// The driver's missed count for the stall, once a switch after it
+    /// came.
+    missed: Option<u64>,
+    /// The device's heartbeat last seen and its changes since the stall.
+    beat: u64,
+    beats: u32,
+    /// The pump's lost time (late, device) since the stall, µs, once
+    /// [`STALL_LOOKS`] ticks passed.
+    lost: Option<(u64, u64)>,
+}
+
+impl StallWatch {
+    fn figures(&self) -> Figures {
+        let h = self.device.header();
+        let (late_us, device_us) = pump_lost(h);
+        Figures {
+            seq: h.seq.load(Ordering::Acquire),
+            missed: h.missed.load(Ordering::Relaxed),
+            late_us,
+            device_us,
+        }
+    }
+
+    /// Each switch: the first after the stall takes the driver's missed
+    /// count (it adds the blocks the host missed before it calls the
+    /// switch); later ones count the device's ticks until the lost time
+    /// is read.
+    fn observe(&mut self) {
+        let Some(at) = self.at else { return };
+        let now = self.figures();
+        if self.missed.is_none() {
+            self.missed = Some(now.missed.saturating_sub(at.missed));
+        } else if self.lost.is_none() {
+            let beat = self.device.header().heartbeat_ms.load(Ordering::Acquire);
+            if beat != self.beat {
+                self.beat = beat;
+                self.beats += 1;
+                if self.beats >= STALL_LOOKS {
+                    self.lost = Some(lost_since(at, now));
+                }
+            }
+        }
+    }
+
+    /// The stall: `stall_ms` spun, its figures on either side.
+    fn stall(&mut self, stall_ms: u64) {
+        let at = self.figures();
+        self.beat = self.device.header().heartbeat_ms.load(Ordering::Acquire);
+        // Spun, not slept: a sleep rounds to the timer's tick (15.6 ms by
+        // default), past the impulse's return.
+        let from = Instant::now();
+        let until = from + Duration::from_millis(stall_ms);
+        while Instant::now() < until {
+            std::hint::spin_loop();
+        }
+        self.stall_us = from.elapsed().as_micros() as u64;
+        self.published = self.figures().seq.saturating_sub(at.seq);
+        self.at = Some(at);
+    }
+}
+
+/// The pump's lost time (late, device) from `at` to `now`, µs.
+fn lost_since(at: Figures, now: Figures) -> (u64, u64) {
+    (
+        now.late_us.saturating_sub(at.late_us),
+        now.device_us.saturating_sub(at.device_us),
+    )
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -196,6 +321,9 @@ unsafe fn switch_body(half: i32, _direct: ASIOBool, pos: Option<u64>) {
         let origin = *s.origin.get_or_insert(pos);
         s.position = pos.saturating_sub(origin);
     }
+    if let Some(w) = s.watch.as_mut() {
+        w.observe();
+    }
     // An impulse second the timeline skipped is not sent.
     while s.next_emit < s.position {
         s.next_emit += s.rate;
@@ -207,11 +335,11 @@ unsafe fn switch_body(half: i32, _direct: ASIOBool, pos: Option<u64>) {
             .is_some_and(|e| s.position >= e + 4 * s.block as u64)
     {
         s.stalled = true;
-        // Spun, not slept: a sleep rounds to the timer's tick (15.6 ms by
-        // default), past the impulse's return.
-        let until = Instant::now() + Duration::from_millis(s.stall_ms);
-        while Instant::now() < until {
-            std::hint::spin_loop();
+        // The blocks the pump published while the host stalled, for the
+        // driver to count missed, and the pump's lost time around them
+        // (dasio#162).
+        if let Some(w) = s.watch.as_mut() {
+            w.stall(s.stall_ms);
         }
     }
     let n = s.block;
@@ -380,6 +508,29 @@ pub fn probe_at(instance: u32, seconds: u64, stall_ms: u64, rate: u32) -> Result
         *GAPS.lock().unwrap() = Vec::with_capacity(4096);
         *OVER_1MS_ENDS.lock().unwrap() = Vec::with_capacity(4096);
         *T0.lock().unwrap() = Some(Instant::now());
+        let watch = if stall_ms > 0 {
+            match shm::Shared::open(instance) {
+                Ok(device) => Some(StallWatch {
+                    device,
+                    at: None,
+                    published: 0,
+                    stall_us: 0,
+                    missed: None,
+                    beat: 0,
+                    beats: 0,
+                    lost: None,
+                }),
+                Err(e) => {
+                    (v.disposeBuffers)(d);
+                    (v.Release)(d);
+                    return Err(format!(
+                        "the device's shared memory for the stall's blocks: {e}"
+                    ));
+                }
+            }
+        } else {
+            None
+        };
         *STATE.lock().unwrap() = Some(State {
             rate: u64::from(rate),
             bufs: infos
@@ -392,6 +543,7 @@ pub fn probe_at(instance: u32, seconds: u64, stall_ms: u64, rate: u32) -> Result
             position: 0,
             stall_ms,
             stalled: false,
+            watch,
             next_emit: u64::from(rate),
             last_emit: None,
             last_emit_us: 0,
@@ -473,6 +625,20 @@ pub fn probe_at(instance: u32, seconds: u64, stall_ms: u64, rate: u32) -> Result
     report.gaps_over_1ms = GAPS_OVER_1MS.load(Ordering::Relaxed);
     report.gap_blocks = GAP_BLOCKS.load(Ordering::Relaxed);
     report.emitted = s.emitted;
+    report.stall_asked_us = stall_ms * 1_000;
+    if let Some(w) = s.watch.as_ref()
+        && let Some(at) = w.at
+    {
+        // A run that ended before a switch after the stall, or before
+        // STALL_LOOKS ticks, reads the rest at its end.
+        let end = w.figures();
+        let (late_us, device_us) = w.lost.unwrap_or_else(|| lost_since(at, end));
+        report.stall_published = w.published;
+        report.stall_us = w.stall_us;
+        report.stall_missed = w.missed.unwrap_or(end.missed.saturating_sub(at.missed));
+        report.stall_lost_late_blocks = host_blocks(late_us);
+        report.stall_lost_device_blocks = host_blocks(device_us);
+    }
     report.skipped = s.skipped;
     report.round_trips = s.round_trips;
     report.rx_peaks = s.peaks;
