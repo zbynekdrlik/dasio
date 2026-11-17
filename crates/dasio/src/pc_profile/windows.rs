@@ -20,10 +20,11 @@ use windows_sys::Win32::System::Registry::{
 use windows_sys::Win32::System::Threading::{
     ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, GetPriorityClass,
     GetProcessAffinityMask, HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
-    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, REALTIME_PRIORITY_CLASS,
+    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    REALTIME_PRIORITY_CLASS,
 };
 
-use super::absent::{self, AbsentEntry, Removal, Target};
+use super::absent::{self, AbsentEntry, Fallback, Removal, Step, Target};
 use super::{Action, ProcState, Profile, Reader, Value, get_ini, set_ini};
 
 const NET_CLASS: &str =
@@ -424,7 +425,11 @@ fn remove(r: &Removal) -> Result<(), String> {
             }
             system32_tool("schtasks", &["/delete", "/tn", t.as_str(), "/f"])
         }
-        Removal::Exe { exe, uninstall } => {
+        Removal::Exe {
+            exe,
+            uninstall,
+            fallback,
+        } => {
             if !file_there(exe)? {
                 return Ok(());
             }
@@ -436,15 +441,120 @@ fn remove(r: &Removal) -> Result<(), String> {
             let status = run_bounded(&prog, args)?;
             // An uninstaller's exit code says little (some end non-zero
             // after a good uninstall): the exe gone is what counts.
+            if !file_there(exe)? {
+                return Ok(());
+            }
+            let left = format!(
+                "ran {prog} {} ({status}): {exe} is still there",
+                args.join(" ")
+            );
+            let Some(fb) = fallback else {
+                return Err(left);
+            };
+            // EdgeUpdate's /uninstall keeps itself while WebView2 is
+            // installed (dasio#128, dsg + mbc 16.11.2026).
+            println!("fallback for {exe}: {left}");
+            run_fallback(fb).map_err(|e| format!("{left}; fallback: {e}"))?;
             if file_there(exe)? {
-                return Err(format!(
-                    "ran {prog} {} ({status}): {exe} is still there",
-                    args.join(" ")
-                ));
+                return Err(format!("{left}; after the fallback too"));
             }
             Ok(())
         }
     }
+}
+
+/// The fallback's steps, each printed: the named processes running from
+/// the folder stopped, then the folder deleted. The folder is checked
+/// against [`absent::REMOVABLE_DIRS`] again before the delete.
+fn run_fallback(fb: &Fallback) -> Result<(), String> {
+    for step in fb.steps() {
+        match step {
+            Step::Stop { name, dir } => stop_inside(&name, &dir)?,
+            Step::RemoveDir(dir) => {
+                if !absent::removable(&dir) {
+                    return Err(format!(
+                        "{dir}: not a folder dasio deletes ({:?})",
+                        absent::REMOVABLE_DIRS
+                    ));
+                }
+                match std::fs::remove_dir_all(&dir) {
+                    Ok(()) => println!("fallback: deleted {dir}"),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        println!("fallback: {dir} was already gone")
+                    }
+                    Err(e) => return Err(format!("deleting {dir}: {e}")),
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// How long a stopped process may take to exit, in 100 ms looks.
+const STOP_LOOKS: u32 = 100;
+
+/// Stops every process named `name` whose image lies inside `dir`; one
+/// elsewhere, or one whose path cannot be read, is left (and printed: a
+/// left one inside the folder makes its delete fail, which says so).
+fn stop_inside(name: &str, dir: &str) -> Result<(), String> {
+    for pid in find_processes(name)? {
+        let image = match image_path(pid) {
+            Ok(image) => image,
+            Err(e) => {
+                // Ended since the snapshot, or not ours to read.
+                println!("fallback: left {name} pid {pid}: {e}");
+                continue;
+            }
+        };
+        if !absent::inside(dir, &image) {
+            println!("fallback: left {name} pid {pid} ({image}): not inside {dir}");
+            continue;
+        }
+        // taskkill turns on the debug privilege a stop of the updater's
+        // SYSTEM service process needs; the filter keeps it to this name.
+        let pid_text = pid.to_string();
+        let filter = format!("IMAGENAME eq {name}");
+        system32_tool("taskkill", &["/F", "/PID", &pid_text, "/FI", &filter])
+            .map_err(|e| format!("{name} pid {pid} ({image}): not stopped: {e}"))?;
+        let mut looks = 0;
+        while find_processes(name)?.contains(&pid) {
+            looks += 1;
+            if looks > STOP_LOOKS {
+                return Err(format!(
+                    "{name} pid {pid} ({image}): still running {} s after the stop",
+                    STOP_LOOKS / 10
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        println!("fallback: stopped {name} pid {pid} ({image})");
+    }
+    Ok(())
+}
+
+/// The full image path of process `pid`.
+fn image_path(pid: u32) -> Result<String, String> {
+    // SAFETY: a query-only handle, closed below.
+    let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if h.is_null() {
+        return Err(format!(
+            "cannot open it ({})",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // The longest path Windows gives.
+    let mut buf = vec![0u16; 32_768];
+    let mut len = buf.len() as u32;
+    // SAFETY: a valid handle, a buffer of `len` UTF-16 units.
+    let ok =
+        unsafe { QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) };
+    let err = std::io::Error::last_os_error();
+    // SAFETY: the handle opened above, closed once.
+    unsafe { CloseHandle(h) };
+    if ok == 0 {
+        return Err(format!("its path is unreadable ({err})"));
+    }
+    Ok(String::from_utf16_lossy(&buf[..len as usize]))
 }
 
 /// Runs `prog args` and waits at most [`UNINSTALL_LIMIT`]; past it the
@@ -646,26 +756,33 @@ fn find_nic_class(guid: &str) -> Option<String> {
 
 /// The pid of the first process with image `exe` (case ignored).
 fn find_process(exe: &str) -> Option<u32> {
+    find_processes(exe).ok()?.into_iter().next()
+}
+
+/// The ids of every process whose exe file name is `exe` (case ignored).
+fn find_processes(exe: &str) -> Result<Vec<u32>, String> {
     // SAFETY: a process snapshot, closed below.
     let snap: HANDLE = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snap == INVALID_HANDLE_VALUE {
-        return None;
+        return Err(format!(
+            "the process list is unreadable ({})",
+            std::io::Error::last_os_error()
+        ));
     }
     // SAFETY: a zeroed entry with its size set, as the API wants.
     let mut e: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
     e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-    let mut pid = None;
+    let mut pids = Vec::new();
     // SAFETY: a valid snapshot and entry.
     let mut ok = unsafe { Process32FirstW(snap, &mut e) } != 0;
     while ok {
         if from_wide(&e.szExeFile).eq_ignore_ascii_case(exe) {
-            pid = Some(e.th32ProcessID);
-            break;
+            pids.push(e.th32ProcessID);
         }
         // SAFETY: as above.
         ok = unsafe { Process32NextW(snap, &mut e) } != 0;
     }
     // SAFETY: the snapshot opened above.
     unsafe { CloseHandle(snap) };
-    pid
+    Ok(pids)
 }

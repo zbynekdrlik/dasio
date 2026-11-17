@@ -200,6 +200,15 @@ paths:
 - The baseline removes Edge (`setup.exe --uninstall --msedge
   --system-level --force-uninstall`), EdgeUpdate (`/uninstall`), its
   services edgeupdate / edgeupdatem / MicrosoftEdgeElevationService and
-  its two task families. On dsg 16.11 EdgeUpdate's `/uninstall` left its
-  exe; `EdgeWebView` (WebView2) was still installed there, which may keep
-  it (not proven). Read that FAILED line's PC before re-running apply.
+  its two task families. EdgeUpdate's `/uninstall` exits 0 but keeps
+  itself while WebView2 (`EdgeWebView`, which stays, owner 16.11) is
+  installed (dsg + mbc 16.11), so its entry names a fallback (0.1.117+):
+  `remove_dir` (the exe's own folder, only one on
+  `pc_profile::absent::REMOVABLE_DIRS`, a parse error otherwise; widen it
+  in code, under review) and `stop_processes` (exe file names, stopped
+  only while their image is inside that folder). When the exe stays after
+  the uninstaller, `apply` prints a `fallback for ...` line, stops each
+  named process (`fallback: stopped|left ...`), deletes the folder
+  (`fallback: deleted ...`) and looks again; the exe still there is a
+  FAILED line. Its tasks and services go by their own entries, which run
+  after it.
