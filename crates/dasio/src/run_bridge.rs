@@ -117,16 +117,7 @@ pub fn run(
     let mut b = Bridge::new(spec).map_err(|e| format!("the bridge: {e}"))?;
     // The ASRC seed before the driver's first open (dstack v0.6.172).
     let seed_path = asrc_seed::path(at.dir, &bridge.driver);
-    let (seed, bad, line) = asrc_seed::at_start(&Seed::read(&seed_path));
-    if bad {
-        warn!(path = %seed_path.display(), "{line}");
-    } else {
-        info!(path = %seed_path.display(), "{line}");
-    }
-    if let Some(s) = seed {
-        b.seed_from(s);
-    }
-    let mut keeper = Keeper::new(seed);
+    let mut keeper = seed_bridge(&mut b, &seed_path);
     // Before Pump::new, which would claim the RX rings itself.
     pull_to_driver(&mut b, &media, timing.playout, cfg.sample_rate)?;
     let pull_stats = b.to_asio_pull_stats();
@@ -374,6 +365,21 @@ pub fn run(
         None => Ok(()),
         Some(e) => Err(e),
     }
+}
+
+/// Starts `b`'s ASRC from the seed file at `path` (dasio#120, dstack
+/// v0.6.172), before the driver's first open; the keeper of that file.
+fn seed_bridge(b: &mut Bridge, path: &Path) -> Keeper {
+    let start = asrc_seed::at_start(&Seed::read(path));
+    if start.warn {
+        warn!(path = %path.display(), "{}", start.line);
+    } else {
+        info!(path = %path.display(), "{}", start.line);
+    }
+    if let Some(s) = start.seed {
+        b.seed_from(s);
+    }
+    Keeper::new(start.seed)
 }
 
 /// Writes the bridge's ASRC seed to `path` when it changed since the file

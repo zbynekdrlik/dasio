@@ -28,21 +28,64 @@ fn the_file_is_in_the_instance_folder_named_by_the_driver() {
 #[test]
 fn the_start_seeds_only_from_a_readable_seed() {
     let s = seed(7.512);
-    let (got, warn, line) = at_start(&Ok(Some(s)));
-    assert_eq!(got, Some(s));
-    assert!(!warn);
+    let st = at_start(&Ok(Some(s)));
+    assert_eq!(st.seed, Some(s));
+    assert!(!st.warn);
     assert!(
-        line.contains("to ASIO 7.512 ppm, from ASIO -7.500 ppm"),
-        "{line}"
+        st.line.contains("to ASIO 7.512 ppm, from ASIO -7.500 ppm"),
+        "{}",
+        st.line
     );
-    let (got, warn, line) = at_start(&Ok(None));
-    assert_eq!(got, None);
-    assert!(!warn);
-    assert!(line.starts_with("no ASRC seed yet"), "{line}");
-    let (got, warn, line) = at_start(&Err("x: unknown key `y`".into()));
-    assert_eq!(got, None);
-    assert!(warn);
-    assert!(line.contains("x: unknown key `y`"), "{line}");
+    let st = at_start(&Ok(None));
+    assert_eq!(st.seed, None);
+    assert!(!st.warn);
+    assert!(st.line.starts_with("no ASRC seed yet"), "{}", st.line);
+    let st = at_start(&Err("x: unknown key `y`".into()));
+    assert_eq!(st.seed, None);
+    assert!(st.warn);
+    assert!(st.line.contains("x: unknown key `y`"), "{}", st.line);
+}
+
+#[test]
+fn a_seed_moves_past_the_tolerance_or_on_a_changed_shape() {
+    let a = seed(7.5);
+    // The fit's small moves while locked are not written.
+    assert!(!moved(&a, &a));
+    assert!(!moved(&a, &seed(7.5 + 0.04)));
+    assert!(!moved(&a, &seed(7.5 - 0.04)));
+    assert!(moved(&a, &seed(7.5 + 0.06)));
+    assert!(moved(&a, &seed(7.5 - 0.06)));
+    // Exactly the tolerance is not past it.
+    assert!(!moved(&seed(0.0), &seed(SEED_TOLERANCE_PPM)));
+    let from = |p: Option<f64>| Seed {
+        from_asio_ppm: p,
+        ..a
+    };
+    assert!(moved(&a, &from(Some(-7.56))));
+    assert!(!moved(&a, &from(Some(-7.46))));
+    assert!(moved(&a, &from(None)));
+    assert!(moved(&from(None), &a));
+    assert!(!moved(&from(None), &from(None)));
+    let to_none = Seed {
+        to_asio_ppm: None,
+        ..a
+    };
+    assert!(moved(&a, &to_none));
+    assert!(moved(&to_none, &a));
+    assert!(moved(
+        &a,
+        &Seed {
+            dante_rate: 48_000,
+            ..a
+        }
+    ));
+    assert!(moved(
+        &a,
+        &Seed {
+            driver_rate: 48_000,
+            ..a
+        }
+    ));
 }
 
 #[test]
@@ -60,9 +103,11 @@ fn a_seed_with_one_side_reads_none_for_the_other() {
 #[test]
 fn only_a_changed_seed_is_written() {
     let (a, b) = (seed(7.5), seed(7.6));
-    // The file's own seed is not written again; nothing known, nothing.
+    // The file's own seed is not written again, nor one within the
+    // tolerance; nothing known, nothing.
     let k = Keeper::new(Some(a));
     assert_eq!(k.due(Some(a)), None);
+    assert_eq!(k.due(Some(seed(7.51))), None);
     assert_eq!(k.due(None), None);
     assert_eq!(k.due(Some(b)), Some(b));
     // No file: the first seed is written.
@@ -100,7 +145,7 @@ fn the_seed_round_trips_through_dstacks_file() {
     let due = k.due(Some(s)).unwrap();
     assert_eq!(k.wrote(due, due.write(&p)), None);
     assert_eq!(Seed::read(&p), Ok(Some(s)));
-    assert_eq!(at_start(&Seed::read(&p)).0, Some(s));
+    assert_eq!(at_start(&Seed::read(&p)).seed, Some(s));
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -117,11 +162,17 @@ fn the_bridge_instance_reads_and_keeps_the_seed() {
         found[0]
     };
     let path = once("asrc_seed::path(at.dir, &bridge.driver)");
-    let read = once("asrc_seed::at_start(&Seed::read(&seed_path))");
+    let helper_start = once("\nfn seed_bridge(");
+    let read = once("asrc_seed::at_start(&Seed::read(&path))");
     let given = once("b.seed_from(s);");
+    assert!(
+        helper_start < read && read < given,
+        "read, then seed_from, in the helper"
+    );
+    let call = once("seed_bridge(&mut b, &seed_path)");
     let runner = src.find("spawn_runner(").expect("the runner's start");
-    assert!(path < read && read < given, "path, read, then seed_from");
-    assert!(given < runner, "seeded before the driver's first open");
+    assert!(path < call, "the path, then the helper");
+    assert!(call < runner, "seeded before the driver's first open");
     let timer = once("Every::new(asrc_seed::SAVE_EVERY, start, false)");
     let due = once("if save.due(now) {\n            save_seed(&shared, &mut keeper, &seed_path);");
     let end = once(
