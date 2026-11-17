@@ -13,6 +13,7 @@ use std::net::Ipv4Addr;
 
 use dstack::daemon::{IfAddr, Place, pick_interface};
 use dstack::device::DeviceConfig;
+use dstack::host::test_run::TestRun;
 
 /// The refusal when the command line gives neither or both of the flags.
 pub const ONE_PLACE: &str = "give exactly one of --ip <address> and --iface <interface name>";
@@ -132,12 +133,40 @@ pub fn address_in(
 /// interface's link-local address (a Dante network without DHCP).
 pub const LINK_LOCAL_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// [`address_in`] on this box's interfaces now (an interface at boot may
-/// have no address yet: the service asks again).
+/// [`address_in`] as a TEST RUN takes it (dstack's `host::test_run`,
+/// dasio#167): with `DSTACK_TEST_LOOPBACK=1` (this workspace's
+/// `.cargo/config.toml` sets it for every process cargo runs) a loopback
+/// `--ip` is the device's address, as dstack's own start serves it, and
+/// any other address an interface holds is refused unless
+/// `DSTACK_LIVE_TEST=1`, so no test device's mDNS, info or heartbeat
+/// multicast reaches a real network. Outside a test run (production: the
+/// service and `dasio run` on a PC) it is [`address_in`] unchanged.
+pub fn address_for(
+    run: TestRun,
+    place: &Place,
+    addrs: &[IfAddr],
+    link_local_ok: bool,
+) -> Result<Ipv4Addr, String> {
+    if let Some(lo) = run.loopback(place) {
+        return Ok(lo.ip);
+    }
+    let ip = address_in(place, addrs, link_local_ok)?;
+    run.admit(IfAddr {
+        name: String::new(),
+        ip,
+        netmask: Ipv4Addr::UNSPECIFIED,
+    })
+    .map(|_| ip)
+    .map_err(|e| format!("{ip}: {e}"))
+}
+
+/// [`address_for`] on this box's interfaces now, for this process's test
+/// run (an interface at boot may have no address yet: the service asks
+/// again).
 pub fn address(place: &Place, link_local_ok: bool) -> Result<Ipv4Addr, String> {
     let addrs = dstack::host::interfaces()
         .map_err(|e| format!("the box's interfaces could not be read: {e}"))?;
-    address_in(place, &addrs, link_local_ok)
+    address_for(TestRun::from_env(), place, &addrs, link_local_ok)
 }
 
 /// The device config's keys that set its control ports and process id.
@@ -355,6 +384,91 @@ mod tests {
             address_in(&Place::Iface("Ethernet".into()), &leased, false),
             Ok(Ipv4Addr::new(10, 77, 7, 108))
         );
+    }
+
+    /// A test run (`DSTACK_TEST_LOOPBACK=1`), live (`DSTACK_LIVE_TEST=1`)
+    /// or not.
+    fn test_run(live: bool) -> TestRun {
+        TestRun {
+            loopback: true,
+            live,
+        }
+    }
+
+    #[test]
+    fn a_test_run_serves_on_loopback_and_refuses_a_site_address() {
+        // dasio#167: the e2e devices on 127.0.0.1, as dstack's start
+        // serves them in a test run; no interface lookup holds loopback.
+        assert_eq!(
+            address_for(test_run(false), &Place::Ip(Ipv4Addr::LOCALHOST), &[], false),
+            Ok(Ipv4Addr::LOCALHOST)
+        );
+        assert_eq!(
+            address_for(test_run(true), &Place::Ip(Ipv4Addr::LOCALHOST), &[], false),
+            Ok(Ipv4Addr::LOCALHOST)
+        );
+        // An address the box holds: refused in a test run, before any bind.
+        let site = Ipv4Addr::new(10, 77, 7, 232);
+        assert_eq!(
+            address_for(test_run(false), &Place::Ip(site), &addrs(), false),
+            Err(format!(
+                "10.77.7.232: {}",
+                dstack::host::test_run::SITE_REFUSED
+            ))
+        );
+        assert_eq!(
+            address_for(
+                test_run(false),
+                &Place::Iface("Wi-Fi".into()),
+                &addrs(),
+                false
+            ),
+            Err(format!(
+                "192.168.1.5: {}",
+                dstack::host::test_run::SITE_REFUSED
+            ))
+        );
+        // An explicitly live test may take it.
+        assert_eq!(
+            address_for(test_run(true), &Place::Ip(site), &addrs(), false),
+            Ok(site)
+        );
+        // A place the box does not hold is judged as in production.
+        let e = address_for(
+            test_run(false),
+            &Place::Ip(Ipv4Addr::new(10, 77, 7, 9)),
+            &addrs(),
+            false,
+        )
+        .unwrap_err();
+        assert!(e.starts_with("10.77.7.9: "), "{e}");
+        assert!(!e.contains("DSTACK_TEST_LOOPBACK"), "{e}");
+    }
+
+    #[test]
+    fn outside_a_test_run_the_address_is_production_s() {
+        let prod = TestRun::default();
+        let site = Ipv4Addr::new(10, 77, 7, 232);
+        assert_eq!(
+            address_for(prod, &Place::Ip(site), &addrs(), false),
+            Ok(site)
+        );
+        let lo = vec![IfAddr {
+            name: "lo".into(),
+            ip: Ipv4Addr::LOCALHOST,
+            netmask: Ipv4Addr::new(255, 0, 0, 0),
+        }];
+        assert_eq!(
+            address_for(prod, &Place::Ip(Ipv4Addr::LOCALHOST), &lo, false),
+            address_in(&Place::Ip(Ipv4Addr::LOCALHOST), &lo, false)
+        );
+        assert!(address_for(prod, &Place::Ip(Ipv4Addr::LOCALHOST), &lo, false).is_err());
+        // A live flag alone is no test run.
+        let live_only = TestRun {
+            loopback: false,
+            live: true,
+        };
+        assert!(address_for(live_only, &Place::Ip(Ipv4Addr::LOCALHOST), &lo, false).is_err());
     }
 
     #[test]
