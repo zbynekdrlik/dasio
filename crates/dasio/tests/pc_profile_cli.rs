@@ -127,3 +127,44 @@ fn an_existing_absent_exe_is_a_problem_and_apply_plan_names_its_uninstaller() {
     assert!(!plan.contains("gone.exe"), "{plan}");
     assert!(still, "--plan removed nothing");
 }
+
+#[test]
+fn a_process_s_integrity_is_read_from_its_token() {
+    // dasio#128: the real token read, on the check's own process (the
+    // built dasio.exe, running while it checks). The runner's account runs
+    // it at medium or high; exactly one of the two wants is met, and the
+    // other is a problem naming the level read, never "unreadable".
+    let run = |want: &str| {
+        let (dir, file) = profile(
+            &format!("integrity-{want}"),
+            &format!("name = \"ci\"\n[[process]]\nexe = \"dasio.exe\"\nintegrity = \"{want}\"\n"),
+        );
+        let out = Command::new(exe())
+            .args(["pc-profile", "check", "--profile"])
+            .arg(&file)
+            .output()
+            .unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        stdout
+            .lines()
+            .find(|l| l.starts_with("PROBLEM process dasio.exe integrity: "))
+            .map(str::to_string)
+    };
+    let (medium, high) = (run("medium"), run("high"));
+    match (medium, high) {
+        (None, Some(line)) => assert!(
+            line.starts_with(
+                "PROBLEM process dasio.exe integrity: medium (the profile wants high)"
+            ),
+            "{line}"
+        ),
+        (Some(line), None) => assert!(
+            line.starts_with(
+                "PROBLEM process dasio.exe integrity: high (the profile wants medium)"
+            ),
+            "{line}"
+        ),
+        other => panic!("exactly one of medium/high must hold: {other:?}"),
+    }
+}

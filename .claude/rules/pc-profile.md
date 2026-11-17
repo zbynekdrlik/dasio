@@ -132,6 +132,15 @@ paths:
 - `[[process]]` entries only check what Process Lasso applied (affinity,
   priority class). The setting itself is Lasso's ini, which the profile
   holds key by key.
+- `[[process]]` also takes `integrity = "low"|"medium"|"high"|"system"`
+  (dasio#128, 0.1.126+): the token's level (`OpenProcessToken` +
+  `TokenIntegrityLevel`, a limited query handle is enough). Checked only,
+  a running process is never de-elevated; an unreadable token is a
+  problem. The baseline holds both Lives (`Ableton Live 12 Suite.exe`,
+  `AbletonLiveMaster.exe`) at `medium`. A site `[[process]]` for the
+  same exe takes over only the fields it sets: FOH's and mbc's affinity
+  entries keep the baseline's integrity, each with its own `why`; a
+  site turns a baseline field off only by naming another value.
 - `[[disk]]` entries (`drive = "C:"`, `min_free_gb = N`) are a floor of
   free space: below it, the check reports a problem. Checked only, never
   applied. Add one to a PC's profile only after that PC runs a dasio that
@@ -199,7 +208,8 @@ paths:
   its local memory (`foh-reboot-ableton-start`), not in the repo. It starts them
   NOT elevated (through explorer.exe, never a direct start from the elevated
   remote shell): an elevated Live blocks fohmixer's hub from its windows
-  (17.11.2026). Then it
+  (17.11.2026; the profile reports it as `process ... integrity: high`).
+  Then it
   checks that the band Ableton is attached to its dasio instance
   (`attached=1` in the instance log) and that Lasso's affinities hold.
 
