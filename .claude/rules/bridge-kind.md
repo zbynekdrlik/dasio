@@ -10,8 +10,8 @@ paths:
 
 - A `[bridge]` table in `device.toml` makes an instance a bridge to a local
   ASIO driver (`driver`, `to_asio`, `from_asio`, optional `app_buffer_ns`,
-  `to_asio_app_buffer_ns`, `from_asio_app_buffer_ns`; channels 1-based, one
-  per RX / TX channel). No table: the DAW kind.
+  `to_asio_app_buffer_ns`, `from_asio_app_buffer_ns`, `converter_taps`;
+  channels 1-based, one per RX / TX channel). No table: the DAW kind.
 - dasio's own keys (`iface`, `[bridge]`) are removed in
   `place::device_config` before dstack's `DeviceConfig` reads the file
   (deny_unknown_fields). A new dasio key goes there too, and dtray's
@@ -118,3 +118,36 @@ paths:
   `save_seed` (via `asrc_seed::Keeper`: only a changed seed, a failed write
   retried, its error logged once) on the loop's 60 s `save` timer and once
   after the device stops. `asrc_seed/tests.rs` guards this wiring as text.
+- dsg on v0.6.172 (17.11.2026, dasio#120): to-ASIO 1.333 ms (unseeded
+  start) and then 1.0 ms (seeded start, ppm 7.7 at the first counts line
+  instead of 0.3) each held 30 min with from-ASIO at the default 1.667 ms:
+  0 underruns either way, 0 missed. Neither window had a late MiniFuse
+  callback. dsg runs to-ASIO 1.0 ms. The seed file was rewritten 5-6 times
+  per 30 min (0.05 ppm tolerance), the first write about 2 min after start.
+- The converter length (dstack v0.6.174, dstack issue 382, the owner's
+  decision of 17.11.2026: SoundGrid runs 96 kHz too, the converter goes to
+  the minimum): `[bridge] converter_taps` (32 to 256 in steps of 8, unset
+  = 256) is checked by `kind::converter_taps` with dstack-asio's own bounds
+  (`MIN/MAX_CONVERTER_TAPS`, `dstack_resample::TAPS_STEP`; a test holds
+  dasio's check equal to `Bridge::new`'s for 0-300) and goes into
+  `Spec::converter_taps` for both directions. Delay at 96 <-> 96 kHz: 256
+  taps 1.333 ms, 48 taps 0.250 ms (flat to 20 kHz), 32 taps 0.167 ms
+  (-0.4 dB at 20 kHz). `bridge_json` carries `to_asio_converter_delay_us` /
+  `from_asio_converter_delay_us` (dlink `Stats::converter_delay_ns`,
+  rounded, the last player's; left out until a direction's first player:
+  the to-ASIO one comes at the driver's first open), the counts line
+  `*_converter_delay_ms`. dtray v0.6.174 does not know the key yet (its
+  `[bridge]` read refuses unknown fields, dstack issue 387's open item):
+  on a PC with `converter_taps` set, dtray's settings window reads "Settings
+  not readable" until the tag moves past the release that teaches it; the
+  device itself reads the key.
+- The driver callback's lateness bins (dstack v0.6.173, dstack issue
+  386): `bridge_json` writes `late_250us`..`late_2000us`
+  (`dstack_asio::state::LATE_BIN_KEYS`, every bin, 0 included) before
+  `pc_profile_problems`; the counts line `late_bins = [..]`. A from-ASIO
+  underrun reads as the driver's from a callback 3/4 of the from-ASIO
+  target late. `app_status::underrun_tick` (dstack's
+  `UnderrunWatch::look`) runs once in the counts tick on one watch made
+  before the loop and WARNs `asio bridge underruns since the last check:
+  ...` when a count rose; a wrapper, because `app_status/tests.rs` forbids
+  any `.look(` in `run_bridge.rs`.

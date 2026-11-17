@@ -143,6 +143,9 @@ fn bridge_running() -> BridgeFacts {
         to_asio_underruns: 2,
         from_asio_underruns: 5,
         resets: 1,
+        late_bins: [0; 8],
+        to_asio_converter_delay_ns: 0,
+        from_asio_converter_delay_ns: 0,
         pc_problems: Some(0),
         tx: TxPath::default(),
         from_asio_age: None,
@@ -160,6 +163,7 @@ fn the_bridge_facts_come_from_the_runner_s_status() {
         rate: 48_000,
         buffer_frames: 128,
         resets: 4,
+        late_bins: [1, 2, 3, 4, 5, 6, 7, 8],
         ..Default::default()
     };
     let f = BridgeFacts::of(
@@ -184,6 +188,10 @@ fn the_bridge_facts_come_from_the_runner_s_status() {
             to_asio_underruns: 7,
             from_asio_underruns: 9,
             resets: 4,
+            late_bins: [1, 2, 3, 4, 5, 6, 7, 8],
+            // The players' delays come from their stats, not the status.
+            to_asio_converter_delay_ns: 0,
+            from_asio_converter_delay_ns: 0,
             pc_problems: Some(2),
             tx: TxPath::Udp,
             from_asio_age: Some(AGE_DSG),
@@ -842,3 +850,7 @@ fn the_bridge_instance_hands_the_from_asio_side_to_the_tx_thread() {
     // The pull's counts reach the status.
     assert!(src.contains("from_asio_pull: from_pull.as_ref().map(|p| p.view()),"));
 }
+
+/// dstack v0.6.173 / v0.6.174's bridge figures (dasio#120): lateness bins,
+/// converter delays, the underrun tick.
+mod bridge_figures;

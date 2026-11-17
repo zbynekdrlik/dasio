@@ -56,6 +56,7 @@ fn the_bridge_table_reads_as_written() {
             app_buffer_ns: Some(5_000_000),
             to_asio_app_buffer_ns: None,
             from_asio_app_buffer_ns: None,
+            converter_taps: None,
         }
     );
 }
@@ -79,6 +80,7 @@ fn the_spec_is_the_devices_rate_block_and_counts() {
             app_buffer_ns: Some(5_000_000),
             to_asio_app_buffer_ns: None,
             from_asio_app_buffer_ns: None,
+            converter_taps: None,
         })
     );
 }
@@ -301,4 +303,79 @@ fn the_description_names_the_driver_and_both_maps() {
         bridge_of("driver = \"Test ASIO\"\nto_asio = [1]").describe(),
         "bridge to \"Test ASIO\": RX -> outputs [1], inputs [] -> TX, app buffer default"
     );
+}
+
+/// dsg's converter (dasio#120, the owner's decision of 17.11.2026 on
+/// dstack issue 382): both directions' sinc length into the spec.
+#[test]
+fn the_converter_length_goes_into_the_spec_and_the_description() {
+    let b = bridge_of(&format!("{PER_DIRECTION}converter_taps = 48\n"));
+    assert_eq!(b.converter_taps, Some(48));
+    assert_eq!(b.spec(&device()).unwrap().converter_taps, Some(48));
+    assert_eq!(
+        b.describe(),
+        "bridge to \"Test ASIO\": RX -> outputs [3,4], inputs [1,2,5] -> TX, app buffer default, \
+         to ASIO 1333333 ns, converter 48 taps"
+    );
+    // Unset: dstack's default (256 taps), and the line names none.
+    let b = bridge_of(FULL);
+    assert_eq!(b.converter_taps, None);
+    assert_eq!(b.spec(&device()).unwrap().converter_taps, None);
+    assert!(!b.describe().contains("converter"), "{}", b.describe());
+}
+
+/// What dstack-asio's `Bridge::new` takes: 32 to 256 taps in steps of 8,
+/// each edge and step checked on its own.
+#[test]
+fn the_converter_length_is_held_to_32_to_256_in_steps_of_8() {
+    for ok in [32_u32, 40, 48, 128, 248, 256] {
+        let b = bridge_of(&format!("{FULL}converter_taps = {ok}\n"));
+        assert_eq!(b.converter_taps, Some(ok), "{ok}");
+        assert_eq!(b.spec(&device()).unwrap().converter_taps, Some(ok));
+    }
+    for bad in [
+        "0",
+        "8",
+        "24",
+        "31",
+        "33",
+        "36",
+        "47",
+        "252",
+        "257",
+        "264",
+        "-8",
+        "4294967328",
+    ] {
+        assert_eq!(
+            refusal(&format!("driver = \"Test ASIO\"\nconverter_taps = {bad}")),
+            format!("[bridge] `converter_taps` = {bad}: 32 to 256 in steps of 8"),
+            "{bad}"
+        );
+    }
+    for bad in ["48.0", "\"48\"", "[48]"] {
+        assert_eq!(
+            refusal(&format!("driver = \"Test ASIO\"\nconverter_taps = {bad}")),
+            "[bridge] `converter_taps` must be a whole number of taps",
+            "{bad}"
+        );
+    }
+}
+
+/// dstack-asio takes every length dasio lets through, and dasio refuses
+/// every one dstack-asio refuses (its own check, `Bridge::new`).
+#[test]
+fn dasio_s_converter_check_agrees_with_dstack_asio_s() {
+    for taps in 0..=300_u32 {
+        let spec = Spec {
+            converter_taps: Some(taps),
+            ..bridge_of(FULL).spec(&device()).unwrap()
+        };
+        let dstack_takes = dstack_asio::bridge::Bridge::new(spec).is_ok();
+        let dasio_takes = kind(&with_bridge(&format!(
+            "driver = \"Test ASIO\"\nconverter_taps = {taps}"
+        )))
+        .is_ok();
+        assert_eq!(dasio_takes, dstack_takes, "{taps} taps");
+    }
 }

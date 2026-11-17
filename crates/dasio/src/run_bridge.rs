@@ -36,6 +36,13 @@
 //! is read before the driver's first open and written from the run loop
 //! when the bridge's seed changed (once a minute at most) and at the end.
 //!
+//! **Each underrun names its cause** (dasio#120, dstack issue 386,
+//! v0.6.173): the counts tick hands the players' underruns and the driver
+//! callbacks' lateness bins to dstack's [`UnderrunWatch`], which WARNs
+//! when a count rose. The converter's length is the config's
+//! (`[bridge] converter_taps`, dstack issue 382, v0.6.174); the status and
+//! the counts line carry each direction's converter delay.
+//!
 //! [`FromAsio`]: dstack_asio::bridge::FromAsio
 //! [`DanteSide`]: dstack_asio::bridge::DanteSide
 //! [`AsioSide`]: dstack_asio::bridge::AsioSide
@@ -52,7 +59,7 @@ use dlink::bridge::pull::PullStats;
 use dstack::host::{self, Signals, Stopped};
 use dstack::media::tx::{TxFill, TxFillStats};
 use dstack::stream::{self, Map, Pump, PumpStats, Timing};
-use dstack_asio::bridge::{Bridge, Seed};
+use dstack_asio::bridge::{Bridge, Seed, UnderrunWatch};
 use dstack_asio::win::WinDevice;
 use dstack_asio::{Channels, MakeProcess, Opened, Process, Reason, Runner, Status};
 use tracing::{error, info, warn};
@@ -191,6 +198,8 @@ pub fn run(
             crate::app_status::bridge_json(&BridgeFacts {
                 rx: rx_figures.report(),
                 from_asio_pull: from_pull.as_ref().map(|p| p.view()),
+                to_asio_converter_delay_ns: to_stats.converter_delay_ns(),
+                from_asio_converter_delay_ns: from_stats.converter_delay_ns(),
                 ..BridgeFacts::of(
                     &driver,
                     &s,
@@ -232,6 +241,8 @@ pub fn run(
     let mut keep = Every::new(crate::to_asio_pull::KEEP_EVERY, start, false);
     // The look for a new ASRC seed to keep (dasio#120).
     let mut save = Every::new(asrc_seed::SAVE_EVERY, start, false);
+    // The underrun counts at the last counts tick (dstack v0.6.173).
+    let mut underruns = UnderrunWatch::new();
     let profile = ProfileWatch::new(own);
     // The first check a minute in: after the helper placer has moved this
     // process's threads off the media CPUs (a thread on a media CPU takes
@@ -270,6 +281,15 @@ pub fn run(
                 media.rx.network_p99_ns(),
             );
             let s = lock(&status).clone();
+            // A player's underruns that rose since the last tick, with the
+            // driver callbacks' lateness meanwhile: dstack WARNs.
+            crate::app_status::underrun_tick(
+                &mut underruns,
+                &s,
+                to_stats.underruns(),
+                from_stats.underruns(),
+                from_stats.target_ms(),
+            );
             let v = stats.view();
             info!(
                 state = ?s.state,
@@ -278,6 +298,8 @@ pub fn run(
                 buffer_frames = s.buffer_frames,
                 callbacks = s.callbacks,
                 late_callbacks = s.late_callbacks,
+                // 0.25 ms bins under two periods (dstack v0.6.173).
+                late_bins = ?s.late_bins,
                 fast_callbacks = s.fast_callbacks,
                 overloads = s.overloads,
                 faults = s.faults,
@@ -288,6 +310,7 @@ pub fn run(
                 to_asio_underruns = to_stats.underruns(),
                 to_asio_ppm = to_stats.ppm(),
                 to_asio_target_ms = to_stats.target_ms(),
+                to_asio_converter_delay_ms = to_stats.converter_delay_ns() as f64 / 1e6,
                 to_asio_overflows = to_fifo.as_ref().map_or(0, |f| f.overflows()),
                 to_asio_pulls = pull_stats.as_ref().map_or(0, |p| p.pulls()),
                 to_asio_pull_restarts = pull_stats.as_ref().map_or(0, |p| p.restarts()),
@@ -295,6 +318,7 @@ pub fn run(
                 from_asio_underruns = from_stats.underruns(),
                 from_asio_ppm = from_stats.ppm(),
                 from_asio_target_ms = from_stats.target_ms(),
+                from_asio_converter_delay_ms = from_stats.converter_delay_ns() as f64 / 1e6,
                 // None for a bridge with no channel from ASIO (no pull).
                 from_asio_pull = ?from_pull.as_ref().map(|p| p.view()),
                 blocks = v.blocks,

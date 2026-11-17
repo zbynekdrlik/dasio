@@ -101,6 +101,13 @@ Owner rules from dasio#1. They hold for every change on a PC running dasio.
   `deploy.ps1` (install.ps1 with output into `install.log`, then
   `install.done`) and start it with a SYSTEM scheduled task (`schtasks
   /create ... /ru SYSTEM /rl HIGHEST` + `/run`). Poll for `install.done`.
+- **Remote-shell gotchas (dsg, 17.11.2026):** `& script.ps1` is refused
+  (script execution disabled): run a helper with `powershell -NoProfile
+  -ExecutionPolicy Bypass -File <ps1>`. A config written with PS 5.1's
+  `Set-Content -Encoding utf8` gets a BOM: write TOML with
+  `[IO.File]::WriteAllText(path, text, (New-Object Text.UTF8Encoding $false))`.
+  For a soak, the MCP `Wait` tool caps at 300 s (use 240) and several
+  `Wait` calls in one message run at the same time: send them one by one.
 - **A GitHub artifact reaches a PC through its signed blob URL.** Get the
   302 `Location` of `/actions/artifacts/<id>/zip` with the gh token. It lives
   about 10 min. Download it on the PC and check every SHA256SUMS line. The

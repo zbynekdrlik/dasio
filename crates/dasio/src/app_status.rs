@@ -6,7 +6,8 @@
 use std::collections::VecDeque;
 
 use dstack::media::tx::{AppView, TxFillView};
-use dstack_asio::bridge::{AgeReport, BlockAge};
+use dstack_asio::bridge::{AgeReport, BlockAge, UnderrunCounts, UnderrunWatch};
+use dstack_asio::state::{LATE_BIN_KEYS, LATE_BINS};
 
 /// Seconds the late count per minute is taken over.
 pub const LATE_WINDOW_S: u64 = 60;
@@ -211,6 +212,15 @@ pub struct BridgeFacts {
     pub from_asio_underruns: u64,
     /// Runs the runner closed (a reset, a rate change, a stall, a fault).
     pub resets: u64,
+    /// The current run's driver callbacks per 0.25 ms lateness bin, under
+    /// two periods (dstack v0.6.173, dasio#120; `LATE_BIN_KEYS`).
+    pub late_bins: [u64; LATE_BINS],
+    /// Each direction's converter delay, ns (dstack v0.6.174, dasio#120;
+    /// `Stats::converter_delay_ns`, the last player's): 0 until that
+    /// direction's first player was made (the to-ASIO one at the driver's
+    /// first open).
+    pub to_asio_converter_delay_ns: u64,
+    pub from_asio_converter_delay_ns: u64,
     /// The PC profile's problems, checked in process (dasio#120); `None`
     /// without a profile or before the first check.
     pub pc_problems: Option<u32>,
@@ -252,6 +262,9 @@ impl BridgeFacts {
             to_asio_underruns,
             from_asio_underruns,
             resets: status.resets,
+            late_bins: status.late_bins,
+            to_asio_converter_delay_ns: 0,
+            from_asio_converter_delay_ns: 0,
             pc_problems,
             tx,
             from_asio_age,
@@ -299,6 +312,56 @@ pub fn from_asio_age_tick(
     network_p99_ns: Option<u64>,
 ) -> Option<String> {
     age.look(view, network_p99_ns)
+}
+
+/// The bridge status loop's underrun check (dstack v0.6.173, dasio#120),
+/// once a counts tick, never from the pump or the driver's callback (it
+/// formats and logs): the runner's `status` and both players' underruns
+/// against the last tick's; when one rose, dstack WARNs which side, how
+/// many, whose (the driver's callback lateness or the bridge's) and the
+/// callbacks' lateness meanwhile, and that text is returned.
+/// `from_asio_target_ms` is the from-ASIO player's target
+/// (`Stats::target_ms`).
+pub fn underrun_tick(
+    watch: &mut UnderrunWatch,
+    status: &dstack_asio::Status,
+    to_asio_underruns: u64,
+    from_asio_underruns: u64,
+    from_asio_target_ms: f64,
+) -> Option<String> {
+    watch.look(
+        UnderrunCounts::of(status, to_asio_underruns, from_asio_underruns),
+        from_asio_target_ms,
+    )
+}
+
+/// The bridge's lateness bin keys for its status JSON (dstack v0.6.173,
+/// dasio#120), each followed by a comma: every bin, 0 included (a count).
+fn late_bins_json(bins: &[u64; LATE_BINS]) -> String {
+    LATE_BIN_KEYS
+        .iter()
+        .zip(bins)
+        .map(|(key, n)| format!("\"{key}\":{n},"))
+        .collect()
+}
+
+/// `ns` in whole us, rounded.
+fn us_of_ns(ns: u64) -> u64 {
+    (ns + 500) / 1000
+}
+
+/// The bridge's converter delay keys for its status JSON (dstack
+/// v0.6.174, dasio#120), us, each followed by a comma: a direction's only
+/// once its first player was made (never a 0 that reads as no delay).
+fn converter_json(to_asio_ns: u64, from_asio_ns: u64) -> String {
+    [
+        ("to_asio_converter_delay_us", to_asio_ns),
+        ("from_asio_converter_delay_us", from_asio_ns),
+    ]
+    .into_iter()
+    .filter(|&(_, ns)| ns > 0)
+    .map(|(key, ns)| format!("\"{key}\":{},", us_of_ns(ns)))
+    .collect()
 }
 
 /// The bridge's from-ASIO pull key for its status JSON (dstack v0.6.167,
@@ -393,16 +456,18 @@ fn escaped(t: &str) -> String {
 }
 
 /// The JSON object for a bridge instance's `set_app_status`: `line`,
-/// `state`, `kind` and every number (no DAW: `daw_attached` false); the
-/// RX arrival and its ASIO pull wait keys only once measured (dasio#128),
-/// the from-ASIO pull's only with channels from ASIO (dasio#120).
+/// `state`, `kind` and every number (no DAW: `daw_attached` false), the
+/// driver callbacks' lateness bins and each direction's converter delay
+/// once its first player was made (dasio#120); the RX arrival and its
+/// ASIO pull wait keys only once measured (dasio#128), the from-ASIO
+/// pull's only with channels from ASIO (dasio#120).
 pub fn bridge_json(f: &BridgeFacts) -> String {
     format!(
         concat!(
             "{{\"line\":\"{}\",\"state\":\"{}\",\"kind\":\"bridge\",\"daw_attached\":false,",
             "\"driver\":\"{}\",\"running\":{},\"reason\":\"{}\",\"rate\":{},",
             "\"buffer_frames\":{},\"to_asio_underruns\":{},\"from_asio_underruns\":{},",
-            "\"resets\":{},\"pc_profile_problems\":{},{}{}{}{}{}}}"
+            "\"resets\":{},{}{}\"pc_profile_problems\":{},{}{}{}{}{}}}"
         ),
         escaped(&bridge_line(f)),
         bridge_state(f),
@@ -414,6 +479,8 @@ pub fn bridge_json(f: &BridgeFacts) -> String {
         f.to_asio_underruns,
         f.from_asio_underruns,
         f.resets,
+        late_bins_json(&f.late_bins),
+        converter_json(f.to_asio_converter_delay_ns, f.from_asio_converter_delay_ns),
         f.pc_problems.map_or(-1, i64::from),
         age_json(f.from_asio_age),
         pull_json(f.from_asio_pull),
