@@ -459,7 +459,8 @@ pub enum ExeStep {
 pub fn exe_steps(uninstall: &[String], before: &[&'static PreWrite]) -> Vec<ExeStep> {
     before
         .iter()
-        .map(|w| ExeStep::Write(*w))
+        .copied()
+        .map(ExeStep::Write)
         .chain([ExeStep::Uninstall(uninstall.to_vec()), ExeStep::Look])
         .collect()
 }
