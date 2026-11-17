@@ -1661,6 +1661,10 @@ why = "Edge's updater task (its name ends in a GUID): owner 16.11.2026: no brows
 task = '\MicrosoftEdgeUpdateTaskMachineUA*'
 why = "Edge's updater task (its name ends in a GUID): owner 16.11.2026: no browser and no updater on a dasio PC, removed, not only disabled, so nothing starts by chance; re-removed after a Windows upgrade (dasio#128)"
 
+[[absent]]
+task = '\MicrosoftEdgeUpdateBrowserReplacementTask'
+why = "Edge's updater task, added by Edge's MSI install next to the two families and left after them (dsg 17.11.2026): owner 16.11.2026: no browser and no updater on a dasio PC, removed, not only disabled (dasio#128)"
+
 # The Dante NIC's driver package per NIC family (dasio#128), by the NIC's
 # hardware, whichever driver is bound now (an inbox rtcx21 on a RTL8168
 # reads as the wrong version and provider). Checked only (WARN + tray
