@@ -708,6 +708,22 @@ exe = "dsync.exe"
 affinity = "{system}"
 why = "dantesync on the system CPUs, off dasio's and the DAW's (FOH 0-3, mbc 0-1, dsg 0; the CPU layout, dasio#1, dasio#128)"
 
+# Every DAW at medium integrity, never elevated (dasio#128, 17.11.2026):
+# both FOH Lives, started from the elevated remote shell after a reboot,
+# ran at high, and fohmixer's hub (medium) got "SetWindowPos: Access is
+# denied" on their windows. Checked only: a running DAW is never
+# de-elevated; restart it through explorer.exe. A PC not running it has
+# no finding.
+[[process]]
+exe = "Ableton Live 12 Suite.exe"
+integrity = "medium"
+why = "the DAW (band Live on FOH, Live on mbc) at medium integrity, not elevated: an elevated Live blocks fohmixer's hub from its windows (FOH 17.11.2026, dasio#128); restart it through explorer.exe"
+
+[[process]]
+exe = "AbletonLiveMaster.exe"
+integrity = "medium"
+why = "FOH's master Live at medium integrity, not elevated: an elevated Live blocks fohmixer's hub from its windows (FOH 17.11.2026, dasio#128); restart it through explorer.exe"
+
 # Process Lasso's global settings as on FOH (dasio#1). Its per-exe rules
 # (priorities, affinities, gaming-mode paths) name site exes and stay in
 # each PC's own file. A PC without Process Lasso shows one problem.

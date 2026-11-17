@@ -8,6 +8,10 @@ use std::path::Path;
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_SUCCESS, HANDLE, INVALID_HANDLE_VALUE,
 };
+use windows_sys::Win32::Security::{
+    GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TOKEN_MANDATORY_LABEL,
+    TOKEN_QUERY, TokenIntegrityLevel,
+};
 use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
@@ -20,8 +24,8 @@ use windows_sys::Win32::System::Registry::{
 use windows_sys::Win32::System::Threading::{
     ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, GetPriorityClass,
     GetProcessAffinityMask, HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
-    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
-    REALTIME_PRIORITY_CLASS,
+    OpenProcess, OpenProcessToken, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    QueryFullProcessImageNameW, REALTIME_PRIORITY_CLASS,
 };
 
 use super::absent::{self, AbsentEntry, Fallback, Removal, Step, Target};
@@ -31,6 +35,53 @@ mod exe;
 
 const NET_CLASS: &str =
     r"SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}";
+
+/// The integrity level of process `h`'s token (dasio#128): the last
+/// sub-authority of its mandatory label's SID, named by
+/// [`super::integrity_name`]. `h` needs only
+/// `PROCESS_QUERY_LIMITED_INFORMATION`.
+fn integrity(h: HANDLE) -> Result<String, String> {
+    let mut token: HANDLE = std::ptr::null_mut();
+    // SAFETY: a valid process handle and a writable token handle.
+    if unsafe { OpenProcessToken(h, TOKEN_QUERY, &mut token) } == 0 {
+        return Err(format!(
+            "OpenProcessToken: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // A label is a pointer and its SID; 64 bytes hold any mandatory label
+    // (SID of one sub-authority: 12 bytes), u64 for the pointer's alignment.
+    let mut buf = [0u64; 8];
+    let mut len = 0u32;
+    // SAFETY: a valid token handle and a writable buffer of the size given.
+    let ok = unsafe {
+        GetTokenInformation(
+            token,
+            TokenIntegrityLevel,
+            buf.as_mut_ptr().cast(),
+            std::mem::size_of_val(&buf) as u32,
+            &mut len,
+        )
+    } != 0;
+    let err = std::io::Error::last_os_error();
+    // SAFETY: the token opened above, closed once.
+    unsafe { CloseHandle(token) };
+    if !ok {
+        return Err(format!("GetTokenInformation: {err}"));
+    }
+    // SAFETY: the buffer holds a TOKEN_MANDATORY_LABEL whose SID points
+    // into the same buffer, still alive here.
+    let rid = unsafe {
+        let label = &*(buf.as_ptr() as *const TOKEN_MANDATORY_LABEL);
+        let sid = label.Label.Sid;
+        let count = *GetSidSubAuthorityCount(sid);
+        if count == 0 {
+            return Err("the label has no sub-authority".into());
+        }
+        *GetSidSubAuthority(sid, u32::from(count) - 1)
+    };
+    Ok(super::integrity_name(rid).to_string())
+}
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -215,6 +266,7 @@ impl Reader for Pc {
         let ok = unsafe { GetProcessAffinityMask(h, &mut mask, &mut system) } != 0;
         // SAFETY: a valid handle.
         let class = unsafe { GetPriorityClass(h) };
+        let integrity = integrity(h);
         // SAFETY: the handle opened above, closed once.
         unsafe { CloseHandle(h) };
         if !ok || class == 0 {
@@ -232,6 +284,7 @@ impl Reader for Pc {
         Some(ProcState {
             affinity: mask as u64,
             priority: priority.to_string(),
+            integrity,
         })
     }
 

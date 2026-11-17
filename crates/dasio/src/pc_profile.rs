@@ -14,8 +14,9 @@
 //!   from `nic_guid`.
 //! - `[[ini]]`: one `key=value` line of an ini file (Process Lasso's).
 //! - `[[process]]`: what a running process must have (affinity, priority
-//!   class), to see that the tool which sets it (Lasso) did; checked only,
-//!   never applied, and skipped while the process does not run.
+//!   class), to see that the tool which sets it (Lasso) did, and its
+//!   integrity level (a DAW at medium, not elevated: dasio#128); checked
+//!   only, never applied, and skipped while the process does not run.
 //! - `[[disk]]`: a floor of free space on a drive, so a filling disk shows
 //!   as a problem before it hurts (FOH's C: had 26.5 GB left, owner
 //!   9.11.2026, dasio#1); checked only, never applied.
@@ -189,8 +190,21 @@ pub struct ProcEntry {
     /// `idle`, `below normal`, `normal`, `above normal`, `high`, `realtime`.
     #[serde(default)]
     pub priority: Option<String>,
+    /// The token's integrity level, one of [`INTEGRITIES`] (dasio#128,
+    /// 17.11.2026: a Live started from the elevated remote shell runs at
+    /// `high`, and fohmixer's hub, at `medium`, may not move its windows).
+    /// Checked only: a running process cannot be de-elevated.
+    #[serde(default)]
+    pub integrity: Option<String>,
     #[serde(default)]
     pub why: String,
+}
+
+impl ProcEntry {
+    /// Whether it checks anything at all.
+    pub fn checks(&self) -> bool {
+        self.affinity.is_some() || self.priority.is_some() || self.integrity.is_some()
+    }
 }
 
 /// A floor of free space on a drive.
@@ -269,6 +283,27 @@ pub struct ProcState {
     pub affinity: u64,
     /// One of the names [`ProcEntry::priority`] takes.
     pub priority: String,
+    /// The token's integrity level ([`integrity_name`]), or why it could
+    /// not be read.
+    pub integrity: Result<String, String>,
+}
+
+/// The integrity levels a `[[process]]` entry may want.
+pub const INTEGRITIES: [&str; 4] = ["low", "medium", "high", "system"];
+
+/// The name of a token's integrity level from its mandatory label's RID
+/// (`SECURITY_MANDATORY_*_RID`): `medium plus` (UIAccess) and `protected`
+/// are read but never wanted.
+pub fn integrity_name(rid: u32) -> &'static str {
+    match rid {
+        0..0x1000 => "untrusted",
+        0x1000..0x2000 => "low",
+        0x2000..0x2100 => "medium",
+        0x2100..0x3000 => "medium plus",
+        0x3000..0x4000 => "high",
+        0x4000..0x5000 => "system",
+        _ => "protected",
+    }
 }
 
 /// What the PC shows, for the check.
@@ -404,6 +439,14 @@ fn parse_with(text: &str, need_nic_guid: bool) -> Result<Profile, String> {
         {
             return Err(format!(
                 "process {}: priority {c} is not one of {PRIORITIES:?}",
+                e.exe
+            ));
+        }
+        if let Some(i) = &e.integrity
+            && !INTEGRITIES.contains(&i.as_str())
+        {
+            return Err(format!(
+                "process {}: integrity {i} is not one of {INTEGRITIES:?}",
                 e.exe
             ));
         }
@@ -625,6 +668,22 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
                 why: e.why.clone(),
                 must: false,
             });
+        }
+        if let Some(want) = &e.integrity {
+            let found = match &s.integrity {
+                Ok(level) if level == want => None,
+                Ok(level) => Some(level.clone()),
+                Err(err) => Some(format!("unreadable ({err})")),
+            };
+            if let Some(found) = found {
+                out.push(Problem {
+                    what: format!("process {} integrity", e.exe),
+                    found,
+                    want: want.clone(),
+                    why: e.why.clone(),
+                    must: false,
+                });
+            }
         }
     }
     for e in &p.disk {

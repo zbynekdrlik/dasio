@@ -10,6 +10,7 @@ mod layout;
 mod must;
 mod nic_driver_kind;
 mod power;
+mod process_integrity;
 
 /// A PC as a test sets it up: the reader the check sees.
 #[derive(Default)]
@@ -171,6 +172,7 @@ fn matching_pc() -> Pc {
         ProcState {
             affinity: 0xF0,
             priority: "high".into(),
+            integrity: Ok("medium".into()),
         },
     );
     pc.free.insert("C:".into(), 100 << 30);
@@ -210,6 +212,7 @@ fn every_kind_of_difference_is_a_problem_with_its_reason() {
         ProcState {
             affinity: 0xFC00_0000,
             priority: "realtime".into(),
+            integrity: Ok("medium".into()),
         },
     );
     let problems = check(&p, &pc);

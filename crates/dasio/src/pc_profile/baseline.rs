@@ -57,16 +57,33 @@ pub fn merge(base: &Profile, site: &Profile) -> Profile {
         .collect();
     ini.extend(site.ini.iter().cloned());
     out.ini = ini;
+    // A site entry takes over only the fields it sets: the baseline's
+    // integrity stays checked next to a site's Lasso affinity for the same
+    // exe (dasio#128), each with its own reason; a baseline entry left
+    // checking nothing goes.
     let mut process: Vec<ProcEntry> = base
         .process
         .iter()
-        .filter(|b| {
-            !site
+        .map(|b| {
+            let mut rest = b.clone();
+            for s in site
                 .process
                 .iter()
-                .any(|s| s.exe.eq_ignore_ascii_case(&b.exe))
+                .filter(|s| s.exe.eq_ignore_ascii_case(&b.exe))
+            {
+                if s.affinity.is_some() {
+                    rest.affinity = None;
+                }
+                if s.priority.is_some() {
+                    rest.priority = None;
+                }
+                if s.integrity.is_some() {
+                    rest.integrity = None;
+                }
+            }
+            rest
         })
-        .cloned()
+        .filter(ProcEntry::checks)
         .collect();
     process.extend(site.process.iter().cloned());
     out.process = process;
