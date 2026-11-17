@@ -369,7 +369,7 @@ fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_a
         Ok(dasio::host_stall::Verdict::Exercised) => {}
         Ok(dasio::host_stall::Verdict::PumpCpuTaken) => eprintln!(
             "the 5 ms host stall: the runner took the pump's CPU over it ({} published, {} lost to late wakes)",
-            r.stall_published, r.pump_lost_late_blocks
+            r.stall_published, r.stall_lost_late_blocks
         ),
         Err(e) => panic!("{e} (max gap {} us)", r.max_gap_us),
     }
