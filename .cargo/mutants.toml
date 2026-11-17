@@ -14,6 +14,7 @@ exclude_globs = [
   "crates/dasio/src/jitter.rs",
   "crates/dasio/src/kernel_tx/windows.rs",
   "crates/dasio/src/pc_profile/windows.rs",
+  "crates/dasio/src/pc_profile/windows/exe.rs",
   "crates/dasio/src/pc_profile/hold/windows.rs",
   "crates/dasio/src/main.rs",
   "crates/dasio/src/probe.rs",

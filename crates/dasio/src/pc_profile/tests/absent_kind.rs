@@ -173,6 +173,7 @@ fn what_exists_is_a_problem_and_its_removal_is_planned() {
                     "--force-uninstall".into(),
                 ],
                 before: vec![],
+                windows_caller: false,
                 fallback: None,
             }),
             Action::Remove(Removal::Service("edgeupdate".into())),
@@ -326,6 +327,11 @@ fn the_baseline_keeps_edge_and_its_updater_off_every_pc() {
     }
     assert!(has(Target::Task(r"\MicrosoftEdgeUpdateTaskMachineCore*")));
     assert!(has(Target::Task(r"\MicrosoftEdgeUpdateTaskMachineUA*")));
+    // Edge's MSI install adds it next to the two families (dsg 17.11.2026):
+    // it stayed after the EdgeUpdate folder was gone.
+    assert!(has(Target::Task(
+        r"\MicrosoftEdgeUpdateBrowserReplacementTask"
+    )));
     let edge = b
         .absent
         .iter()
@@ -404,6 +410,7 @@ fn an_exe_entrys_fallback_parses_and_is_planned_after_its_uninstaller() {
             exe: UPDATE.into(),
             uninstall: vec![UPDATE.into(), "/uninstall".into()],
             before: vec![],
+            windows_caller: false,
             fallback: Some(fb.clone()),
         })]
     );
@@ -497,11 +504,11 @@ fn a_fallback_deletes_only_the_allowed_folder_of_its_own_exe() {
         ),
         (
             "service = \"edgeupdate\"\nremove_dir = 'C:\\x'".to_string(),
-            "absent service edgeupdate: remove_dir, stop_processes and before_uninstall are for exe only".to_string(),
+            "absent service edgeupdate: remove_dir, stop_processes, before_uninstall and windows_caller are for exe only".to_string(),
         ),
         (
             "task = '\\x*'\nstop_processes = ['a.exe']".to_string(),
-            r"absent task \x*: remove_dir, stop_processes and before_uninstall are for exe only".to_string(),
+            r"absent task \x*: remove_dir, stop_processes, before_uninstall and windows_caller are for exe only".to_string(),
         ),
     ];
     for (body, want) in refused {
@@ -665,7 +672,9 @@ fn only_edgeupdatedevs_allowuninstall_is_written_before_an_uninstaller() {
     ] {
         let err = one(&body).unwrap_err();
         assert!(
-            err.ends_with(": remove_dir, stop_processes and before_uninstall are for exe only"),
+            err.ends_with(
+                ": remove_dir, stop_processes, before_uninstall and windows_caller are for exe only"
+            ),
             "{err}"
         );
     }
@@ -688,6 +697,7 @@ fn the_write_comes_before_the_uninstaller_and_only_while_the_exe_is_there() {
             exe: EDGE.into(),
             uninstall: vec![r"C:\setup.exe".into(), "--uninstall".into()],
             before: vec![w],
+            windows_caller: false,
             fallback: None,
         })]
     );
@@ -697,7 +707,7 @@ fn the_write_comes_before_the_uninstaller_and_only_while_the_exe_is_there() {
     );
     let args = ["--uninstall".to_string(), "--msedge".to_string()];
     assert_eq!(
-        exe_steps(&args, &[w]),
+        exe_steps(&args, &[w], false),
         vec![
             ExeStep::Write(w),
             ExeStep::Uninstall(args.to_vec()),
@@ -705,7 +715,7 @@ fn the_write_comes_before_the_uninstaller_and_only_while_the_exe_is_there() {
         ]
     );
     assert_eq!(
-        exe_steps(&args, &[]),
+        exe_steps(&args, &[], false),
         vec![ExeStep::Uninstall(args.to_vec()), ExeStep::Look]
     );
 }

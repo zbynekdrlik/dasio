@@ -27,6 +27,8 @@ use windows_sys::Win32::System::Threading::{
 use super::absent::{self, AbsentEntry, Fallback, Removal, Step, Target};
 use super::{Action, ProcState, Profile, Reader, Value, get_ini, set_ini};
 
+mod exe;
+
 const NET_CLASS: &str =
     r"SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}";
 
@@ -306,9 +308,12 @@ fn powercfg(args: &[String]) -> Result<(), String> {
 
 /// Windows' System32 folder (`%SystemRoot%\System32`).
 fn system32() -> Result<String, String> {
-    std::env::var("SystemRoot")
-        .map(|root| format!(r"{root}\System32"))
-        .map_err(|e| format!("SystemRoot: {e}"))
+    system_root().map(|root| format!(r"{root}\System32"))
+}
+
+/// Windows' own folder (`%SystemRoot%`).
+fn system_root() -> Result<String, String> {
+    std::env::var("SystemRoot").map_err(|e| format!("SystemRoot: {e}"))
 }
 
 /// Runs System32's `<tool>.exe <args>`; the error names the command, its
@@ -408,10 +413,6 @@ fn folder_names(dir: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// How long `apply` waits for an uninstaller: a hung or interactive one
-/// must not hold the boot-time apply or install.ps1 for good (dasio#128).
-const UNINSTALL_LIMIT: std::time::Duration = std::time::Duration::from_secs(600);
-
 /// Removes what `r` names (dasio#128): exactly that service, task or
 /// program, nothing else. What is already gone is fine: one removal can
 /// take others with it (EdgeUpdate's uninstaller removes its services and
@@ -448,58 +449,9 @@ fn remove(r: &Removal) -> Result<(), String> {
             exe,
             uninstall,
             before,
+            windows_caller,
             fallback,
-        } => {
-            if !file_there(exe)? {
-                return Ok(());
-            }
-            let Some((first, args)) = uninstall.split_first() else {
-                return Err(format!("{exe}: no uninstaller given"));
-            };
-            let prog = absent::resolve_uninstaller(first, folder_names, |p| Path::new(p).is_file())
-                .ok_or_else(|| format!("{exe}: its uninstaller {first} was not found"))?;
-            let mut ran = String::new();
-            for step in absent::exe_steps(args, before) {
-                match step {
-                    absent::ExeStep::Write(w) => {
-                        // `plan` takes it from `absent::PRE_UNINSTALL_WRITES`
-                        // (key, name and data in code): no profile text
-                        // reaches the write.
-                        write(w.key, w.name, &Value::String(w.data.to_string()))
-                            .map_err(|e| format!("{exe}: before the uninstaller: {e}"))?;
-                        println!(
-                            "before the uninstaller of {exe}: set {} = {:?} (REG_SZ)",
-                            w.path(),
-                            w.data
-                        );
-                    }
-                    absent::ExeStep::Uninstall(args) => {
-                        let status = run_bounded(&prog, &args)?;
-                        ran = format!("ran {prog} {} ({status})", args.join(" "));
-                    }
-                    absent::ExeStep::Look => {
-                        // An uninstaller's exit code says little (some end
-                        // non-zero after a good uninstall): the exe gone is
-                        // what counts.
-                        if !file_there(exe)? {
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-            let left = format!("{ran}: {exe} is still there");
-            let Some(fb) = fallback else {
-                return Err(left);
-            };
-            // EdgeUpdate's /uninstall keeps itself while WebView2 is
-            // installed (dasio#128, dsg + mbc 16.11.2026).
-            println!("fallback for {exe}: {left}");
-            run_fallback(fb).map_err(|e| format!("{left}; fallback: {e}"))?;
-            if file_there(exe)? {
-                return Err(format!("{left}; after the fallback too"));
-            }
-            Ok(())
-        }
+        } => exe::remove(exe, uninstall, before, *windows_caller, fallback.as_ref()),
     }
 }
 
@@ -595,35 +547,6 @@ fn image_path(pid: u32) -> Result<String, String> {
         return Err(format!("its path is unreadable ({err})"));
     }
     Ok(String::from_utf16_lossy(&buf[..len as usize]))
-}
-
-/// Runs `prog args` and waits at most [`UNINSTALL_LIMIT`]; past it the
-/// process is killed and the error says so.
-fn run_bounded(prog: &str, args: &[String]) -> Result<std::process::ExitStatus, String> {
-    use std::process::Stdio;
-    let mut child = std::process::Command::new(prog)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("{prog}: {e}"))?;
-    let start = std::time::Instant::now();
-    loop {
-        if let Some(status) = child.try_wait().map_err(|e| format!("{prog}: {e}"))? {
-            return Ok(status);
-        }
-        if start.elapsed() > UNINSTALL_LIMIT {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!(
-                "{prog} {}: still running after {} s, stopped",
-                args.join(" "),
-                UNINSTALL_LIMIT.as_secs()
-            ));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
 }
 
 /// An ini file as text (UTF-16 with a BOM or 8-bit).

@@ -196,7 +196,10 @@ paths:
   `Version`.
 - The two Abletons on FOH (band and master) never start on their own after
   a reboot. The dasio session starts both itself; the launch commands are in
-  its local memory (`foh-reboot-ableton-start`), not in the repo. Then it
+  its local memory (`foh-reboot-ableton-start`), not in the repo. It starts them
+  NOT elevated (through explorer.exe, never a direct start from the elevated
+  remote shell): an elevated Live blocks fohmixer's hub from its windows
+  (17.11.2026). Then it
   checks that the band Ableton is attached to its dasio instance
   (`attached=1` in the instance log) and that Lasso's affinities hold.
 
@@ -256,7 +259,9 @@ paths:
 - The baseline removes Edge (`setup.exe --uninstall --msedge
   --system-level --verbose-logging --log-file=... --force-uninstall`),
   EdgeUpdate (`/uninstall`), its services edgeupdate / edgeupdatem / MicrosoftEdgeElevationService and
-  its two task families. EdgeUpdate's `/uninstall` exits 0 but keeps
+  its two task families and `\MicrosoftEdgeUpdateBrowserReplacementTask`
+  (Edge's MSI install adds it, dsg 17.11.2026). EdgeUpdate's `/uninstall`
+  exits 0 but keeps
   itself while WebView2 (`EdgeWebView`, which stays, owner 16.11) is
   installed (dsg + mbc 16.11), so its entry names a fallback (0.1.117+):
   `remove_dir` (the exe's own folder, only one on
@@ -279,10 +284,25 @@ paths:
   printing `before the uninstaller of ...: set ...`. Only a value on
   `pc_profile::absent::PRE_UNINSTALL_WRITES` (key, name and data in code;
   widen it under review, a parse error otherwise). The value stays after.
-  When Edge still stays, read setup's own reason in
+  Even so setup refused on FOH ("Not a Windows caller", `Uninstall was
+  blocked for this product: 532`): its `edge_install_util` allows the
+  uninstall only when setup's PARENT process is `dllhost.exe` in Windows'
+  own folder (log: `Parent process: ...`, `Uninstall allowed: Windows
+  caller`). So the entry names `windows_caller = true` (0.1.125+, exe
+  only): `apply` copies `%SystemRoot%\System32\cmd.exe` to
+  `%SystemRoot%\SystemTemp\dllhost.exe` (another file there is refused,
+  never overwritten; a byte-equal copy a killed apply left is replaced),
+  runs `dllhost.exe /d /v:off /c ""<setup>" <args>"`
+  (`pc_profile::absent::caller_command`; an uninstaller or argument holding
+  `" & | < > ^ % !`, a newline, or an empty or spaced argument is a parse
+  error), deletes the copy (also after a failed run; past 10 min the
+  caller's tree is ended with `taskkill /T /F`) and looks again. The glue is
+  `pc_profile/windows/exe.rs`
+  (FOH 17.11.2026: Edge 156 removed, exit 20, a few in-use files left in
+  the version folder). Refused on FOH 17.11 and not worth retrying: an
+  empty `windir` ("No windir environment variable found", he3als's method
+  2), a setup.exe copy under `C:\Windows\Temp`, a SYSTEM cmd.exe from
+  System32. Not needed: the placeholder `SystemApps\...\MicrosoftEdge.exe`,
+  a region change. Setup's reason is in
   `C:\ProgramData\dasio\msedge_installer.log` (`--verbose-logging
-  --log-file`; without `--verbose-logging` setup logs nothing; should
-  `--log-file` be ignored, it is the running account's `%TEMP%`, for
-  SYSTEM `C:\Windows\SystemTemp`). Untried further steps the known removers
-  use: a placeholder `C:\Windows\SystemApps\Microsoft.MicrosoftEdge_8wekyb3d8bbwe\MicrosoftEdge.exe`,
-  a temporary EEA region; decide from that log, not by guessing.
+  --log-file`; without `--verbose-logging` setup logs nothing).

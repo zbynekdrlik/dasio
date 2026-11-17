@@ -13,7 +13,8 @@
 //!   running from the exe's own folder and deletes that folder, only one on
 //!   [`REMOVABLE_DIRS`] (`remove_dir`, `stop_processes`: EdgeUpdate's
 //!   `/uninstall` keeps itself while WebView2 is installed, dsg + mbc
-//!   16.11.2026);
+//!   16.11.2026); with `windows_caller = true` the uninstaller runs
+//!   through a Windows caller (see [`caller_command`]);
 //! - `service = '<name>'`: `sc stop` + `sc delete`, only for a service on
 //!   [`DELETABLE_SERVICES`] (a parse error otherwise);
 //! - `task = '<path as schtasks shows it>'`: `schtasks /delete`; a trailing
@@ -83,6 +84,66 @@ pub fn pre_write(path: &str) -> Option<&'static PreWrite> {
         .find(|w| w.path().eq_ignore_ascii_case(path))
 }
 
+/// The program the Windows caller is copied from, under `%SystemRoot%`.
+pub const CALLER_SOURCE: &str = r"System32\cmd.exe";
+
+/// The Windows caller's file name: Edge's setup allows its uninstall when
+/// its parent process is `dllhost.exe` in Windows' own folder (its log:
+/// `Parent process: C:\Windows\SystemTemp\dllhost.exe`, `Uninstall
+/// allowed: Windows caller`; FOH, Windows 10 IoT LTSC 2021, Edge 156,
+/// 17.11.2026). A SYSTEM cmd.exe from System32, a setup.exe copied under
+/// `C:\Windows\Temp` and an empty `windir` were each refused ("Not a
+/// Windows caller" / "No windir environment variable found", exit 532).
+/// The method is ave9858's Edge removal script (dasio#128).
+pub const CALLER_NAME: &str = "dllhost.exe";
+
+/// Where the Windows caller is copied to: `%SystemRoot%\SystemTemp` (the
+/// SYSTEM account's temp folder, Windows 10 21H2+ and 11; the place proven
+/// on FOH). Deleted right after the uninstaller.
+pub fn caller_path(system_root: &str) -> String {
+    format!(r"{system_root}\SystemTemp\{CALLER_NAME}")
+}
+
+/// Characters cmd.exe reads as its own inside a `/c` line (`"` would end
+/// the quoting, `!` is delayed expansion where the registry turns it on);
+/// an uninstaller or argument holding one is refused.
+const CMD_SPECIAL: [char; 10] = ['"', '&', '|', '<', '>', '^', '%', '!', '\n', '\r'];
+
+/// Why `s` (an uninstaller path or argument run through the Windows
+/// caller) cannot go on cmd.exe's `/c` line; `Ok` when it can.
+fn cmd_safe(s: &str) -> Result<(), String> {
+    match s.chars().find(|c| CMD_SPECIAL.contains(c)) {
+        Some(c) => Err(format!(
+            "{s:?} holds {c:?}, which cmd.exe reads itself (the Windows caller is cmd.exe)"
+        )),
+        None => Ok(()),
+    }
+}
+
+/// The Windows caller's (cmd.exe's) command line that runs `prog args`:
+/// `/d /v:off /c ""<prog>" <args>"`. `/d`: no Command Processor AutoRun
+/// runs as the elevated caller; `/v:off`: no delayed expansion. cmd.exe
+/// strips the outer quotes of the `/c` line, so a path with spaces or
+/// `(x86)` stays one quoted word.
+pub fn caller_command(prog: &str, args: &[String]) -> Result<String, String> {
+    cmd_safe(prog)?;
+    for a in args {
+        cmd_safe(a)?;
+        if a.is_empty() || a.contains(char::is_whitespace) {
+            return Err(format!(
+                "{a:?}: an argument through the Windows caller is one word, no spaces"
+            ));
+        }
+    }
+    let mut line = format!(r#"/d /v:off /c ""{prog}""#);
+    for a in args {
+        line.push(' ');
+        line.push_str(a);
+    }
+    line.push('"');
+    Ok(line)
+}
+
 /// Something that must not exist on the PC.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -113,6 +174,10 @@ pub struct AbsentEntry {
     /// (`exe` only).
     #[serde(default)]
     pub before_uninstall: Option<Vec<String>>,
+    /// Run the uninstaller through a Windows caller (`exe` only): cmd.exe
+    /// copied to [`caller_path`] as [`CALLER_NAME`], deleted after.
+    #[serde(default)]
+    pub windows_caller: bool,
     #[serde(default)]
     pub why: String,
 }
@@ -244,10 +309,13 @@ pub fn validate(e: &AbsentEntry) -> Result<(), String> {
         ));
     };
     if !matches!(target, Target::Exe(_))
-        && (e.remove_dir.is_some() || e.stop_processes.is_some() || e.before_uninstall.is_some())
+        && (e.remove_dir.is_some()
+            || e.stop_processes.is_some()
+            || e.before_uninstall.is_some()
+            || e.windows_caller)
     {
         return Err(format!(
-            "{}: remove_dir, stop_processes and before_uninstall are for exe only",
+            "{}: remove_dir, stop_processes, before_uninstall and windows_caller are for exe only",
             e.what()
         ));
     }
@@ -275,6 +343,10 @@ pub fn validate(e: &AbsentEntry) -> Result<(), String> {
                 ));
             }
             validate_fallback(exe, e)?;
+            if e.windows_caller {
+                caller_command(prog, &cmd[1..])
+                    .map_err(|err| format!("absent exe {exe}: windows_caller: {err}"))?;
+            }
             if let Some(bad) = e
                 .before_uninstall
                 .iter()
@@ -438,6 +510,7 @@ pub enum Removal {
         exe: String,
         uninstall: Vec<String>,
         before: Vec<&'static PreWrite>,
+        windows_caller: bool,
         fallback: Option<Fallback>,
     },
 }
@@ -448,21 +521,35 @@ pub enum Removal {
 pub enum ExeStep {
     /// Write this value (REG_SZ) under HKLM.
     Write(&'static PreWrite),
-    /// Run the uninstaller with its arguments.
+    /// Copy [`CALLER_SOURCE`] to [`caller_path`].
+    CopyCaller,
+    /// Run the uninstaller with its arguments (through the caller when
+    /// one was copied).
     Uninstall(Vec<String>),
+    /// Delete the caller's copy (also after a failed uninstaller).
+    DeleteCaller,
     /// Look whether the exe is gone; when not, the fallback (if any).
     Look,
 }
 
-/// The steps of an exe removal: every `before` write first, then the
-/// uninstaller, then the look.
-pub fn exe_steps(uninstall: &[String], before: &[&'static PreWrite]) -> Vec<ExeStep> {
-    before
-        .iter()
-        .copied()
-        .map(ExeStep::Write)
-        .chain([ExeStep::Uninstall(uninstall.to_vec()), ExeStep::Look])
-        .collect()
+/// The steps of an exe removal: every `before` write first, then (with a
+/// Windows caller: its copy, ) the uninstaller(, the copy's delete), then
+/// the look.
+pub fn exe_steps(
+    uninstall: &[String],
+    before: &[&'static PreWrite],
+    windows_caller: bool,
+) -> Vec<ExeStep> {
+    let mut steps: Vec<ExeStep> = before.iter().copied().map(ExeStep::Write).collect();
+    if windows_caller {
+        steps.push(ExeStep::CopyCaller);
+    }
+    steps.push(ExeStep::Uninstall(uninstall.to_vec()));
+    if windows_caller {
+        steps.push(ExeStep::DeleteCaller);
+    }
+    steps.push(ExeStep::Look);
+    steps
 }
 
 impl Removal {
@@ -475,8 +562,14 @@ impl Removal {
                 exe,
                 uninstall,
                 before,
+                windows_caller,
                 fallback,
             } => {
+                let via = if *windows_caller {
+                    format!(" through {CALLER_NAME} (a copy of {CALLER_SOURCE})")
+                } else {
+                    String::new()
+                };
                 let first = if before.is_empty() {
                     String::new()
                 } else {
@@ -495,7 +588,7 @@ impl Removal {
                     format!("; if that leaves the exe: {stop}deletes {}", f.dir)
                 });
                 format!(
-                    "the absence of {exe} ({first}runs {}{then})",
+                    "the absence of {exe} ({first}runs {}{via}{then})",
                     uninstall.join(" ")
                 )
             }
@@ -545,6 +638,7 @@ pub fn plan(entries: &[AbsentEntry], r: &dyn Reader) -> Vec<Removal> {
                         .flatten()
                         .filter_map(|p| pre_write(p.as_str()))
                         .collect(),
+                    windows_caller: e.windows_caller,
                     fallback: e.remove_dir.as_ref().map(|dir| Fallback {
                         dir: dir.clone(),
                         stop: e.stop_processes.clone().unwrap_or_default(),
