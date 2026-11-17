@@ -32,13 +32,16 @@ pub struct NicDriverEntry {
     pub provider: String,
     /// The package's INF, installed with `pnputil /add-driver`.
     pub inf: String,
-    /// The CN of the Authenticode signer of the package's catalog.
+    /// The CN of the Authenticode signer of the package's catalog. A CN
+    /// alone proves little on a test-signing PC (extra roots); the files'
+    /// SHA256 are what pins the package, the signer only adds Windows'
+    /// own check of the catalog.
     pub signer: String,
     /// Every file of the package, each with its SHA256.
     pub files: Vec<PackageFile>,
     /// Where the package comes from.
     pub source: String,
-    #[serde(default)]
+    /// Why this driver (the evidence), shown with a mismatch.
     pub why: String,
 }
 
@@ -62,10 +65,13 @@ pub fn validate(e: &NicDriverEntry) -> Result<(), String> {
         return fail("give at least one hardware_ids prefix");
     }
     for id in &e.hardware_ids {
+        // Down to the device: a vendor alone would take every NIC of it.
         let up = id.to_ascii_uppercase();
-        if !(up.starts_with(r"PCI\VEN_") || up.starts_with(r"USB\VID_")) {
+        let device = (up.starts_with(r"PCI\VEN_") && up.contains("&DEV_"))
+            || (up.starts_with(r"USB\VID_") && up.contains("&PID_"));
+        if !device {
             return fail(&format!(
-                r"hardware id {id:?} is not a PCI\VEN_... or USB\VID_... prefix"
+                r"hardware id {id:?} is not a PCI\VEN_...&DEV_... or USB\VID_...&PID_... prefix"
             ));
         }
     }
@@ -74,6 +80,7 @@ pub fn validate(e: &NicDriverEntry) -> Result<(), String> {
         ("provider", &e.provider),
         ("signer", &e.signer),
         ("source", &e.source),
+        ("why", &e.why),
     ] {
         if v.trim().is_empty() {
             return fail(&format!("{field} must not be empty"));

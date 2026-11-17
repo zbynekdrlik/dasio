@@ -105,6 +105,8 @@ fn a_valid_entry_passes_and_a_usb_prefix_is_a_hardware_id_too() {
     let mut e = entry();
     e.hardware_ids = vec![r"usb\vid_0bda&pid_8156".into()];
     assert_eq!(validate(&e), Ok(()));
+    e.hardware_ids = vec![r"pci\ven_10ec&dev_8125&subsys_e0001458".into()];
+    assert_eq!(validate(&e), Ok(()));
 }
 
 #[test]
@@ -119,13 +121,31 @@ fn an_entry_missing_what_install_needs_is_refused_naming_it() {
         &|e| e.hardware_ids.clear(),
         "give at least one hardware_ids prefix",
     );
+    let not_device = r"is not a PCI\VEN_...&DEV_... or USB\VID_...&PID_... prefix";
     refused(
-        &|e| e.hardware_ids.push("VEN_10EC".into()),
-        r#"hardware id "VEN_10EC" is not a PCI\VEN_... or USB\VID_... prefix"#,
+        &|e| e.hardware_ids.push("VEN_10EC&DEV_8125".into()),
+        &format!(r#"hardware id "VEN_10EC&DEV_8125" {not_device}"#),
     );
     refused(
-        &|e| e.hardware_ids[0] = r"PCI\DEV_8125".into(),
-        r#"hardware id "PCI\\DEV_8125" is not a PCI\VEN_... or USB\VID_... prefix"#,
+        &|e| e.hardware_ids[1] = r"PCI\DEV_8125".into(),
+        &format!(r#"hardware id "PCI\\DEV_8125" {not_device}"#),
+    );
+    // A vendor alone would take every NIC of it.
+    refused(
+        &|e| e.hardware_ids[1] = r"PCI\VEN_10EC".into(),
+        &format!(r#"hardware id "PCI\\VEN_10EC" {not_device}"#),
+    );
+    refused(
+        &|e| e.hardware_ids[1] = r"USB\VID_0BDA&DEV_8156".into(),
+        &format!(r#"hardware id "USB\\VID_0BDA&DEV_8156" {not_device}"#),
+    );
+    refused(
+        &|e| e.hardware_ids[1] = r"PCI\VEN_10EC&PID_8125".into(),
+        &format!(r#"hardware id "PCI\\VEN_10EC&PID_8125" {not_device}"#),
+    );
+    refused(
+        &|e| e.hardware_ids[1] = r"USB\PID_8156&VID_0BDA".into(),
+        &format!(r#"hardware id "USB\\PID_8156&VID_0BDA" {not_device}"#),
     );
     refused(&|e| e.version = " ".into(), "version must not be empty");
     refused(
@@ -134,6 +154,7 @@ fn an_entry_missing_what_install_needs_is_refused_naming_it() {
     );
     refused(&|e| e.signer = String::new(), "signer must not be empty");
     refused(&|e| e.source = String::new(), "source must not be empty");
+    refused(&|e| e.why = String::new(), "why must not be empty");
     refused(
         &|e| e.files[1].name = r"x\rt640x64.cat".into(),
         r#"file "x\\rt640x64.cat": give the name alone, no folder"#,
@@ -155,7 +176,9 @@ fn an_entry_missing_what_install_needs_is_refused_naming_it() {
         r#"file "": give the name alone, no folder"#,
     );
     refused(
-        &|e| e.files[2].sha256.pop().map(drop).unwrap(),
+        &|e| {
+            e.files[2].sha256.pop();
+        },
         "file rt640x64.sys: sha256 is not 64 hex digits",
     );
     refused(

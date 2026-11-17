@@ -20,7 +20,10 @@
 #   (inside this bundle folder) must be exactly the baseline's package,
 #   every file's SHA256 and the catalog's signer checked by `dasio pc-profile
 #   nic-driver` (dasio#128); refuses on any difference with nothing changed,
-#   and refuses when the adapter does not run the pinned version afterwards,
+#   and refuses when the adapter does not run the pinned version afterwards;
+#   pnputil gives the driver to every device its INF matches (a second
+#   Realtek NIC restarts too), and a running instance loses its NIC for
+#   those seconds (the step comes before the instance's stop),
 # - copies dasio.exe and dasio_driver.dll to C:\Program Files\dasio, and
 #   dasio.exe again as dasio-<device name>.exe, the instance's own binary
 #   (its service runs it, so Process Lasso can pin each instance by name);
@@ -419,7 +422,10 @@ if (-not $TestClock) {
             $rel = $f.FullName.Substring($pkgDir.Length + 1)
             $verifyArgs += @("--file", "$rel=$((Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash)")
         }
-        $verifyArgs += @("--signature", "$($sig.Status)", "--signer", "$($sig.SignerCertificate.Subject)")
+        # An unsigned catalog has no certificate: "none" (an empty argument
+        # never reaches dasio on Windows PowerShell), refused as not signed.
+        $signer = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { "none" }
+        $verifyArgs += @("--signature", "$($sig.Status)", "--signer", $signer)
         $verdict = @(& (Join-Path $here "dasio.exe") @verifyArgs)
         $verified = $LASTEXITCODE
         $verdict | ForEach-Object { Write-Output $_ }
@@ -428,9 +434,14 @@ if (-not $TestClock) {
         }
         $inf = ($verdict | Where-Object { $_ -like "INF *" } | Select-Object -First 1).Substring(4)
         $wantVersion = ($verdict | Where-Object { $_ -like "VERSION *" } | Select-Object -First 1).Substring(8)
-        Write-Output "installing $inf ($wantVersion) for '$alias': the adapter restarts"
+        Write-Output "installing $inf ($wantVersion) for '$alias': the adapter restarts, with every other device the INF matches"
         & pnputil.exe /add-driver (Join-Path $pkgDir $inf) /install
         $pnputil = $LASTEXITCODE
+        # 0 installed, 3010 installed (a reboot finishes it), 259 nothing
+        # newer to install (the read-back says what runs).
+        if (@(0, 3010, 259) -notcontains $pnputil) {
+            throw "the NIC driver step: pnputil /add-driver $inf /install failed (exit $pnputil); '$alias' may have restarted; the instance was not touched"
+        }
         # The adapter comes back with the new driver; Windows keeps a newer
         # one it ranks higher (remove that one first, on site).
         $deadline = (Get-Date).AddSeconds(60)
@@ -438,6 +449,9 @@ if (-not $TestClock) {
             Start-Sleep -Seconds 2
             $nowVersion = (Get-NetAdapter | Where-Object { $_.InterfaceGuid -eq $adapterGuid } | Select-Object -First 1).DriverVersion
         } while ($nowVersion -ne $wantVersion -and (Get-Date) -lt $deadline)
+        if (-not (Get-NetAdapter | Where-Object { $_.InterfaceGuid -eq $adapterGuid })) {
+            throw "the NIC driver step: no adapter has the Dante NIC's GUID $adapterGuid after pnputil /add-driver $inf /install (exit $pnputil): read the new one with Get-NetAdapter and set nic_guid in the PC profile; the instance was not touched"
+        }
         if ($nowVersion -ne $wantVersion) {
             throw "the NIC driver step: '$alias' runs driver '$nowVersion' after pnputil /add-driver $inf /install (exit $pnputil), not the pinned $wantVersion (a newer driver Windows ranks higher stays: pnputil /delete-driver <its oem inf> /uninstall, on site, then run the install again); the instance was not touched"
         }

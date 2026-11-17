@@ -63,7 +63,12 @@ paths:
   is a copy of FOH's package (`pnputil /export-driver <oem inf> <folder>`,
   FOH's oem name read with `pnputil /enum-drivers`), put inside the bundle
   folder. `-NicDriver` is opt-in only: the adapter restarts, someone on
-  site. pnputil keeps a newer driver Windows ranks higher (dsg's 10.80):
+  site. `pnputil /add-driver /install` gives the driver to EVERY device
+  the INF matches: a second Realtek NIC (often the remote path) restarts
+  too, and a running instance loses its NIC (the step is before the
+  instance's stop). `hardware_ids` must name the device (`&DEV_`/`&PID_`),
+  never a vendor alone; `why` is required. The package's SHA256 are the
+  trust anchor; the signer CN only adds Windows' own catalog check. pnputil keeps a newer driver Windows ranks higher (dsg's 10.80):
   install.ps1 refuses after the read-back; remove that one first. A site
   `[[nic_driver]]` with the same `family` wins (dsg measuring 10.80); it
   needs 0.1.121+ on the PC. A new pinned package: read its files' SHA256
