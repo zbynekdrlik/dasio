@@ -602,7 +602,7 @@ fn read_text(path: &Path) -> Result<String, String> {
 }
 
 /// The value `name` under HKLM\`key`.
-fn read(key: &str, name: &str) -> Result<Option<Value>, String> {
+pub(super) fn read(key: &str, name: &str) -> Result<Option<Value>, String> {
     let (k, n) = (wide(key), wide(name));
     let mut kind = 0u32;
     let mut len = 0u32;

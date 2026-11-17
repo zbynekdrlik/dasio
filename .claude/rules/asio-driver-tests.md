@@ -2,6 +2,8 @@
 paths:
   - "crates/asio-driver/tests/**"
   - "crates/dasio/tests/e2e.rs"
+  - "crates/dasio/src/probe.rs"
+  - "crates/dasio/src/host_stall.rs"
 ---
 
 # Driver host tests
@@ -13,3 +15,5 @@ paths:
 - `tests/common/mod.rs` is compiled into every test binary that declares `mod common;`. Each such binary must use all of its pub functions, or `dead_code` fails clippy `-D warnings`.
 - To measure the driver's worker thread (its CPU, say), record `GetCurrentThreadId()` in the test's bufferSwitch callback: it runs on the worker. `Rt::worker_tid` is private. Use `GetThreadTimes` on that tid, not `GetProcessTimes`: the other tests in the binary run in parallel and add noise to the process figure (dasio#87).
 - windows-sys gates some Threading functions on other features. For example, `CreateWaitableTimerExW` needs `Win32_Security`. Check `#[cfg(feature = ...)]` in the registry source before you push.
+- An e2e timing failure on the Windows runner: read the device log the test prints (each second's `engine pump lost or overran blocks` line with `cause=late`/`behind_max_us`/`max_process_us`, and the `counts` line) beside the probe's `Report` before calling it a defect. `cause=late` with a small `max_process_us` is the runner taking the pump's CPU (dasio#114, #162). Judge runner vs device with figures from the event's own window (the injected stall's `stall_*` fields), never whole-run totals: a late loss elsewhere in the run must not excuse the device.
+- Passing tests print nothing (output is captured), so a green rerun gives no figures to compare: keep the failing attempt's log (`gh api repos/<repo>/actions/runs/<id>/attempts/1/jobs`, then `.../actions/jobs/<job>/logs`).

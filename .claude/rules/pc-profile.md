@@ -131,6 +131,23 @@ paths:
   `DisableWpbtExecution` = 1 (DWORD) stops it from the next boot on. The
   profile holds it next to the service's `Start`. Seen on FOH, 9.11.2026
   (dasio#1).
+- Windows (WaaSMedic) sets UsoSvc, the Update Orchestrator, back to
+  automatic at boot (FOH 8.11 + 15.11.2026, SCM 7040; not seen yet on the
+  LTSC 24H2 boxes). The service holds it itself (dasio#158,
+  `pc_profile::hold`, 0.1.119+): right before each profile check (the
+  first after start, then every 10 min, on the helper CPUs at the thread's
+  lowest priority) it sets the start type back to disabled through the SCM
+  and stops it (waiting out a start in progress), in process, with a WARN
+  `UsoSvc held off (dasio#158): ...`; a reset after a check waits for the
+  next one (up to 10 min). No task is installed for it. FOH's hand-made
+  `\dasio-usosvc-off` goes only after the dsg reboot proof on #158.
+  Another service Windows resets by itself goes on `hold::HELD` (only
+  through a reviewed code change, never from a profile) with the same
+  `Start` in the baseline (a test keeps them equal). Windows Update still
+  works: dasio's update runs (`wu.ps1`, dasio#109) use the Windows Update
+  Agent API through `wuauserv` (manual start), not UsoSvc (mbc 13.11: 5
+  updates installed with UsoSvc disabled and stopped). Never hold
+  `wuauserv`.
 - Process Lasso can migrate its ini at start: the `Version` key changes and
   new default keys appear. Diff the ini against the newest backup dasio
   made before a Lasso change (`prolasso.ini.bak-*` / `prolasso.ini.before-*`

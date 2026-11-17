@@ -72,6 +72,19 @@ impl ProfileWatch {
         let spawned = std::thread::Builder::new()
             .name("pc-profile".into())
             .spawn(move || {
+                // This thread runs in the media process: off the media
+                // CPUs at once (the helper placer would move it within a
+                // second) and at the lowest priority, for the hold and the
+                // bridge kind's check alike (the DAW kind's only waits for
+                // its child).
+                off_media_cpus(own);
+                lowest_priority();
+                // What Windows turns back on by itself (UsoSvc at boot) is
+                // held off first, so the check that follows sees it held
+                // (dasio#158): in process, no child.
+                for line in crate::pc_profile::hold::windows::hold_services() {
+                    warn!("{line}");
+                }
                 // The built-in baseline applies on every PC, a site profile
                 // or not (dasio#128).
                 let found = check(own);
@@ -128,10 +141,26 @@ fn record(last: &Mutex<Option<Vec<String>>>, found: crate::pc_profile::ChildChec
     n
 }
 
-/// The check in this thread, at the lowest priority: the profile without
-/// the entries whose reading starts a process
-/// ([`crate::pc_profile::in_process`]).
-fn in_process_check(_own: usize) -> Result<crate::pc_profile::ChildCheck, String> {
+/// The calling thread (the check's) on this process's helper CPUs
+/// ([`crate::helper_cpus`]); left where it is when there are none.
+fn off_media_cpus(own: usize) {
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, GetCurrentThread, GetProcessAffinityMask, SetThreadAffinityMask,
+    };
+    let (mut process, mut system) = (0usize, 0usize);
+    // SAFETY: this process's pseudo handle and two writable masks.
+    if unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut process, &mut system) } == 0 {
+        return;
+    }
+    let helpers = crate::helper_cpus(process, own);
+    // SAFETY: this thread's pseudo handle and a subset of the process's CPUs.
+    if helpers != 0 && unsafe { SetThreadAffinityMask(GetCurrentThread(), helpers) } == 0 {
+        warn!(err = %std::io::Error::last_os_error(), "the PC profile check stays where it is");
+    }
+}
+
+/// The calling thread (the check's) at the lowest priority.
+fn lowest_priority() {
     use windows_sys::Win32::System::Threading::{
         GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_LOWEST,
     };
@@ -139,6 +168,12 @@ fn in_process_check(_own: usize) -> Result<crate::pc_profile::ChildCheck, String
     if unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST) } == 0 {
         warn!(err = %std::io::Error::last_os_error(), "the PC profile check runs at normal priority");
     }
+}
+
+/// The check in this thread (already at the lowest priority): the profile
+/// without the entries whose reading starts a process
+/// ([`crate::pc_profile::in_process`]).
+fn in_process_check(_own: usize) -> Result<crate::pc_profile::ChildCheck, String> {
     Ok(in_process_problems(false))
 }
 
