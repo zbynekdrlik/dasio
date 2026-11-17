@@ -21,9 +21,14 @@ class Classify(unittest.TestCase):
         self.assertEqual(mdns_watch.classify("10.1.0.4", self.control, self.control), "control")
         self.assertIsNone(mdns_watch.classify("10.1.0.4", mdns_watch.control_query("cd34"), self.control))
 
-    def test_dante_mdns_is_split_by_its_source(self):
+    def test_dante_mdns_is_split_by_the_interface_it_arrived_on(self):
         self.assertEqual(mdns_watch.classify("127.0.0.1", ARC, self.control), "dante loopback")
         self.assertEqual(mdns_watch.classify("127.0.0.2", ARC, self.control), "dante loopback")
+
+    def test_the_interface_decides_not_the_source(self):
+        # A datagram from 127.0.0.1 that arrived on the routed interface
+        # is on the network: classify gets the arrival interface.
+        self.assertEqual(mdns_watch.classify("10.1.0.4", ARC, self.control), "dante network")
         self.assertEqual(mdns_watch.classify("10.1.0.4", ARC, self.control), "dante network")
 
     def test_other_mdns_is_not_counted(self):

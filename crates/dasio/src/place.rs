@@ -151,6 +151,8 @@ pub fn address_for(
         return Ok(lo.ip);
     }
     let ip = address_in(place, addrs, link_local_ok)?;
+    // `admit` judges the found address only: the interface's name and
+    // netmask play no part.
     run.admit(IfAddr {
         name: String::new(),
         ip,
@@ -446,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn outside_a_test_run_the_address_is_production_s() {
+    fn outside_a_test_run_the_address_is_the_production_lookup_s() {
         let prod = TestRun::default();
         let site = Ipv4Addr::new(10, 77, 7, 232);
         assert_eq!(

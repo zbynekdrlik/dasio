@@ -7,10 +7,10 @@
 //! device processes; dstack's `host::test_run`, dasio#167): their mDNS,
 //! info and heartbeat multicasts never leave the box. Two devices share
 //! that one address, as several instances share the PC's: the first on the
-//! stack's default ports, the second on its own ports and process id. In each, RX 1 is subscribed to its own TX 1
-//! through the device's state file, so each impulse the host sends on
-//! output 1 goes out through Dante and comes back on input 1. Only our own
-//! devices are subscribed.
+//! stack's default ports, the second on its own ports and process id. In
+//! each, RX 1 is subscribed to its own TX 1 through the device's state file,
+//! so each impulse the host sends on output 1 goes out through Dante and
+//! comes back on input 1. Only our own devices are subscribed.
 #![cfg(windows)]
 
 use std::net::{Ipv4Addr, UdpSocket};

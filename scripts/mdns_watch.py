@@ -3,10 +3,12 @@
 
 The test suite's devices must serve on loopback only (DSTACK_TEST_LOOPBACK,
 `.cargo/config.toml`), so no Dante mDNS of theirs may reach the box's
-network. This listens on 224.0.0.251:5353, joined on the box's routed IPv4
-address and on 127.0.0.1, while the command runs, and counts the datagrams
-that name a Dante service (`_netaudio-*`) by source: one from any address
-but loopback is a test device on the network, and fails the run.
+network. This listens on 224.0.0.251:5353 while the command runs, with one
+socket per interface (the box's routed IPv4 address, and 127.0.0.1), and
+counts the datagrams that name a Dante service (`_netaudio-*`) by the
+interface they ARRIVED on, never by their source: a device bound to
+127.0.0.1 whose multicast still left on the routed NIC must count as on the
+network. One on the routed interface fails the run.
 
 Two checks keep the count honest (a listener that hears nothing proves
 nothing):
@@ -23,6 +25,7 @@ else 0.
 import argparse
 import ipaddress
 import os
+import platform
 import socket
 import struct
 import subprocess
@@ -38,6 +41,12 @@ DANTE = b"_netaudio"
 CONTROL_WAIT_S = 5.0
 # Late datagrams of the command's last device (its goodbye) still counted.
 AFTER_S = 2.0
+# The largest UDP payload: a datagram larger than the receive buffer is an
+# error on Windows (WSAEMSGSIZE), not a truncation.
+MAX_DATAGRAM = 65535
+# Linux's IP_MULTICAST_ALL (not in Python's socket module): 0 = a socket
+# gets only the groups it joined on its own interface.
+IP_MULTICAST_ALL = 49
 
 
 def routed_ipv4():
@@ -65,14 +74,15 @@ def control_query(nonce):
     return header + name + b"\x00" + struct.pack("!HH", 12, 1)
 
 
-def classify(src, data, control):
-    """What a datagram from `src` is: "control" (our own query), "dante
-    loopback", "dante network", or None (any other mDNS)."""
+def classify(iface, data, control):
+    """What a datagram that arrived on `iface` (an interface's address) is:
+    "control" (our own query), "dante loopback", "dante network", or None
+    (any other mDNS). The interface it arrived on decides, not its source."""
     if data == control:
         return "control"
     if DANTE not in data:
         return None
-    if ipaddress.ip_address(src).is_loopback:
+    if ipaddress.ip_address(iface).is_loopback:
         return "dante loopback"
     return "dante network"
 
@@ -98,43 +108,80 @@ def verdict(counts, network_sources, control_seen, require_loopback):
     return problems
 
 
-def join(sock, iface):
-    mreq = socket.inet_aton(GROUP) + socket.inet_aton(iface)
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-
-
-def listener(routed):
+def listener(iface):
+    """A socket that receives the mDNS group only as it arrives on `iface`.
+    Windows delivers a multicast datagram to a socket bound to the address
+    of the interface it arrived on; Linux binds the group and takes only
+    the memberships of its own socket."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("", PORT))
-    join(sock, routed)
-    join(sock, "127.0.0.1")
+    if platform.system() == "Windows":
+        sock.bind((iface, PORT))
+    else:
+        sock.setsockopt(socket.IPPROTO_IP, IP_MULTICAST_ALL, 0)
+        sock.bind((GROUP, PORT))
+    mreq = socket.inet_aton(GROUP) + socket.inet_aton(iface)
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
     sock.settimeout(0.2)
     return sock
 
 
 class Counter:
-    def __init__(self, sock, control):
-        self.sock = sock
+    """Counts what one interface's socket hears, on its own thread. A
+    receive error ends the thread and is kept in `error`: the run then
+    fails, a dead listener never reads as a clean count."""
+
+    def __init__(self, iface, control, totals):
+        self.iface = iface
+        self.sock = listener(iface)
         self.control = control
-        self.counts = {}
-        self.network_sources = set()
+        self.totals = totals
+        self.error = None
         self.control_seen = threading.Event()
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self.run, daemon=True)
 
     def run(self):
-        while not self.stop.is_set():
-            try:
-                data, (src, _port) = self.sock.recvfrom(9000)
-            except socket.timeout:
-                continue
-            kind = classify(src, data, self.control)
-            if kind is None:
-                continue
-            if kind == "control":
-                self.control_seen.set()
-                continue
+        try:
+            while not self.stop.is_set():
+                try:
+                    data, (src, _port) = self.sock.recvfrom(MAX_DATAGRAM)
+                except socket.timeout:
+                    continue
+                kind = classify(self.iface, data, self.control)
+                if kind is None:
+                    continue
+                if kind == "control":
+                    self.control_seen.set()
+                    continue
+                self.totals.add(kind, src)
+        except Exception as e:  # kept and reported by finish(), never dropped
+            self.error = e
+
+    def finish(self):
+        """Stops the thread; the problem when it had died on its own."""
+        died = not self.thread.is_alive()
+        self.stop.set()
+        self.thread.join()
+        self.sock.close()
+        if self.error is not None:
+            return f"the listener on {self.iface} failed: {self.error!r}"
+        if died:
+            return f"the listener on {self.iface} ended before the run did"
+        return None
+
+
+class Totals:
+    """The Dante datagrams both listeners heard, by kind, and the network's
+    sources (for the log)."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.counts = {}
+        self.network_sources = set()
+
+    def add(self, kind, src):
+        with self.lock:
             self.counts[kind] = self.counts.get(kind, 0) + 1
             if kind == "dante network":
                 self.network_sources.add(src)
@@ -151,8 +198,11 @@ def main(argv):
 
     routed = routed_ipv4()
     control = control_query(os.urandom(6).hex())
-    counter = Counter(listener(routed), control)
-    counter.thread.start()
+    totals = Totals()
+    network = Counter(routed, control, totals)
+    loopback = Counter("127.0.0.1", control, totals)
+    for c in (network, loopback):
+        c.thread.start()
 
     sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sender.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(routed))
@@ -160,37 +210,41 @@ def main(argv):
     sender.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
     sender.sendto(control, (GROUP, PORT))
     sender.close()
-    counter.control_seen.wait(CONTROL_WAIT_S)
+    network.control_seen.wait(CONTROL_WAIT_S)
     print(
-        f"mdns_watch: listening on {GROUP}:{PORT} (joined on {routed} and 127.0.0.1); "
-        f"control query back: {counter.control_seen.is_set()}",
+        f"mdns_watch: listening on {GROUP}:{PORT} on {routed} and 127.0.0.1; "
+        f"control query back on {routed}: {network.control_seen.is_set()}",
         flush=True,
     )
+    if not network.control_seen.is_set():
+        for c in (network, loopback):
+            c.finish()
+        for problem in verdict({}, set(), False, False):
+            print(f"mdns_watch: {problem}", file=sys.stderr)
+        return 1
 
     code = subprocess.call(command)
     time.sleep(AFTER_S)
-    counter.stop.set()
-    counter.thread.join()
-    counter.sock.close()
+    problems = [e for e in (network.finish(), loopback.finish()) if e is not None]
 
     print(
         f"mdns_watch: Dante mDNS during the run: "
-        f"{counter.counts.get('dante loopback', 0)} on 127.0.0.1, "
-        f"{counter.counts.get('dante network', 0)} on the network "
-        f"(sources {sorted(counter.network_sources)})",
+        f"{totals.counts.get('dante loopback', 0)} on 127.0.0.1, "
+        f"{totals.counts.get('dante network', 0)} on {routed} "
+        f"(sources {sorted(totals.network_sources)})",
         flush=True,
     )
-    if code != 0:
-        print(f"mdns_watch: the command failed with exit code {code}", file=sys.stderr)
-        return code
-    problems = verdict(
-        counter.counts,
-        counter.network_sources,
-        counter.control_seen.is_set(),
+    problems += verdict(
+        totals.counts,
+        totals.network_sources,
+        network.control_seen.is_set(),
         args.require_loopback,
     )
     for problem in problems:
         print(f"mdns_watch: {problem}", file=sys.stderr)
+    if code != 0:
+        print(f"mdns_watch: the command failed with exit code {code}", file=sys.stderr)
+        return code
     return 1 if problems else 0
 
 
