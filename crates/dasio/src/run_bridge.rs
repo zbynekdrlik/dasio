@@ -231,6 +231,7 @@ pub fn run(
         tx = cfg.tx.len(),
         block = cfg.block,
         driver = %bridge.driver,
+        figures = "answered on the info port 8700 (dstack issue 391)",
         "dasio bridge instance serving"
     );
     // The helper CPUs for every thread but the media threads: the
@@ -351,39 +352,15 @@ pub fn run(
             info!("a stop was asked");
             break None;
         }
-        if let Some(e) = device.ended() {
-            break Some(e);
-        }
-        // dasio's NDIS filter came unbound from the adapter: no silent
-        // UDP fallback (dasio#125); the SCM restarts the device, whose
-        // start checks the binding again.
-        if tuning.kernel_tx && crate::kernel_tx::windows::unbound() {
-            let e = "dasio's NDIS filter is no longer bound to the device's adapter: the device ends (dasio does not run without it)".to_string();
-            error!(why = %e, "the device ends");
-            break Some(e);
-        }
-        // A must-have item of the baseline went missing (dasio#128): the
-        // device ends, the SCM restarts it and its start names it again.
-        if tuning.kernel_tx
-            && let Some(e) = profile.must_have()
-        {
-            error!(why = %e, "the device ends");
-            break Some(e);
-        }
-        if let Some(e) = crate::health::pump_failure(&stats.stream_stats(), pump.is_finished()) {
-            error!(why = %e, "the device ends");
-            break Some(e);
-        }
-        // The runner loops until it is told to stop: a thread that ended
-        // panicked, and the driver is no longer served.
-        if lock(&status).reason == Some(Reason::Parked) {
-            let e = "the ASIO driver is parked (a callback never returned; no open succeeds in this process): the device ends for the SCM to restart it".to_string();
-            error!(why = %e, "the device ends");
-            break Some(e);
-        }
-        if runner.is_finished() {
-            let e = "the ASIO driver's runner thread ended (panicked): the device ends for the SCM to restart it".to_string();
-            error!(why = %e, "the device ends");
+        if let Some(e) = device_end(
+            &device,
+            tuning.kernel_tx,
+            &profile,
+            &stats,
+            &pump,
+            &status,
+            &runner,
+        ) {
             break Some(e);
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -401,6 +378,55 @@ pub fn run(
         None => Ok(()),
         Some(e) => Err(e),
     }
+}
+
+/// Why the device must end now, when nothing asked for a stop: the
+/// device's own end, or one this instance decides (each logged here): its
+/// NDIS filter unbound, a missing must-have baseline item, a failed pump,
+/// a parked driver or a dead runner thread. `None` while it serves.
+fn device_end(
+    device: &host::Host,
+    kernel_tx: bool,
+    profile: &ProfileWatch,
+    stats: &PumpStats,
+    pump: &JoinHandle<()>,
+    status: &Mutex<Status>,
+    runner: &JoinHandle<()>,
+) -> Option<String> {
+    if let Some(e) = device.ended() {
+        return Some(e);
+    }
+    // dasio's NDIS filter came unbound from the adapter: no silent
+    // UDP fallback (dasio#125); the SCM restarts the device, whose
+    // start checks the binding again.
+    if kernel_tx && crate::kernel_tx::windows::unbound() {
+        let e = "dasio's NDIS filter is no longer bound to the device's adapter: the device ends (dasio does not run without it)".to_string();
+        error!(why = %e, "the device ends");
+        return Some(e);
+    }
+    // A must-have item of the baseline went missing (dasio#128): the
+    // device ends, the SCM restarts it and its start names it again.
+    if kernel_tx && let Some(e) = profile.must_have() {
+        error!(why = %e, "the device ends");
+        return Some(e);
+    }
+    if let Some(e) = crate::health::pump_failure(&stats.stream_stats(), pump.is_finished()) {
+        error!(why = %e, "the device ends");
+        return Some(e);
+    }
+    // The runner loops until it is told to stop: a thread that ended
+    // panicked, and the driver is no longer served.
+    if lock(status).reason == Some(Reason::Parked) {
+        let e = "the ASIO driver is parked (a callback never returned; no open succeeds in this process): the device ends for the SCM to restart it".to_string();
+        error!(why = %e, "the device ends");
+        return Some(e);
+    }
+    if runner.is_finished() {
+        let e = "the ASIO driver's runner thread ended (panicked): the device ends for the SCM to restart it".to_string();
+        error!(why = %e, "the device ends");
+        return Some(e);
+    }
+    None
 }
 
 /// Starts `b`'s ASRC from the seed file at `path` (dasio#120, dstack

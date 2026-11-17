@@ -255,6 +255,8 @@ fn the_underrun_tick_s_counts_and_causes_are_what_dcontroller_reads() {
     // dstack v0.6.176 (dstack issue 391, dcontroller#108): after a tick the
     // watch hands the device's figure slot the counts the tick was given
     // and each side's latest cause; the slot answers dcontroller's read.
+    // dstack owns the cause rules (its own tests); this checks that
+    // dasio's tick feeds the watch the slot reads, each count on its side.
     use dstack::info::{FigureSlot, OwnFigures, UnderrunCause};
     let slot = FigureSlot::started_at(0);
     slot.set_source(OwnFigures::default);
