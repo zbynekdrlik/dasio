@@ -108,6 +108,9 @@ paths:
   test that reads install.ps1 or a source file as text replaces `\r\n`
   first: the Windows runner checks out CRLF. The Windows glue (exit codes,
   `layout`) is tested through the built exe in `tests/pc_profile_cli.rs`.
+  A process check there reads the exe's own process (`dasio.exe`, running
+  while it checks); the runner's integrity level is not pinned, so the
+  integrity test asserts exactly one of medium / high holds.
 
 - Every Windows, NIC, driver-parameter or Process Lasso change on a dasio
   PC goes into that PC's profile in the same step. A change that lives only
