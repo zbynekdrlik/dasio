@@ -29,6 +29,9 @@
 //! - `[[absent]]`: a program, service or task that must not exist (Edge
 //!   and its updater, dasio#128); `apply` removes it ([`absent`]).
 //!
+//! Besides, the service holds the services Windows turns back on by itself
+//! (UsoSvc, dasio#158) off before each check ([`hold`]).
+//!
 //! Every PC is held to the built-in baseline merged with its own profile
 //! ([`baseline`](self::baseline), dasio#128); the baseline's CPU masks are
 //! computed from the PC's CPU count ([`layout`](self::layout)), and its
@@ -41,6 +44,7 @@ use serde::Deserialize;
 
 pub mod absent;
 mod baseline;
+pub mod hold;
 pub mod layout;
 mod os_text;
 pub(crate) mod power;

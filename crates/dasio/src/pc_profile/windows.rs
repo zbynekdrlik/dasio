@@ -30,7 +30,7 @@ use super::{Action, ProcState, Profile, Reader, Value, get_ini, set_ini};
 const NET_CLASS: &str =
     r"SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}";
 
-fn wide(s: &str) -> Vec<u16> {
+pub(super) fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 
@@ -602,7 +602,7 @@ fn read_text(path: &Path) -> Result<String, String> {
 }
 
 /// The value `name` under HKLM\`key`.
-fn read(key: &str, name: &str) -> Result<Option<Value>, String> {
+pub(super) fn read(key: &str, name: &str) -> Result<Option<Value>, String> {
     let (k, n) = (wide(key), wide(name));
     let mut kind = 0u32;
     let mut len = 0u32;

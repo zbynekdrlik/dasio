@@ -72,6 +72,12 @@ impl ProfileWatch {
         let spawned = std::thread::Builder::new()
             .name("pc-profile".into())
             .spawn(move || {
+                // What Windows turns back on by itself (UsoSvc at boot) is
+                // held off first, so the check that follows sees it held
+                // (dasio#158): in process, no child.
+                for line in crate::pc_profile::hold::windows::hold_services() {
+                    warn!("{line}");
+                }
                 // The built-in baseline applies on every PC, a site profile
                 // or not (dasio#128).
                 let found = check(own);
