@@ -752,19 +752,19 @@ fn each_from_asio_pull_trouble_shows_in_the_line() {
     for (p, text) in [
         (
             pull(1, 0, 0, 0),
-            " · from ASIO pull: 1 restarts, 0 skipped, 0 late writes, 0 faults",
+            " · from ASIO pull: restarts 1, skipped 0, late writes 0, faults 0",
         ),
         (
             pull(0, 7, 0, 0),
-            " · from ASIO pull: 0 restarts, 7 skipped, 0 late writes, 0 faults",
+            " · from ASIO pull: restarts 0, skipped 7, late writes 0, faults 0",
         ),
         (
             pull(0, 0, 2, 0),
-            " · from ASIO pull: 0 restarts, 0 skipped, 2 late writes, 0 faults",
+            " · from ASIO pull: restarts 0, skipped 0, late writes 2, faults 0",
         ),
         (
             pull(0, 0, 0, 1),
-            " · from ASIO pull: 0 restarts, 0 skipped, 0 late writes, 1 faults",
+            " · from ASIO pull: restarts 0, skipped 0, late writes 0, faults 1",
         ),
     ] {
         let f = BridgeFacts {
@@ -809,6 +809,7 @@ fn the_bridge_instance_hands_the_from_asio_side_to_the_tx_thread() {
     let start = once("prepared\n        .start(");
     let runner = src.find("spawn_runner(").expect("the runner's start");
     assert!(call < dante, "the pull is taken before the pump's side");
+    assert!(dante < pump, "the pump's side goes to Pump::new");
     assert!(call < start, "the fill is claimed before the device starts");
     assert!(
         call < runner,
@@ -821,6 +822,14 @@ fn the_bridge_instance_hands_the_from_asio_side_to_the_tx_thread() {
     assert!(
         helper < take && take < fill && fill < claim,
         "take, fill, then claim, in the helper"
+    );
+    // A refused claim is a start error, never dropped (the pull went with
+    // the refused fill: no pump path is left).
+    assert!(
+        src[claim..].starts_with(
+            ".claim_fill(fill)\n        .map_err(|r| format!(\"the from-ASIO pull: {}\", r.reason))?;"
+        ),
+        "the refusal ends the start"
     );
     let map = src[..pump]
         .rfind("let map = Map {")

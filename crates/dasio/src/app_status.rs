@@ -321,7 +321,7 @@ fn pull_suffix(pull: Option<TxFillView>) -> String {
             if p.rebootstraps > 0 || p.skipped > 0 || p.writes_after_send > 0 || p.faults > 0 =>
         {
             format!(
-                " · from ASIO pull: {} restarts, {} skipped, {} late writes, {} faults",
+                " · from ASIO pull: restarts {}, skipped {}, late writes {}, faults {}",
                 p.rebootstraps, p.skipped, p.writes_after_send, p.faults
             )
         }

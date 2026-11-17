@@ -85,9 +85,10 @@ paths:
   it (`pull_from_asio` refuses one). The fill's counts (dstack status
   `tx_pull`) are the from-ASIO side's health: `bridge_json`'s
   `from_asio_pull` object (only with channels from ASIO), the line's
-  ` · from ASIO pull: N restarts, N skipped, N late writes, N faults` (only
+  ` · from ASIO pull: restarts N, skipped N, late writes N, faults N` (only
   when one is above 0) and a warn icon only on a fault (the processor
   panicked: silent for good). `from_asio_block_age_us` is now taken at the
   TX thread's fill. A refused second driver open reads `the Dante device
   has not taken the last output yet` (was "...pump has not taken...").
+  The counts line carries `from_asio_pull` (`None` without a pull).
   `app_status/tests.rs` guards this wiring as text.

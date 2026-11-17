@@ -246,7 +246,6 @@ pub fn run(
             );
             let s = lock(&status).clone();
             let v = stats.view();
-            let fill = from_pull.as_ref().map(|p| p.view()).unwrap_or_default();
             info!(
                 state = ?s.state,
                 reason = s.reason.as_ref().map(ToString::to_string).unwrap_or_default(),
@@ -271,11 +270,8 @@ pub fn run(
                 from_asio_underruns = from_stats.underruns(),
                 from_asio_ppm = from_stats.ppm(),
                 from_asio_target_ms = from_stats.target_ms(),
-                from_asio_pull_blocks = fill.blocks,
-                from_asio_pull_restarts = fill.rebootstraps,
-                from_asio_pull_skipped = fill.skipped,
-                from_asio_pull_writes_after_send = fill.writes_after_send,
-                from_asio_pull_faults = fill.faults,
+                // None for a bridge with no channel from ASIO (no pull).
+                from_asio_pull = ?from_pull.as_ref().map(|p| p.view()),
                 blocks = v.blocks,
                 pump_late = v.late,
                 missed = v.missed,
