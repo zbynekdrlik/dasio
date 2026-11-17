@@ -5,7 +5,7 @@
 
 use std::collections::VecDeque;
 
-use dstack::media::tx::AppView;
+use dstack::media::tx::{AppView, TxFillView};
 use dstack_asio::bridge::{AgeReport, BlockAge};
 
 /// Seconds the late count per minute is taken over.
@@ -222,6 +222,11 @@ pub struct BridgeFacts {
     /// The measured RX packet age at arrival (dasio#128): information,
     /// never advice; `None` before a packet was placed.
     pub rx: Option<crate::rx_arrival::Report>,
+    /// The from-ASIO side's health since the device's start (dstack
+    /// v0.6.167, dasio#120): the TX thread's fill of the from-ASIO
+    /// channels (dstack's status `tx_pull`); `None` for a bridge with no
+    /// channel from ASIO.
+    pub from_asio_pull: Option<TxFillView>,
 }
 
 impl BridgeFacts {
@@ -251,6 +256,7 @@ impl BridgeFacts {
             tx,
             from_asio_age,
             rx: None,
+            from_asio_pull: None,
         }
     }
 }
@@ -295,6 +301,40 @@ pub fn from_asio_age_tick(
     age.look(view, network_p99_ns)
 }
 
+/// The bridge's from-ASIO pull key for its status JSON (dstack v0.6.167,
+/// dasio#120), followed by a comma: the TX thread's fill counts since the
+/// start, left out for a bridge with no channel from ASIO.
+fn pull_json(pull: Option<TxFillView>) -> String {
+    pull.map_or_else(String::new, |p| {
+        format!(
+            "\"from_asio_pull\":{{\"blocks\":{},\"rebootstraps\":{},\"skipped\":{},\"writes_after_send\":{},\"faults\":{}}},",
+            p.blocks, p.rebootstraps, p.skipped, p.writes_after_send, p.faults
+        )
+    })
+}
+
+/// The tray line's from-ASIO pull part: nothing while the fill never
+/// restarted, skipped, wrote after a send or faulted since the start.
+fn pull_suffix(pull: Option<TxFillView>) -> String {
+    match pull {
+        Some(p)
+            if p.rebootstraps > 0 || p.skipped > 0 || p.writes_after_send > 0 || p.faults > 0 =>
+        {
+            format!(
+                " · from ASIO pull: restarts {}, skipped {}, late writes {}, faults {}",
+                p.rebootstraps, p.skipped, p.writes_after_send, p.faults
+            )
+        }
+        _ => String::new(),
+    }
+}
+
+/// The from-ASIO pull's processor panicked: dstack never calls it again,
+/// the from-ASIO channels stay silent until the device restarts.
+fn pull_faulted(pull: Option<TxFillView>) -> bool {
+    pull.is_some_and(|p| p.faults > 0)
+}
+
 /// The menu line dtray shows for a bridge instance.
 pub fn bridge_line(f: &BridgeFacts) -> String {
     let now = if f.running {
@@ -307,11 +347,12 @@ pub fn bridge_line(f: &BridgeFacts) -> String {
         }
     };
     format!(
-        "bridge to \"{}\": {now} · underruns to ASIO {} / from ASIO {} · resets {}{}{}{}",
+        "bridge to \"{}\": {now} · underruns to ASIO {} / from ASIO {} · resets {}{}{}{}{}",
         f.driver,
         f.to_asio_underruns,
         f.from_asio_underruns,
         f.resets,
+        pull_suffix(f.from_asio_pull),
         crate::rx_arrival::suffix(f.rx),
         f.tx.suffix(),
         pc_suffix(f.pc_problems)
@@ -319,10 +360,14 @@ pub fn bridge_line(f: &BridgeFacts) -> String {
 }
 
 /// The icon's state of a bridge instance: `ok` while the driver runs the
-/// bridge (every frame through the filter, no PC profile problem), `warn`
-/// otherwise.
+/// bridge (every frame through the filter, no PC profile problem, the
+/// from-ASIO pull not faulted), `warn` otherwise.
 pub fn bridge_state(f: &BridgeFacts) -> &'static str {
-    if f.running && !f.tx.bad() && !f.pc_problems.is_some_and(|n| n > 0) {
+    if f.running
+        && !f.tx.bad()
+        && !f.pc_problems.is_some_and(|n| n > 0)
+        && !pull_faulted(f.from_asio_pull)
+    {
         "ok"
     } else {
         "warn"
@@ -349,14 +394,15 @@ fn escaped(t: &str) -> String {
 
 /// The JSON object for a bridge instance's `set_app_status`: `line`,
 /// `state`, `kind` and every number (no DAW: `daw_attached` false); the
-/// RX arrival and its ASIO pull wait keys only once measured (dasio#128).
+/// RX arrival and its ASIO pull wait keys only once measured (dasio#128),
+/// the from-ASIO pull's only with channels from ASIO (dasio#120).
 pub fn bridge_json(f: &BridgeFacts) -> String {
     format!(
         concat!(
             "{{\"line\":\"{}\",\"state\":\"{}\",\"kind\":\"bridge\",\"daw_attached\":false,",
             "\"driver\":\"{}\",\"running\":{},\"reason\":\"{}\",\"rate\":{},",
             "\"buffer_frames\":{},\"to_asio_underruns\":{},\"from_asio_underruns\":{},",
-            "\"resets\":{},\"pc_profile_problems\":{},{}{}{}{}}}"
+            "\"resets\":{},\"pc_profile_problems\":{},{}{}{}{}{}}}"
         ),
         escaped(&bridge_line(f)),
         bridge_state(f),
@@ -370,6 +416,7 @@ pub fn bridge_json(f: &BridgeFacts) -> String {
         f.resets,
         f.pc_problems.map_or(-1, i64::from),
         age_json(f.from_asio_age),
+        pull_json(f.from_asio_pull),
         crate::rx_arrival::json(f.rx),
         crate::rx_arrival::pull_wait_json(f.rx),
         f.tx.json(),
