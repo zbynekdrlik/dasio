@@ -5,7 +5,10 @@
 //! 10 min); `apply` removes exactly what the entry names:
 //! - `exe = '<full path>'` with `uninstall = ['<uninstaller>', 'args'...]`:
 //!   runs that uninstaller (its path may hold one `*` folder, e.g. Edge's
-//!   version folder: the newest version found is run); when the exe is
+//!   version folder: the newest version found is run), after the registry
+//!   values named in `before_uninstall` are written, each only one on
+//!   [`PRE_UNINSTALL_WRITES`] (Edge's setup refuses on Windows 10 LTSC
+//!   without EdgeUpdateDev `AllowUninstall`, FOH 17.11.2026); when the exe is
 //!   still there after it, an optional fallback stops the named processes
 //!   running from the exe's own folder and deletes that folder, only one on
 //!   [`REMOVABLE_DIRS`] (`remove_dir`, `stop_processes`: EdgeUpdate's
@@ -38,6 +41,48 @@ pub const DELETABLE_SERVICES: [&str; 3] =
 /// folder is not on it: it stays (owner 16.11.2026).
 pub const REMOVABLE_DIRS: [&str; 1] = [r"C:\Program Files (x86)\Microsoft\EdgeUpdate"];
 
+/// A registry value `apply` writes right before an exe's uninstaller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreWrite {
+    /// The key under HKLM, without `HKLM\`.
+    pub key: &'static str,
+    /// The value's name.
+    pub name: &'static str,
+    /// Its REG_SZ data.
+    pub data: &'static str,
+}
+
+impl PreWrite {
+    /// The value as an entry's `before_uninstall` names it:
+    /// `HKLM\<key>\<name>`.
+    pub fn path(&self) -> String {
+        format!(r"HKLM\{}\{}", self.key, self.name)
+    }
+}
+
+/// The registry values an exe entry may have written before its
+/// uninstaller (`before_uninstall`; the list and the data are in code,
+/// under review, never in a profile). EdgeUpdateDev `AllowUninstall`
+/// (REG_SZ ""): Edge's setup.exe refused `--uninstall --force-uninstall` on
+/// FOH's Windows 10 IoT Enterprise LTSC 2021 ("Edge not uninstallable per
+/// regional policy", EdgeUpdate's log, 17.11.2026; Microsoft supports the
+/// uninstall only in the EEA on Windows 11), and the known removers
+/// (he3als/EdgeRemover, ave9858's script) write exactly this value before
+/// it (dasio#128). It stays after: it only lets setup uninstall Edge.
+pub static PRE_UNINSTALL_WRITES: [PreWrite; 1] = [PreWrite {
+    key: r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdateDev",
+    name: "AllowUninstall",
+    data: "",
+}];
+
+/// The [`PRE_UNINSTALL_WRITES`] entry `path` names (`HKLM\<key>\<name>`,
+/// case ignored, as the registry); `None` for any other.
+pub fn pre_write(path: &str) -> Option<&'static PreWrite> {
+    PRE_UNINSTALL_WRITES
+        .iter()
+        .find(|w| w.path().eq_ignore_ascii_case(path))
+}
+
 /// Something that must not exist on the PC.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -63,6 +108,11 @@ pub struct AbsentEntry {
     /// while it runs from inside that folder (`remove_dir` only).
     #[serde(default)]
     pub stop_processes: Option<Vec<String>>,
+    /// Registry values written right before the uninstaller, each as
+    /// `HKLM\<key>\<name>` and only one on [`PRE_UNINSTALL_WRITES`]
+    /// (`exe` only).
+    #[serde(default)]
+    pub before_uninstall: Option<Vec<String>>,
     #[serde(default)]
     pub why: String,
 }
@@ -193,9 +243,11 @@ pub fn validate(e: &AbsentEntry) -> Result<(), String> {
             [&e.exe, &e.service, &e.task]
         ));
     };
-    if !matches!(target, Target::Exe(_)) && (e.remove_dir.is_some() || e.stop_processes.is_some()) {
+    if !matches!(target, Target::Exe(_))
+        && (e.remove_dir.is_some() || e.stop_processes.is_some() || e.before_uninstall.is_some())
+    {
         return Err(format!(
-            "{}: remove_dir and stop_processes are for exe only",
+            "{}: remove_dir, stop_processes and before_uninstall are for exe only",
             e.what()
         ));
     }
@@ -223,6 +275,27 @@ pub fn validate(e: &AbsentEntry) -> Result<(), String> {
                 ));
             }
             validate_fallback(exe, e)?;
+            if let Some(bad) = e
+                .before_uninstall
+                .iter()
+                .flatten()
+                .find(|p| pre_write(p).is_none())
+            {
+                let known: Vec<String> = PRE_UNINSTALL_WRITES.iter().map(PreWrite::path).collect();
+                return Err(format!(
+                    "absent exe {exe}: before_uninstall {bad}: dasio writes only {known:?} (pc_profile::absent::PRE_UNINSTALL_WRITES)"
+                ));
+            }
+            let names = e.before_uninstall.as_deref().unwrap_or_default();
+            if let Some((_, twice)) = names
+                .iter()
+                .enumerate()
+                .find(|(i, p)| names[..*i].iter().any(|q| q.eq_ignore_ascii_case(p)))
+            {
+                return Err(format!(
+                    "absent exe {exe}: before_uninstall {twice}: named twice"
+                ));
+            }
         }
         Target::Service(s) => {
             if e.uninstall.is_some() {
@@ -358,13 +431,38 @@ pub enum Removal {
     Service(String),
     /// `schtasks /delete` of a task, by its full path as found.
     Task(String),
-    /// The program's uninstaller, then a look that `exe` is gone; when it
-    /// is not, the fallback (if the entry names one) and a second look.
+    /// The registry values of `before` written, the program's uninstaller,
+    /// then a look that `exe` is gone; when it is not, the fallback (if the
+    /// entry names one) and a second look.
     Exe {
         exe: String,
         uninstall: Vec<String>,
+        before: Vec<&'static PreWrite>,
         fallback: Option<Fallback>,
     },
+}
+
+/// One step of an exe's removal, in the order `apply` takes them while the
+/// exe is there (an exe already gone takes none).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExeStep {
+    /// Write this value (REG_SZ) under HKLM.
+    Write(&'static PreWrite),
+    /// Run the uninstaller with its arguments.
+    Uninstall(Vec<String>),
+    /// Look whether the exe is gone; when not, the fallback (if any).
+    Look,
+}
+
+/// The steps of an exe removal: every `before` write first, then the
+/// uninstaller, then the look.
+pub fn exe_steps(uninstall: &[String], before: &[&'static PreWrite]) -> Vec<ExeStep> {
+    before
+        .iter()
+        .copied()
+        .map(ExeStep::Write)
+        .chain([ExeStep::Uninstall(uninstall.to_vec()), ExeStep::Look])
+        .collect()
 }
 
 impl Removal {
@@ -376,8 +474,18 @@ impl Removal {
             Removal::Exe {
                 exe,
                 uninstall,
+                before,
                 fallback,
             } => {
+                let first = if before.is_empty() {
+                    String::new()
+                } else {
+                    let w: Vec<String> = before
+                        .iter()
+                        .map(|w| format!("{} = {:?}", w.path(), w.data))
+                        .collect();
+                    format!("sets {}, then ", w.join(", "))
+                };
                 let then = fallback.as_ref().map_or(String::new(), |f| {
                     let stop = if f.stop.is_empty() {
                         String::new()
@@ -386,7 +494,10 @@ impl Removal {
                     };
                     format!("; if that leaves the exe: {stop}deletes {}", f.dir)
                 });
-                format!("the absence of {exe} (runs {}{then})", uninstall.join(" "))
+                format!(
+                    "the absence of {exe} ({first}runs {}{then})",
+                    uninstall.join(" ")
+                )
             }
         }
     }
@@ -427,6 +538,13 @@ pub fn plan(entries: &[AbsentEntry], r: &dyn Reader) -> Vec<Removal> {
                 Some(Target::Exe(exe)) => Removal::Exe {
                     exe: exe.to_string(),
                     uninstall: e.uninstall.clone().unwrap_or_default(),
+                    // Validated at parse: every name is on the list.
+                    before: e
+                        .before_uninstall
+                        .iter()
+                        .flatten()
+                        .filter_map(|p| pre_write(p.as_str()))
+                        .collect(),
                     fallback: e.remove_dir.as_ref().map(|dir| Fallback {
                         dir: dir.clone(),
                         stop: e.stop_processes.clone().unwrap_or_default(),

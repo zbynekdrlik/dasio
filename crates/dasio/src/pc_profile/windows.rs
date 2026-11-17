@@ -447,6 +447,7 @@ fn remove(r: &Removal) -> Result<(), String> {
         Removal::Exe {
             exe,
             uninstall,
+            before,
             fallback,
         } => {
             if !file_there(exe)? {
@@ -457,16 +458,36 @@ fn remove(r: &Removal) -> Result<(), String> {
             };
             let prog = absent::resolve_uninstaller(first, folder_names, |p| Path::new(p).is_file())
                 .ok_or_else(|| format!("{exe}: its uninstaller {first} was not found"))?;
-            let status = run_bounded(&prog, args)?;
-            // An uninstaller's exit code says little (some end non-zero
-            // after a good uninstall): the exe gone is what counts.
-            if !file_there(exe)? {
-                return Ok(());
+            let mut ran = String::new();
+            for step in absent::exe_steps(args, before) {
+                match step {
+                    absent::ExeStep::Write(w) => {
+                        // `plan` takes it from `absent::PRE_UNINSTALL_WRITES`
+                        // (key, name and data in code): no profile text
+                        // reaches the write.
+                        write(w.key, w.name, &Value::String(w.data.to_string()))
+                            .map_err(|e| format!("{exe}: before the uninstaller: {e}"))?;
+                        println!(
+                            "before the uninstaller of {exe}: set {} = {:?} (REG_SZ)",
+                            w.path(),
+                            w.data
+                        );
+                    }
+                    absent::ExeStep::Uninstall(args) => {
+                        let status = run_bounded(&prog, &args)?;
+                        ran = format!("ran {prog} {} ({status})", args.join(" "));
+                    }
+                    absent::ExeStep::Look => {
+                        // An uninstaller's exit code says little (some end
+                        // non-zero after a good uninstall): the exe gone is
+                        // what counts.
+                        if !file_there(exe)? {
+                            return Ok(());
+                        }
+                    }
+                }
             }
-            let left = format!(
-                "ran {prog} {} ({status}): {exe} is still there",
-                args.join(" ")
-            );
+            let left = format!("{ran}: {exe} is still there");
             let Some(fb) = fallback else {
                 return Err(left);
             };

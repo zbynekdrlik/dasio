@@ -1617,7 +1617,13 @@ why = "Lasso never switches the power plan (gaming mode, energy saver, load-base
 
 [[absent]]
 exe = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
-uninstall = ['C:\Program Files (x86)\Microsoft\Edge\Application\*\Installer\setup.exe', '--uninstall', '--msedge', '--system-level', '--force-uninstall']
+uninstall = ['C:\Program Files (x86)\Microsoft\Edge\Application\*\Installer\setup.exe', '--uninstall', '--msedge', '--system-level', '--verbose-logging', '--log-file=C:\ProgramData\dasio\msedge_installer.log', '--force-uninstall']
+# Its setup refuses on Windows 10 LTSC without EdgeUpdateDev AllowUninstall
+# ("Edge not uninstallable per regional policy", FOH 17.11.2026): apply
+# writes it first (only a value on pc_profile::absent::PRE_UNINSTALL_WRITES).
+# --verbose-logging + --log-file: setup logs its own reason to
+# C:\ProgramData\dasio\msedge_installer.log when it still refuses (dasio#128).
+before_uninstall = ['HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdateDev\AllowUninstall']
 why = "Microsoft Edge: owner 16.11.2026: no browser and no updater on a dasio PC, removed, not only disabled, so nothing starts by chance; re-removed after a Windows upgrade (dasio#128)"
 
 [[absent]]

@@ -2,8 +2,9 @@
 //! on a dasio PC, reported while it does and removed by `apply`.
 
 use super::super::absent::{
-    DELETABLE_SERVICES, Fallback, REMOVABLE_DIRS, Step, Target, inside, parent_dir, removable,
-    resolve_uninstaller, split_star, task_folder, task_matches, versions_newest_first,
+    DELETABLE_SERVICES, ExeStep, Fallback, PRE_UNINSTALL_WRITES, REMOVABLE_DIRS, Step, Target,
+    exe_steps, inside, parent_dir, pre_write, removable, resolve_uninstaller, split_star,
+    task_folder, task_matches, versions_newest_first,
 };
 use super::super::*;
 use super::Pc;
@@ -171,6 +172,7 @@ fn what_exists_is_a_problem_and_its_removal_is_planned() {
                     "--system-level".into(),
                     "--force-uninstall".into(),
                 ],
+                before: vec![],
                 fallback: None,
             }),
             Action::Remove(Removal::Service("edgeupdate".into())),
@@ -335,6 +337,8 @@ fn the_baseline_keeps_edge_and_its_updater_off_every_pc() {
             "--uninstall",
             "--msedge",
             "--system-level",
+            "--verbose-logging",
+            r"--log-file=C:\ProgramData\dasio\msedge_installer.log",
             "--force-uninstall"
         ]
     );
@@ -399,6 +403,7 @@ fn an_exe_entrys_fallback_parses_and_is_planned_after_its_uninstaller() {
         vec![Action::Remove(Removal::Exe {
             exe: UPDATE.into(),
             uninstall: vec![UPDATE.into(), "/uninstall".into()],
+            before: vec![],
             fallback: Some(fb.clone()),
         })]
     );
@@ -492,11 +497,11 @@ fn a_fallback_deletes_only_the_allowed_folder_of_its_own_exe() {
         ),
         (
             "service = \"edgeupdate\"\nremove_dir = 'C:\\x'".to_string(),
-            "absent service edgeupdate: remove_dir and stop_processes are for exe only".to_string(),
+            "absent service edgeupdate: remove_dir, stop_processes and before_uninstall are for exe only".to_string(),
         ),
         (
             "task = '\\x*'\nstop_processes = ['a.exe']".to_string(),
-            r"absent task \x*: remove_dir and stop_processes are for exe only".to_string(),
+            r"absent task \x*: remove_dir, stop_processes and before_uninstall are for exe only".to_string(),
         ),
     ];
     for (body, want) in refused {
@@ -593,4 +598,136 @@ fn the_baselines_edgeupdate_entry_deletes_its_folder_when_it_stays() {
         .find(|e| e.target() == Some(Target::Exe(EDGE)))
         .unwrap();
     assert_eq!(edge.remove_dir, None);
+}
+
+/// EdgeUpdateDev's `AllowUninstall`, as an entry names it.
+const ALLOW: &str = r"HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdateDev\AllowUninstall";
+
+/// Edge's entry with the write before its uninstaller.
+fn edge_with(before: &str) -> Result<Profile, String> {
+    one(&format!(
+        "exe = '{EDGE}'\nuninstall = ['C:\\setup.exe', '--uninstall']\nbefore_uninstall = [{before}]"
+    ))
+}
+
+#[test]
+fn only_edgeupdatedevs_allowuninstall_is_written_before_an_uninstaller() {
+    // The list is in code: an empty REG_SZ, as the known removers write it
+    // (FOH 17.11.2026, Edge refused on Windows 10 LTSC).
+    assert_eq!(
+        PRE_UNINSTALL_WRITES.len(),
+        1,
+        "widening it writes more: review it"
+    );
+    let w = &PRE_UNINSTALL_WRITES[0];
+    assert_eq!(w.key, r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdateDev");
+    assert_eq!(w.name, "AllowUninstall");
+    assert_eq!(w.data, "");
+    assert_eq!(w.path(), ALLOW);
+    assert_eq!(pre_write(ALLOW), Some(w));
+    assert_eq!(
+        pre_write(&ALLOW.to_ascii_lowercase()),
+        Some(w),
+        "case ignored"
+    );
+    for other in [
+        r"HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdateDev",
+        r"HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdateDev\AllowUninstal",
+        r"HKLM\SOFTWARE\Microsoft\EdgeUpdateDev\AllowUninstall",
+        r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdateDev\AllowUninstall",
+        r"HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdateDev\AllowUninstall\x",
+        "",
+    ] {
+        assert_eq!(pre_write(other), None, "{other}");
+    }
+    let p = edge_with(&format!("'{}'", ALLOW.to_ascii_uppercase())).unwrap();
+    assert_eq!(
+        p.absent[0].before_uninstall.as_deref(),
+        Some([ALLOW.to_ascii_uppercase()].as_slice())
+    );
+    let bad = r"HKLM\SYSTEM\CurrentControlSet\Services\x\Start";
+    assert_eq!(
+        edge_with(&format!("'{ALLOW}', '{bad}'")).unwrap_err(),
+        format!(
+            "absent exe {EDGE}: before_uninstall {bad}: dasio writes only [{ALLOW:?}] (pc_profile::absent::PRE_UNINSTALL_WRITES)"
+        )
+    );
+    assert_eq!(
+        edge_with(&format!("'{ALLOW}', '{}'", ALLOW.to_ascii_lowercase())).unwrap_err(),
+        format!(
+            "absent exe {EDGE}: before_uninstall {}: named twice",
+            ALLOW.to_ascii_lowercase()
+        )
+    );
+    for body in [
+        format!("service = \"edgeupdate\"\nbefore_uninstall = ['{ALLOW}']"),
+        format!("task = '\\x*'\nbefore_uninstall = ['{ALLOW}']"),
+    ] {
+        let err = one(&body).unwrap_err();
+        assert!(
+            err.ends_with(": remove_dir, stop_processes and before_uninstall are for exe only"),
+            "{err}"
+        );
+    }
+}
+
+#[test]
+fn the_write_comes_before_the_uninstaller_and_only_while_the_exe_is_there() {
+    let p = edge_with(&format!("'{ALLOW}'")).unwrap();
+    let w = &PRE_UNINSTALL_WRITES[0];
+    // Edge gone: nothing planned, so nothing is written.
+    assert!(plan(&p, &Pc::default()).is_empty());
+    let pc = Pc {
+        files: vec![EDGE.into()],
+        ..Pc::default()
+    };
+    let actions = plan(&p, &pc);
+    assert_eq!(
+        actions,
+        vec![Action::Remove(Removal::Exe {
+            exe: EDGE.into(),
+            uninstall: vec![r"C:\setup.exe".into(), "--uninstall".into()],
+            before: vec![w],
+            fallback: None,
+        })]
+    );
+    assert_eq!(
+        describe(&actions[0]),
+        format!(r#"the absence of {EDGE} (sets {ALLOW} = "", then runs C:\setup.exe --uninstall)"#)
+    );
+    let args = ["--uninstall".to_string(), "--msedge".to_string()];
+    assert_eq!(
+        exe_steps(&args, &[w]),
+        vec![
+            ExeStep::Write(w),
+            ExeStep::Uninstall(args.to_vec()),
+            ExeStep::Look
+        ]
+    );
+    assert_eq!(
+        exe_steps(&args, &[]),
+        vec![ExeStep::Uninstall(args.to_vec()), ExeStep::Look]
+    );
+}
+
+#[test]
+fn the_baselines_edge_entry_allows_its_uninstall_first() {
+    let b = baseline().unwrap();
+    let edge = b
+        .absent
+        .iter()
+        .find(|e| e.target() == Some(Target::Exe(EDGE)))
+        .unwrap();
+    assert_eq!(
+        edge.before_uninstall.as_deref(),
+        Some([ALLOW.to_string()].as_slice())
+    );
+    // Only Edge's entry writes anything first.
+    assert_eq!(
+        b.absent
+            .iter()
+            .filter(|e| e.before_uninstall.is_some())
+            .count(),
+        1
+    );
 }
