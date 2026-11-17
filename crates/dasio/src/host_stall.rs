@@ -48,12 +48,30 @@ pub fn stall_blocks(s: &Stall) -> u64 {
 
 /// The verdict on `s`, or why it fails.
 pub fn verdict(s: &Stall) -> Result<Verdict, String> {
-    if s.missed > 0 {
-        Ok(Verdict::Exercised)
+    // The pump published through the stall: the host, back, takes the
+    // newest block, and the driver counts every one before it missed.
+    if s.published >= 2 {
+        let due = s.published - 1;
+        return if s.missed >= due {
+            Ok(Verdict::Exercised)
+        } else {
+            Err(format!(
+                "the {} us host stall missed no block: {} published meanwhile, {} counted missed (at least {due})",
+                s.stall_us, s.published, s.missed
+            ))
+        };
+    }
+    // At most one block in the whole stall: the pump did not run. Only the
+    // device's own late wakes, with none of its own losses, excuse it, and
+    // they must cover the stall less what it published and one block of
+    // phase at either edge.
+    let span = stall_blocks(s);
+    if s.pump_lost_device_blocks == 0 && s.pump_lost_late_blocks + s.published + 1 >= span {
+        Ok(Verdict::PumpCpuTaken)
     } else {
         Err(format!(
-            "the {} us host stall missed no block ({} published meanwhile)",
-            s.stall_us, s.published
+            "the {} us host stall missed no block: the pump published {} in it ({span} blocks), lost {} to late wakes and {} to the device in the run",
+            s.stall_us, s.published, s.pump_lost_late_blocks, s.pump_lost_device_blocks
         ))
     }
 }

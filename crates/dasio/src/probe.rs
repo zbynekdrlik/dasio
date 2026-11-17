@@ -71,6 +71,26 @@ pub struct Report {
     /// may excuse missing switches.
     pub pump_lost_late_blocks: u64,
     pub pump_lost_device_blocks: u64,
+    /// The injected stall (dasio#162): the device blocks published while
+    /// the host stalled (its seq after less before) and the stall's
+    /// measured length, µs; 0 without a stall.
+    pub stall_published: u64,
+    pub stall_us: u64,
+}
+
+impl Report {
+    /// The injected stall's figures, for [`crate::host_stall::verdict`].
+    pub fn stall(&self) -> crate::host_stall::Stall {
+        crate::host_stall::Stall {
+            published: self.stall_published,
+            stall_us: self.stall_us,
+            block: self.block,
+            rate: self.rate,
+            missed: self.missed,
+            pump_lost_late_blocks: self.pump_lost_late_blocks,
+            pump_lost_device_blocks: self.pump_lost_device_blocks,
+        }
+    }
 }
 
 /// The onset of an arrival: a quarter of the impulse.
@@ -91,6 +111,12 @@ struct State {
     /// impulse left (while it is on its way): 0 for none.
     stall_ms: u64,
     stalled: bool,
+    /// The device's mapping, read around the stall (its published seq);
+    /// `None` without a stall.
+    device: Option<shm::Shared>,
+    /// The stall's device blocks published and length, µs.
+    stall_published: u64,
+    stall_us: u64,
     next_emit: u64,
     last_emit: Option<u64>,
     /// When `last_emit` left, µs since the probe's start.
@@ -207,12 +233,24 @@ unsafe fn switch_body(half: i32, _direct: ASIOBool, pos: Option<u64>) {
             .is_some_and(|e| s.position >= e + 4 * s.block as u64)
     {
         s.stalled = true;
+        // The device's published seq on either side: the blocks the pump
+        // published while the host stalled, for the driver to count missed
+        // (dasio#162).
+        let seq = |s: &State| {
+            s.device
+                .as_ref()
+                .map_or(0, |d| d.header().seq.load(Ordering::Acquire))
+        };
+        let before = seq(&*s);
         // Spun, not slept: a sleep rounds to the timer's tick (15.6 ms by
         // default), past the impulse's return.
-        let until = Instant::now() + Duration::from_millis(s.stall_ms);
+        let from = Instant::now();
+        let until = from + Duration::from_millis(s.stall_ms);
         while Instant::now() < until {
             std::hint::spin_loop();
         }
+        s.stall_us = from.elapsed().as_micros() as u64;
+        s.stall_published = seq(&*s).saturating_sub(before);
     }
     let n = s.block;
     // Inputs are bufs[0..rx], outputs bufs[rx..].
@@ -380,6 +418,20 @@ pub fn probe_at(instance: u32, seconds: u64, stall_ms: u64, rate: u32) -> Result
         *GAPS.lock().unwrap() = Vec::with_capacity(4096);
         *OVER_1MS_ENDS.lock().unwrap() = Vec::with_capacity(4096);
         *T0.lock().unwrap() = Some(Instant::now());
+        let device = if stall_ms > 0 {
+            match shm::Shared::open(instance) {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    (v.disposeBuffers)(d);
+                    (v.Release)(d);
+                    return Err(format!(
+                        "the device's shared memory for the stall's blocks: {e}"
+                    ));
+                }
+            }
+        } else {
+            None
+        };
         *STATE.lock().unwrap() = Some(State {
             rate: u64::from(rate),
             bufs: infos
@@ -392,6 +444,9 @@ pub fn probe_at(instance: u32, seconds: u64, stall_ms: u64, rate: u32) -> Result
             position: 0,
             stall_ms,
             stalled: false,
+            device,
+            stall_published: 0,
+            stall_us: 0,
             next_emit: u64::from(rate),
             last_emit: None,
             last_emit_us: 0,
@@ -473,6 +528,8 @@ pub fn probe_at(instance: u32, seconds: u64, stall_ms: u64, rate: u32) -> Result
     report.gaps_over_1ms = GAPS_OVER_1MS.load(Ordering::Relaxed);
     report.gap_blocks = GAP_BLOCKS.load(Ordering::Relaxed);
     report.emitted = s.emitted;
+    report.stall_published = s.stall_published;
+    report.stall_us = s.stall_us;
     report.skipped = s.skipped;
     report.round_trips = s.round_trips;
     report.rx_peaks = s.peaks;
