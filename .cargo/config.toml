@@ -1,0 +1,11 @@
+# dasio#167 (dstack issue 366, dstack >= v0.6.164): every process cargo runs
+# in this workspace (cargo test, cargo run, nextest, cargo-mutants, CI) is a
+# TEST RUN: a dstack device serves only on a loopback address
+# (`dstack::host::test_run`; dasio's `place::address` takes the same rule),
+# so no test device's mDNS, info or heartbeat multicast leaves the box onto
+# a real network. The e2e test's `dasio run` processes inherit it. A live
+# test on a real network sets DSTACK_LIVE_TEST=1 on its own command line.
+# Production never has the variable: the installed service and a `dasio run`
+# started by hand serve on the PC's Dante address as before.
+[env]
+DSTACK_TEST_LOOPBACK = "1"

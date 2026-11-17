@@ -1,16 +1,19 @@
 //! The whole path as on the PC, on a GitHub-hosted Windows runner: the real
-//! `dasio` device processes (on the runner's routed IPv4, the stack's
-//! test-only system clock: the runner has no dantesync) and an ASIO host on
-//! each instance's driver in this process (the probe, as a DAW drives it).
-//! Two devices share the runner's one address, as several instances share
-//! the PC's: the first on the stack's default ports, the second on its own
-//! ports and process id. In each, RX 1 is subscribed to its own TX 1
-//! through the device's state file, so each impulse the host sends on
-//! output 1 goes out through Dante and comes back on input 1. Only our own
-//! devices are subscribed.
+//! `dasio` device processes (on loopback, 127.0.0.1, the stack's test-only
+//! system clock: the runner has no dantesync) and an ASIO host on each
+//! instance's driver in this process (the probe, as a DAW drives it). The
+//! devices serve on loopback because this is a test run
+//! (`DSTACK_TEST_LOOPBACK=1` from `.cargo/config.toml`, inherited by the
+//! device processes; dstack's `host::test_run`, dasio#167): their mDNS,
+//! info and heartbeat multicasts never leave the box. Two devices share
+//! that one address, as several instances share the PC's: the first on the
+//! stack's default ports, the second on its own ports and process id. In
+//! each, RX 1 is subscribed to its own TX 1 through the device's state file,
+//! so each impulse the host sends on output 1 goes out through Dante and
+//! comes back on input 1. Only our own devices are subscribed.
 #![cfg(windows)]
 
-use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::{Ipv4Addr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -91,15 +94,16 @@ fn device_in(dir: &Path, name: &str, extra: &str) -> PathBuf {
     path
 }
 
-/// The runner's IPv4 address on its default route (connecting a UDP
-/// socket picks the route and sends nothing).
-fn routed_ipv4() -> Ipv4Addr {
-    let probe = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
-    probe.connect((Ipv4Addr::new(192, 0, 2, 1), 9)).unwrap();
-    match probe.local_addr().unwrap() {
-        SocketAddr::V4(a) if !a.ip().is_loopback() && !a.ip().is_unspecified() => *a.ip(),
-        other => panic!("no routed IPv4 address on this runner: {other}"),
-    }
+/// The devices' address: loopback, the only one a test run serves on
+/// (dasio#167; a routed address put each device's mDNS on the runner's
+/// network). The test run's flag must reach the device processes.
+fn test_ipv4() -> Ipv4Addr {
+    assert_eq!(
+        std::env::var(dstack::host::test_run::LOOPBACK_ENV).as_deref(),
+        Ok("1"),
+        "run this test through cargo (.cargo/config.toml sets the test run's flag)"
+    );
+    Ipv4Addr::LOCALHOST
 }
 
 /// A device process; killed if the test ends without stopping it (a
@@ -316,7 +320,7 @@ fn an_impulse_goes_out_through_dante_and_comes_back_on_two_devices_sharing_one_a
         "{cpus} CPUs: the two devices' pinned threads need {CPUS_NEEDED}"
     );
     let dir = std::env::temp_dir().join(format!("dasio-e2e-{}", std::process::id()));
-    let ip = routed_ipv4();
+    let ip = test_ipv4();
     let first = Device::start(
         FIRST,
         &device_in(&dir.join("first"), "test-device", FIRST_CPUS),

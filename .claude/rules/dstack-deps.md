@@ -38,3 +38,10 @@ paths:
 
 - Move all six dstack git deps together and update the lock for those packages only: `cargo update -p dstack -p dstack-audio-io -p dstack-asio -p dlink -p dstack-endpoint -p dstack-resample` (a lock refresh, not a build). Then read the tag's CHANGELOG "Consumers" line and port the API it names.
 - Write a dstack issue as "dstack issue N" in commit messages, never "#N": the commit gate reads a bare "#N" as a dasio ticket and refuses the commit when that number does not exist here (0.1.108, dstack issue 325).
+
+## Tests are a dstack test run (dasio#167)
+
+- `.cargo/config.toml` sets `DSTACK_TEST_LOOPBACK=1` for every process cargo runs (tests, nextest, cargo-mutants, `cargo run`). dstack then serves a device on loopback only and refuses a site address unless `DSTACK_LIVE_TEST=1`; `place::address` takes the same rule (`address_for`), so `dasio run --ip 127.0.0.1` works under cargo and nowhere else (production refuses loopback).
+- A test that starts a device (the e2e test's `dasio run` children inherit the variable) uses 127.0.0.1, never the routed address: on dev1 that put test mDNS on the LAN next to FOH's Dante leg (dasio#127). The one exception is CI's `scripts/ci-service-test.ps1`: it installs the real SCM service (no cargo, so no variable; production refuses loopback) on the runner's routed address, on a GitHub runner's network, outside `mdns_watch`'s window.
+- The Windows CI test job runs the suite under `scripts/mdns_watch.py --require-loopback`: Dante mDNS (`_netaudio`) heard from the runner's routed address fails the job; the devices' announcements on 127.0.0.1 and a control query of its own must be heard.
+- dstack v0.6.165+: `spin_no_yield_tail` (DeviceConfig, default false) stays OFF in every dasio config until dstack says the dstack issue 351 soak passed and flips the default.

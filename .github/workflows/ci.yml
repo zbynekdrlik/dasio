@@ -55,7 +55,15 @@ jobs:
           persist-credentials: false
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
+      - if: runner.os != 'Windows'
+        run: cargo test --workspace --locked
+      # On Windows the suite runs the e2e test's real devices: count Dante
+      # mDNS on the runner's routed address meanwhile (dasio#167). Test
+      # devices serve on loopback (DSTACK_TEST_LOOPBACK, .cargo/config.toml),
+      # so any from the network fails the job; their announcements on
+      # 127.0.0.1 and a control query of our own must be heard.
+      - if: runner.os == 'Windows'
+        run: python scripts/mdns_watch.py --require-loopback -- cargo test --workspace --locked
       # The bridge's cost per block in the build the PCs run (dasio#28 E13):
       # its time bound holds only in an optimized build.
       - run: cargo test --release --locked -p dasio --test bench_bridge -- --nocapture
