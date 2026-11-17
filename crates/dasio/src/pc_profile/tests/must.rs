@@ -265,3 +265,49 @@ fn install_ps1_refuses_before_it_touches_the_instance() {
         "applied once, before the stop"
     );
 }
+
+/// install.ps1's `-NicDriver` step (dasio#128): opt-in only, the package
+/// checked by dasio (whose refusal throws) before pnputil runs, the version
+/// read back, all before the baseline step sets the NIC's settings again.
+#[test]
+fn install_ps1_installs_the_nic_driver_only_when_asked_and_only_a_checked_package() {
+    let s = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/install.ps1"),
+    )
+    .unwrap()
+    .replace("\r\n", "\n");
+    let at = |needle: &str| {
+        s.find(needle)
+            .unwrap_or_else(|| panic!("install.ps1 has no {needle}"))
+    };
+    let param = at("[string]$NicDriver = \"\"");
+    let guid = at("if ($profileGuid -ne $adapterGuid) {");
+    let opt_in = at("if ($NicDriver) {");
+    let inside = at("StartsWith($bundleDir");
+    let admin = at("Assert-AdminOnly $pkgDir");
+    let verify = at("& (Join-Path $here \"dasio.exe\") @verifyArgs");
+    let refused = at("if ($verified -ne 0) {");
+    let pnputil = at("& pnputil.exe /add-driver");
+    let back = at("if ($nowVersion -ne $wantVersion) {");
+    let apply = at("& (Join-Path $here \"dasio.exe\") pc-profile apply");
+    assert!(param < guid);
+    assert!(
+        guid < opt_in
+            && opt_in < inside
+            && inside < admin
+            && admin < verify
+            && verify < refused
+            && refused < pnputil
+            && pnputil < back
+            && back < apply
+    );
+    assert!(s[refused..pnputil].contains("throw \"the NIC driver step: dasio refused"));
+    assert!(s[back..apply].contains("throw \"the NIC driver step:"));
+    assert!(s[opt_in..verify].contains("$verifyArgs = @(\"pc-profile\", \"nic-driver\")"));
+    assert!(s[opt_in..verify].contains("\"--signature\", \"$($sig.Status)\""));
+    assert_eq!(
+        s.matches("pnputil.exe /add-driver").count(),
+        1,
+        "only in the opt-in step"
+    );
+}

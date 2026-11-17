@@ -65,6 +65,8 @@ pub struct Pc {
     nic_device: Option<String>,
     /// The Dante NIC's driver service (its Enum key's `Service`).
     nic_service: Option<String>,
+    /// The Dante NIC's hardware IDs (its Enum key's `HardwareID`).
+    nic_hardware_ids: Vec<String>,
 }
 
 impl Pc {
@@ -85,10 +87,23 @@ impl Pc {
                 _ => None,
             }
         });
+        let nic_hardware_ids = instance
+            .as_deref()
+            .map(|id| {
+                match read(
+                    &format!(r"SYSTEM\CurrentControlSet\Enum\{id}"),
+                    "HardwareID",
+                ) {
+                    Ok(Some(Value::MultiSz(ids))) => ids,
+                    _ => Vec::new(),
+                }
+            })
+            .unwrap_or_default();
         Pc {
             nic_class,
             nic_device,
             nic_service,
+            nic_hardware_ids,
         }
     }
 
@@ -152,6 +167,10 @@ impl Pc {
 impl Reader for Pc {
     fn nic_service(&self) -> Option<String> {
         self.nic_service.clone()
+    }
+
+    fn nic_hardware_ids(&self) -> Vec<String> {
+        self.nic_hardware_ids.clone()
     }
 
     fn absent(&self, e: &AbsentEntry) -> Result<Vec<String>, String> {

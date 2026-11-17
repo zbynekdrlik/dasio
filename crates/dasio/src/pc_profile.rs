@@ -6,7 +6,7 @@
 //! process off the media CPUs ([`ChildCheck`]), and reports what differs;
 //! `dasio pc-profile apply` sets what differs.
 //!
-//! Seven kinds of entries:
+//! Eight kinds of entries:
 //! - `[[registry]]`: one value under `HKLM\...` (a DWORD, a string, a
 //!   list of strings (REG_MULTI_SZ, e.g. a NIC's `SubnetMask`), or binary
 //!   as hex). `{nic_class}` and `{nic_device}` in a key stand for
@@ -28,6 +28,9 @@
 //!   another tool's install.
 //! - `[[absent]]`: a program, service or task that must not exist (Edge
 //!   and its updater, dasio#128); `apply` removes it ([`absent`]).
+//! - `[[nic_driver]]`: the driver package a family of Dante NICs must run
+//!   (by hardware ID, dasio#128); checked only, `install.ps1 -NicDriver`
+//!   installs it ([`nic_driver`]).
 //!
 //! Besides, the service holds the services Windows turns back on by itself
 //! (UsoSvc, dasio#158) off before each check ([`hold`]).
@@ -46,14 +49,18 @@ pub mod absent;
 mod baseline;
 pub mod hold;
 pub mod layout;
+pub mod nic_driver;
 mod os_text;
 pub(crate) mod power;
 #[cfg(windows)]
 pub mod windows;
 
 pub use absent::{AbsentEntry, Removal};
-pub use baseline::{BASELINE, MUST_HAVE, baseline, baseline_only, load, merge, must_have_failure};
+pub use baseline::{
+    BASELINE, MUST_HAVE, baseline, baseline_only, load, load_merged, merge, must_have_failure,
+};
 pub use layout::{Layout, resolve};
+pub use nic_driver::NicDriverEntry;
 pub use os_text::{parse_bcdedit, parse_task_xml};
 pub use power::{PowerSetting, describe, power_setting, powercfg_commands};
 
@@ -91,6 +98,10 @@ pub struct Profile {
     /// What must not exist on the PC ([`absent`], dasio#128).
     #[serde(default)]
     pub absent: Vec<AbsentEntry>,
+    /// The driver package each Dante NIC family must run ([`nic_driver`],
+    /// dasio#128).
+    #[serde(default)]
+    pub nic_driver: Vec<NicDriverEntry>,
 }
 
 impl Profile {
@@ -103,6 +114,7 @@ impl Profile {
             + self.bcd.len()
             + self.task.len()
             + self.absent.len()
+            + self.nic_driver.len()
     }
 }
 
@@ -283,6 +295,9 @@ pub trait Reader {
     /// service's name, each task the pattern matches by its full path;
     /// empty when there is none.
     fn absent(&self, e: &AbsentEntry) -> Result<Vec<String>, String>;
+    /// The Dante NIC's PnP hardware IDs (its Enum key's `HardwareID`),
+    /// most specific first; empty when the NIC was not found.
+    fn nic_hardware_ids(&self) -> Vec<String>;
 }
 
 /// Whether `e` applies on the PC `r` reads: an entry for one NIC driver
@@ -429,6 +444,9 @@ fn parse_with(text: &str, need_nic_guid: bool) -> Result<Profile, String> {
     }
     for e in &p.absent {
         absent::validate(e)?;
+    }
+    for e in &p.nic_driver {
+        nic_driver::validate(e)?;
     }
     Ok(p)
 }
@@ -697,6 +715,7 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
         }
     }
     out.extend(absent::check(&p.absent, r));
+    out.extend(nic_driver::check(&p.nic_driver, r));
     out
 }
 

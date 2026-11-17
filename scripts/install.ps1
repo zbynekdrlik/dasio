@@ -14,6 +14,16 @@
 #   refuses, naming the step, a profile without the device adapter's
 #   nic_guid and a must-have item left unset (exit 2: the Dante NIC's
 #   settings, test signing, a profile that does not load),
+# - with -NicDriver <folder> only (never by default: a NIC driver change
+#   restarts the adapter, so it runs with someone on site), installs the
+#   Dante NIC family's pinned driver package before that step: the folder
+#   (inside this bundle folder) must be exactly the baseline's package,
+#   every file's SHA256 and the catalog's signer checked by `dasio pc-profile
+#   nic-driver` (dasio#128); refuses on any difference with nothing changed,
+#   and refuses when the adapter does not run the pinned version afterwards;
+#   pnputil gives the driver to every device its INF matches (a second
+#   Realtek NIC restarts too), and a running instance loses its NIC for
+#   those seconds (the step comes before the instance's stop),
 # - copies dasio.exe and dasio_driver.dll to C:\Program Files\dasio, and
 #   dasio.exe again as dasio-<device name>.exe, the instance's own binary
 #   (its service runs it, so Process Lasso can pin each instance by name);
@@ -68,10 +78,15 @@ param(
     # The dsync service as the only PTP time (`--clock dsync`). Without it
     # the device follows Dante PTP in process (needs Npcap) and falls back
     # to the service.
-    [switch]$DsyncClock
+    [switch]$DsyncClock,
+    # A folder in this bundle folder holding the Dante NIC's pinned driver
+    # package (e.g. FOH's: pnputil /export-driver <oem inf> <folder>):
+    # installed, after the check, before the baseline step (dasio#128).
+    [string]$NicDriver = ""
 )
 $ErrorActionPreference = "Stop"
 if ($TestClock -and $DsyncClock) { throw "-TestClock and -DsyncClock exclude each other; nothing changed" }
+if ($TestClock -and $NicDriver) { throw "-TestClock and -NicDriver exclude each other (no Dante NIC under the test clock); nothing changed" }
 if ([bool]$Ip -eq [bool]$Iface) { throw "give exactly one of -Ip <address> and -Iface <interface name>; nothing changed" }
 
 $bin = Join-Path $env:ProgramFiles "dasio"
@@ -375,6 +390,72 @@ if (-not $TestClock) {
     }
     if ($profileGuid -ne $adapterGuid) {
         throw "the baseline step: $profilePath names the Dante NIC '$profileGuid', but the device runs on '$alias' ($adapterGuid): set nic_guid = `"$adapterGuid`" there; nothing changed"
+    }
+    # The Dante NIC's pinned driver package (dasio#128), only when asked.
+    # dasio decides whether the folder is exactly the baseline's package
+    # (every file's SHA256, the catalog's signer) before pnputil touches
+    # anything; the NIC's settings, which a driver change resets, are set
+    # again by the baseline step right after.
+    if ($NicDriver) {
+        $pkgDir = (Resolve-Path -LiteralPath $NicDriver).ProviderPath.TrimEnd('\')
+        $bundleDir = (Resolve-Path -LiteralPath $here).ProviderPath.TrimEnd('\') + '\'
+        if (-not ($pkgDir + '\').StartsWith($bundleDir, [System.StringComparison]::OrdinalIgnoreCase) -or ($pkgDir + '\') -eq $bundleDir) {
+            throw "the NIC driver step: $pkgDir is not a folder inside the bundle folder $here (an admin-only place, so nothing swaps the package between the check and the install); nothing changed"
+        }
+        Assert-AdminOnly $pkgDir "the NIC driver folder $pkgDir"
+        $pkgFiles = @(Get-ChildItem -LiteralPath $pkgDir -File -Recurse -Force)
+        foreach ($f in $pkgFiles) {
+            $writers = @(Get-OtherWriters $f.FullName $ChangeRights)
+            if ($writers.Count) { throw "the NIC driver step: $($f.FullName) can be changed by $($writers -join ', '); nothing changed" }
+        }
+        $cats = @($pkgFiles | Where-Object { $_.Extension -ieq ".cat" })
+        if ($cats.Count -ne 1) {
+            throw "the NIC driver step: $pkgDir holds $($cats.Count) catalog (.cat) files, a driver package has one; nothing changed"
+        }
+        $sig = Get-AuthenticodeSignature -LiteralPath $cats[0].FullName
+        $nicAdapter = Get-NetAdapter | Where-Object { $_.InterfaceGuid -eq $adapterGuid } | Select-Object -First 1
+        $hwids = @((Get-PnpDeviceProperty -InstanceId $nicAdapter.PnPDeviceID -KeyName DEVPKEY_Device_HardwareIds).Data)
+        $verifyArgs = @("pc-profile", "nic-driver")
+        foreach ($id in $hwids) { $verifyArgs += @("--hardware-id", $id) }
+        foreach ($f in $pkgFiles) {
+            # A file in a subfolder keeps its folder: never a file of the package.
+            $rel = $f.FullName.Substring($pkgDir.Length + 1)
+            $verifyArgs += @("--file", "$rel=$((Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash)")
+        }
+        # An unsigned catalog has no certificate: "none" (an empty argument
+        # never reaches dasio on Windows PowerShell), refused as not signed.
+        $signer = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { "none" }
+        $verifyArgs += @("--signature", "$($sig.Status)", "--signer", $signer)
+        $verdict = @(& (Join-Path $here "dasio.exe") @verifyArgs)
+        $verified = $LASTEXITCODE
+        $verdict | ForEach-Object { Write-Output $_ }
+        if ($verified -ne 0) {
+            throw "the NIC driver step: dasio refused the package in $pkgDir (the line above); nothing changed"
+        }
+        $inf = ($verdict | Where-Object { $_ -like "INF *" } | Select-Object -First 1).Substring(4)
+        $wantVersion = ($verdict | Where-Object { $_ -like "VERSION *" } | Select-Object -First 1).Substring(8)
+        Write-Output "installing $inf ($wantVersion) for '$alias': the adapter restarts, with every other device the INF matches"
+        & pnputil.exe /add-driver (Join-Path $pkgDir $inf) /install
+        $pnputil = $LASTEXITCODE
+        # 0 installed, 3010 installed (a reboot finishes it), 259 nothing
+        # newer to install (the read-back says what runs).
+        if (@(0, 3010, 259) -notcontains $pnputil) {
+            throw "the NIC driver step: pnputil /add-driver $inf /install failed (exit $pnputil); '$alias' may have restarted; the instance was not touched"
+        }
+        # The adapter comes back with the new driver; Windows keeps a newer
+        # one it ranks higher (remove that one first, on site).
+        $deadline = (Get-Date).AddSeconds(60)
+        do {
+            Start-Sleep -Seconds 2
+            $nowVersion = (Get-NetAdapter | Where-Object { $_.InterfaceGuid -eq $adapterGuid } | Select-Object -First 1).DriverVersion
+        } while ($nowVersion -ne $wantVersion -and (Get-Date) -lt $deadline)
+        if (-not (Get-NetAdapter | Where-Object { $_.InterfaceGuid -eq $adapterGuid })) {
+            throw "the NIC driver step: no adapter has the Dante NIC's GUID $adapterGuid after pnputil /add-driver $inf /install (exit $pnputil): read the new one with Get-NetAdapter and set nic_guid in the PC profile; the instance was not touched"
+        }
+        if ($nowVersion -ne $wantVersion) {
+            throw "the NIC driver step: '$alias' runs driver '$nowVersion' after pnputil /add-driver $inf /install (exit $pnputil), not the pinned $wantVersion (a newer driver Windows ranks higher stays: pnputil /delete-driver <its oem inf> /uninstall, on site, then run the install again); the instance was not touched"
+        }
+        Write-Output "the NIC driver step: '$alias' runs $inf $wantVersion"
     }
     & (Join-Path $here "dasio.exe") pc-profile apply
     $applied = $LASTEXITCODE

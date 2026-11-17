@@ -1,6 +1,6 @@
 # Every non-site key of the FOH and mbc PC profiles (dasio#128): the
 # baseline must hold each. kind|key|name (registry), kind|file|key (ini),
-# kind|name (bcd, process). Generic names only: no site exe, GUID or path.
+# kind|name (bcd, process), nic_driver|<a hardware id the driver entry takes>. Generic names only: no site exe, GUID or path.
 registry|HKLM\SYSTEM\CurrentControlSet\Services\MMCSS|Start
 registry|HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile|SystemResponsiveness
 registry|HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile|NetworkThrottlingIndex
@@ -13,7 +13,6 @@ registry|HKLM\SYSTEM\CurrentControlSet\Services\WinDefend|Start
 registry|HKLM\SYSTEM\CurrentControlSet\Services\wuauserv|Start
 registry|HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU|NoAutoUpdate
 registry|HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate|ExcludeWUDriversInQualityUpdate
-registry|{nic_class}|DriverVersion
 registry|{nic_class}|*EEE
 registry|{nic_class}|*FlowControl
 registry|{nic_class}|*InterruptModeration
@@ -208,3 +207,4 @@ bcd|disabledynamictick
 bcd|testsigning
 registry|HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection|DisableRealtimeMonitoring
 registry|HKLM\SOFTWARE\Microsoft\Windows Defender\Scan|ScheduleDay
+nic_driver|PCI\VEN_10EC&DEV_8125
