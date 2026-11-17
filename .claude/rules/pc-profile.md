@@ -259,7 +259,9 @@ paths:
 - The baseline removes Edge (`setup.exe --uninstall --msedge
   --system-level --verbose-logging --log-file=... --force-uninstall`),
   EdgeUpdate (`/uninstall`), its services edgeupdate / edgeupdatem / MicrosoftEdgeElevationService and
-  its two task families. EdgeUpdate's `/uninstall` exits 0 but keeps
+  its two task families and `\MicrosoftEdgeUpdateBrowserReplacementTask`
+  (Edge's MSI install adds it, dsg 17.11.2026). EdgeUpdate's `/uninstall`
+  exits 0 but keeps
   itself while WebView2 (`EdgeWebView`, which stays, owner 16.11) is
   installed (dsg + mbc 16.11), so its entry names a fallback (0.1.117+):
   `remove_dir` (the exe's own folder, only one on
