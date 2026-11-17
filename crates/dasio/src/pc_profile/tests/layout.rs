@@ -395,3 +395,121 @@ fn site_instances_reads_the_site_file_or_one() {
     assert!(site_instances(&dir).is_err());
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn rss_takes_the_system_cpus_without_cpu_0_when_there_are_two_or_more() {
+    // FOH 32: system 0-3, RSS 1-3 (3 CPUs); mbc 12: system 0-1, RSS 1;
+    // dsg 4: system 0 alone, RSS 0 (its hand values, dasio#120).
+    assert_eq!(Layout::of(32, 2).rss_span(), (1, 3));
+    assert_eq!(Layout::of(32, 2).rss_cpus(), 3);
+    assert_eq!(Layout::of(12, 1).rss_span(), (1, 1));
+    assert_eq!(Layout::of(12, 1).rss_cpus(), 1);
+    assert_eq!(Layout::of(4, 1).rss_span(), (0, 0));
+    assert_eq!(Layout::of(4, 1).rss_cpus(), 1);
+    // The edges of "two or more": 8 CPUs = 1 system CPU, 9 = 2.
+    assert_eq!(Layout::of(8, 1).rss_span(), (0, 0));
+    assert_eq!(Layout::of(9, 1).rss_span(), (1, 1));
+    // No CPU count read, and one full processor group.
+    assert_eq!(Layout::of(0, 1).rss_span(), (0, 0));
+    assert_eq!(Layout::of(128, 1).rss_span(), (1, 7));
+    assert_eq!(Layout::of(128, 1).rss_cpus(), 7);
+}
+
+#[test]
+fn rss_never_reaches_dasio_s_or_the_daw_s_cpus() {
+    for cpus in 1..=64 {
+        for instances in 1..=3 {
+            let l = Layout::of(cpus, instances);
+            let (first, last) = l.rss_span();
+            assert!(first <= last, "{cpus}/{instances}");
+            let mask = ((1u64 << (last - first + 1)) - 1) << first;
+            assert_eq!(mask.count_ones(), l.rss_cpus(), "{cpus}/{instances}");
+            assert_eq!(mask & !l.system_mask(), 0, "{cpus}/{instances}");
+            assert_eq!(mask & l.dasio_cpus_mask(), 0, "{cpus}/{instances}");
+            if let Ok(daw) = l.daw_mask() {
+                assert_eq!(mask & daw, 0, "{cpus}/{instances}");
+            }
+            assert_eq!(mask & 1 == 0, l.system >= 2, "{cpus}/{instances}");
+        }
+    }
+}
+
+#[test]
+fn resolve_puts_the_rss_range_in_as_strings() {
+    let text = "name = \"x\"\n[[registry]]\nkey = '{nic_class}'\nname = \"*RssBaseProcNumber\"\ncomputed = \"rss_base_cpu\"\n[[registry]]\nkey = '{nic_class}'\nname = \"*RssMaxProcNumber\"\ncomputed = \"rss_max_cpu\"\n[[registry]]\nkey = '{nic_class}'\nname = \"*MaxRssProcessors\"\ncomputed = \"rss_cpus\"\n";
+    let values = |cpus: usize| {
+        let mut p = parse_with(text, false).unwrap();
+        resolve(&mut p, cpus).unwrap();
+        p.registry
+            .iter()
+            .map(|e| {
+                assert!(e.computed.is_none() && e.dword.is_none() && e.binary.is_none());
+                want_reg(e).unwrap()
+            })
+            .collect::<Vec<_>>()
+    };
+    let s = |v: &str| Value::String(v.into());
+    assert_eq!(values(32), [s("1"), s("3"), s("3")]);
+    assert_eq!(values(12), [s("1"), s("1"), s("1")]);
+    assert_eq!(values(4), [s("0"), s("0"), s("1")]);
+    assert_eq!(values(64), [s("1"), s("7"), s("7")]);
+}
+
+#[test]
+fn the_shipped_baseline_puts_the_dante_nic_s_rss_on_the_system_cpus() {
+    let get = |cpus: usize, instances: usize| {
+        let mut b = baseline().unwrap();
+        b.instances = Some(instances);
+        resolve(&mut b, cpus).unwrap();
+        [
+            "*RssBaseProcNumber",
+            "*RssMaxProcNumber",
+            "*MaxRssProcessors",
+        ]
+        .map(|name| {
+            let all: Vec<_> = b.registry.iter().filter(|e| e.name == name).collect();
+            assert_eq!(all.len(), 1, "{name}");
+            let e = all[0];
+            assert_eq!(e.key, "{nic_class}");
+            // Only the PCIe Realtek: mbc's USB NIC has no RSS.
+            assert_eq!(e.nic_service.as_deref(), Some("rt640x64"));
+            // Checked and applied like the NIC's other properties, never
+            // a reason to refuse the start.
+            assert!(!e.must && !e.check_only && !e.absent_ok);
+            want_reg(e).unwrap()
+        })
+    };
+    let s = |v: &str| Value::String(v.into());
+    assert_eq!(get(32, 2), [s("1"), s("3"), s("3")], "FOH");
+    assert_eq!(get(12, 1), [s("1"), s("1"), s("1")], "mbc");
+    assert_eq!(get(4, 1), [s("0"), s("0"), s("1")], "dsg");
+    // apply says it restarts the NIC, as for every NIC property.
+    let a = Action::Reg {
+        key: "{nic_class}".into(),
+        name: "*RssMaxProcNumber".into(),
+        value: s("3"),
+    };
+    assert_eq!(takes_effect(&a), "a restart of the Dante NIC");
+}
+
+#[test]
+fn a_site_s_own_rss_values_win_over_the_computed_ones() {
+    let dir = std::env::temp_dir().join(format!("dasio-rss-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("pc.toml");
+    std::fs::write(
+        &file,
+        "name = \"foh\"\nnic_guid = \"{G}\"\n[[registry]]\nkey = '{nic_class}'\nname = \"*RssBaseProcNumber\"\nstring = \"0\"\n",
+    )
+    .unwrap();
+    let p = load(&file, 32).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let one = |name: &str| {
+        let all: Vec<_> = p.registry.iter().filter(|e| e.name == name).collect();
+        assert_eq!(all.len(), 1, "{name}");
+        want_reg(all[0]).unwrap()
+    };
+    assert_eq!(one("*RssBaseProcNumber"), Value::String("0".into()));
+    assert_eq!(one("*RssMaxProcNumber"), Value::String("3".into()));
+    assert_eq!(one("*MaxRssProcessors"), Value::String("3".into()));
+}
