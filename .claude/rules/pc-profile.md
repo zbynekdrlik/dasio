@@ -288,11 +288,14 @@ paths:
   own folder (log: `Parent process: ...`, `Uninstall allowed: Windows
   caller`). So the entry names `windows_caller = true` (0.1.125+, exe
   only): `apply` copies `%SystemRoot%\System32\cmd.exe` to
-  `%SystemRoot%\SystemTemp\dllhost.exe` (`Temp` without SystemTemp; a file
-  already there is refused, never overwritten), runs `dllhost.exe /c
-  ""<setup>" <args>"` (`pc_profile::absent::caller_command`; an uninstaller
-  or argument holding `" & | < > ^ %` or a space in an argument is a parse
-  error), deletes the copy (also after a failed run) and looks again
+  `%SystemRoot%\SystemTemp\dllhost.exe` (another file there is refused,
+  never overwritten; a byte-equal copy a killed apply left is replaced),
+  runs `dllhost.exe /d /v:off /c ""<setup>" <args>"`
+  (`pc_profile::absent::caller_command`; an uninstaller or argument holding
+  `" & | < > ^ % !`, a newline, or an empty or spaced argument is a parse
+  error), deletes the copy (also after a failed run; past 10 min the
+  caller's tree is ended with `taskkill /T /F`) and looks again. The glue is
+  `pc_profile/windows/exe.rs`
   (FOH 17.11.2026: Edge 156 removed, exit 20, a few in-use files left in
   the version folder). Refused on FOH 17.11 and not worth retrying: an
   empty `windir` ("No windir environment variable found", he3als's method

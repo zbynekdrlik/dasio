@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use super::*;
 
+mod absent_caller;
 mod absent_kind;
 mod fold;
 mod hold;

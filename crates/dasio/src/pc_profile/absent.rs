@@ -98,16 +98,16 @@ pub const CALLER_SOURCE: &str = r"System32\cmd.exe";
 pub const CALLER_NAME: &str = "dllhost.exe";
 
 /// Where the Windows caller is copied to: `%SystemRoot%\SystemTemp` (the
-/// SYSTEM account's temp folder, Windows 10 21H2+ and 11), else
-/// `%SystemRoot%\Temp`. Deleted right after the uninstaller.
-pub fn caller_path(system_root: &str, system_temp: bool) -> String {
-    let dir = if system_temp { "SystemTemp" } else { "Temp" };
-    format!(r"{system_root}\{dir}\{CALLER_NAME}")
+/// SYSTEM account's temp folder, Windows 10 21H2+ and 11; the place proven
+/// on FOH). Deleted right after the uninstaller.
+pub fn caller_path(system_root: &str) -> String {
+    format!(r"{system_root}\SystemTemp\{CALLER_NAME}")
 }
 
 /// Characters cmd.exe reads as its own inside a `/c` line (`"` would end
-/// the quoting); an uninstaller or argument holding one is refused.
-const CMD_SPECIAL: [char; 9] = ['"', '&', '|', '<', '>', '^', '%', '\n', '\r'];
+/// the quoting, `!` is delayed expansion where the registry turns it on);
+/// an uninstaller or argument holding one is refused.
+const CMD_SPECIAL: [char; 10] = ['"', '&', '|', '<', '>', '^', '%', '!', '\n', '\r'];
 
 /// Why `s` (an uninstaller path or argument run through the Windows
 /// caller) cannot go on cmd.exe's `/c` line; `Ok` when it can.
@@ -121,8 +121,10 @@ fn cmd_safe(s: &str) -> Result<(), String> {
 }
 
 /// The Windows caller's (cmd.exe's) command line that runs `prog args`:
-/// `/c ""<prog>" <args>"`. cmd.exe strips the outer quotes of the `/c`
-/// line, so a path with spaces or `(x86)` stays one quoted word.
+/// `/d /v:off /c ""<prog>" <args>"`. `/d`: no Command Processor AutoRun
+/// runs as the elevated caller; `/v:off`: no delayed expansion. cmd.exe
+/// strips the outer quotes of the `/c` line, so a path with spaces or
+/// `(x86)` stays one quoted word.
 pub fn caller_command(prog: &str, args: &[String]) -> Result<String, String> {
     cmd_safe(prog)?;
     for a in args {
@@ -133,7 +135,7 @@ pub fn caller_command(prog: &str, args: &[String]) -> Result<String, String> {
             ));
         }
     }
-    let mut line = format!(r#"/c ""{prog}""#);
+    let mut line = format!(r#"/d /v:off /c ""{prog}""#);
     for a in args {
         line.push(' ');
         line.push_str(a);
