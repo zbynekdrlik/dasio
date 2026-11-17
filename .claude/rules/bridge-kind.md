@@ -96,3 +96,13 @@ paths:
   line break must normalise `\r\n` first: the Windows CI checkout has CRLF
   lines, so a `"...\n        ..."` needle passes on Linux and fails the
   Windows test and coverage jobs (PR 169, run 44055706009).
+- `app_buffer_ns` is ONE target for both directions (dstack-asio
+  `Spec.app_buffer_ns`; default = driver buffer + one pump block, 1.667 ms
+  on dsg's MiniFuse 128 @ 96 kHz). dsg's 17.11.2026 steps (dasio#120):
+  1.333 ms held to-ASIO (0 underruns, 59 min, late callbacks included)
+  but not from-ASIO (4 underruns in 29 min); 1.0 ms failed both ways
+  (to-ASIO once in the ASRC's first unlocked minute, from-ASIO 4 in 6
+  min). A lower bridge latency needs dstack (per-direction targets, the
+  from-ASIO converter call at the TX block, the sinc length), not a
+  smaller value here. The `rx_asio_pull_wait` is no latency term (the
+  read is by position, media - P).
