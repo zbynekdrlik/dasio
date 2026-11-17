@@ -136,11 +136,11 @@ paths:
   `from_asio_converter_delay_us` (dlink `Stats::converter_delay_ns`,
   rounded, the last player's; left out until a direction's first player:
   the to-ASIO one comes at the driver's first open), the counts line
-  `*_converter_delay_ms`. dtray v0.6.174 does not know the key yet (its
-  `[bridge]` read refuses unknown fields, dstack issue 387's open item):
-  on a PC with `converter_taps` set, dtray's settings window reads "Settings
-  not readable" until the tag moves past the release that teaches it; the
-  device itself reads the key.
+  `*_converter_delay_ms`. dtray reads the key since dstack v0.6.175
+  (dstack issue 387): it refuses one outside 32-256 in steps of 8 and
+  shows the per-direction targets and the length in the note beside the
+  app buffer (`file: to 1 ms, 32 taps`). On v0.6.174 its `[bridge]` read
+  refused the key ("Settings not readable"); the device always read it.
 - The driver callback's lateness bins (dstack v0.6.173, dstack issue
   386): `bridge_json` writes `late_250us`..`late_2000us`
   (`dstack_asio::state::LATE_BIN_KEYS`, every bin, 0 included) before
@@ -151,3 +151,20 @@ paths:
   before the loop and WARNs `asio bridge underruns since the last check:
   ...` when a count rose; a wrapper, because `app_status/tests.rs` forbids
   any `.look(` in `run_bridge.rs`.
+- dcontroller reads the bridge figures over the network (dstack v0.6.176,
+  dstack issue 391, dcontroller#108): two calls in `run_bridge::run`.
+  `lock(&shared).publish_figures(media.bridge_figures(), Arc::clone(&status))`
+  once, after the device's and the runner's start and before the loop
+  (dstack-asio `Bridge::publish_figures`: targets, converter delays,
+  `late_callbacks` and the bins read live at each request from the
+  players' `Stats` and the runner's `Status`); and
+  `underruns.publish(media.bridge_figures())` right after `underrun_tick`
+  in the counts tick (the counts and each side's latest cause: a cause
+  belongs to the counts beside it, at most 10 s old). Without the first
+  call the device answers nothing. The device answers dstack's request on
+  the info port 8700, unicast to the asker (`dstack::info::bridge`, body
+  version 1). On a PC where other dstack apps share the address, whichever
+  binds 8700 first relays the request: every one of them needs v0.6.176+.
+  dsg (18.11.2026): dasio-dsg alone holds 8700, no dlisten or dsend.
+  `app_status/tests/bridge_figures.rs` guards both calls as text and checks
+  that the tick's counts and causes are what the slot answers.

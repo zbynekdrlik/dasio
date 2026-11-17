@@ -1,6 +1,7 @@
 //! dstack v0.6.173 / v0.6.174's bridge figures (dasio#120): the driver
 //! callbacks' lateness bins, each direction's converter delay and the
-//! underrun tick, in the bridge's status and its run loop.
+//! underrun tick, in the bridge's status and its run loop; v0.6.176's
+//! network read of them (dstack issue 391, dcontroller#108).
 
 use super::*;
 
@@ -246,5 +247,96 @@ fn the_bridge_s_status_loop_checks_the_underruns_once_a_counts_tick() {
             "underrun_tick(\n                &mut underruns,\n                &s,\n                to_stats.underruns(),\n                from_stats.underruns(),\n                from_stats.target_ms(),\n            );"
         ),
         "the tick's arguments"
+    );
+}
+
+#[test]
+fn the_underrun_tick_s_counts_and_causes_are_what_dcontroller_reads() {
+    // dstack v0.6.176 (dstack issue 391, dcontroller#108): after a tick the
+    // watch hands the device's figure slot the counts the tick was given
+    // and each side's latest cause; the slot answers dcontroller's read.
+    use dstack::info::{FigureSlot, OwnFigures, UnderrunCause};
+    let slot = FigureSlot::started_at(0);
+    slot.set_source(OwnFigures::default);
+    let mut watch = UnderrunWatch::new();
+    let read = |watch: &UnderrunWatch| {
+        watch.publish(&slot);
+        let f = slot.figures().expect("a source is set");
+        (
+            f.to_asio_underruns,
+            f.from_asio_underruns,
+            f.to_asio_cause,
+            f.from_asio_cause,
+        )
+    };
+    assert_eq!(
+        read(&watch),
+        (0, 0, UnderrunCause::None, UnderrunCause::None)
+    );
+    // A from-ASIO underrun with a callback 1.0-1.25 ms late at a 1.333 ms
+    // target: the driver's; no to-ASIO one yet.
+    let late = minifuse([0, 0, 0, 1, 0, 0, 0, 0], 0);
+    assert!(underrun_tick(&mut watch, &late, 0, 2, 1.333333).is_some());
+    assert_eq!(
+        read(&watch),
+        (0, 2, UnderrunCause::None, UnderrunCause::Driver)
+    );
+    // A to-ASIO underrun with no callback late since: the bridge's; the
+    // from-ASIO side keeps its latest cause.
+    assert!(underrun_tick(&mut watch, &late, 1, 2, 1.333333).is_some());
+    assert_eq!(
+        read(&watch),
+        (1, 2, UnderrunCause::Bridge, UnderrunCause::Driver)
+    );
+    // A quiet tick keeps the counts and the causes.
+    assert_eq!(underrun_tick(&mut watch, &late, 1, 2, 1.333333), None);
+    assert_eq!(
+        read(&watch),
+        (1, 2, UnderrunCause::Bridge, UnderrunCause::Driver)
+    );
+}
+
+#[test]
+fn the_bridge_publishes_its_figures_once_and_its_underruns_every_counts_tick() {
+    // dstack v0.6.176's consumer port (dstack issue 391, dcontroller#108):
+    // without both calls the device answers nothing to dcontroller's read.
+    // A Windows checkout has CRLF lines: the needles below span lines.
+    let src = include_str!("../../run_bridge.rs").replace("\r\n", "\n");
+    let once = |needle: &str| {
+        let found: Vec<usize> = src.match_indices(needle).map(|(i, _)| i).collect();
+        assert_eq!(found.len(), 1, "{needle}: once in run_bridge.rs");
+        found[0]
+    };
+    // Once, when the device, the bridge and the runner exist, before the
+    // loop: the runner's own status, read live at each request.
+    let figures =
+        once("lock(&shared).publish_figures(media.bridge_figures(), Arc::clone(&status));");
+    once("publish_figures(");
+    let device = once("prepared\n        .start(");
+    let runner = once("let (runner, status) = match spawn_runner(");
+    let looping = once("let why = loop {");
+    assert!(device < figures, "after the device's start");
+    assert!(runner < figures, "after the runner's start");
+    assert!(
+        src[runner..figures].contains("return Err(e);\n        }\n    };\n"),
+        "past the runner's start, not in its error path"
+    );
+    assert!(figures < looping, "once, before the run loop");
+    // Every counts tick, right after the underrun look: a cause belongs to
+    // the counts beside it.
+    let tick = src.find("if counts.due(now) {").expect("the counts tick");
+    let tick_end = src[tick..].find("\"bridge counts\"").expect("its log line") + tick;
+    let publish = once("underruns.publish(media.bridge_figures());");
+    once(".publish(");
+    assert!(
+        (tick..tick_end).contains(&publish),
+        "the publish is not inside the counts tick"
+    );
+    let look = once("crate::app_status::underrun_tick(");
+    assert!(
+        src[look..].starts_with(
+            "crate::app_status::underrun_tick(\n                &mut underruns,\n                &s,\n                to_stats.underruns(),\n                from_stats.underruns(),\n                from_stats.target_ms(),\n            );\n            underruns.publish(media.bridge_figures());"
+        ),
+        "the publish right after the underrun look"
     );
 }

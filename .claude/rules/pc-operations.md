@@ -101,6 +101,14 @@ Owner rules from dasio#1. They hold for every change on a PC running dasio.
   `deploy.ps1` (install.ps1 with output into `install.log`, then
   `install.done`) and start it with a SYSTEM scheduled task (`schtasks
   /create ... /ru SYSTEM /rl HIGHEST` + `/run`). Poll for `install.done`.
+  Give the task a trigger in the PAST (`Register-ScheduledTask` with
+  `New-ScheduledTaskTrigger -Once -At (Get-Date).AddDays(-1)`, `-User
+  SYSTEM -RunLevel Highest`, then `Start-ScheduledTask`: no locale date
+  format) and delete it after `install.done` (`Unregister-ScheduledTask
+  -Confirm:$false`). A `/sc once /st 23:59` task fires again that night: on dsg
+  (17.11.2026 22:59Z) the b0127 and b0128 deploy tasks both re-ran,
+  `install.ps1` ran twice in parallel, and b0128's bundle config replaced
+  the live one (32 converter taps back to 48, dasio#120).
 - **Remote-shell gotchas (dsg, 17.11.2026):** `& script.ps1` is refused
   (script execution disabled): run a helper with `powershell -NoProfile
   -ExecutionPolicy Bypass -File <ps1>`. A config written with PS 5.1's

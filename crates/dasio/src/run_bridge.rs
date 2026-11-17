@@ -43,6 +43,14 @@
 //! (`[bridge] converter_taps`, dstack issue 382, v0.6.174); the status and
 //! the counts line carry each direction's converter delay.
 //!
+//! **dcontroller reads these figures over the network** (dasio#120,
+//! dstack issue 391, v0.6.176, dcontroller#108): once the runner runs, the
+//! bridge becomes the source of the device's figure slot (targets,
+//! converter delays and callback lateness, read at each request), and each
+//! counts tick hands the slot the underruns and their causes right after
+//! the watch's look. The device answers dstack's bridge-figures request on
+//! the info port 8700; without the source it answers nothing.
+//!
 //! [`FromAsio`]: dstack_asio::bridge::FromAsio
 //! [`DanteSide`]: dstack_asio::bridge::DanteSide
 //! [`AsioSide`]: dstack_asio::bridge::AsioSide
@@ -176,6 +184,8 @@ pub fn run(
             return Err(e);
         }
     };
+    // From now on the device answers dcontroller's figures read (dstack issue 391).
+    lock(&shared).publish_figures(media.bridge_figures(), Arc::clone(&status));
     // The PC profile's problems (dasio#5, #120); u32::MAX while there is none.
     let pc_problems = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
     // The measured RX packet age at arrival (dasio#128): information
@@ -282,7 +292,8 @@ pub fn run(
             );
             let s = lock(&status).clone();
             // A player's underruns that rose since the last tick, with the
-            // driver callbacks' lateness meanwhile: dstack WARNs.
+            // driver callbacks' lateness meanwhile: dstack WARNs. The counts
+            // and causes then go to dcontroller's read (dstack issue 391).
             crate::app_status::underrun_tick(
                 &mut underruns,
                 &s,
@@ -290,6 +301,7 @@ pub fn run(
                 from_stats.underruns(),
                 from_stats.target_ms(),
             );
+            underruns.publish(media.bridge_figures());
             let v = stats.view();
             info!(
                 state = ?s.state,
