@@ -54,17 +54,22 @@ pub fn run(
         instance,
         matches!(kind, crate::kind::Kind::Bridge(_)),
     );
-    // A bridge to a local ASIO driver (dasio#106) runs its own loop.
-    if let crate::kind::Kind::Bridge(bridge) = kind {
-        return crate::run_bridge::run(instance, bridge, cfg, ip, clock, tuning, stop_asked);
-    }
-    // The per-minute counters go next to the instance's config and log
-    // (dasio#28 A36).
+    // The instance's folder (its config's): the per-minute counters go
+    // there next to the config and log (dasio#28 A36), a bridge's ASRC
+    // seed too (dasio#120).
     let minutes_dir = std::path::absolute(&config)
         .map_err(|e| format!("the config's path {}: {e}", config.display()))?
         .parent()
         .map(std::path::Path::to_path_buf)
         .unwrap_or_default();
+    // A bridge to a local ASIO driver (dasio#106) runs its own loop.
+    if let crate::kind::Kind::Bridge(bridge) = kind {
+        let at = crate::run_bridge::Instance {
+            number: instance,
+            dir: &minutes_dir,
+        };
+        return crate::run_bridge::run(at, bridge, cfg, ip, clock, tuning, stop_asked);
+    }
     let own = crate::own_cpus(&cfg);
     let shape = Shape::new(cfg.rx.len() as u32, cfg.tx.len() as u32, cfg.block as u32)
         .ok_or("the channels (at most 64 each way) or the block do not fit the driver")?;

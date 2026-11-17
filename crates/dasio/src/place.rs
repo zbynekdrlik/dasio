@@ -632,7 +632,9 @@ mod tests {
 
     #[test]
     fn dstack_reads_the_config_without_dasio_s_bridge_table() {
-        let bridge = "[bridge]\ndriver = \"Test ASIO\"\nto_asio = [1, 2]\n";
+        // The per-direction targets (dasio#120) are dasio's keys too.
+        let bridge = "[bridge]\ndriver = \"Test ASIO\"\nto_asio = [1, 2]\n\
+                      to_asio_app_buffer_ns = 1333333\nfrom_asio_app_buffer_ns = 1666666\n";
         let written = DeviceConfig::from_toml(DEVICE).unwrap();
         // The table alone, then beside `iface` (dasio#106).
         for text in [

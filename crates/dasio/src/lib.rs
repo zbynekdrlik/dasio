@@ -12,6 +12,7 @@
 
 pub mod app_rate;
 pub mod app_status;
+pub mod asrc_seed;
 pub mod bridge;
 pub mod bursts;
 pub mod cpu_sets;
