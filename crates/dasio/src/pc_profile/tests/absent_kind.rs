@@ -338,6 +338,7 @@ fn the_baseline_keeps_edge_and_its_updater_off_every_pc() {
             "--msedge",
             "--system-level",
             "--verbose-logging",
+            r"--log-file=C:\ProgramData\dasio\msedge_installer.log",
             "--force-uninstall"
         ]
     );
@@ -649,6 +650,13 @@ fn only_edgeupdatedevs_allowuninstall_is_written_before_an_uninstaller() {
         edge_with(&format!("'{ALLOW}', '{bad}'")).unwrap_err(),
         format!(
             "absent exe {EDGE}: before_uninstall {bad}: dasio writes only [{ALLOW:?}] (pc_profile::absent::PRE_UNINSTALL_WRITES)"
+        )
+    );
+    assert_eq!(
+        edge_with(&format!("'{ALLOW}', '{}'", ALLOW.to_ascii_lowercase())).unwrap_err(),
+        format!(
+            "absent exe {EDGE}: before_uninstall {}: named twice",
+            ALLOW.to_ascii_lowercase()
         )
     );
     for body in [

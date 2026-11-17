@@ -286,6 +286,16 @@ pub fn validate(e: &AbsentEntry) -> Result<(), String> {
                     "absent exe {exe}: before_uninstall {bad}: dasio writes only {known:?} (pc_profile::absent::PRE_UNINSTALL_WRITES)"
                 ));
             }
+            let names = e.before_uninstall.as_deref().unwrap_or_default();
+            if let Some((_, twice)) = names
+                .iter()
+                .enumerate()
+                .find(|(i, p)| names[..*i].iter().any(|q| q.eq_ignore_ascii_case(p)))
+            {
+                return Err(format!(
+                    "absent exe {exe}: before_uninstall {twice}: named twice"
+                ));
+            }
         }
         Target::Service(s) => {
             if e.uninstall.is_some() {

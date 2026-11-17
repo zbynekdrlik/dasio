@@ -254,8 +254,8 @@ paths:
   after 0.1.113 (the one shipping it): an older one refuses the whole
   profile.
 - The baseline removes Edge (`setup.exe --uninstall --msedge
-  --system-level --verbose-logging --force-uninstall`), EdgeUpdate (`/uninstall`), its
-  services edgeupdate / edgeupdatem / MicrosoftEdgeElevationService and
+  --system-level --verbose-logging --log-file=... --force-uninstall`),
+  EdgeUpdate (`/uninstall`), its services edgeupdate / edgeupdatem / MicrosoftEdgeElevationService and
   its two task families. EdgeUpdate's `/uninstall` exits 0 but keeps
   itself while WebView2 (`EdgeWebView`, which stays, owner 16.11) is
   installed (dsg + mbc 16.11), so its entry names a fallback (0.1.117+):
@@ -280,7 +280,9 @@ paths:
   `pc_profile::absent::PRE_UNINSTALL_WRITES` (key, name and data in code;
   widen it under review, a parse error otherwise). The value stays after.
   When Edge still stays, read setup's own reason in
-  `C:\Windows\SystemTemp\msedge_installer.log` (`--verbose-logging`;
-  without it setup logs nothing). Untried further steps the known removers
+  `C:\ProgramData\dasio\msedge_installer.log` (`--verbose-logging
+  --log-file`; without `--verbose-logging` setup logs nothing; should
+  `--log-file` be ignored, it is the running account's `%TEMP%`, for
+  SYSTEM `C:\Windows\SystemTemp`). Untried further steps the known removers
   use: a placeholder `C:\Windows\SystemApps\Microsoft.MicrosoftEdge_8wekyb3d8bbwe\MicrosoftEdge.exe`,
   a temporary EEA region; decide from that log, not by guessing.
