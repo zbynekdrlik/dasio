@@ -210,7 +210,7 @@ dependencies = [
 
 [[package]]
 name = "dasio"
-version = "0.1.119"
+version = "0.1.120"
 dependencies = [
  "asio-driver",
  "assert_no_alloc",
