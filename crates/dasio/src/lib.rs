@@ -17,6 +17,7 @@ pub mod bursts;
 pub mod cpu_sets;
 pub mod cpu_snap;
 pub mod health;
+pub mod host_stall;
 #[cfg(windows)]
 pub mod jitter;
 pub mod kernel_tx;
