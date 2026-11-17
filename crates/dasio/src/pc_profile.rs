@@ -53,6 +53,7 @@ pub mod layout;
 pub mod nic_driver;
 mod os_text;
 pub(crate) mod power;
+mod process;
 #[cfg(windows)]
 pub mod windows;
 
@@ -64,6 +65,7 @@ pub use layout::{Layout, resolve};
 pub use nic_driver::NicDriverEntry;
 pub use os_text::{parse_bcdedit, parse_task_xml};
 pub use power::{PowerSetting, describe, power_setting, powercfg_commands};
+pub use process::{INTEGRITIES, ProcEntry, ProcState, integrity_name};
 
 /// Where the service looks for the profile.
 pub const DEFAULT_PATH: &str = r"C:\ProgramData\dasio\pc-profile.toml";
@@ -178,35 +180,6 @@ pub struct IniEntry {
     pub why: String,
 }
 
-/// What a running process must have.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct ProcEntry {
-    /// The image name, e.g. `AbletonLiveMaster.exe` (case ignored).
-    pub exe: String,
-    /// The affinity mask in hex, e.g. `"0xF0"`.
-    #[serde(default)]
-    pub affinity: Option<String>,
-    /// `idle`, `below normal`, `normal`, `above normal`, `high`, `realtime`.
-    #[serde(default)]
-    pub priority: Option<String>,
-    /// The token's integrity level, one of [`INTEGRITIES`] (dasio#128,
-    /// 17.11.2026: a Live started from the elevated remote shell runs at
-    /// `high`, and fohmixer's hub, at `medium`, may not move its windows).
-    /// Checked only: a running process cannot be de-elevated.
-    #[serde(default)]
-    pub integrity: Option<String>,
-    #[serde(default)]
-    pub why: String,
-}
-
-impl ProcEntry {
-    /// Whether it checks anything at all.
-    pub fn checks(&self) -> bool {
-        self.affinity.is_some() || self.priority.is_some() || self.integrity.is_some()
-    }
-}
-
 /// A floor of free space on a drive.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -277,35 +250,6 @@ pub enum Value {
     Binary(Vec<u8>),
 }
 
-/// A running process as read.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProcState {
-    pub affinity: u64,
-    /// One of the names [`ProcEntry::priority`] takes.
-    pub priority: String,
-    /// The token's integrity level ([`integrity_name`]), or why it could
-    /// not be read.
-    pub integrity: Result<String, String>,
-}
-
-/// The integrity levels a `[[process]]` entry may want.
-pub const INTEGRITIES: [&str; 4] = ["low", "medium", "high", "system"];
-
-/// The name of a token's integrity level from its mandatory label's RID
-/// (`SECURITY_MANDATORY_*_RID`): `medium plus` (UIAccess) and `protected`
-/// are read but never wanted.
-pub fn integrity_name(rid: u32) -> &'static str {
-    match rid {
-        0..0x1000 => "untrusted",
-        0x1000..0x2000 => "low",
-        0x2000..0x2100 => "medium",
-        0x2100..0x3000 => "medium plus",
-        0x3000..0x4000 => "high",
-        0x4000..0x5000 => "system",
-        _ => "protected",
-    }
-}
-
 /// What the PC shows, for the check.
 pub trait Reader {
     /// The value `name` under `key`; `Ok(None)` when it (or the key) is
@@ -313,7 +257,9 @@ pub trait Reader {
     fn reg(&self, key: &str, name: &str) -> Result<Option<Value>, String>;
     /// The value of the first `key=` line of `file`; `Ok(None)` without one.
     fn ini(&self, file: &str, key: &str) -> Result<Option<String>, String>;
-    /// The first running process with image `exe`; `None` when none runs.
+    /// The first running process with image `exe`; `None` when none runs
+    /// (or it cannot be opened for a limited query, which a SYSTEM or admin
+    /// reader always can for a DAW: it counts as not running).
     fn process(&self, exe: &str) -> Option<ProcState>;
     /// The free bytes on `drive` (e.g. `C:`) for the reading account.
     fn free_bytes(&self, drive: &str) -> Result<u64, String>;
@@ -645,47 +591,7 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
             must: false,
         });
     }
-    for e in &p.process {
-        let Some(s) = r.process(&e.exe) else { continue };
-        if let Some(want) = e.affinity.as_deref().and_then(parse_mask)
-            && s.affinity != want
-        {
-            out.push(Problem {
-                what: format!("process {} affinity", e.exe),
-                found: format!("0x{:X}", s.affinity),
-                want: format!("0x{want:X}"),
-                why: e.why.clone(),
-                must: false,
-            });
-        }
-        if let Some(want) = &e.priority
-            && s.priority != *want
-        {
-            out.push(Problem {
-                what: format!("process {} priority", e.exe),
-                found: s.priority.clone(),
-                want: want.clone(),
-                why: e.why.clone(),
-                must: false,
-            });
-        }
-        if let Some(want) = &e.integrity {
-            let found = match &s.integrity {
-                Ok(level) if level == want => None,
-                Ok(level) => Some(level.clone()),
-                Err(err) => Some(format!("unreadable ({err})")),
-            };
-            if let Some(found) = found {
-                out.push(Problem {
-                    what: format!("process {} integrity", e.exe),
-                    found,
-                    want: want.clone(),
-                    why: e.why.clone(),
-                    must: false,
-                });
-            }
-        }
-    }
+    process::problems(p, r, &mut out);
     for e in &p.disk {
         // The text stays the same while the drive stays under its floor:
         // the service logs a problem again only when its text changes, so

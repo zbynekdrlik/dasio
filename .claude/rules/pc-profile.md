@@ -139,7 +139,8 @@ paths:
   problem. The baseline holds both Lives (`Ableton Live 12 Suite.exe`,
   `AbletonLiveMaster.exe`) at `medium`. A site `[[process]]` for the
   same exe takes over only the fields it sets: FOH's and mbc's affinity
-  entries keep the baseline's integrity, each with its own `why`.
+  entries keep the baseline's integrity, each with its own `why`; a
+  site turns a baseline field off only by naming another value.
 - `[[disk]]` entries (`drive = "C:"`, `min_free_gb = N`) are a floor of
   free space: below it, the check reports a problem. Checked only, never
   applied. Add one to a PC's profile only after that PC runs a dasio that
