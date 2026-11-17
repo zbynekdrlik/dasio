@@ -163,7 +163,7 @@ fn the_bridge_instance_reads_and_keeps_the_seed() {
     };
     let path = once("asrc_seed::path(at.dir, &bridge.driver)");
     let helper_start = once("\nfn seed_bridge(");
-    let read = once("asrc_seed::at_start(&Seed::read(&path))");
+    let read = once("asrc_seed::at_start(&Seed::read(path))");
     let given = once("b.seed_from(s);");
     assert!(
         helper_start < read && read < given,
