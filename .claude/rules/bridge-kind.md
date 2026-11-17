@@ -118,3 +118,9 @@ paths:
   `save_seed` (via `asrc_seed::Keeper`: only a changed seed, a failed write
   retried, its error logged once) on the loop's 60 s `save` timer and once
   after the device stops. `asrc_seed/tests.rs` guards this wiring as text.
+- dsg on v0.6.172 (17.11.2026, dasio#120): to-ASIO 1.333 ms (unseeded
+  start) and then 1.0 ms (seeded start, ppm 7.7 at the first counts line
+  instead of 0.3) each held 30 min with from-ASIO at the default 1.667 ms:
+  0 underruns either way, 0 missed. Neither window had a late MiniFuse
+  callback. dsg runs to-ASIO 1.0 ms. The seed file was rewritten 5-6 times
+  per 30 min (0.05 ppm tolerance), the first write about 2 min after start.
