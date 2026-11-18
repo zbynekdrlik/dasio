@@ -1,7 +1,7 @@
 //! `[[process]]` entries: what a running process must have (affinity and
-//! priority class, which Process Lasso sets, and the token's integrity
-//! level, dasio#128); checked only, never applied, and skipped while the
-//! process does not run.
+//! priority class, held by dasio's keeper since dasio#185, before that by
+//! Process Lasso, and the token's integrity level, dasio#128, checked
+//! only); skipped while the process does not run.
 
 use serde::Deserialize;
 

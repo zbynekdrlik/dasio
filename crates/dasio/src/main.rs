@@ -18,7 +18,7 @@ fn usage() -> ExitCode {
          dasio stop --instance <n>\n       \
          dasio probe --instance <n> [--seconds <s>] [--affinity <hex mask>] [--rate <Hz>]\n       \
          dasio jitter --cpus <n,n,..> --seconds <s>\n       \
-         dasio pc-profile check|apply|layout [--profile <file>] [--plan]\n       \
+         dasio pc-profile check|apply|layout|keep [--profile <file>] [--plan]\n       \
          dasio pc-profile nic-driver [--profile <file>] --hardware-id <id>... --file <name>=<sha256>... --signature <status> --signer <subject>\n       \
          dasio unregister --instance <n> [--name <shown to DAWs>]"
     );
@@ -87,6 +87,7 @@ fn main() -> ExitCode {
             Some("check") => pc_profile(&path, false, true),
             Some("apply") => pc_profile(&path, true, plan_only),
             Some("layout") => pc_layout(&path),
+            Some("keep") => pc_keep(&path),
             Some("nic-driver") => pc_nic_driver(&path, &args[2..]),
             _ => usage(),
         };
@@ -501,6 +502,118 @@ fn pc_layout(path: &str) -> ExitCode {
 
 #[cfg(not(windows))]
 fn pc_layout(_path: &str) -> ExitCode {
+    eprintln!("dasio: Windows only");
+    ExitCode::FAILURE
+}
+
+/// `dasio pc-profile keep` (dasio#185, the `dasio-pc-keep` SYSTEM task
+/// install.ps1 registers): every running process of each `[[process]]`
+/// entry gets the entry's affinity and priority class, every
+/// [`keep::EVERY_MS`](dasio::pc_profile::keep::EVERY_MS), what Process
+/// Lasso did. Runs until stopped, on the system CPUs below normal; reloads
+/// the profile when its file changes; logs each change to
+/// [`keep::LOG_PATH`](dasio::pc_profile::keep::LOG_PATH).
+#[cfg(windows)]
+fn pc_keep(path: &str) -> ExitCode {
+    use dasio::pc_profile::{
+        Layout, keep, load,
+        windows::{cpu_count, keep::pass},
+    };
+    use std::io::Write;
+    let log = |line: &str| {
+        let p = std::path::Path::new(keep::LOG_PATH);
+        if std::fs::metadata(p).is_ok_and(|m| m.len() > keep::LOG_MAX_BYTES) {
+            let _ = std::fs::rename(p, p.with_extension("log.1"));
+        }
+        let stamp = chrono_free_utc();
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(p)
+        {
+            Ok(mut f) => {
+                let _ = writeln!(f, "{stamp} {line}");
+            }
+            Err(e) => eprintln!("dasio keep: {}: {e}", keep::LOG_PATH),
+        }
+    };
+    let cpus = match cpu_count() {
+        Ok(n) => n,
+        Err(e) => {
+            log(&format!("the keeper did not start: {e}"));
+            return ExitCode::FAILURE;
+        }
+    };
+    let file = std::path::Path::new(path);
+    let mut profile: Option<dasio::pc_profile::Profile> = None;
+    let mut stamp = None;
+    let mut placed = false;
+    let mut quiet = keep::Quiet::default();
+    let mut failed = std::collections::HashSet::new();
+    let start = std::time::Instant::now();
+    loop {
+        let modified = std::fs::metadata(file).and_then(|m| m.modified()).ok();
+        if profile.is_none() || modified != stamp {
+            stamp = modified;
+            match load(file, cpus) {
+                Ok(p) => {
+                    let held = keep::held(&p);
+                    log(&format!(
+                        "the keeper holds {} process entries: {}",
+                        held.len(),
+                        held.iter()
+                            .map(|e| e.exe.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                    if !placed {
+                        let layout = Layout::of(cpus, p.instances.unwrap_or(1));
+                        log(&place_keeper(layout.system_mask()));
+                        placed = true;
+                    }
+                    profile = Some(p);
+                }
+                Err(e) => log(&format!(
+                    "the PC profile does not load, the keeper keeps the last one: {e}"
+                )),
+            }
+        }
+        if let Some(p) = &profile {
+            let now = start.elapsed().as_millis() as u64;
+            for line in pass(p, &mut quiet, &mut failed, now) {
+                log(&line);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(keep::EVERY_MS));
+    }
+}
+
+/// The keeper's own process: on the system CPUs (`mask`) below normal, off
+/// dasio's and the DAW's CPUs. The line says what it got.
+#[cfg(windows)]
+fn place_keeper(mask: u64) -> String {
+    use windows_sys::Win32::System::Threading::{
+        BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, SetPriorityClass, SetProcessAffinityMask,
+    };
+    // SAFETY: the pseudo-handle of this process.
+    let prio = unsafe { SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS) } != 0;
+    // SAFETY: as above; a mask of this PC's CPUs from its layout.
+    let aff = unsafe { SetProcessAffinityMask(GetCurrentProcess(), mask as usize) } != 0;
+    format!("the keeper runs below normal ({prio}) on CPUs 0x{mask:X} ({aff})")
+}
+
+/// Now in UTC as `YYYY-MM-DDTHH:MM:SSZ`, from the system clock.
+#[cfg(windows)]
+fn chrono_free_utc() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    dasio::pc_profile::keep::utc_stamp(secs)
+}
+
+#[cfg(not(windows))]
+fn pc_keep(_path: &str) -> ExitCode {
     eprintln!("dasio: Windows only");
     ExitCode::FAILURE
 }

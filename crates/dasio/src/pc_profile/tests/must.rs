@@ -333,3 +333,33 @@ fn install_ps1_installs_the_nic_driver_only_when_asked_and_only_a_checked_packag
         "only in the opt-in step"
     );
 }
+
+/// The process keeper (dasio#185): install.ps1 stops its task before the
+/// copy of dasio.exe as dasio-keep.exe (the running keeper holds that
+/// file), then registers it as a SYSTEM boot task running `pc-profile
+/// keep`, restarted on failure, starts it and refuses when it is not
+/// running.
+#[test]
+fn install_ps1_restarts_the_process_keeper_around_its_copy() {
+    let s = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/install.ps1"),
+    )
+    .unwrap()
+    .replace("\r\n", "\n");
+    let at = |needle: &str| {
+        s.find(needle)
+            .unwrap_or_else(|| panic!("install.ps1 has no {needle}"))
+    };
+    let stop = at("Stop-ScheduledTask -TaskName $keepTask");
+    let copy = at("Copy-Item (Join-Path $here \"dasio.exe\") $keepExe -Force");
+    let register = at("Register-ScheduledTask -TaskName $keepTask");
+    let start = at("Start-ScheduledTask -TaskName $keepTask");
+    let refuse = at("throw \"the process keeper ($keepTask) did not start\"");
+    assert!(stop < copy && copy < register && register < start && start < refuse);
+    assert!(s.contains("New-ScheduledTaskAction -Execute $keepExe -Argument \"pc-profile keep\""));
+    assert!(s.contains("-Trigger (New-ScheduledTaskTrigger -AtStartup)"));
+    assert!(s.contains("-RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)"));
+    assert!(s.contains("-User SYSTEM -RunLevel Highest"));
+    // Before the instance's own service is (re)made.
+    assert!(start < at("New-Service -Name $service"));
+}

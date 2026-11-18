@@ -45,6 +45,9 @@
 #   not for a bridge instance, whose config has a [bridge] table),
 # - puts the device config at C:\ProgramData\dasio\instance-<n>\device.toml,
 #   and moves aside a state file another config left at its state path,
+# - copies dasio.exe as dasio-keep.exe and (re)starts the SYSTEM task
+#   dasio-pc-keep (`dasio pc-profile keep`, dasio#185): the [[process]]
+#   entries' affinity and priority, held by dasio (what Process Lasso did);
 # - copies dtray.exe and dtray-cli.exe (dstack's tray: every local dstack device, with dasio's
 #   line per instance) and starts it at the installing user's logon
 #   (`dtray-cli --autostart on`); removes the former dasio-tray; writes the
@@ -543,6 +546,27 @@ try {
         Write-Output "$($s.Name) runs the new binary"
     }
 }
+# The process keeper (dasio#185): dasio-keep.exe, its own copy of dasio.exe
+# (so a new dasio.exe never waits on it), run by the SYSTEM task
+# dasio-pc-keep at boot and restarted on failure, holds every [[process]]
+# entry's affinity and priority class (what Process Lasso did). Stopped for
+# the copy, started again after it.
+$keepTask = "dasio-pc-keep"
+$keepExe = Join-Path $bin "dasio-keep.exe"
+if (Get-ScheduledTask -TaskName $keepTask -ErrorAction SilentlyContinue) {
+    Stop-ScheduledTask -TaskName $keepTask
+    Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue | Wait-Process -Timeout 15
+}
+Copy-Item (Join-Path $here "dasio.exe") $keepExe -Force
+$keepAction = New-ScheduledTaskAction -Execute $keepExe -Argument "pc-profile keep"
+$keepSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
+Register-ScheduledTask -TaskName $keepTask -Action $keepAction -Trigger (New-ScheduledTaskTrigger -AtStartup) -Settings $keepSettings -User SYSTEM -RunLevel Highest -Force | Out-Null
+Start-ScheduledTask -TaskName $keepTask
+if (-not (Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue)) {
+    Start-Sleep -Seconds 2
+    if (-not (Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue)) { throw "the process keeper ($keepTask) did not start" }
+}
+
 # dtray, dstack's tray for every local dstack device (dasio's line per
 # instance comes from its device's status). A running one holds its binary,
 # which Windows lets move but not overwrite; moved-aside copies go once

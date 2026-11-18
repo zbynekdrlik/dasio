@@ -150,9 +150,22 @@ paths:
   `dasio pc-profile apply --plan`, then `dasio pc-profile apply`. The
   service checks it at start and every 10 min: each problem is a WARN line
   in the instance log, and dtray's line shows `PC profile: N problems`.
-- `[[process]]` entries only check what Process Lasso applied (affinity,
-  priority class). The setting itself is Lasso's ini, which the profile
-  holds key by key.
+- `[[process]]` entries (affinity, priority class) are HELD by dasio's
+  process keeper since 0.1.135 (dasio#185, owner 18.11.2026: what Process
+  Lasso did, dasio does): `dasio pc-profile keep`, run as the SYSTEM task
+  `dasio-pc-keep` (install.ps1 copies dasio.exe as `dasio-keep.exe`, stops
+  the task around the copy, registers it at boot, restarted on failure),
+  walks the process list every 2 s and sets what differs on every running
+  process of the entry's exe, on the system CPUs below normal, outside the
+  media process (a DAW kind's in-process work once cost FOH 16 ms gaps).
+  Log: `C:\ProgramData\dasio\pc-keep.log` (each change; a process
+  something keeps setting back logs once a minute with the count, e.g.
+  ProBalance). `integrity` stays check-only. Lasso's catch-all (everything
+  else on the system CPUs) is `ReservedCpuSets` already. A PC whose Lasso
+  is removed names its ini in the site profile's `no_ini = ['<path>']`:
+  every `[[ini]]` entry for that file (the baseline's 150 Lasso keys and
+  the site's) is left out. While a PC still runs Lasso, Lasso and the
+  keeper set the same values from the same profile.
 - `[[process]]` also takes `integrity = "low"|"medium"|"high"|"system"`
   (dasio#128, 0.1.126+): the token's level (`OpenProcessToken` +
   `TokenIntegrityLevel`, a limited query handle is enough). Checked only,

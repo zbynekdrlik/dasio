@@ -7,6 +7,7 @@ mod absent_kind;
 mod device_kind;
 mod fold;
 mod hold;
+mod keep;
 mod layout;
 mod must;
 mod nic_driver_kind;

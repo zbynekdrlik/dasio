@@ -375,3 +375,41 @@ fn the_dante_nic_s_parent_chain_is_read_up_to_the_root() {
     let none = Pc::new(&parse(&format!("name = \"ci\"\nnic_guid = \"{guid}\"\n")).unwrap());
     assert_eq!(none.nic_chain(), Vec::<String>::new());
 }
+
+#[test]
+fn the_keeper_gives_a_running_process_its_entry_s_priority_and_affinity() {
+    // dasio#185: one pass of `dasio pc-profile keep` over a real process
+    // of the runner (a waiting ping, started here), read back.
+    use dasio::pc_profile::{Reader, keep::Quiet, parse, windows::Pc, windows::keep::pass};
+    let mut child = Command::new("ping")
+        .args(["-n", "60", "127.0.0.1"])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let p = parse(
+        "name = \"ci\"\n[[process]]\nexe = \"ping.exe\"\naffinity = \"0x1\"\npriority = \"below normal\"\n",
+    )
+    .unwrap();
+    let pc = Pc::new(&p);
+    let before = pc.process("ping.exe");
+    let mut quiet = Quiet::default();
+    let mut failed = std::collections::HashSet::new();
+    let lines = pass(&p, &mut quiet, &mut failed, 0);
+    let after = pc.process("ping.exe");
+    let again = pass(&p, &mut quiet, &mut failed, 2_000);
+    child.kill().unwrap();
+    let before = before.expect("the ping runs");
+    let after = after.expect("the ping still runs");
+    assert_eq!(
+        (after.affinity, after.priority.as_str()),
+        (0x1, "below normal")
+    );
+    let changed = format!("kept ping.exe (pid {}): ", child.id());
+    assert!(
+        lines.iter().any(|l| l.starts_with(&changed)),
+        "{lines:?} (before: {before:?})"
+    );
+    // Held already: the second pass sets and logs nothing.
+    assert_eq!(again, Vec::<String>::new());
+    assert!(failed.is_empty(), "{failed:?}");
+}
