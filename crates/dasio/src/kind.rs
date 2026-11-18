@@ -157,19 +157,16 @@ fn buffer_ns(t: &toml::Table, key: &str) -> Result<Option<u64>, String> {
             let Ok(n) = u64::try_from(*n) else {
                 return Err(format!("[{CONFIG_BRIDGE}] `{key}` = {n}: a negative time"));
             };
+            // dlink's problem names `app_buffer_ns`, the bridge's names the
+            // key itself. A direction's own target has the bridge's floor,
+            // 0.5 ms (dstack issue 422), not a dlink app's 1 ms.
             let problem = if key == "app_buffer_ns" {
                 AppBuffer::new(0, 0).set(Some(n)).problem()
             } else {
-                // A direction's own target: the bridge's floor, 0.5 ms
-                // (dstack issue 422), not a dlink app's 1 ms.
                 dstack_asio::bridge::direction_target_problem(key, n)
             };
             match problem {
-                // dlink names `app_buffer_ns`; the key read here is `key`.
-                Some(problem) => Err(format!(
-                    "[{CONFIG_BRIDGE}] {}",
-                    problem.replacen("app_buffer_ns", key, 1)
-                )),
+                Some(problem) => Err(format!("[{CONFIG_BRIDGE}] {problem}")),
                 None => Ok(Some(n)),
             }
         }
