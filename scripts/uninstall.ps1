@@ -86,8 +86,12 @@ if (-not (Get-Service -Name "dasio-*" -ErrorAction SilentlyContinue)) {
     }
     $left = @(Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue)
     if ($left.Count -gt 0) {
-        $left | Stop-Process -Force
-        $left | Wait-Process -Timeout 15
+        # It may end on its own between the read and the stop: checked after.
+        $left | Stop-Process -Force -ErrorAction SilentlyContinue
+        @(Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue) | Wait-Process -Timeout 15 -ErrorAction SilentlyContinue
+        if (Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue) {
+            throw "the process keeper did not end within 15 s; its task stays disabled: run the uninstall again"
+        }
     }
     if (Get-ScheduledTask -TaskName "dasio-pc-keep" -ErrorAction SilentlyContinue) {
         Unregister-ScheduledTask -TaskName "dasio-pc-keep" -Confirm:$false

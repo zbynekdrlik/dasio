@@ -567,8 +567,10 @@ try {
     $left = @(Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue)
     if ($left.Count -gt 0) {
         Write-Output "ending the process keeper ($($left.Count) process(es) left after the task's stop)"
-        $left | Stop-Process -Force
-        $left | Wait-Process -Timeout 15
+        # It may end on its own between the read and the stop: checked after.
+        $left | Stop-Process -Force -ErrorAction SilentlyContinue
+        @(Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue) | Wait-Process -Timeout 15 -ErrorAction SilentlyContinue
+        if (Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue) { throw "the process keeper did not end within 15 s" }
     }
     # A scanner can hold a just-ended exe a moment: a few tries, then fail.
     for ($try = 1; ; $try++) {

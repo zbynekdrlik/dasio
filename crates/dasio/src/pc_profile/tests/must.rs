@@ -355,7 +355,7 @@ fn install_ps1_restarts_the_process_keeper_around_its_copy() {
     let disable = at("Disable-ScheduledTask -TaskName $keepTask | Out-Null");
     let stop = at("Stop-ScheduledTask -TaskName $keepTask");
     assert!(disable < stop);
-    let ended_left = at("$left | Stop-Process -Force");
+    let ended_left = at("$left | Stop-Process -Force -ErrorAction SilentlyContinue");
     let copy = at(
         "try { Copy-Item (Join-Path $here \"dasio.exe\") $keepExe -Force -ErrorAction Stop; break }",
     );
@@ -381,11 +381,16 @@ fn install_ps1_restarts_the_process_keeper_around_its_copy() {
     // Before the instance's own service is (re)made.
     assert!(ended < at("New-Service -Name $service"));
     let u = read("../../scripts/uninstall.ps1");
-    let gone = u
-        .find("Unregister-ScheduledTask -TaskName \"dasio-pc-keep\" -Confirm:$false")
-        .expect("uninstall.ps1 removes the keeper");
-    assert!(u[..gone].contains("Disable-ScheduledTask -TaskName \"dasio-pc-keep\""));
-    assert!(u[..gone].contains("Stop-ScheduledTask -TaskName \"dasio-pc-keep\""));
-    assert!(u[..gone].contains("$left | Stop-Process -Force"));
-    assert!(u[gone..].contains("throw \"removing dasio-keep.exe failed 10 times"));
+    let uat = |needle: &str| {
+        u.find(needle)
+            .unwrap_or_else(|| panic!("uninstall.ps1 has no {needle}"))
+    };
+    let off = uat("Disable-ScheduledTask -TaskName \"dasio-pc-keep\" | Out-Null");
+    let stopped = uat("Stop-ScheduledTask -TaskName \"dasio-pc-keep\"");
+    let left = uat("$left | Stop-Process -Force -ErrorAction SilentlyContinue");
+    let not_ended =
+        uat("throw \"the process keeper did not end within 15 s; its task stays disabled");
+    let gone = uat("Unregister-ScheduledTask -TaskName \"dasio-pc-keep\" -Confirm:$false");
+    let exe = uat("throw \"removing dasio-keep.exe failed 10 times");
+    assert!(off < stopped && stopped < left && left < not_ended && not_ended < gone && gone < exe);
 }
