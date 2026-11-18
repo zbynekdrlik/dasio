@@ -64,7 +64,7 @@ impl Proc {
                 pid,
             )
         };
-        (!h.is_null()).then_some(Proc(h))
+        if h.is_null() { None } else { Some(Proc(h)) }
     }
 
     /// Whether its image's file name is `exe` (case ignored).

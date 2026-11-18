@@ -2,7 +2,10 @@
 //! `no_ini` key that drops a replaced tool's ini entries.
 
 use super::*;
-use crate::pc_profile::keep::{QUIET_MS, Quiet, Set, counted, held, line, utc_stamp, wanted};
+use crate::pc_profile::keep::{
+    FIGHT_LIMIT, FIGHT_WINDOW_MS, Fights, Note, Set, gave_up_line, held, line, mask_outside,
+    utc_stamp, wanted,
+};
 
 fn entry(exe: &str, affinity: Option<&str>, priority: Option<&str>) -> ProcEntry {
     ProcEntry {
@@ -114,7 +117,8 @@ fn a_process_set_back_again_and_again_is_given_up() {
 }
 
 #[test]
-fn changes_further_apart_than_the_window_never_add_up() {
+fn the_count_starts_over_with_each_window() {
+    // Four changes a window, for two windows: never the fifth in one.
     let mut f = Fights::default();
     for n in 0..(2 * FIGHT_LIMIT) {
         assert_eq!(
