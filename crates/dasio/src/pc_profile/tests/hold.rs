@@ -8,10 +8,41 @@ const USO: Held = Held {
     start: 4,
 };
 
+/// Delivery Optimization: Windows' servicing set its `Start` 4 -> 3 on FOH
+/// right after an SPP start (18.11.2026 05:03 CET, no SCM event: a direct
+/// registry write), and the check only reported it (dasio#26).
+const DO_SVC: Held = Held {
+    service: "DoSvc",
+    start: 4,
+};
+
 #[test]
-fn uso_svc_is_held_disabled() {
-    assert_eq!(HELD, &[USO]);
+fn uso_svc_and_do_svc_are_held_disabled() {
+    assert_eq!(HELD, &[USO, DO_SVC]);
     assert_eq!(DISABLED, 4);
+}
+
+#[test]
+fn a_do_svc_reset_to_manual_is_set_back_and_stopped() {
+    assert_eq!(
+        decide(&DO_SVC, Some(3), true),
+        Some(Fix {
+            was: Some(3),
+            stop: true
+        })
+    );
+    assert_eq!(
+        describe(
+            &DO_SVC,
+            &Fix {
+                was: Some(3),
+                stop: false
+            },
+            &Ok(()),
+            &Ok(())
+        ),
+        "DoSvc held off (dasio#158): start was 3 (manual), set to 4 (disabled)"
+    );
 }
 
 /// The hold and the baseline's check agree: the baseline holds each held
