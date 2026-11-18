@@ -194,7 +194,11 @@ paths:
   `\dasio-usosvc-off` goes only after the dsg reboot proof on #158.
   Another service Windows resets by itself goes on `hold::HELD` (only
   through a reviewed code change, never from a profile) with the same
-  `Start` in the baseline (a test keeps them equal). Windows Update still
+  `Start` in the baseline (a test keeps them equal). Held since 0.1.130:
+  DoSvc (Delivery Optimization) at 4 too: on FOH 18.11.2026 05:03 CET an
+  SPP start was followed by UsoSvc set to automatic and DoSvc's `Start`
+  4 -> 3 by a direct registry write (no SCM 7040, so look at the profile
+  check's drift line, not only 7040) (dasio#26). Windows Update still
   works: dasio's update runs (`wu.ps1`, dasio#109) use the Windows Update
   Agent API through `wuauserv` (manual start), not UsoSvc (mbc 13.11: 5
   updates installed with UsoSvc disabled and stopped). Never hold
