@@ -189,3 +189,17 @@ paths:
   and has told its latencies. The driver's latencies are what it declares,
   not measured on the wire. dcontroller shows them once dstack's figures
   carry them (dcontroller#117).
+- **The SoundGrid ASIO buffer** (dsg 18.11.2026, #190): `SoundGridAsio.dll`
+  reads it from the HKCU of the process that loads it, value `Buffer
+  Size(Samples)` (REG_BINARY, little-endian u32) under `Software\Waves\
+  SoundGrid\ASIO Driver\Configuration`. dasio runs as SYSTEM: that is
+  `HKU\S-1-5-18\...`, held in dsg's site profile (#191). The SoundGrid
+  Driver Control Panel writes only the desktop user's hive, and the
+  node's `SoundGrid.Driver.preferences` `<BlockSize>` does not reach the
+  driver either: after either one the driver still reported 256, also
+  after a dasio restart. Keep all three the same. Opening the panel's
+  buffer dropdown stalled the driver (229 late callbacks, ~77 underruns
+  each way in 10 s) and the selection made it ask for a reset: never touch
+  that panel while dsg carries a show. 128 frames: input latency 288,
+  output 480 frames (256: 416 / 608).
+

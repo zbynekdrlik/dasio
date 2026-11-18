@@ -11,7 +11,9 @@
 //!   list of strings (REG_MULTI_SZ, e.g. a NIC's `SubnetMask`), or binary
 //!   as hex). `{nic_class}` and `{nic_device}` in a key stand for
 //!   the Dante NIC's class key and its Enum `Device Parameters` key, found
-//!   from `nic_guid`.
+//!   from `nic_guid`. Also under [`SYSTEM_HIVE`] (dasio#191): SYSTEM's own
+//!   hive, the HKCU of dasio's process, where a driver dasio loads keeps
+//!   its per-user settings (the SoundGrid ASIO buffer).
 //! - `[[ini]]`: one `key=value` line of an ini file (Process Lasso's).
 //! - `[[process]]`: what a running process must have (affinity, priority
 //!   class), held by dasio's keeper (`dasio pc-profile keep`, [`keep`],
@@ -358,6 +360,40 @@ pub fn site_instances(path: &std::path::Path) -> Result<usize, String> {
 /// Reads a PC's profile; the error names what is wrong in it.
 pub fn parse(text: &str) -> Result<Profile, String> {
     parse_with(text, true)
+}
+
+/// SYSTEM's own hive under `HKEY_USERS` (dasio#191). dasio runs as
+/// SYSTEM, so this is its HKCU: an ASIO driver loaded in dasio's process
+/// keeps its per-user settings there (dsg's SoundGrid ASIO buffer).
+pub const SYSTEM_HIVE: &str = r"HKU\S-1-5-18\";
+
+/// The registry root a profile key is under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Root {
+    /// `HKLM\`.
+    Machine,
+    /// `HKEY_USERS`, only [`SYSTEM_HIVE`].
+    Users,
+}
+
+/// `key` as its root and the path under it: `HKLM\x` is `x` under
+/// HKLM, `HKU\S-1-5-18\x` is `S-1-5-18\x` under HKEY_USERS. Anything
+/// else under HKU\ (another user's hive, loaded only while that user is
+/// logged on, or SYSTEM's spelled otherwise) is refused, so is any other
+/// root: a problem of that entry, the rest of the profile stays.
+pub fn split_root(key: &str) -> Result<(Root, &str), String> {
+    if let Some(rest) = key.strip_prefix(r"HKLM\") {
+        return Ok((Root::Machine, rest));
+    }
+    if key.starts_with(SYSTEM_HIVE) {
+        return Ok((Root::Users, &key[r"HKU\".len()..]));
+    }
+    if key.starts_with(r"HKU\") {
+        return Err(format!(
+            "{key}: under HKU\\ only SYSTEM's own hive, written {SYSTEM_HIVE}... (another user's hive is loaded only while that user is logged on)"
+        ));
+    }
+    Err(format!("{key}: only HKLM\\ or {SYSTEM_HIVE} keys"))
 }
 
 fn parse_with(text: &str, need_nic_guid: bool) -> Result<Profile, String> {

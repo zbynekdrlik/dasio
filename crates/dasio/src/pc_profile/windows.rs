@@ -17,9 +17,9 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::Registry::{
-    HKEY, HKEY_LOCAL_MACHINE, KEY_READ, REG_BINARY, REG_DWORD, REG_EXPAND_SZ, REG_MULTI_SZ,
-    REG_QWORD, REG_SZ, RRF_RT_ANY, RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW,
-    RegSetKeyValueW,
+    HKEY, HKEY_LOCAL_MACHINE, HKEY_USERS, KEY_READ, REG_BINARY, REG_DWORD, REG_EXPAND_SZ,
+    REG_MULTI_SZ, REG_QWORD, REG_SZ, RRF_RT_ANY, RegCloseKey, RegEnumKeyExW, RegGetValueW,
+    RegOpenKeyExW, RegSetKeyValueW,
 };
 use windows_sys::Win32::System::Threading::{
     ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, GetPriorityClass,
@@ -171,8 +171,10 @@ impl Pc {
         }
     }
 
-    /// `key` (as the profile writes it) as a path under HKLM.
-    fn resolve(&self, key: &str) -> Result<String, String> {
+    /// `key` (as the profile writes it) as its root and the path under it:
+    /// the placeholders are HKLM keys, a plain key names its root (HKLM, or
+    /// SYSTEM's own hive under HKEY_USERS, dasio#191).
+    fn resolve(&self, key: &str) -> Result<(HKEY, String), String> {
         let k = if let Some(rest) = key.strip_prefix("{nic_class}") {
             format!(
                 "{}{rest}",
@@ -199,11 +201,12 @@ impl Pc {
                     .ok_or("the Dante NIC's device key was not found")?
             )
         } else {
-            key.strip_prefix(r"HKLM\")
-                .ok_or_else(|| format!("{key}: only HKLM\\ keys"))?
-                .to_string()
+            return Ok(match super::split_root(key)? {
+                (super::Root::Machine, rest) => (HKEY_LOCAL_MACHINE, rest.to_string()),
+                (super::Root::Users, rest) => (HKEY_USERS, rest.to_string()),
+            });
         };
-        Ok(k)
+        Ok((HKEY_LOCAL_MACHINE, k))
     }
 
     /// Applies one action; the error says why it failed.
@@ -215,8 +218,8 @@ impl Pc {
         }
         match a {
             Action::Reg { key, name, value } => {
-                let k = self.resolve(key)?;
-                write(&k, name, value)
+                let (root, k) = self.resolve(key)?;
+                write_in(root, &k, name, value)
             }
             Action::Ini { file, key, value } => {
                 let path = Path::new(file);
@@ -266,7 +269,8 @@ impl Reader for Pc {
     }
 
     fn reg(&self, key: &str, name: &str) -> Result<Option<Value>, String> {
-        read(&self.resolve(key)?, name)
+        let (root, k) = self.resolve(key)?;
+        read_in(root, &k, name)
     }
 
     fn ini(&self, file: &str, key: &str) -> Result<Option<String>, String> {
@@ -609,13 +613,23 @@ fn read_text(path: &Path) -> Result<String, String> {
 
 /// The value `name` under HKLM\`key`.
 pub(super) fn read(key: &str, name: &str) -> Result<Option<Value>, String> {
+    read_in(HKEY_LOCAL_MACHINE, key, name)
+}
+
+/// The root's name in a message.
+fn root_name(root: HKEY) -> &'static str {
+    if root == HKEY_USERS { "HKU" } else { "HKLM" }
+}
+
+/// The value `name` under `root`\`key`.
+fn read_in(root: HKEY, key: &str, name: &str) -> Result<Option<Value>, String> {
     let (k, n) = (wide(key), wide(name));
     let mut kind = 0u32;
     let mut len = 0u32;
     // SAFETY: valid NUL-terminated strings; a size query (no buffer).
     let r = unsafe {
         RegGetValueW(
-            HKEY_LOCAL_MACHINE,
+            root,
             k.as_ptr(),
             n.as_ptr(),
             RRF_RT_ANY,
@@ -635,7 +649,7 @@ pub(super) fn read(key: &str, name: &str) -> Result<Option<Value>, String> {
     // SAFETY: as above, with a buffer of `len2` bytes.
     let r = unsafe {
         RegGetValueW(
-            HKEY_LOCAL_MACHINE,
+            root,
             k.as_ptr(),
             n.as_ptr(),
             RRF_RT_ANY,
@@ -681,6 +695,11 @@ pub(super) fn read(key: &str, name: &str) -> Result<Option<Value>, String> {
 }
 
 pub(super) fn write(key: &str, name: &str, v: &Value) -> Result<(), String> {
+    write_in(HKEY_LOCAL_MACHINE, key, name, v)
+}
+
+/// Sets `name` under `root`\`key` (the key is created when missing).
+fn write_in(root: HKEY, key: &str, name: &str, v: &Value) -> Result<(), String> {
     let (k, n) = (wide(key), wide(name));
     let (kind, data): (u32, Vec<u8>) = match v {
         Value::Dword(d) => (REG_DWORD, d.to_le_bytes().to_vec()),
@@ -702,7 +721,7 @@ pub(super) fn write(key: &str, name: &str, v: &Value) -> Result<(), String> {
     // missing.
     let r = unsafe {
         RegSetKeyValueW(
-            HKEY_LOCAL_MACHINE,
+            root,
             k.as_ptr(),
             n.as_ptr(),
             kind,
@@ -713,7 +732,7 @@ pub(super) fn write(key: &str, name: &str, v: &Value) -> Result<(), String> {
     if r == ERROR_SUCCESS {
         Ok(())
     } else {
-        Err(format!(r"HKLM\{key}\{name}: os error {r}"))
+        Err(format!(r"{}\{key}\{name}: os error {r}", root_name(root)))
     }
 }
 
