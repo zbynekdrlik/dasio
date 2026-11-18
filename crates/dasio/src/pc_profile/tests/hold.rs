@@ -2,7 +2,7 @@
 
 use super::super::hold::{
     ACCESS_DENIED, DISABLED, Fix, HELD, Held, decide, describe, not_held, registry_fallback,
-    start_name,
+    set_start_with, start_name,
 };
 use super::super::*;
 
@@ -220,4 +220,41 @@ fn only_an_access_denied_start_goes_to_the_registry() {
     assert!(!registry_fallback(Some(1060)));
     assert!(!registry_fallback(Some(1072)));
     assert!(!registry_fallback(None));
+}
+
+/// The SCM's answer decides whether the registry is written at all, and
+/// the write's own result is what is reported.
+#[test]
+fn the_registry_is_written_only_after_an_access_denied() {
+    let denied = || std::io::Error::from_raw_os_error(5);
+    let mut wrote = 0;
+    assert_eq!(
+        set_start_with(Ok(()), || {
+            wrote += 1;
+            Ok(())
+        }),
+        Ok(())
+    );
+    assert_eq!(wrote, 0, "an SCM success writes nothing");
+    assert_eq!(
+        set_start_with(Err(denied()), || {
+            wrote += 1;
+            Ok(())
+        }),
+        Ok(())
+    );
+    assert_eq!(wrote, 1, "access denied writes the registry once");
+    let failed = set_start_with(Err(denied()), || Err("os error 2".into())).unwrap_err();
+    assert!(failed.contains("the SCM refused it"), "{failed}");
+    assert!(
+        failed.ends_with("the registry write failed: os error 2"),
+        "{failed}"
+    );
+    let other = set_start_with(Err(std::io::Error::from_raw_os_error(1060)), || {
+        wrote += 1;
+        Ok(())
+    })
+    .unwrap_err();
+    assert_eq!(wrote, 1, "another SCM error writes nothing");
+    assert_eq!(other, std::io::Error::from_raw_os_error(1060).to_string());
 }
