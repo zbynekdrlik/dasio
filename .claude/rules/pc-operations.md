@@ -116,6 +116,22 @@ Owner rules from dasio#1. They hold for every change on a PC running dasio.
   `[IO.File]::WriteAllText(path, text, (New-Object Text.UTF8Encoding $false))`.
   For a soak, the MCP `Wait` tool caps at 300 s (use 240) and several
   `Wait` calls in one message run at the same time: send them one by one.
+- **A dasio PC on two networks uses dstack's layout B** (two-networks.md):
+  Dante UNTAGGED on the physical NIC, the LAN as the tagged Realtek Virtual
+  Adapter. dasio's NDIS filter (dasio_pacer) cannot bind to a Realtek
+  Virtual Adapter (no binding row exists), and on the physical NIC its
+  kernel-TX frames leave untagged, so Dante on a VLAN adapter (layout A)
+  cannot carry dasio at all. Say this at the start of any two-network plan
+  (dsg 18.11.2026: layout A was set up and switched before it surfaced).
+  The Dante leg on the physical NIC can take DHCP with a fixed lease (its
+  MAC is stable) with `Set-NetIPInterface -IgnoreDefaultRoutes Enabled`
+  and metric 900; the LAN VLAN adapter takes a new random MAC at every base
+  restart, so its lease is not stable. Opening Realtek's 8169DiagV2 window
+  resets the base NIC twice (~5 s link drops each).
+- **A long remote job** (an installer, dante-leg.ps1, a network change)
+  runs as a SYSTEM scheduled task, or with an MCP Shell `timeout` large
+  enough (the fleet Shell takes any timeout; a 120 s value cut dsg's
+  dante-leg.ps1 run midway, 18.11.2026).
 - **A GitHub artifact reaches a PC through its signed blob URL.** Get the
   302 `Location` of `/actions/artifacts/<id>/zip` with the gh token. It lives
   about 10 min. Download it on the PC and check every SHA256SUMS line. The
