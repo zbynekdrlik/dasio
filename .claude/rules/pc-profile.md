@@ -198,7 +198,14 @@ paths:
   DoSvc (Delivery Optimization) at 4 too: on FOH 18.11.2026 05:03 CET an
   SPP start was followed by UsoSvc set to automatic and DoSvc's `Start`
   4 -> 3 by a direct registry write (no SCM 7040, so look at the profile
-  check's drift line, not only 7040) (dasio#26). Windows Update still
+  check's drift line, not only 7040) (dasio#26). DoSvc is a protected
+  service (`sc qprotection DoSvc`: WINDOWS LIGHT): the SCM refuses its
+  start type even to SYSTEM ("Access is denied. (os error 5)", dsg 0.1.130),
+  so the hold writes a refused start type to the service's registry
+  `Start` (0.1.131, `hold::registry_fallback`); a protected service may
+  also refuse the stop. Prove a held service on dsg first: set its `Start`
+  by hand, wait for the next check (10 min) and read the "held off" line
+  before deploying to FOH or mbc. Windows Update still
   works: dasio's update runs (`wu.ps1`, dasio#109) use the Windows Update
   Agent API through `wuauserv` (manual start), not UsoSvc (mbc 13.11: 5
   updates installed with UsoSvc disabled and stopped). Never hold

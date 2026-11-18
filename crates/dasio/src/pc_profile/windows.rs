@@ -690,7 +690,7 @@ pub(super) fn read(key: &str, name: &str) -> Result<Option<Value>, String> {
     }))
 }
 
-fn write(key: &str, name: &str, v: &Value) -> Result<(), String> {
+pub(super) fn write(key: &str, name: &str, v: &Value) -> Result<(), String> {
     let (k, n) = (wide(key), wide(name));
     let (kind, data): (u32, Vec<u8>) = match v {
         Value::Dword(d) => (REG_DWORD, d.to_le_bytes().to_vec()),

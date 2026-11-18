@@ -2,6 +2,8 @@
 //! and state, sets it back and stops it, in this process, through the
 //! `windows-service` crate (the start type alone through
 //! `ChangeServiceConfigW`: the crate's `change_config` wants every field).
+//! A protected service whose start type the SCM refuses (DoSvc) gets it in
+//! its registry key instead ([`registry_fallback`]).
 //! The decisions and the log lines are the portable [`super`].
 
 use std::time::{Duration, Instant};
@@ -11,8 +13,8 @@ use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 use windows_sys::Win32::System::Services::{ChangeServiceConfigW, SERVICE_NO_CHANGE};
 
 use super::super::Value;
-use super::super::windows::read;
-use super::{HELD, Held, decide, describe, not_held};
+use super::super::windows::{read, write};
+use super::{HELD, Held, decide, describe, not_held, registry_fallback};
 
 /// How long a pending state may last before the hold gives up on it.
 const PENDING: Duration = Duration::from_secs(30);
@@ -47,7 +49,7 @@ fn hold(held: &Held) -> Option<String> {
         Err(e) => return Some(not_held(held, &e)),
     };
     let set = if fix.was.is_some() {
-        set_start(&svc, held.start)
+        set_start(&svc, &key, held.start)
     } else {
         Ok(())
     };
@@ -77,9 +79,20 @@ fn state(svc: &Service) -> Result<ServiceState, String> {
         .map_err(|e| format!("its state is unreadable: {}", os(e)))
 }
 
+/// The start type through the SCM, or, for a protected service the SCM
+/// refuses ([`registry_fallback`]), in its registry key `key`.
+fn set_start(svc: &Service, key: &str, start: u32) -> Result<(), String> {
+    match scm_set_start(svc, start) {
+        Ok(()) => Ok(()),
+        Err(e) if registry_fallback(e.raw_os_error()) => write(key, "Start", &Value::Dword(start))
+            .map_err(|w| format!("the SCM refused it ({e}) and the registry write failed: {w}")),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// The start type through the SCM (as `sc config <name> start= ...`), so
 /// the manager's own copy changes too, not only the registry's.
-fn set_start(svc: &Service, start: u32) -> Result<(), String> {
+fn scm_set_start(svc: &Service, start: u32) -> Result<(), std::io::Error> {
     // SAFETY: the crate's open handle with SERVICE_CHANGE_CONFIG; every
     // other field unchanged (SERVICE_NO_CHANGE, nulls).
     let ok = unsafe {
@@ -98,7 +111,7 @@ fn set_start(svc: &Service, start: u32) -> Result<(), String> {
         )
     };
     if ok == 0 {
-        return Err(std::io::Error::last_os_error().to_string());
+        return Err(std::io::Error::last_os_error());
     }
     Ok(())
 }
