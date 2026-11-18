@@ -1035,3 +1035,43 @@ fn the_bridge_fills_each_direction_s_target_from_its_own_player() {
         );
     }
 }
+
+#[test]
+fn the_delays_reach_dstack_s_figures_as_u32_us_0_while_not_known() {
+    // dasio#187, dstack issue 419: dcontroller's two lines.
+    assert_eq!(path_us(None), (0, 0));
+    let d = delays(&bridge_dsg()).unwrap();
+    assert_eq!(path_us(Some(&d)), (7283, 7689));
+    let big = Delays {
+        asio_to_dante_us: u64::from(u32::MAX) + 1,
+        dante_to_asio_us: u64::from(u32::MAX),
+    };
+    assert_eq!(path_us(Some(&big)), (u32::MAX, u32::MAX));
+}
+
+#[test]
+fn the_bridge_hands_dstack_its_driver_once_and_its_delays_every_counts_tick() {
+    // dasio#187 (dstack v0.6.184): without these calls dcontroller shows no
+    // "<driver> → Dante X ms" line. Windows glue, read as text.
+    let src = include_str!("../run_bridge.rs").replace("\r\n", "\n");
+    let once = |needle: &str| {
+        let found: Vec<usize> = src.match_indices(needle).map(|(i, _)| i).collect();
+        assert_eq!(found.len(), 1, "{needle}: once in run_bridge.rs");
+        found[0]
+    };
+    let figures =
+        once("lock(&shared).publish_figures(media.bridge_figures(), Arc::clone(&status));");
+    let driver = once("media.bridge_figures().set_driver(&bridge.driver);");
+    let looping = once("let why = loop {");
+    assert!(
+        figures < driver && driver < looping,
+        "after the publish, before the loop"
+    );
+    let tick = src.find("if counts.due(now) {").expect("the counts tick");
+    let tick_end = src[tick..].find("\"bridge counts\"").expect("its log line") + tick;
+    let path = once(".set_path(asio_to_dante, dante_to_asio);");
+    once("crate::app_status::path_us(crate::app_status::delays(&facts()).as_ref());");
+    assert!((tick..tick_end).contains(&path), "inside the counts tick");
+    // The status JSON reads the same facts.
+    once("media.set_app_status(move || crate::app_status::bridge_json(&facts()));");
+}

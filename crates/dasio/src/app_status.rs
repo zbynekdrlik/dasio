@@ -301,6 +301,14 @@ pub struct Delays {
     pub dante_to_asio_us: u64,
 }
 
+/// The delays as dstack's figures carry them (dasio#187, dstack issue
+/// 419): u32 us each, 0 while not known, a longer one held at u32::MAX
+/// (never wrapped).
+pub fn path_us(d: Option<&Delays>) -> (u32, u32) {
+    let us = |v: u64| u32::try_from(v).unwrap_or(u32::MAX);
+    d.map_or((0, 0), |d| (us(d.asio_to_dante_us), us(d.dante_to_asio_us)))
+}
+
 /// The bridge's delays while its driver runs and has told its latencies;
 /// `None` otherwise.
 pub fn delays(f: &BridgeFacts) -> Option<Delays> {

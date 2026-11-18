@@ -191,8 +191,14 @@ paths:
   " ASIO" / " ASIO Driver") and served as `bridge_asio_to_dante_us` /
   `bridge_dante_to_asio_us` in the status JSON; only while the driver runs
   and has told its latencies. The driver's latencies are what it declares,
-  not measured on the wire. dcontroller shows them once dstack's figures
-  carry them (dcontroller#117).
+  not measured on the wire. Since 0.1.139 (dstack v0.6.184, dstack issue
+  419) the counts tick hands them to dstack's figures
+  (`FigureSlot::set_path`, u32 us, 0 while not known, `path_us`) and the
+  start hands the driver's name (`set_driver`): dcontroller (v0.1.77+)
+  shows "<driver> → Dante X ms". The status JSON and the tick read one
+  `facts` closure. Every dstack app sharing a PC's info port must be on
+  v0.6.184+ (an older manager drops a v2 reply): FOH's and mbc's dsend and
+  dlisten before their dasio moves.
 - **The SoundGrid ASIO buffer** (dsg 18.11.2026, #190): `SoundGridAsio.dll`
   reads it from the HKCU of the process that loads it, value `Buffer
   Size(Samples)` (REG_BINARY, little-endian u32) under `Software\Waves\
