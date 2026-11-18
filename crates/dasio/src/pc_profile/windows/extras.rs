@@ -32,19 +32,21 @@ type NtQuery = unsafe extern "system" fn(HANDLE, u32, *mut c_void, u32, *mut u32
 type NtSet = unsafe extern "system" fn(HANDLE, u32, *const c_void, u32) -> i32;
 type GpuGet = unsafe extern "system" fn(HANDLE, *mut i32) -> i32;
 type GpuSet = unsafe extern "system" fn(HANDLE, i32) -> i32;
+/// A looked-up export, before it is given its own signature.
+type Export = unsafe extern "system" fn() -> isize;
 
 /// The address of `name` in `module` (NUL-terminated ASCII), if any.
-fn lookup(module: *mut c_void, name: &[u8]) -> Option<usize> {
+fn lookup(module: *mut c_void, name: &[u8]) -> Option<Export> {
     if module.is_null() {
         return None;
     }
     // SAFETY: a loaded module and a NUL-terminated name.
-    unsafe { GetProcAddress(module, name.as_ptr()) }.map(|f| f as usize)
+    unsafe { GetProcAddress(module, name.as_ptr()) }
 }
 
 /// ntdll's I/O priority query and set (ntdll is in every process).
 fn ntdll() -> Option<(NtQuery, NtSet)> {
-    static FNS: OnceLock<Option<(usize, usize)>> = OnceLock::new();
+    static FNS: OnceLock<Option<(Export, Export)>> = OnceLock::new();
     let (q, s) = (*FNS.get_or_init(|| {
         let name = wide("ntdll.dll");
         // SAFETY: a NUL-terminated name; ntdll is always loaded.
@@ -58,8 +60,8 @@ fn ntdll() -> Option<(NtQuery, NtSet)> {
     // documented signatures.
     Some(unsafe {
         (
-            std::mem::transmute::<usize, NtQuery>(q),
-            std::mem::transmute::<usize, NtSet>(s),
+            std::mem::transmute::<Export, NtQuery>(q),
+            std::mem::transmute::<Export, NtSet>(s),
         )
     })
 }
@@ -67,7 +69,7 @@ fn ntdll() -> Option<(NtQuery, NtSet)> {
 /// gdi32's GPU scheduling priority get and set, gdi32 loaded from
 /// System32 on first use (and kept: one load per process).
 fn gdi32() -> Option<(GpuGet, GpuSet)> {
-    static FNS: OnceLock<Option<(usize, usize)>> = OnceLock::new();
+    static FNS: OnceLock<Option<(Export, Export)>> = OnceLock::new();
     let (g, s) = (*FNS.get_or_init(|| {
         let name = wide("gdi32.dll");
         // SAFETY: a NUL-terminated name, searched in System32 only.
@@ -87,8 +89,8 @@ fn gdi32() -> Option<(GpuGet, GpuSet)> {
     // documented signatures.
     Some(unsafe {
         (
-            std::mem::transmute::<usize, GpuGet>(g),
-            std::mem::transmute::<usize, GpuSet>(s),
+            std::mem::transmute::<Export, GpuGet>(g),
+            std::mem::transmute::<Export, GpuSet>(s),
         )
     })
 }
@@ -183,25 +185,70 @@ pub(super) fn named(e: &ProcEntry) -> bool {
         || e.priority_boost.is_some()
 }
 
+/// One priority kind: its names by value from `first`, read and set
+/// through a process handle.
+struct Level {
+    what: &'static str,
+    names: &'static [&'static str],
+    first: u32,
+    get: fn(HANDLE) -> Option<u32>,
+    put: fn(HANDLE, u32) -> Result<(), String>,
+}
+
+const IO: Level = Level {
+    what: "io priority",
+    names: &IO_PRIORITIES,
+    first: 0,
+    get: io,
+    put: set_io,
+};
+
+const MEMORY: Level = Level {
+    what: "memory priority",
+    names: &MEMORY_PRIORITIES,
+    first: 1,
+    get: memory,
+    put: set_memory,
+};
+
+const GPU: Level = Level {
+    what: "gpu priority",
+    names: &GPU_PRIORITIES,
+    first: 0,
+    get: gpu,
+    put: set_gpu,
+};
+
+impl Level {
+    /// Its name now, `None` when unreadable.
+    fn read(&self, h: HANDLE) -> Option<String> {
+        (self.get)(h)
+            .and_then(|v| level_name(self.names, self.first, v))
+            .map(String::from)
+    }
+
+    /// Sets `v` and reads it back; the error says why it did not hold.
+    fn apply(&self, h: HANDLE, v: &str) -> Result<(), String> {
+        let what = self.what;
+        let Some(n) = level_value(self.names, self.first, v) else {
+            return Err(format!("{what} {v:?} is not one of {:?}", self.names));
+        };
+        (self.put)(h, n).map_err(|e| format!("{what} {v}: {e}"))?;
+        let now = self.read(h);
+        if now.as_deref() != Some(v) {
+            let now = now.unwrap_or_else(|| "unreadable".into());
+            return Err(format!("{what} {v} reads back as {now}"));
+        }
+        Ok(())
+    }
+}
+
 /// What `e` names, read through `h`.
 pub(super) fn read(h: HANDLE, e: &ProcEntry) -> Extras {
-    let name = |v: Option<u32>, names: &[&'static str], first: u32| {
-        v.and_then(|v| level_name(names, first, v))
-            .map(String::from)
-    };
     Extras {
-        io: e
-            .io_priority
-            .as_ref()
-            .and_then(|_| name(io(h), &IO_PRIORITIES, 0)),
-        memory: e
-            .memory_priority
-            .as_ref()
-            .and_then(|_| name(memory(h), &MEMORY_PRIORITIES, 1)),
-        gpu: e
-            .gpu_priority
-            .as_ref()
-            .and_then(|_| name(gpu(h), &GPU_PRIORITIES, 0)),
+        io: e.io_priority.as_ref().and_then(|_| IO.read(h)),
+        memory: e.memory_priority.as_ref().and_then(|_| MEMORY.read(h)),
+        gpu: e.gpu_priority.as_ref().and_then(|_| GPU.read(h)),
         boost: e.priority_boost.and_then(|_| boost(h)),
     }
 }
@@ -209,50 +256,27 @@ pub(super) fn read(h: HANDLE, e: &ProcEntry) -> Extras {
 /// Sets `want`'s I/O, memory and GPU priority and boost through `h`, each
 /// read back, into `done`; the first failure stops it and says why.
 pub(super) fn set(h: HANDLE, want: &Set, done: &mut Set) -> Option<String> {
-    type Setter = fn(HANDLE, u32) -> Result<(), String>;
-    type Getter = fn(HANDLE) -> Option<u32>;
-    let levels: [(&str, &Option<String>, &[&'static str], u32, Setter, Getter); 3] = [
-        ("io priority", &want.io, &IO_PRIORITIES, 0, set_io, io),
-        (
-            "memory priority",
-            &want.memory,
-            &MEMORY_PRIORITIES,
-            1,
-            set_memory,
-            memory,
-        ),
-        ("gpu priority", &want.gpu, &GPU_PRIORITIES, 0, set_gpu, gpu),
-    ];
-    for (what, v, names, first, setter, getter) in levels {
+    for (level, v, slot) in [
+        (&IO, &want.io, &mut done.io),
+        (&MEMORY, &want.memory, &mut done.memory),
+        (&GPU, &want.gpu, &mut done.gpu),
+    ] {
         let Some(v) = v else { continue };
-        let Some(n) = level_value(names, first, v) else {
-            return Some(format!("{what} {v:?} is not one of {names:?}"));
-        };
-        if let Err(e) = setter(h, n) {
-            return Some(format!("{what} {v}: {e}"));
+        if let Err(e) = level.apply(h, v) {
+            return Some(e);
         }
-        let now = getter(h);
-        if now != Some(n) {
-            let read = now
-                .and_then(|x| level_name(names, first, x))
-                .unwrap_or("unreadable");
-            return Some(format!("{what} {v} reads back as {read}"));
-        }
-        match what {
-            "io priority" => done.io = Some(v.clone()),
-            "memory priority" => done.memory = Some(v.clone()),
-            _ => done.gpu = Some(v.clone()),
-        }
+        *slot = Some(v.clone());
     }
     if let Some(on) = want.boost {
         if let Err(e) = set_boost(h, on) {
             return Some(format!("priority boost {}: {e}", boost_name(on)));
         }
-        if boost(h) != Some(on) {
+        let now = boost(h);
+        if now != Some(on) {
             return Some(format!(
                 "priority boost {} reads back as {}",
                 boost_name(on),
-                boost(h).map_or("unreadable".into(), boost_name)
+                now.map_or("unreadable".into(), boost_name)
             ));
         }
         done.boost = Some(on);
