@@ -40,8 +40,8 @@ struct Pc {
     absent_err: Option<String>,
     /// The Dante NIC's hardware IDs.
     hardware_ids: Vec<String>,
-    /// The Dante NIC's device instance path.
-    nic_instance: Option<String>,
+    /// The Dante NIC's device instance path, then its parents'.
+    nic_chain: Vec<String>,
     /// Devices by instance path (upper case), for `[[device]]`.
     devices: HashMap<String, DevState>,
     /// `device()` fails with this.
@@ -55,8 +55,8 @@ impl Reader for Pc {
     fn nic_hardware_ids(&self) -> Vec<String> {
         self.hardware_ids.clone()
     }
-    fn nic_instance_id(&self) -> Option<String> {
-        self.nic_instance.clone()
+    fn nic_chain(&self) -> Vec<String> {
+        self.nic_chain.clone()
     }
     fn device(&self, id: &str) -> Result<Option<DevState>, String> {
         if let Some(err) = &self.device_err {

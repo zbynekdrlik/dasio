@@ -5,14 +5,18 @@
 
 use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
     CM_DISABLE_PERSIST, CM_DISABLE_UI_NOT_OK, CM_DRP_CONFIGFLAGS, CM_Disable_DevNode,
-    CM_Get_DevNode_Registry_PropertyW, CM_Get_DevNode_Status, CM_LOCATE_DEVNODE_NORMAL,
-    CM_LOCATE_DEVNODE_PHANTOM, CM_Locate_DevNodeW, CM_Set_DevNode_Registry_PropertyW,
-    CONFIGFLAG_DISABLED, CONFIGRET, CR_NO_SUCH_DEVNODE, CR_NO_SUCH_VALUE, CR_REMOVE_VETOED,
-    CR_SUCCESS, DN_HAS_PROBLEM,
+    CM_Get_DevNode_Registry_PropertyW, CM_Get_DevNode_Status, CM_Get_Device_IDW, CM_Get_Parent,
+    CM_LOCATE_DEVNODE_NORMAL, CM_LOCATE_DEVNODE_PHANTOM, CM_Locate_DevNodeW,
+    CM_Set_DevNode_Registry_PropertyW, CONFIGFLAG_DISABLED, CONFIGRET, CR_NO_SUCH_DEVNODE,
+    CR_NO_SUCH_VALUE, CR_REMOVE_VETOED, CR_SUCCESS, DN_HAS_PROBLEM, MAX_DEVICE_ID_LEN,
 };
 
 use super::super::device::{DevState, PROBLEM_DISABLED};
-use super::wide;
+use super::{from_wide, wide};
+
+/// The most parents walked from the Dante NIC: far more than any device
+/// tree has between a NIC and its root.
+const MAX_DEPTH: usize = 64;
 
 /// A CONFIGRET as an error text.
 fn cr_text(call: &str, cr: CONFIGRET) -> String {
@@ -89,6 +93,48 @@ fn read(dev: u32, present: bool) -> Result<DevState, String> {
         problem: (status & DN_HAS_PROBLEM != 0).then_some(problem),
         config_disabled,
     })
+}
+
+/// The instance path of devnode `dev`.
+fn device_id(dev: u32) -> Result<String, String> {
+    let mut buf = vec![0u16; MAX_DEVICE_ID_LEN as usize + 1];
+    // SAFETY: a buffer of `buf.len()` UTF-16 units; the id is at most
+    // MAX_DEVICE_ID_LEN plus its NUL.
+    let cr = unsafe { CM_Get_Device_IDW(dev, buf.as_mut_ptr(), buf.len() as u32, 0) };
+    if cr != CR_SUCCESS {
+        return Err(cr_text("CM_Get_Device_ID", cr));
+    }
+    Ok(from_wide(&buf))
+}
+
+/// The Dante NIC's instance path `id`, then each of its parents' up to the
+/// root; empty when the NIC or a parent was not read (then `[[device]]`
+/// disables nothing).
+pub fn chain(id: &str) -> Vec<String> {
+    let walk = || -> Result<Vec<String>, String> {
+        let (mut dev, _) = locate(id)?.ok_or("not found")?;
+        let mut out = vec![id.to_string()];
+        for _ in 0..MAX_DEPTH {
+            let mut parent = 0u32;
+            // SAFETY: an out handle and a devnode handle from CM_Locate_DevNode
+            // or an earlier CM_Get_Parent.
+            match unsafe { CM_Get_Parent(&mut parent, dev, 0) } {
+                CR_SUCCESS => {}
+                CR_NO_SUCH_DEVNODE => return Ok(out),
+                cr => return Err(cr_text("CM_Get_Parent", cr)),
+            }
+            out.push(device_id(parent)?);
+            dev = parent;
+        }
+        Err(format!("more than {MAX_DEPTH} parents"))
+    };
+    match walk() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(nic = id, error = %e, "the Dante NIC's device path was not read: no [[device]] entry is disabled (dasio#181)");
+            Vec::new()
+        }
+    }
 }
 
 /// The device with instance path `id`; `None` when the PC has no such

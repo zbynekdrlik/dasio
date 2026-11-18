@@ -5,7 +5,10 @@ use super::*;
 
 const AUDIO: &str = r"PCI\VEN_8086&DEV_54C8&SUBSYS_17951025&REV_00\3&11583659&0&FB";
 const BT: &str = r"USB\VID_8087&PID_0026\5&C99FFEC&0&10";
-const NIC: &str = r"PCI\VEN_10EC&DEV_8168&SUBSYS_00000000&REV_15\4&2A2C2B1&0&00E3";
+const NIC: &str = r"USB\VID_0BDA&PID_8156\4F13000001";
+/// The hub and the host controller mbc's USB Dante NIC hangs on.
+const HUB: &str = r"USB\ROOT_HUB30\5&1EF46A2D&0&0";
+const XHCI: &str = r"PCI\VEN_1022&DEV_1639&SUBSYS_387017AA&REV_00\4&2D99F355&0&0441";
 
 fn profile(entries: &str) -> Profile {
     parse(&format!("name = \"dsg\"\n{entries}")).unwrap()
@@ -29,7 +32,7 @@ fn pc(devices: &[(&str, DevState)]) -> Pc {
             .iter()
             .map(|(id, s)| (id.to_ascii_uppercase(), *s))
             .collect(),
-        nic_instance: Some(NIC.into()),
+        nic_chain: vec![NIC.into(), HUB.into(), XHCI.into(), r"HTREE\ROOT\0".into()],
         ..Pc::default()
     }
 }
@@ -102,10 +105,17 @@ fn an_entry_must_name_one_device_by_its_whole_instance_path() {
         err(AUDIO, "a", " "),
         format!("device {AUDIO:?}: why must not be empty")
     );
-    // An empty part does not count: `PCI\\X` is still bus and device only.
+    // An empty part names nothing Device Manager shows.
     assert_eq!(
         err(r"PCI\\X", "a", "b"),
         r#"device "PCI\\\\X": give the whole device instance path: <bus>\<device>\<instance>"#
+    );
+    assert_eq!(
+        err(&format!("{AUDIO}\\"), "a", "b"),
+        format!(
+            "device {:?}: give the whole device instance path: <bus>\\<device>\\<instance>",
+            format!("{AUDIO}\\")
+        )
     );
 }
 
@@ -291,18 +301,59 @@ fn the_dante_nic_is_never_disabled_and_its_entry_is_a_problem() {
     );
     assert_eq!(problems.len(), 2);
     assert_eq!(plan(&p, &r), vec![Action::Disable(AUDIO.into())]);
-    // Without a known Dante NIC, the guard compares with nothing.
-    let unknown = Pc {
-        nic_instance: None,
-        ..r
+}
+
+#[test]
+fn a_device_the_dante_nic_hangs_on_is_never_disabled() {
+    // Its hub or host controller off cuts the USB NIC off just the same.
+    let p = profile(&format!(
+        "{}{}{}",
+        entry(HUB, "usb hub"),
+        entry(&XHCI.to_ascii_lowercase(), "usb host"),
+        entry(AUDIO, "audio")
+    ));
+    let on = state(true, None, false);
+    let r = pc(&[(HUB, on), (XHCI, on), (AUDIO, on)]);
+    let found: Vec<(String, String)> = check(&p, &r)
+        .into_iter()
+        .map(|pr| (pr.found, pr.want))
+        .collect();
+    let hangs = (
+        "a device the Dante NIC hangs on".to_string(),
+        "an entry for another device".to_string(),
+    );
+    assert_eq!(found, [hangs.clone(), hangs, ("on".into(), "off".into())]);
+    assert_eq!(plan(&p, &r), vec![Action::Disable(AUDIO.into())]);
+}
+
+#[test]
+fn without_the_dante_nic_s_path_nothing_is_disabled() {
+    // Fail closed: an unread NIC must not turn the guard off.
+    let p = profile(&format!(
+        "{}{}",
+        entry(NIC, "dante nic"),
+        entry(AUDIO, "audio")
+    ));
+    let r = Pc {
+        nic_chain: Vec::new(),
+        ..pc(&[
+            (NIC, state(true, None, false)),
+            (AUDIO, state(true, None, false)),
+        ])
     };
     assert_eq!(
-        plan(&p, &unknown),
-        vec![
-            Action::Disable(NIC.to_ascii_lowercase()),
-            Action::Disable(AUDIO.into())
-        ]
+        check(&p, &r),
+        vec![Problem {
+            what: "the 2 [[device]] entries".into(),
+            found: "not checked: the Dante NIC's device path was not read".into(),
+            want: "the Dante NIC's device and its parents, so no entry can cut it off".into(),
+            why: "no device is disabled without them (dasio#181)".into(),
+            must: false,
+        }]
     );
+    assert_eq!(plan(&p, &r), Vec::<Action>::new());
+    // A profile without devices needs no NIC path.
+    assert_eq!(check(&profile(""), &r), Vec::<Problem>::new());
 }
 
 #[test]

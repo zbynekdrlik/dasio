@@ -8,8 +8,10 @@
 //! The check reads the device's live state (its problem code: 22 is
 //! "disabled") and whether it stays off across a boot (CONFIGFLAG_DISABLED
 //! in its Enum key's `ConfigFlags`); `apply` disables it now and for every
-//! boot. An entry naming the Dante NIC itself is refused: disabling it
-//! cuts a remote PC off (mbc has no other NIC).
+//! boot. An entry naming the Dante NIC, or a device it hangs on (its USB
+//! hub, host controller, PCI bridge), is refused: disabling it cuts a
+//! remote PC off (mbc has no other NIC). Without the NIC's device path
+//! nothing is disabled at all.
 //!
 //! The portable part (validation, the check, the plan) is here; reading
 //! and disabling the device is [`windows`](super::windows).
@@ -87,8 +89,9 @@ pub fn validate(e: &DeviceEntry) -> Result<(), String> {
     if id.to_ascii_uppercase().starts_with("HKLM") {
         return fail(r"give the device instance path (e.g. PCI\VEN_...\...), not a registry key");
     }
-    // Bus, device and instance: a bare bus or hardware id names no one device.
-    if id.split('\\').filter(|p| !p.is_empty()).count() < 3 {
+    // Bus, device and instance, none empty: a bare bus or hardware id names
+    // no one device, and a stray `\` never matches Device Manager's path.
+    if id.split('\\').count() < 3 || id.split('\\').any(str::is_empty) {
         return fail(r"give the whole device instance path: <bus>\<device>\<instance>");
     }
     if e.name.trim().is_empty() {
@@ -100,16 +103,37 @@ pub fn validate(e: &DeviceEntry) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether `e` names the Dante NIC (`nic`, its instance path).
-fn is_nic(e: &DeviceEntry, nic: Option<&str>) -> bool {
-    nic.is_some_and(|n| n.eq_ignore_ascii_case(&e.instance_id))
+/// What `e` is to the Dante NIC: `Some` when disabling it cuts the NIC off
+/// (`chain` is the NIC's path, then its parents').
+fn guarded(e: &DeviceEntry, chain: &[String]) -> Option<&'static str> {
+    match chain
+        .iter()
+        .position(|c| c.eq_ignore_ascii_case(&e.instance_id))?
+    {
+        0 => Some("the Dante NIC"),
+        _ => Some("a device the Dante NIC hangs on"),
+    }
 }
 
 /// Each entry against the PC: one problem (WARN, never must-have) for a
 /// device that is not off, one for a missing one (unless `absent_ok`), one
-/// for an unreadable one, and one for an entry naming the Dante NIC.
+/// for an unreadable one, and one for an entry naming the Dante NIC or a
+/// device it hangs on. Without the NIC's path, one problem for them all
+/// (and [`plan`] disables nothing).
 pub fn check(entries: &[DeviceEntry], r: &dyn Reader) -> Vec<Problem> {
-    let nic = r.nic_instance_id();
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    let chain = r.nic_chain();
+    if chain.is_empty() {
+        return vec![Problem {
+            what: format!("the {} [[device]] entries", entries.len()),
+            found: "not checked: the Dante NIC's device path was not read".into(),
+            want: "the Dante NIC's device and its parents, so no entry can cut it off".into(),
+            why: "no device is disabled without them (dasio#181)".into(),
+            must: false,
+        }];
+    }
     let mut out = Vec::new();
     for e in entries {
         let what = format!("device {} ({})", e.name, e.instance_id);
@@ -120,11 +144,11 @@ pub fn check(entries: &[DeviceEntry], r: &dyn Reader) -> Vec<Problem> {
             why,
             must: false,
         };
-        if is_nic(e, nic.as_deref()) {
+        if let Some(it) = guarded(e, &chain) {
             out.push(Problem {
                 want: "an entry for another device".into(),
                 ..problem(
-                    "the Dante NIC".into(),
+                    it.into(),
                     "never disabled by the profile: it cuts the PC off (dasio#181)".into(),
                 )
             });
@@ -142,13 +166,16 @@ pub fn check(entries: &[DeviceEntry], r: &dyn Reader) -> Vec<Problem> {
 }
 
 /// The instance paths `apply` disables: every device that is there and not
-/// off, never the Dante NIC; an unreadable one too (the disable says why
-/// it fails).
+/// off, an unreadable one too (the disable says why it fails); never the
+/// Dante NIC or a device it hangs on, and nothing without the NIC's path.
 pub fn plan(entries: &[DeviceEntry], r: &dyn Reader) -> Vec<String> {
-    let nic = r.nic_instance_id();
+    let chain = r.nic_chain();
+    if chain.is_empty() {
+        return Vec::new();
+    }
     entries
         .iter()
-        .filter(|e| !is_nic(e, nic.as_deref()))
+        .filter(|e| guarded(e, &chain).is_none())
         .filter(|e| match r.device(&e.instance_id) {
             Ok(Some(s)) => !s.off(),
             Ok(None) => false,

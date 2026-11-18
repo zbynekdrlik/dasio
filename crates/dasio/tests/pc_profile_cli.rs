@@ -260,3 +260,46 @@ fn apply_disables_a_device_now_and_for_every_boot() {
         Err(r"device ROOT\DASIO_CI_NONE\0000: not on this PC".into())
     );
 }
+
+#[test]
+fn apply_holds_an_unplugged_device_off_for_when_it_comes_back() {
+    // dasio#181: a device known but not connected (a phantom devnode, like
+    // mbc's Wi-Fi) gets CONFIGFLAG_DISABLED, so it stays off when it comes
+    // back. On a phantom of the runner that is not held off yet.
+    use dasio::pc_profile::{Action, DevState, Reader, parse, windows::Pc};
+    let out = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-PnpDevice | Where-Object { -not $_.Present } | ForEach-Object { $_.InstanceId }",
+        ])
+        .output()
+        .unwrap();
+    let ids = String::from_utf8_lossy(&out.stdout).into_owned();
+    let pc = Pc::new(&parse("name = \"ci\"\n").unwrap());
+    let id = ids
+        .lines()
+        .map(str::trim)
+        .find(|id| {
+            matches!(
+                pc.device(id),
+                Ok(Some(DevState {
+                    present: false,
+                    config_disabled: false,
+                    ..
+                }))
+            )
+        })
+        .unwrap_or_else(|| panic!("no unplugged device on the runner that is not held off: {ids}"))
+        .to_string();
+    pc.apply(&Action::Disable(id.clone())).unwrap();
+    assert_eq!(
+        pc.device(&id).unwrap(),
+        Some(DevState {
+            present: false,
+            problem: None,
+            config_disabled: true,
+        }),
+        "{id}"
+    );
+}

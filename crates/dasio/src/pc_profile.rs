@@ -34,7 +34,7 @@
 //!   installs it ([`nic_driver`]).
 //! - `[[device]]`: a device the PC does not need, held off (by its device
 //!   instance path, site data, dasio#181); `apply` disables it now and for
-//!   every boot, never the Dante NIC ([`device`]).
+//!   every boot, never the Dante NIC or a device it hangs on ([`device`]).
 //!
 //! Besides, the service holds the services Windows turns back on by itself
 //! (UsoSvc, dasio#158; DoSvc, dasio#26) off before each check ([`hold`]).
@@ -288,9 +288,10 @@ pub trait Reader {
     /// The Dante NIC's PnP hardware IDs (its Enum key's `HardwareID`),
     /// most specific first; empty when the NIC was not found.
     fn nic_hardware_ids(&self) -> Vec<String>;
-    /// The Dante NIC's device instance path; `None` when the NIC was not
-    /// found.
-    fn nic_instance_id(&self) -> Option<String>;
+    /// The Dante NIC's device instance path, then each of its parents' up
+    /// to the root (`[[device]]` never disables one); empty when the NIC or
+    /// a parent was not read.
+    fn nic_chain(&self) -> Vec<String>;
     /// The device with instance path `id` ([`device`]); `Ok(None)` when the
     /// PC has no such device (no Enum key).
     fn device(&self, id: &str) -> Result<Option<DevState>, String>;

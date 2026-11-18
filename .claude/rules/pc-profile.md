@@ -80,8 +80,10 @@ paths:
   (CONFIGFLAG_DISABLED), or unplugged with the flag; else a WARN naming the
   state (`on`, `off until the next boot`, `not connected, on when
   connected`). `apply` runs `CM_Disable_DevNode(PERSIST)` and sets the flag
-  (a vetoed stop is a FAILED line). An entry naming the Dante NIC is refused,
-  never planned: disabling it cuts the PC off. Never hold a device with a
+  (a vetoed stop is a FAILED line). An entry naming the Dante NIC or a
+  device it hangs on (its USB hub, host controller, PCI bridge: the NIC's
+  `CM_Get_Parent` chain) is refused, never planned: disabling it cuts the PC
+  off. Without that chain (NIC not read) nothing is checked or disabled. Never hold a device with a
   raw `Enum\...\ConfigFlags` `[[registry]]` entry (exact DWORD, clobbers
   other bits, only at boot): dsg's 16 move to `[[device]]` at its next
   deploy. Read a PC's devices with `Get-PnpDevice` (InstanceId, Status,

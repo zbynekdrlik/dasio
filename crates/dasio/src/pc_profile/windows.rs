@@ -121,8 +121,9 @@ pub struct Pc {
     nic_service: Option<String>,
     /// The Dante NIC's hardware IDs (its Enum key's `HardwareID`).
     nic_hardware_ids: Vec<String>,
-    /// The Dante NIC's device instance path.
-    nic_instance: Option<String>,
+    /// The Dante NIC's device instance path, then its parents' (empty when
+    /// not read: `[[device]]` then disables nothing).
+    nic_chain: Vec<String>,
 }
 
 impl Pc {
@@ -160,7 +161,7 @@ impl Pc {
             nic_device,
             nic_service,
             nic_hardware_ids,
-            nic_instance: instance,
+            nic_chain: instance.as_deref().map(device::chain).unwrap_or_default(),
         }
     }
 
@@ -231,8 +232,8 @@ impl Reader for Pc {
         self.nic_hardware_ids.clone()
     }
 
-    fn nic_instance_id(&self) -> Option<String> {
-        self.nic_instance.clone()
+    fn nic_chain(&self) -> Vec<String> {
+        self.nic_chain.clone()
     }
 
     fn device(&self, id: &str) -> Result<Option<DevState>, String> {
