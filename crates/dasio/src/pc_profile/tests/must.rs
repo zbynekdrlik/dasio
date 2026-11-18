@@ -362,7 +362,12 @@ fn install_ps1_restarts_the_process_keeper_around_its_copy() {
     let start = at("throw \"the process keeper ($keepTask) did not start\"");
     let ended = at("throw \"the process keeper ($keepTask) ended right after its start");
     assert!(
-        stop < copy && copy < register && register < finally && finally < start && start < ended
+        stop < ended_left
+            && ended_left < copy
+            && copy < register
+            && register < finally
+            && finally < start
+            && start < ended
     );
     assert!(s.contains("New-ScheduledTaskAction -Execute $keepExe -Argument \"pc-profile keep\""));
     assert!(s.contains("(New-ScheduledTaskTrigger -AtStartup)"));
