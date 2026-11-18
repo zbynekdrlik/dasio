@@ -259,10 +259,23 @@ fn install_ps1_refuses_before_it_touches_the_instance() {
     assert!(at("& gpupdate.exe") > stop);
     assert!(s[refuse..stop].contains("throw \"the baseline step:"));
     assert!(s[guid..apply].contains("throw \"the baseline step:"));
+    // Applied before the stop, and again after the forced Group Policy
+    // refresh: on mbc (18.11.2026) that refresh removed a policy value the
+    // first apply had just written (Defender's DisableAntiSpyware, dasio#24).
     assert_eq!(
         s.matches(" pc-profile apply\n").count(),
-        1,
-        "applied once, before the stop"
+        2,
+        "applied before the stop and again after gpupdate"
+    );
+    let gp = at("& gpupdate.exe");
+    let again = s[gp..]
+        .find(" pc-profile apply\n")
+        .map(|i| gp + i)
+        .expect("applied again after gpupdate");
+    assert!(apply < stop && stop < gp && gp < again);
+    assert!(
+        s[again..].contains("$applied = $LASTEXITCODE"),
+        "the second apply's result is the one reported"
     );
 }
 
