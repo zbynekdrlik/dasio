@@ -292,9 +292,9 @@ pub trait Reader {
     /// to the root (`[[device]]` never disables one); empty when the NIC or
     /// a parent was not read.
     fn nic_chain(&self) -> Vec<String>;
-    /// Each network adapter with an IPv4 address: its device instance path,
+    /// Each network adapter that is up or has an address: its device path,
     /// then its parents' up to the root (`[[device]]` never disables one).
-    fn addressed(&self) -> Result<Vec<Vec<String>>, String>;
+    fn live(&self) -> Result<Vec<Vec<String>>, String>;
     /// The parents of device `id` up to the root, nearest first.
     fn parents(&self, id: &str) -> Result<Vec<String>, String>;
     /// The device with instance path `id` ([`device`]); `Ok(None)` when the

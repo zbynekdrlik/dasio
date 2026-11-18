@@ -348,7 +348,7 @@ fn without_the_dante_nic_s_path_nothing_is_disabled() {
         vec![Problem {
             what: "the 2 [[device]] entries".into(),
             found: "not checked: the Dante NIC's device path was not read".into(),
-            want: "the Dante NIC's device, every adapter with an address and their parents, so no entry can cut the PC off".into(),
+            want: "the Dante NIC's device, every live network adapter and their parents, so no entry can cut the PC off".into(),
             why: "no device is disabled without them (dasio#181)".into(),
             must: false,
         }]
@@ -406,13 +406,13 @@ fn the_bridge_s_in_process_check_keeps_the_devices() {
     assert_eq!(in_process(&p).device, p.device);
 }
 
-/// dsg's LAN VLAN adapter (layout B): the remote path, with an address.
+/// dsg's LAN VLAN adapter (layout B): the remote path, up with an address.
 const LAN: &str = r"ROOT\NET\0001";
 const LAN_PARENT: &str = r"ROOT\RTVNIC\0000";
 
 fn with_lan(devices: &[(&str, DevState)]) -> Pc {
     Pc {
-        addressed: vec![
+        live: vec![
             vec![NIC.into(), HUB.into(), XHCI.into(), r"HTREE\ROOT\0".into()],
             vec![LAN.into(), LAN_PARENT.into(), r"HTREE\ROOT\0".into()],
         ],
@@ -435,8 +435,8 @@ fn an_adapter_with_an_address_and_what_it_hangs_on_are_never_disabled() {
     assert_eq!(
         found,
         [
-            "a network adapter with an address (a path to the PC)",
-            "a device a network adapter with an address hangs on",
+            "a network adapter that is up or has an address (a path of the PC)",
+            "a device a live network adapter hangs on",
             "on"
         ]
     );
@@ -464,7 +464,7 @@ fn a_device_below_the_dante_nic_or_an_addressed_adapter_is_never_disabled() {
     .into_iter()
     .map(|(id, p)| (id.to_ascii_uppercase(), p))
     .collect();
-    let below = "a device below the Dante NIC or a network adapter with an address";
+    let below = "a device below the Dante NIC or a live network adapter";
     let problems = check(&p, &r);
     assert_eq!(
         problems
@@ -501,7 +501,7 @@ fn a_device_whose_parents_are_unreadable_is_never_disabled() {
 fn without_the_addressed_adapters_nothing_is_disabled() {
     let p = profile(&format!("{}{}", entry(AUDIO, "audio"), entry(BT, "bt")));
     let r = Pc {
-        addressed_err: Some("GetAdaptersAddresses: os error 8".into()),
+        live_err: Some("GetAdaptersAddresses: os error 8".into()),
         ..pc(&[(AUDIO, state(true, None, false))])
     };
     assert_eq!(
@@ -509,7 +509,7 @@ fn without_the_addressed_adapters_nothing_is_disabled() {
         vec![Problem {
             what: "the 2 [[device]] entries".into(),
             found: "not checked: the PC's network adapters were not read (GetAdaptersAddresses: os error 8)".into(),
-            want: "the Dante NIC's device, every adapter with an address and their parents, so no entry can cut the PC off".into(),
+            want: "the Dante NIC's device, every live network adapter and their parents, so no entry can cut the PC off".into(),
             why: "no device is disabled without them (dasio#181)".into(),
             must: false,
         }]

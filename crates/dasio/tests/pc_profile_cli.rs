@@ -239,7 +239,7 @@ fn check_reads_a_device_through_the_configuration_manager_and_plan_names_the_dis
     let head = format!("name = \"ci\"\nnic_guid = \"{guid}\"\n");
     let pc = Pc::new(&parse(&format!("{head}{}", entry(missing, "missing"))).unwrap());
     let chain = pc.nic_chain();
-    let addressed = pc.addressed().unwrap();
+    let live = pc.live().unwrap();
     assert!(
         !chain.is_empty(),
         "the runner's adapter {guid}: no device path"
@@ -249,11 +249,11 @@ fn check_reads_a_device_through_the_configuration_manager_and_plan_names_the_dis
         .find(|id| {
             !chain
                 .iter()
-                .chain(addressed.iter().flatten())
+                .chain(live.iter().flatten())
                 .any(|c| c.eq_ignore_ascii_case(id))
         })
         .unwrap_or_else(|| {
-            panic!("every running ROOT device is on a network path {chain:?} {addressed:?}")
+            panic!("every running ROOT device is on a network path {chain:?} {live:?}")
         });
     let (dir, file) = profile(
         "device",
@@ -386,19 +386,21 @@ fn the_dante_nic_s_parent_chain_is_read_up_to_the_root() {
 
 #[test]
 fn the_addressed_adapters_are_read_with_their_parents() {
-    // dasio#181: the runner's adapter that is up carries an address, so
-    // the guard holds it and its parents, each chain ending at the root.
+    // dasio#181: the runner's adapter that is up is live, so the guard
+    // holds it and its parents, each chain ending at the root (on Azure the
+    // first one up is the accelerated-networking VF, which has no address:
+    // the synthetic adapter riding on it does).
     use dasio::pc_profile::{Reader, parse, windows::Pc};
     let (guid, pnp) = runner_nic();
     let entry =
         "[[device]]\ninstance_id = 'ROOT\\DASIO_CI_NONE\\0000'\nname = \"x\"\nwhy = \"ci\"\n";
     let pc = Pc::new(&parse(&format!("name = \"ci\"\nnic_guid = \"{guid}\"\n{entry}")).unwrap());
-    let addressed = pc.addressed().unwrap();
+    let live = pc.live().unwrap();
     assert!(
-        addressed.iter().any(|c| c[0].eq_ignore_ascii_case(&pnp)),
-        "{pnp} not among {addressed:?}"
+        live.iter().any(|c| c[0].eq_ignore_ascii_case(&pnp)),
+        "{pnp} not among {live:?}"
     );
-    for c in &addressed {
+    for c in &live {
         assert_eq!(c.last().map(String::as_str), Some(r"HTREE\ROOT\0"), "{c:?}");
     }
     assert_eq!(pc.parents(&pnp).unwrap(), pc.nic_chain()[1..].to_vec());
