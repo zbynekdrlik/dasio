@@ -151,6 +151,10 @@ fn bridge_running() -> BridgeFacts {
         from_asio_age: None,
         rx: None,
         from_asio_pull: None,
+        driver_input_latency_frames: 0,
+        driver_output_latency_frames: 0,
+        to_asio_target_ns: 0,
+        from_asio_target_ns: 0,
     }
 }
 
@@ -164,6 +168,8 @@ fn the_bridge_facts_come_from_the_runner_s_status() {
         buffer_frames: 128,
         resets: 4,
         late_bins: [1, 2, 3, 4, 5, 6, 7, 8],
+        input_latency_frames: 416,
+        output_latency_frames: 608,
         ..Default::default()
     };
     let f = BridgeFacts::of(
@@ -197,6 +203,11 @@ fn the_bridge_facts_come_from_the_runner_s_status() {
             from_asio_age: Some(AGE_DSG),
             rx: None,
             from_asio_pull: None,
+            driver_input_latency_frames: 416,
+            driver_output_latency_frames: 608,
+            // The targets come from the players, not the status.
+            to_asio_target_ns: 0,
+            from_asio_target_ns: 0,
         }
     );
     let running = dstack_asio::Status {
@@ -870,4 +881,157 @@ fn the_bridge_counts_line_logs_the_peak_lateness_beside_the_bins() {
     assert!(bins < peak && peak - bins < 80, "right after the bins");
     let line = src[..bins].rfind("info!(").expect("the counts line");
     assert!(src[line..bins].contains("late_callbacks = s.late_callbacks,"));
+}
+
+/// dsg on Waves SoundGrid ASIO, 18.11.2026 (dasio#187): 96 kHz, the
+/// driver's latencies 416 / 608 frames, the measured from-ASIO hold
+/// 2784 us, the read wait 1190 us, both converters 167 us.
+fn bridge_dsg() -> BridgeFacts {
+    BridgeFacts {
+        driver: "Waves SoundGrid ASIO".into(),
+        driver_input_latency_frames: 416,
+        driver_output_latency_frames: 608,
+        to_asio_converter_delay_ns: 166_667,
+        from_asio_converter_delay_ns: 166_667,
+        to_asio_target_ns: 1_000_000,
+        from_asio_target_ns: 3_000_000,
+        from_asio_age: Some(AgeReport {
+            block_age_us: Some(2_784),
+            ..AGE_DSG
+        }),
+        rx: Some(crate::rx_arrival::Report {
+            wait: Some(crate::rx_arrival::Wait {
+                mean_ns: Some(1_190_000),
+                peak_us: 0,
+            }),
+            ..Default::default()
+        }),
+        ..bridge_running()
+    }
+}
+
+#[test]
+fn the_bridge_s_delay_each_way_is_the_driver_s_latency_plus_the_measured_hold() {
+    assert_eq!(
+        delays(&bridge_dsg()),
+        Some(Delays {
+            // 4333 (416 frames) + 2784 + 166.
+            asio_to_dante_us: 7_283,
+            // 1190 + 166 + 6333 (608 frames).
+            dante_to_asio_us: 7_689,
+        })
+    );
+}
+
+#[test]
+fn without_a_measured_hold_the_target_counts() {
+    let f = BridgeFacts {
+        from_asio_age: None,
+        rx: None,
+        ..bridge_dsg()
+    };
+    assert_eq!(
+        delays(&f),
+        Some(Delays {
+            asio_to_dante_us: 4_333 + 3_000 + 166,
+            dante_to_asio_us: 1_000 + 166 + 6_333,
+        })
+    );
+}
+
+#[test]
+fn no_delay_while_the_driver_does_not_run_or_has_not_told_its_latency() {
+    let stopped = BridgeFacts {
+        running: false,
+        ..bridge_dsg()
+    };
+    assert_eq!(delays(&stopped), None);
+    let no_rate = BridgeFacts {
+        rate: 0,
+        ..bridge_dsg()
+    };
+    assert_eq!(delays(&no_rate), None);
+    let no_in = BridgeFacts {
+        driver_input_latency_frames: 0,
+        ..bridge_dsg()
+    };
+    assert_eq!(delays(&no_in), None);
+    let no_out = BridgeFacts {
+        driver_output_latency_frames: 0,
+        ..bridge_dsg()
+    };
+    assert_eq!(delays(&no_out), None);
+}
+
+#[test]
+fn the_line_names_the_card_and_says_each_way_in_ms() {
+    let line = bridge_line(&bridge_dsg());
+    assert!(
+        line.starts_with(
+            "bridge to \"Waves SoundGrid ASIO\": running 96000 Hz / 256 · Waves SoundGrid → Dante 7.3 ms · Dante → Waves SoundGrid 7.7 ms · underruns to ASIO 2 / from ASIO 5"
+        ),
+        "{line}"
+    );
+    let j = bridge_json(&bridge_dsg());
+    assert!(
+        j.contains("\"bridge_asio_to_dante_us\":7283,\"bridge_dante_to_asio_us\":7689,"),
+        "{j}"
+    );
+    // Not running: neither in the line nor in the JSON.
+    let stopped = BridgeFacts {
+        running: false,
+        ..bridge_dsg()
+    };
+    assert!(!bridge_line(&stopped).contains("→ Dante"));
+    assert!(!bridge_json(&stopped).contains("bridge_asio_to_dante_us"));
+}
+
+#[test]
+fn the_card_s_name_drops_its_asio_suffix() {
+    assert_eq!(side_name("Waves SoundGrid ASIO"), "Waves SoundGrid");
+    assert_eq!(side_name("MiniFuse ASIO Driver"), "MiniFuse");
+    assert_eq!(side_name("ASIO"), "ASIO");
+    assert_eq!(side_name(" ASIO"), " ASIO");
+    assert_eq!(side_name("Focusrite USB"), "Focusrite USB");
+}
+
+#[test]
+fn a_hold_neither_measured_nor_targeted_gives_no_figure() {
+    // A 0 target is "unknown", never a 0 ms hold.
+    let no_from = BridgeFacts {
+        from_asio_age: None,
+        from_asio_target_ns: 0,
+        ..bridge_dsg()
+    };
+    assert_eq!(delays(&no_from), None);
+    let no_to = BridgeFacts {
+        rx: None,
+        to_asio_target_ns: 0,
+        ..bridge_dsg()
+    };
+    assert_eq!(delays(&no_to), None);
+    // Measured, a 0 target does not matter.
+    let measured = BridgeFacts {
+        from_asio_target_ns: 0,
+        to_asio_target_ns: 0,
+        ..bridge_dsg()
+    };
+    assert!(delays(&measured).is_some());
+}
+
+#[test]
+fn the_bridge_fills_each_direction_s_target_from_its_own_player() {
+    // dasio#187: the targets are the delays' fallback; each comes from its
+    // own direction's stats (Windows glue, read as text).
+    let src = include_str!("../run_bridge.rs").replace("\r\n", "\n");
+    for needle in [
+        "to_asio_target_ns: (to_stats.target_ms() * 1e6) as u64,",
+        "from_asio_target_ns: (from_stats.target_ms() * 1e6) as u64,",
+    ] {
+        assert_eq!(
+            src.matches(needle).count(),
+            1,
+            "{needle}: once in run_bridge.rs"
+        );
+    }
 }

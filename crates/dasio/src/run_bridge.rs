@@ -210,6 +210,8 @@ pub fn run(
                 from_asio_pull: from_pull.as_ref().map(|p| p.view()),
                 to_asio_converter_delay_ns: to_stats.converter_delay_ns(),
                 from_asio_converter_delay_ns: from_stats.converter_delay_ns(),
+                to_asio_target_ns: (to_stats.target_ms() * 1e6) as u64,
+                from_asio_target_ns: (from_stats.target_ms() * 1e6) as u64,
                 ..BridgeFacts::of(
                     &driver,
                     &s,

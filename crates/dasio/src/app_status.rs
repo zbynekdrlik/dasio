@@ -237,6 +237,14 @@ pub struct BridgeFacts {
     /// channels (dstack's status `tx_pull`); `None` for a bridge with no
     /// channel from ASIO.
     pub from_asio_pull: Option<TxFillView>,
+    /// The driver's reported input and output latency, frames (its last
+    /// open): how long its card's side holds a sample each way (dasio#187).
+    pub driver_input_latency_frames: u32,
+    pub driver_output_latency_frames: u32,
+    /// Each direction's target hold, ns (the players' `target_ms`): the
+    /// fallback while no hold was measured (dasio#187); 0 when unknown.
+    pub to_asio_target_ns: u64,
+    pub from_asio_target_ns: u64,
 }
 
 impl BridgeFacts {
@@ -270,7 +278,97 @@ impl BridgeFacts {
             from_asio_age,
             rx: None,
             from_asio_pull: None,
+            driver_input_latency_frames: status.input_latency_frames,
+            driver_output_latency_frames: status.output_latency_frames,
+            to_asio_target_ns: 0,
+            from_asio_target_ns: 0,
         }
+    }
+}
+
+/// How long the bridge delays a sample each way, µs (dasio#187, owner
+/// 18.11.2026: "od kedy sample pritecie do sg sietovky a kedy opusti dante
+/// sietovku", and back).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Delays {
+    /// From its arrival at the ASIO side's card until it leaves the Dante
+    /// NIC: the driver's input latency + the from-ASIO hold (the measured
+    /// block age, else the target) + the converter.
+    pub asio_to_dante_us: u64,
+    /// From its arrival at the Dante NIC until it leaves the ASIO side's
+    /// card: the to-ASIO hold (the measured read wait, else the target) +
+    /// the converter + the driver's output latency.
+    pub dante_to_asio_us: u64,
+}
+
+/// The bridge's delays while its driver runs and has told its latencies;
+/// `None` otherwise.
+pub fn delays(f: &BridgeFacts) -> Option<Delays> {
+    if !f.running
+        || f.rate == 0
+        || f.driver_input_latency_frames == 0
+        || f.driver_output_latency_frames == 0
+    {
+        return None;
+    }
+    let frames = |n: u32| u64::from(n) * 1_000_000 / u64::from(f.rate);
+    // A hold not measured counts its target; neither known: no figure
+    // (a 0 would read as a fast bridge).
+    let from_hold = match f.from_asio_age.and_then(|a| a.block_age_us) {
+        Some(us) => us,
+        None if f.from_asio_target_ns > 0 => f.from_asio_target_ns / 1_000,
+        None => return None,
+    };
+    let to_hold = match f.rx.and_then(|r| r.wait).and_then(|w| w.mean_ns) {
+        Some(ns) => ns / 1_000,
+        None if f.to_asio_target_ns > 0 => f.to_asio_target_ns / 1_000,
+        None => return None,
+    };
+    Some(Delays {
+        asio_to_dante_us: frames(f.driver_input_latency_frames)
+            .saturating_add(from_hold)
+            .saturating_add(f.from_asio_converter_delay_ns / 1_000),
+        dante_to_asio_us: to_hold
+            .saturating_add(f.to_asio_converter_delay_ns / 1_000)
+            .saturating_add(frames(f.driver_output_latency_frames)),
+    })
+}
+
+/// The ASIO side's name in the line: the driver's, without " ASIO Driver"
+/// or " ASIO" at its end ("Waves SoundGrid ASIO" reads "Waves SoundGrid").
+pub fn side_name(driver: &str) -> &str {
+    for suffix in [" ASIO Driver", " ASIO"] {
+        if let Some(head) = driver.strip_suffix(suffix)
+            && !head.is_empty()
+        {
+            return head;
+        }
+    }
+    driver
+}
+
+/// The line's delays, one per direction, in ms with one decimal; empty
+/// without [`delays`].
+fn delays_suffix(f: &BridgeFacts) -> String {
+    let Some(d) = delays(f) else {
+        return String::new();
+    };
+    let side = side_name(&f.driver);
+    format!(
+        " · {side} → Dante {:.1} ms · Dante → {side} {:.1} ms",
+        d.asio_to_dante_us as f64 / 1_000.0,
+        d.dante_to_asio_us as f64 / 1_000.0
+    )
+}
+
+/// The JSON keys of [`delays`], each followed by a comma; empty without.
+fn delays_json(f: &BridgeFacts) -> String {
+    match delays(f) {
+        Some(d) => format!(
+            "\"bridge_asio_to_dante_us\":{},\"bridge_dante_to_asio_us\":{},",
+            d.asio_to_dante_us, d.dante_to_asio_us
+        ),
+        None => String::new(),
     }
 }
 
@@ -410,8 +508,9 @@ pub fn bridge_line(f: &BridgeFacts) -> String {
         }
     };
     format!(
-        "bridge to \"{}\": {now} · underruns to ASIO {} / from ASIO {} · resets {}{}{}{}{}",
+        "bridge to \"{}\": {now}{} · underruns to ASIO {} / from ASIO {} · resets {}{}{}{}{}",
         f.driver,
+        delays_suffix(f),
         f.to_asio_underruns,
         f.from_asio_underruns,
         f.resets,
@@ -467,7 +566,7 @@ pub fn bridge_json(f: &BridgeFacts) -> String {
             "{{\"line\":\"{}\",\"state\":\"{}\",\"kind\":\"bridge\",\"daw_attached\":false,",
             "\"driver\":\"{}\",\"running\":{},\"reason\":\"{}\",\"rate\":{},",
             "\"buffer_frames\":{},\"to_asio_underruns\":{},\"from_asio_underruns\":{},",
-            "\"resets\":{},{}{}\"pc_profile_problems\":{},{}{}{}{}{}}}"
+            "\"resets\":{},{}{}{}\"pc_profile_problems\":{},{}{}{}{}{}}}"
         ),
         escaped(&bridge_line(f)),
         bridge_state(f),
@@ -480,6 +579,7 @@ pub fn bridge_json(f: &BridgeFacts) -> String {
         f.from_asio_underruns,
         f.resets,
         late_bins_json(&f.late_bins),
+        delays_json(f),
         converter_json(f.to_asio_converter_delay_ns, f.from_asio_converter_delay_ns),
         f.pc_problems.map_or(-1, i64::from),
         age_json(f.from_asio_age),
