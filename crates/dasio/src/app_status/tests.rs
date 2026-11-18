@@ -994,3 +994,44 @@ fn the_card_s_name_drops_its_asio_suffix() {
     assert_eq!(side_name(" ASIO"), " ASIO");
     assert_eq!(side_name("Focusrite USB"), "Focusrite USB");
 }
+
+#[test]
+fn a_hold_neither_measured_nor_targeted_gives_no_figure() {
+    // A 0 target is "unknown", never a 0 ms hold.
+    let no_from = BridgeFacts {
+        from_asio_age: None,
+        from_asio_target_ns: 0,
+        ..bridge_dsg()
+    };
+    assert_eq!(delays(&no_from), None);
+    let no_to = BridgeFacts {
+        rx: None,
+        to_asio_target_ns: 0,
+        ..bridge_dsg()
+    };
+    assert_eq!(delays(&no_to), None);
+    // Measured, a 0 target does not matter.
+    let measured = BridgeFacts {
+        from_asio_target_ns: 0,
+        to_asio_target_ns: 0,
+        ..bridge_dsg()
+    };
+    assert!(delays(&measured).is_some());
+}
+
+#[test]
+fn the_bridge_fills_each_direction_s_target_from_its_own_player() {
+    // dasio#187: the targets are the delays' fallback; each comes from its
+    // own direction's stats (Windows glue, read as text).
+    let src = include_str!("../run_bridge.rs").replace("\r\n", "\n");
+    for needle in [
+        "to_asio_target_ns: (to_stats.target_ms() * 1e6) as u64,",
+        "from_asio_target_ns: (from_stats.target_ms() * 1e6) as u64,",
+    ] {
+        assert_eq!(
+            src.matches(needle).count(),
+            1,
+            "{needle}: once in run_bridge.rs"
+        );
+    }
+}

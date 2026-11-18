@@ -115,8 +115,10 @@ fn a_bridge_json_with_every_figure_is_one_object_within_dstack_s_cap() {
         "\"late_2000us\":18446744073709551615",
         "\"to_asio_converter_delay_us\":1333",
         "\"from_asio_converter_delay_us\":1333",
-        "\"bridge_asio_to_dante_us\":",
-        "\"bridge_dante_to_asio_us\":",
+        // u32::MAX frames at 96 kHz + the block age + the converter.
+        "\"bridge_asio_to_dante_us\":44739245639,",
+        // The read wait's u64::MAX ns in us + the converter + the frames.
+        "\"bridge_dante_to_asio_us\":18446788812953540,",
     ] {
         assert!(j.contains(key), "{key} missing in {j}");
     }

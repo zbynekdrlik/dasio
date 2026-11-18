@@ -312,14 +312,18 @@ pub fn delays(f: &BridgeFacts) -> Option<Delays> {
         return None;
     }
     let frames = |n: u32| u64::from(n) * 1_000_000 / u64::from(f.rate);
-    let from_hold = f
-        .from_asio_age
-        .and_then(|a| a.block_age_us)
-        .unwrap_or(f.from_asio_target_ns / 1_000);
-    let to_hold =
-        f.rx.and_then(|r| r.wait)
-            .and_then(|w| w.mean_ns)
-            .map_or(f.to_asio_target_ns / 1_000, |ns| ns / 1_000);
+    // A hold not measured counts its target; neither known: no figure
+    // (a 0 would read as a fast bridge).
+    let from_hold = match f.from_asio_age.and_then(|a| a.block_age_us) {
+        Some(us) => us,
+        None if f.from_asio_target_ns > 0 => f.from_asio_target_ns / 1_000,
+        None => return None,
+    };
+    let to_hold = match f.rx.and_then(|r| r.wait).and_then(|w| w.mean_ns) {
+        Some(ns) => ns / 1_000,
+        None if f.to_asio_target_ns > 0 => f.to_asio_target_ns / 1_000,
+        None => return None,
+    };
     Some(Delays {
         asio_to_dante_us: frames(f.driver_input_latency_frames)
             .saturating_add(from_hold)
