@@ -109,6 +109,14 @@ fn each_direction_takes_its_own_target_into_the_spec() {
     assert_eq!(spec.app_buffer_ns, Some(5_000_000));
     assert_eq!(spec.to_asio_app_buffer_ns, None);
     assert_eq!(spec.from_asio_app_buffer_ns, Some(2_000_000));
+    // Below dlink's 1 ms (dstack issue 422): a direction's own target
+    // reaches dstack's spec as written, never raised to 1 ms here.
+    let b = bridge_of(&format!(
+        "{FULL}to_asio_app_buffer_ns = 500000\nfrom_asio_app_buffer_ns = 750000\n"
+    ));
+    let spec = b.spec(&device()).unwrap();
+    assert_eq!(spec.to_asio_app_buffer_ns, Some(500_000));
+    assert_eq!(spec.from_asio_app_buffer_ns, Some(750_000));
 }
 
 #[test]
