@@ -1052,7 +1052,12 @@ fn the_delays_reach_dstack_s_figures_as_u32_us_0_while_not_known() {
 #[test]
 fn the_bridge_hands_dstack_its_driver_once_and_its_delays_every_counts_tick() {
     // dasio#187 (dstack v0.6.184): without these calls dcontroller shows no
-    // "<driver> → Dante X ms" line. Windows glue, read as text.
+    // "<driver> → Dante X ms" line. Windows glue (run_bridge.rs is not
+    // built on Linux), so a text guard is its only test here: it proves
+    // the calls and where they sit, not the BridgeFacts literal's fields.
+    // Those are guarded by the_bridge_fills_each_direction_s_target_from_
+    // its_own_player and read live from dsg's status and dcontroller after
+    // each deploy (the two figures must equal the dtray line's).
     let src = include_str!("../run_bridge.rs").replace("\r\n", "\n");
     let once = |needle: &str| {
         let found: Vec<usize> = src.match_indices(needle).map(|(i, _)| i).collect();
