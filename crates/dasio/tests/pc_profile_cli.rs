@@ -398,6 +398,7 @@ fn the_keeper_gives_a_running_process_its_entry_s_priority_and_affinity() {
     let after = pc.process("ping.exe");
     let again = pass(&p, &mut quiet, &mut failed, 2_000);
     child.kill().unwrap();
+    child.wait().unwrap();
     let before = before.expect("the ping runs");
     let after = after.expect("the ping still runs");
     assert_eq!(
