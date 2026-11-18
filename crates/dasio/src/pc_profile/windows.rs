@@ -29,8 +29,9 @@ use windows_sys::Win32::System::Threading::{
 };
 
 use super::absent::{self, AbsentEntry, Fallback, Removal, Step, Target};
-use super::{Action, ProcState, Profile, Reader, Value, get_ini, set_ini};
+use super::{Action, DevState, ProcState, Profile, Reader, Value, get_ini, set_ini};
 
+mod device;
 mod exe;
 
 const NET_CLASS: &str =
@@ -120,6 +121,8 @@ pub struct Pc {
     nic_service: Option<String>,
     /// The Dante NIC's hardware IDs (its Enum key's `HardwareID`).
     nic_hardware_ids: Vec<String>,
+    /// The Dante NIC's device instance path.
+    nic_instance: Option<String>,
 }
 
 impl Pc {
@@ -157,6 +160,7 @@ impl Pc {
             nic_device,
             nic_service,
             nic_hardware_ids,
+            nic_instance: instance,
         }
     }
 
@@ -213,6 +217,7 @@ impl Pc {
                 std::fs::write(path, set_ini(&text, key, value)).map_err(|e| format!("{file}: {e}"))
             }
             Action::Remove(r) => remove(r),
+            Action::Disable(id) => device::disable(id),
         }
     }
 }
@@ -224,6 +229,14 @@ impl Reader for Pc {
 
     fn nic_hardware_ids(&self) -> Vec<String> {
         self.nic_hardware_ids.clone()
+    }
+
+    fn nic_instance_id(&self) -> Option<String> {
+        self.nic_instance.clone()
+    }
+
+    fn device(&self, id: &str) -> Result<Option<DevState>, String> {
+        device::state(id)
     }
 
     fn absent(&self, e: &AbsentEntry) -> Result<Vec<String>, String> {

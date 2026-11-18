@@ -1,7 +1,9 @@
 //! `dasio pc-profile` as install.ps1 and the owner run it, on a
 //! GitHub-hosted Windows runner (dasio#128): a must-have item missing
 //! exits 2 with a `MUST-HAVE` line, and `layout` prints the CPU layout the
-//! PC's count gives. Read only: `check` sets nothing.
+//! PC's count gives, and devices are read and disabled through the
+//! configuration manager (dasio#181). `check` sets nothing; one test
+//! disables the runner's kernel-debug NIC.
 #![cfg(windows)]
 
 use std::process::Command;
@@ -167,4 +169,94 @@ fn a_process_s_integrity_is_read_from_its_token() {
         ),
         other => panic!("exactly one of medium/high must hold: {other:?}"),
     }
+}
+
+/// A ROOT-enumerated device of the runner that runs without a problem, as
+/// PowerShell's PnpDevice module reads it.
+fn running_root_device() -> String {
+    let out = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "(Get-PnpDevice -PresentOnly -Status OK | Where-Object { $_.InstanceId -like 'ROOT\\*' } | Select-Object -First 1).InstanceId",
+        ])
+        .output()
+        .unwrap();
+    let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert!(
+        id.split('\\').count() >= 3,
+        "no running ROOT device on the runner: {id:?} {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    id
+}
+
+#[test]
+fn check_reads_a_device_through_the_configuration_manager_and_plan_names_the_disable() {
+    // dasio#181: the real reader. Read only: --plan disables nothing.
+    let running = running_root_device();
+    let missing = r"ROOT\DASIO_CI_NONE\0000";
+    let entry = |id: &str, name: &str| {
+        format!("[[device]]\ninstance_id = '{id}'\nname = \"{name}\"\nwhy = \"ci\"\n")
+    };
+    let (dir, file) = profile(
+        "device",
+        &format!(
+            "name = \"ci\"\n{}{}",
+            entry(&running, "running"),
+            entry(missing, "missing")
+        ),
+    );
+    let run = |args: &[&str]| {
+        let out = Command::new(exe())
+            .args(args)
+            .arg("--profile")
+            .arg(&file)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let check = run(&["pc-profile", "check"]);
+    let plan = run(&["pc-profile", "apply", "--plan"]);
+    std::fs::remove_dir_all(&dir).unwrap();
+    let line = format!("PROBLEM device running ({running}): on (the profile wants off) — ci");
+    assert!(check.lines().any(|l| l == line), "{check}");
+    let line =
+        format!("PROBLEM device missing ({missing}): not on this PC (the profile wants off) — ci");
+    assert!(check.lines().any(|l| l == line), "{check}");
+    let would = format!(
+        "would set device {running} off (takes effect after nothing more (the device stops now; ConfigFlags keeps it off at every boot))"
+    );
+    assert!(plan.lines().any(|l| l == would), "{plan}");
+    assert!(!plan.contains("DASIO_CI_NONE"), "{plan}");
+}
+
+#[test]
+fn apply_disables_a_device_now_and_for_every_boot() {
+    // dasio#181: the real disable, on the runner's kernel-debug NIC (no
+    // job of the runner uses it). Through the library, not `pc-profile
+    // apply`: that would apply the whole baseline to the runner.
+    use dasio::pc_profile::{Action, DevState, Reader, parse, windows::Pc};
+    let id = r"ROOT\KDNIC\0000";
+    let pc = Pc::new(&parse("name = \"ci\"\n").unwrap());
+    let before = pc
+        .device(id)
+        .unwrap()
+        .unwrap_or_else(|| panic!("the runner has no {id}"));
+    assert!(before.present && !before.off(), "{id} before: {before:?}");
+    pc.apply(&Action::Disable(id.into())).unwrap();
+    let off = DevState {
+        present: true,
+        problem: Some(22),
+        config_disabled: true,
+    };
+    assert_eq!(pc.device(id).unwrap(), Some(off));
+    // Again: nothing left to do, still off.
+    pc.apply(&Action::Disable(id.into())).unwrap();
+    assert_eq!(pc.device(id).unwrap(), Some(off));
+    // A device the PC does not have is an error naming it.
+    assert_eq!(
+        pc.apply(&Action::Disable(r"ROOT\DASIO_CI_NONE\0000".into())),
+        Err(r"device ROOT\DASIO_CI_NONE\0000: not on this PC".into())
+    );
 }

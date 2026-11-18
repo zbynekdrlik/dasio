@@ -14,8 +14,8 @@ pub const BASELINE: &str = include_str!("../../../../config/baseline-pc-profile.
 
 /// What a PC is held to: the baseline and its own `site` profile. The
 /// site's entry wins over the baseline's same entry (registry key and name,
-/// ini file and key, process, drive, bcd element, task, absent target); the
-/// rest is added.
+/// ini file and key, process, drive, bcd element, task, absent target,
+/// device); the rest is added.
 /// Without the site's `nic_guid`, the baseline's Dante NIC entries are
 /// left out (no NIC to read).
 pub fn merge(base: &Profile, site: &Profile) -> Profile {
@@ -156,6 +156,19 @@ pub fn merge(base: &Profile, site: &Profile) -> Profile {
         .collect();
     nic_driver.extend(site.nic_driver.iter().cloned());
     out.nic_driver = nic_driver;
+    let mut device: Vec<DeviceEntry> = base
+        .device
+        .iter()
+        .filter(|b| {
+            !site
+                .device
+                .iter()
+                .any(|s| s.instance_id.eq_ignore_ascii_case(&b.instance_id))
+        })
+        .cloned()
+        .collect();
+    device.extend(site.device.iter().cloned());
+    out.device = device;
     out
 }
 
@@ -174,6 +187,7 @@ pub fn baseline_only(base: &Profile) -> Profile {
         task: Vec::new(),
         absent: Vec::new(),
         nic_driver: Vec::new(),
+        device: Vec::new(),
     };
     merge(base, &empty)
 }

@@ -99,5 +99,6 @@ pub fn describe(a: &Action) -> String {
         Action::Reg { key, name, value } => format!("registry {key}\\{name} = {value:?}"),
         Action::Ini { file, key, value } => format!("{file} {key}={value}"),
         Action::Remove(r) => r.describe(),
+        Action::Disable(id) => format!("device {id} off"),
     }
 }

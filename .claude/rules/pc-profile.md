@@ -73,6 +73,19 @@ paths:
   `[[nic_driver]]` with the same `family` wins (dsg measuring 10.80); it
   needs 0.1.121+ on the PC. A new pinned package: read its files' SHA256
   and the catalog's `Get-AuthenticodeSignature` on a PC running it.
+- **A device the PC does not need is a `[[device]]` entry** (dasio#181,
+  0.1.134+; an older dasio refuses the whole profile): `instance_id` (Device
+  Manager's "Device instance path", site data), `name`, `why`, `absent_ok`.
+  Fine only when the device is off now (problem 22) AND at every boot
+  (CONFIGFLAG_DISABLED), or unplugged with the flag; else a WARN naming the
+  state (`on`, `off until the next boot`, `not connected, on when
+  connected`). `apply` runs `CM_Disable_DevNode(PERSIST)` and sets the flag
+  (a vetoed stop is a FAILED line). An entry naming the Dante NIC is refused,
+  never planned: disabling it cuts the PC off. Never hold a device with a
+  raw `Enum\...\ConfigFlags` `[[registry]]` entry (exact DWORD, clobbers
+  other bits, only at boot): dsg's 16 move to `[[device]]` at its next
+  deploy. Read a PC's devices with `Get-PnpDevice` (InstanceId, Status,
+  Problem) before writing entries.
 - **Reserved CPUs** (dasio#120): the baseline's `ReservedCpuSets`
   (`Session Manager\kernel`, `computed = "dasio_cpus"`, read at boot) keeps
   every thread off dasio's CPUs unless its process asks (CPU sets) or is
