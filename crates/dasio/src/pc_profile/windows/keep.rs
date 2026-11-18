@@ -1,18 +1,20 @@
 //! The process keeper's Windows glue (dasio#185): one pass over the
 //! process list, setting what [`keep::wanted`](super::super::keep::wanted)
-//! says. Toolhelp and process handles only: no child process.
+//! says. Toolhelp and process handles only: no child process. I/O, memory
+//! and GPU priority and the boost are [`extras`](super::extras).
 
 use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, GetLastError, HANDLE};
 use windows_sys::Win32::System::Threading::{
     ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, GetPriorityClass,
     GetProcessAffinityMask, HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
-    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
-    QueryFullProcessImageNameW, REALTIME_PRIORITY_CLASS, SetPriorityClass, SetProcessAffinityMask,
+    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_SET_INFORMATION, QueryFullProcessImageNameW, REALTIME_PRIORITY_CLASS, SetPriorityClass,
+    SetProcessAffinityMask,
 };
 
 use super::super::keep::{Fights, Note, Set, gave_up_line, held, line, mask_outside, wanted};
-use super::super::{ProcState, Profile};
-use super::from_wide;
+use super::super::{ProcEntry, ProcState, Profile};
+use super::{extras, from_wide};
 
 /// A priority name's class.
 fn class(name: &str) -> Result<u32, String> {
@@ -61,15 +63,16 @@ enum NotOpened {
 }
 
 impl Proc {
-    fn open(pid: u32) -> Result<Proc, NotOpened> {
-        // SAFETY: plain arguments; the handle is closed by Drop.
-        let h = unsafe {
-            OpenProcess(
-                PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION,
-                0,
-                pid,
-            )
+    /// Opened to set and read it; `full`: also for a full query (what
+    /// [`extras`] reads).
+    fn open(pid: u32, full: bool) -> Result<Proc, NotOpened> {
+        let query = if full {
+            PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION
+        } else {
+            PROCESS_QUERY_LIMITED_INFORMATION
         };
+        // SAFETY: plain arguments; the handle is closed by Drop.
+        let h = unsafe { OpenProcess(PROCESS_SET_INFORMATION | query, 0, pid) };
         if !h.is_null() {
             return Ok(Proc(h));
         }
@@ -96,8 +99,9 @@ impl Proc {
             .is_some_and(|f| f.eq_ignore_ascii_case(exe))
     }
 
-    /// Its affinity and priority, with the PC's CPUs.
-    fn state(&self) -> Option<(ProcState, u64)> {
+    /// Its affinity and priority and what else `e` names, with the PC's
+    /// CPUs.
+    fn state(&self, e: &ProcEntry) -> Option<(ProcState, u64)> {
         let (mut mask, mut system) = (0usize, 0usize);
         // SAFETY: a valid handle and two writable masks.
         let ok = unsafe { GetProcessAffinityMask(self.0, &mut mask, &mut system) } != 0;
@@ -109,6 +113,7 @@ impl Proc {
                     affinity: mask as u64,
                     priority: name(class).to_string(),
                     integrity: Err("not read by the keeper".into()),
+                    extra: extras::read(self.0, e),
                 },
                 system as u64,
             )
@@ -117,13 +122,11 @@ impl Proc {
 
     /// Sets `set`: the affinity first (a mask naming a CPU the PC does not
     /// have is refused), the priority only after it, read back (realtime
-    /// without the privilege becomes high). Returns what it set, and why
-    /// the rest was not.
+    /// without the privilege becomes high), then I/O, memory and GPU
+    /// priority and the boost, each read back. Returns what it set, and
+    /// why the rest was not.
     fn set(&self, set: &Set, system: u64) -> (Set, Option<String>) {
-        let mut done = Set {
-            affinity: None,
-            priority: None,
-        };
+        let mut done = Set::default();
         if let Some(m) = set.affinity {
             if let Some(why) = mask_outside(m, system) {
                 return (done, Some(why));
@@ -153,7 +156,8 @@ impl Proc {
             }
             done.priority = Some(p.clone());
         }
-        (done, None)
+        let err = extras::set(self.0, set, &mut done);
+        (done, err)
     }
 }
 
@@ -187,7 +191,7 @@ pub fn pass(
             if fights.gave_up(pid) {
                 continue;
             }
-            let h = match Proc::open(pid) {
+            let h = match Proc::open(pid, extras::named(e)) {
                 Ok(h) => h,
                 Err(NotOpened::Gone) => continue,
                 Err(NotOpened::Denied) => {
@@ -201,13 +205,13 @@ pub fn pass(
             if !h.image_is(&e.exe) {
                 continue;
             }
-            let Some((s, system)) = h.state() else {
+            let Some((s, system)) = h.state(e) else {
                 continue;
             };
             let Some(set) = wanted(e, &s) else { continue };
             let (done, err) = h.set(&set, system);
             // What was set is logged and counted, also beside a failure.
-            if done.affinity.is_some() || done.priority.is_some() {
+            if !done.is_empty() {
                 lines.push(line(&e.exe, pid, &s, &done));
                 if fights.note(pid, now_ms) == Note::GiveUp {
                     lines.push(gave_up_line(&e.exe, pid));

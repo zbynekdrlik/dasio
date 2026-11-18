@@ -83,6 +83,18 @@ pub fn merge(base: &Profile, site: &Profile) -> Profile {
                 if s.integrity.is_some() {
                     rest.integrity = None;
                 }
+                if s.io_priority.is_some() {
+                    rest.io_priority = None;
+                }
+                if s.memory_priority.is_some() {
+                    rest.memory_priority = None;
+                }
+                if s.gpu_priority.is_some() {
+                    rest.gpu_priority = None;
+                }
+                if s.priority_boost.is_some() {
+                    rest.priority_boost = None;
+                }
             }
             rest
         })

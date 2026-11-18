@@ -8,6 +8,7 @@ mod device_kind;
 mod fold;
 mod hold;
 mod keep;
+mod keep_extras;
 mod layout;
 mod must;
 mod nic_driver_kind;
@@ -97,8 +98,8 @@ impl Reader for Pc {
         }
         Ok(self.ini.get(&(file.to_string(), key.to_string())).cloned())
     }
-    fn process(&self, exe: &str) -> Option<ProcState> {
-        self.procs.get(&exe.to_ascii_lowercase()).cloned()
+    fn process(&self, e: &ProcEntry) -> Option<ProcState> {
+        self.procs.get(&e.exe.to_ascii_lowercase()).cloned()
     }
     fn free_bytes(&self, drive: &str) -> Result<u64, String> {
         if self.unreadable.iter().any(|k| k == drive) {
@@ -191,6 +192,7 @@ fn matching_pc() -> Pc {
             affinity: 0xF0,
             priority: "high".into(),
             integrity: Ok("medium".into()),
+            extra: Extras::default(),
         },
     );
     pc.free.insert("C:".into(), 100 << 30);
@@ -231,6 +233,7 @@ fn every_kind_of_difference_is_a_problem_with_its_reason() {
             affinity: 0xFC00_0000,
             priority: "realtime".into(),
             integrity: Ok("medium".into()),
+            extra: Extras::default(),
         },
     );
     let problems = check(&p, &pc);

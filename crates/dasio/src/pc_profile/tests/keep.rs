@@ -13,6 +13,10 @@ fn entry(exe: &str, affinity: Option<&str>, priority: Option<&str>) -> ProcEntry
         affinity: affinity.map(String::from),
         priority: priority.map(String::from),
         integrity: None,
+        io_priority: None,
+        memory_priority: None,
+        gpu_priority: None,
+        priority_boost: None,
         why: String::new(),
     }
 }
@@ -22,6 +26,7 @@ fn state(affinity: u64, priority: &str) -> ProcState {
         affinity,
         priority: priority.into(),
         integrity: Ok("medium".into()),
+        extra: Extras::default(),
     }
 }
 
@@ -46,21 +51,24 @@ fn only_what_differs_is_set() {
         wanted(&e, &state(0x1, "below normal")),
         Some(Set {
             affinity: None,
-            priority: Some("high".into())
+            priority: Some("high".into()),
+            ..Set::default()
         })
     );
     assert_eq!(
         wanted(&e, &state(0xF, "high")),
         Some(Set {
             affinity: Some(0x1),
-            priority: None
+            priority: None,
+            ..Set::default()
         })
     );
     assert_eq!(
         wanted(&e, &state(0xF, "normal")),
         Some(Set {
             affinity: Some(0x1),
-            priority: Some("high".into())
+            priority: Some("high".into()),
+            ..Set::default()
         })
     );
     // An entry naming only one of them never sets the other.
@@ -68,7 +76,8 @@ fn only_what_differs_is_set() {
         wanted(&entry("x.exe", None, Some("high")), &state(0xF, "normal")),
         Some(Set {
             affinity: None,
-            priority: Some("high".into())
+            priority: Some("high".into()),
+            ..Set::default()
         })
     );
     assert_eq!(
@@ -83,6 +92,7 @@ fn a_change_logs_what_moved_from_what() {
     let both = Set {
         affinity: Some(0x8),
         priority: Some("high".into()),
+        ..Set::default()
     };
     assert_eq!(
         line("SGDawNodeService.exe", 3792, &s, &both),
@@ -91,6 +101,7 @@ fn a_change_logs_what_moved_from_what() {
     let only = Set {
         affinity: Some(0xE),
         priority: None,
+        ..Set::default()
     };
     assert_eq!(
         line("dasio-dsg.exe", 7, &s, &only),

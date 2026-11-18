@@ -393,11 +393,11 @@ fn the_keeper_gives_a_running_process_its_entry_s_priority_and_affinity() {
     )
     .unwrap();
     let pc = Pc::new(&p);
-    let before = pc.process("ping.exe");
+    let before = pc.process(&p.process[0]);
     let mut fights = Fights::default();
     let mut failed = std::collections::HashSet::new();
     let lines = pass(&p, &mut fights, &mut failed, 0);
-    let after = pc.process("ping.exe");
+    let after = pc.process(&p.process[0]);
     let again = pass(&p, &mut fights, &mut failed, 2_000);
     child.kill().unwrap();
     child.wait().unwrap();
@@ -465,4 +465,62 @@ fn a_value_in_system_s_own_hive_is_set_and_read_back_there() {
             .unwrap_err()
             .contains("only SYSTEM's own hive")
     );
+}
+
+#[test]
+fn the_keeper_gives_a_running_process_its_io_memory_and_gpu_priority_and_boost() {
+    // dasio#185: what Process Lasso set on FOH beyond affinity and priority
+    // class, set by one keeper pass on a real process of the runner (a
+    // waiting ping, started here) and read back through the check's reader.
+    use dasio::pc_profile::{
+        Extras, Reader, keep::Fights, parse, windows::Pc, windows::keep::pass,
+    };
+    let mut child = Command::new("ping")
+        .args(["-n", "60", "127.0.0.1"])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let p = parse(
+        "name = \"ci\"\n[[process]]\nexe = \"ping.exe\"\nio_priority = \"very low\"\nmemory_priority = \"low\"\ngpu_priority = \"below normal\"\npriority_boost = false\n",
+    )
+    .unwrap();
+    let pc = Pc::new(&p);
+    let before = pc.process(&p.process[0]);
+    let mut fights = Fights::default();
+    let mut failed = std::collections::HashSet::new();
+    let lines = pass(&p, &mut fights, &mut failed, 0);
+    let after = pc.process(&p.process[0]);
+    let again = pass(&p, &mut fights, &mut failed, 2_000);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let before = before.expect("the ping runs");
+    // A fresh process has Windows' defaults: normal I/O and memory
+    // priority, its boost on.
+    assert_eq!(
+        (
+            before.extra.io.as_deref(),
+            before.extra.memory.as_deref(),
+            before.extra.boost
+        ),
+        (Some("normal"), Some("normal"), Some(true)),
+        "{before:?}"
+    );
+    assert!(failed.is_empty(), "{failed:?} {lines:?}");
+    let after = after.expect("the ping still runs");
+    assert_eq!(
+        after.extra,
+        Extras {
+            io: Some("very low".into()),
+            memory: Some("low".into()),
+            gpu: Some("below normal".into()),
+            boost: Some(false),
+        }
+    );
+    let changed = format!(
+        "kept ping.exe (pid {}): io priority normal -> very low",
+        child.id()
+    );
+    assert!(lines.iter().any(|l| l.starts_with(&changed)), "{lines:?}");
+    // Held already: the second pass sets and logs nothing.
+    assert_eq!(again, Vec::<String>::new());
 }

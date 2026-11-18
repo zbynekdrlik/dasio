@@ -187,6 +187,16 @@ paths:
   10 min is given up with one line (the 10-min check shows the rest).
   Log: `C:\ProgramData\dasio\pc-keep.log` (1 MB, then `.log.1`).
   `integrity` stays check-only.
+- The keeper also holds Lasso's other per-process settings (dasio#185,
+  0.1.138+; an older dasio refuses the whole profile): `io_priority`
+  (very low | low | normal | high, ntdll ProcessIoPriority),
+  `memory_priority` (very low | low | medium | below normal | normal),
+  `gpu_priority` (idle | below normal | normal | above normal | high |
+  realtime, D3DKMT; gdi32 is loaded only for an entry naming it, never in
+  a media process) and `priority_boost = false` (Lasso's
+  `ThreadPriorityBoosts=<exe>;0`). Each is set only when read and
+  different, then read back; an unreadable one is the check's problem, not
+  a set. Lasso's numbers: IO 0-3 = the names in order, memory 1-5, GPU 0-5.
 - What the keeper does NOT cover yet (before a PC's Lasso goes): Lasso's
   `DefaultPriorities` for exes without a `[[process]]` entry (FOH: dsend,
   dlisten above normal, cg below normal, dvs_service high), its I/O, GPU
