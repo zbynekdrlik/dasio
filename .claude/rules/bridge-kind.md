@@ -205,5 +205,9 @@ paths:
   buffer dropdown stalled the driver (229 late callbacks, ~77 underruns
   each way in 10 s) and the selection made it ask for a reset: never touch
   that panel while dsg carries a show. 128 frames: input latency 288,
-  output 480 frames (256: 416 / 608).
+  output 480 frames (256: 416 / 608); 64 frames: 224 / 416. 32 frames is
+  refused at 96 kHz: the from-ASIO default (buffer + one pump block =
+  0.667 ms) is under dlink's 1 ms floor and the driver never starts (dsg
+  18.11.2026 22:15Z, ~52 s silent): change the buffer in all three places
+  and read the `asio: the driver runs` line within 30 s, else put it back.
 
