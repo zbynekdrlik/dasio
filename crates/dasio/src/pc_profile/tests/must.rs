@@ -273,10 +273,19 @@ fn install_ps1_refuses_before_it_touches_the_instance() {
         .map(|i| gp + i)
         .expect("applied again after gpupdate");
     assert!(apply < stop && stop < gp && gp < again);
-    assert!(
-        s[again..].contains("$applied = $LASTEXITCODE"),
-        "the second apply's result is the one reported"
-    );
+    let after = &s[again..];
+    let read = after
+        .find("$applied = $LASTEXITCODE")
+        .expect("the second apply's result is read");
+    assert!(read < 80, "read right after the second apply");
+    // A must-have item the refresh unset refuses the install like the first
+    // apply does (the service would end on it anyway), before register.
+    let refuse2 = after
+        .find("if ($applied -eq 2) {")
+        .expect("the second apply's exit 2 is handled");
+    let register = after.find("register --instance").expect("register follows");
+    assert!(read < refuse2 && refuse2 < register);
+    assert!(after[refuse2..register].contains("throw \"the baseline step"));
 }
 
 /// install.ps1's `-NicDriver` step (dasio#128): opt-in only, the package
