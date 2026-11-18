@@ -480,12 +480,34 @@ fn the_keeper_gives_a_running_process_its_io_memory_and_gpu_priority_and_boost()
         .stdout(std::process::Stdio::null())
         .spawn()
         .unwrap();
-    let p = parse(
-        "name = \"ci\"\n[[process]]\nexe = \"ping.exe\"\nio_priority = \"very low\"\nmemory_priority = \"low\"\ngpu_priority = \"below normal\"\npriority_boost = false\n",
-    )
-    .unwrap();
+    let entry = |io: &str, memory: &str, gpu: &str, boost: bool| {
+        parse(&format!(
+            "name = \"ci\"\n[[process]]\nexe = \"ping.exe\"\nio_priority = \"{io}\"\nmemory_priority = \"{memory}\"\ngpu_priority = \"{gpu}\"\npriority_boost = {boost}\n"
+        ))
+        .unwrap()
+    };
+    // What the ping has now (it inherits the test's I/O and memory
+    // priority: low on the runner), then targets that differ from it.
+    let probe = entry("normal", "normal", "normal", true);
+    let before = Pc::new(&probe)
+        .process(&probe.process[0])
+        .expect("the ping runs");
+    let other = |now: &Option<String>, a: &'static str, b: &'static str| {
+        if now.as_deref() == Some(a) { b } else { a }
+    };
+    let want = Extras {
+        io: Some(other(&before.extra.io, "very low", "low").into()),
+        memory: Some(other(&before.extra.memory, "very low", "low").into()),
+        gpu: Some(other(&before.extra.gpu, "below normal", "idle").into()),
+        boost: Some(!before.extra.boost.expect("its boost reads")),
+    };
+    let p = entry(
+        want.io.as_deref().unwrap(),
+        want.memory.as_deref().unwrap(),
+        want.gpu.as_deref().unwrap(),
+        want.boost.unwrap(),
+    );
     let pc = Pc::new(&p);
-    let before = pc.process(&p.process[0]);
     let mut fights = Fights::default();
     let mut failed = std::collections::HashSet::new();
     let lines = pass(&p, &mut fights, &mut failed, 0);
@@ -493,32 +515,17 @@ fn the_keeper_gives_a_running_process_its_io_memory_and_gpu_priority_and_boost()
     let again = pass(&p, &mut fights, &mut failed, 2_000);
     child.kill().unwrap();
     child.wait().unwrap();
-    let before = before.expect("the ping runs");
-    // A fresh process has Windows' defaults: normal I/O and memory
-    // priority, its boost on.
-    assert_eq!(
-        (
-            before.extra.io.as_deref(),
-            before.extra.memory.as_deref(),
-            before.extra.boost
-        ),
-        (Some("normal"), Some("normal"), Some(true)),
-        "{before:?}"
+    assert!(
+        failed.is_empty(),
+        "{failed:?} {lines:?} (before: {before:?})"
     );
-    assert!(failed.is_empty(), "{failed:?} {lines:?}");
     let after = after.expect("the ping still runs");
-    assert_eq!(
-        after.extra,
-        Extras {
-            io: Some("very low".into()),
-            memory: Some("low".into()),
-            gpu: Some("below normal".into()),
-            boost: Some(false),
-        }
-    );
+    assert_eq!(after.extra, want, "before: {before:?}");
     let changed = format!(
-        "kept ping.exe (pid {}): io priority normal -> very low",
-        child.id()
+        "kept ping.exe (pid {}): io priority {} -> {}",
+        child.id(),
+        before.extra.io.as_deref().unwrap_or("?"),
+        want.io.as_deref().unwrap()
     );
     assert!(lines.iter().any(|l| l.starts_with(&changed)), "{lines:?}");
     // Held already: the second pass sets and logs nothing.
