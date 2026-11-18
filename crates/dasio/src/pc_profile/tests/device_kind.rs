@@ -257,7 +257,9 @@ fn a_missing_device_is_a_problem_unless_absent_ok_and_never_planned() {
 }
 
 #[test]
-fn an_unreadable_device_is_a_problem_and_apply_tries_it() {
+fn an_unreadable_device_is_a_problem_and_never_disabled() {
+    // Not read, its parents are not known either: it may hang below a
+    // network path, so apply leaves it.
     let p = profile(&entry(AUDIO, "audio"));
     let r = Pc {
         device_err: Some("CM_Locate_DevNode: CONFIGRET 51".into()),
@@ -273,7 +275,7 @@ fn an_unreadable_device_is_a_problem_and_apply_tries_it() {
             must: false,
         }]
     );
-    assert_eq!(plan(&p, &r), vec![Action::Disable(AUDIO.into())]);
+    assert_eq!(plan(&p, &r), Vec::<Action>::new());
 }
 
 #[test]
@@ -346,7 +348,7 @@ fn without_the_dante_nic_s_path_nothing_is_disabled() {
         vec![Problem {
             what: "the 2 [[device]] entries".into(),
             found: "not checked: the Dante NIC's device path was not read".into(),
-            want: "the Dante NIC's device and its parents, so no entry can cut it off".into(),
+            want: "the Dante NIC's device, every adapter with an address and their parents, so no entry can cut the PC off".into(),
             why: "no device is disabled without them (dasio#181)".into(),
             must: false,
         }]
@@ -402,4 +404,115 @@ fn the_site_s_device_entry_wins_over_the_baseline_s_and_the_rest_is_kept() {
 fn the_bridge_s_in_process_check_keeps_the_devices() {
     let p = profile(&entry(AUDIO, "audio"));
     assert_eq!(in_process(&p).device, p.device);
+}
+
+/// dsg's LAN VLAN adapter (layout B): the remote path, with an address.
+const LAN: &str = r"ROOT\NET\0001";
+const LAN_PARENT: &str = r"ROOT\RTVNIC\0000";
+
+fn with_lan(devices: &[(&str, DevState)]) -> Pc {
+    Pc {
+        addressed: vec![
+            vec![NIC.into(), HUB.into(), XHCI.into(), r"HTREE\ROOT\0".into()],
+            vec![LAN.into(), LAN_PARENT.into(), r"HTREE\ROOT\0".into()],
+        ],
+        ..pc(devices)
+    }
+}
+
+#[test]
+fn an_adapter_with_an_address_and_what_it_hangs_on_are_never_disabled() {
+    // dsg's LAN89 carries the remote path: off, the PC is out of reach.
+    let p = profile(&format!(
+        "{}{}{}",
+        entry(&LAN.to_ascii_lowercase(), "lan"),
+        entry(LAN_PARENT, "lan parent"),
+        entry(AUDIO, "audio")
+    ));
+    let on = state(true, None, false);
+    let r = with_lan(&[(LAN, on), (LAN_PARENT, on), (AUDIO, on)]);
+    let found: Vec<String> = check(&p, &r).into_iter().map(|pr| pr.found).collect();
+    assert_eq!(
+        found,
+        [
+            "a network adapter with an address (a path to the PC)",
+            "a device a network adapter with an address hangs on",
+            "on"
+        ]
+    );
+    assert_eq!(plan(&p, &r), vec![Action::Disable(AUDIO.into())]);
+}
+
+#[test]
+fn a_device_below_the_dante_nic_or_an_addressed_adapter_is_never_disabled() {
+    const UNDER_NIC: &str = r"USB\VID_0BDA&PID_8156&MI_01\6&1&0&0001";
+    const UNDER_LAN: &str = r"SWD\NETBRIDGE\0000";
+    let p = profile(&format!(
+        "{}{}{}",
+        entry(UNDER_NIC, "nic function"),
+        entry(UNDER_LAN, "lan child"),
+        entry(AUDIO, "audio")
+    ));
+    let on = state(true, None, false);
+    let mut r = with_lan(&[(UNDER_NIC, on), (UNDER_LAN, on), (AUDIO, on)]);
+    r.parents = [
+        (UNDER_NIC, vec![NIC.to_ascii_lowercase(), HUB.into()]),
+        (UNDER_LAN, vec![LAN.into(), LAN_PARENT.into()]),
+        // Hanging on the same hub as the NIC is not hanging below it.
+        (AUDIO, vec![HUB.into(), XHCI.into()]),
+    ]
+    .into_iter()
+    .map(|(id, p)| (id.to_ascii_uppercase(), p))
+    .collect();
+    let below = "a device below the Dante NIC or a network adapter with an address";
+    let problems = check(&p, &r);
+    assert_eq!(
+        problems
+            .iter()
+            .map(|pr| pr.found.as_str())
+            .collect::<Vec<_>>(),
+        [below, below, "on"]
+    );
+    assert_eq!(problems[0].want, "an entry for another device");
+    assert_eq!(plan(&p, &r), vec![Action::Disable(AUDIO.into())]);
+}
+
+#[test]
+fn a_device_whose_parents_are_unreadable_is_never_disabled() {
+    let p = profile(&entry(AUDIO, "audio"));
+    let r = Pc {
+        parents_err: Some("CM_Get_Parent: CONFIGRET 13".into()),
+        ..pc(&[(AUDIO, state(true, None, false))])
+    };
+    assert_eq!(
+        check(&p, &r)[0].found,
+        "unreadable (its parents: CM_Get_Parent: CONFIGRET 13)"
+    );
+    assert_eq!(plan(&p, &r), Vec::<Action>::new());
+    // A device that is off needs no parents.
+    let off = Pc {
+        parents_err: Some("x".into()),
+        ..pc(&[(AUDIO, OFF)])
+    };
+    assert_eq!(check(&p, &off), Vec::<Problem>::new());
+}
+
+#[test]
+fn without_the_addressed_adapters_nothing_is_disabled() {
+    let p = profile(&format!("{}{}", entry(AUDIO, "audio"), entry(BT, "bt")));
+    let r = Pc {
+        addressed_err: Some("GetAdaptersAddresses: os error 8".into()),
+        ..pc(&[(AUDIO, state(true, None, false))])
+    };
+    assert_eq!(
+        check(&p, &r),
+        vec![Problem {
+            what: "the 2 [[device]] entries".into(),
+            found: "not checked: the PC's network adapters were not read (GetAdaptersAddresses: os error 8)".into(),
+            want: "the Dante NIC's device, every adapter with an address and their parents, so no entry can cut the PC off".into(),
+            why: "no device is disabled without them (dasio#181)".into(),
+            must: false,
+        }]
+    );
+    assert_eq!(plan(&p, &r), Vec::<Action>::new());
 }

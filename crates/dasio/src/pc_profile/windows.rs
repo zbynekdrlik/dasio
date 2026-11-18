@@ -124,6 +124,8 @@ pub struct Pc {
     /// The Dante NIC's device instance path, then its parents' (empty when
     /// not read: `[[device]]` then disables nothing).
     nic_chain: Vec<String>,
+    /// Each adapter with an IPv4 address: its path, then its parents'.
+    addressed: Result<Vec<Vec<String>>, String>,
 }
 
 impl Pc {
@@ -166,6 +168,11 @@ impl Pc {
             nic_chain: match instance.as_deref() {
                 Some(id) if !p.device.is_empty() => device::chain(id),
                 _ => Vec::new(),
+            },
+            addressed: if p.device.is_empty() {
+                Ok(Vec::new())
+            } else {
+                device::addressed()
             },
         }
     }
@@ -239,6 +246,14 @@ impl Reader for Pc {
 
     fn nic_chain(&self) -> Vec<String> {
         self.nic_chain.clone()
+    }
+
+    fn addressed(&self) -> Result<Vec<Vec<String>>, String> {
+        self.addressed.clone()
+    }
+
+    fn parents(&self, id: &str) -> Result<Vec<String>, String> {
+        device::parents(id)
     }
 
     fn device(&self, id: &str) -> Result<Option<DevState>, String> {
@@ -820,4 +835,53 @@ fn find_processes(exe: &str) -> Result<Vec<u32>, String> {
     // SAFETY: the snapshot opened above.
     unsafe { CloseHandle(snap) };
     Ok(pids)
+}
+
+/// The NetCfgInstanceId of each adapter with an IPv4 unicast address
+/// (GetAdaptersAddresses' `AdapterName`), for `[[device]]`'s guard
+/// (dasio#181).
+fn addressed_adapter_guids() -> Result<Vec<String>, String> {
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST,
+        GetAdaptersAddresses, IP_ADAPTER_ADDRESSES_LH,
+    };
+    use windows_sys::Win32::Networking::WinSock::AF_INET;
+    const ERROR_BUFFER_OVERFLOW: u32 = 111;
+    let mut size: u32 = 16 * 1024;
+    // The list can grow between the size query and the read: a few tries.
+    for _ in 0..4 {
+        let mut mem = vec![0u64; (size as usize).div_ceil(8)];
+        let first = mem.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
+        // SAFETY: `mem` holds `size` bytes, 8-byte aligned; the call writes
+        // at most that and says how much it needs otherwise.
+        let r = unsafe {
+            GetAdaptersAddresses(
+                u32::from(AF_INET),
+                GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
+                std::ptr::null(),
+                first,
+                &mut size,
+            )
+        };
+        if r == ERROR_BUFFER_OVERFLOW {
+            continue;
+        }
+        if r != 0 {
+            return Err(format!("GetAdaptersAddresses: os error {r}"));
+        }
+        let mut out = Vec::new();
+        let mut a = first;
+        while !a.is_null() {
+            // SAFETY: a list the call built inside `mem`, which lives on.
+            let ad = unsafe { &*a };
+            if !ad.FirstUnicastAddress.is_null() && !ad.AdapterName.is_null() {
+                // SAFETY: a NUL-terminated ANSI string inside `mem`.
+                let name = unsafe { std::ffi::CStr::from_ptr(ad.AdapterName.cast()) };
+                out.push(name.to_string_lossy().into_owned());
+            }
+            a = ad.Next;
+        }
+        return Ok(out);
+    }
+    Err("GetAdaptersAddresses: the adapter list kept growing".into())
 }

@@ -80,13 +80,13 @@ paths:
   (CONFIGFLAG_DISABLED), or unplugged with the flag; else a WARN naming the
   state (`on`, `off until the next boot`, `not connected, on when
   connected`). `apply` runs `CM_Disable_DevNode(PERSIST)` and sets the flag
-  (a vetoed stop is a FAILED line). An entry naming the Dante NIC or a
-  device it hangs on (its USB hub, host controller, PCI bridge: the NIC's
-  `CM_Get_Parent` chain) is refused, never planned: disabling it cuts the PC
-  off. Without that chain (NIC not read) nothing is checked or disabled.
-  Not guarded (dasio#181 open item): an adapter stacked over the NIC (the
-  LAN VLAN adapter of layout B, a bridge) or the remote path's own adapter:
-  never name a Net-class device that carries an address. Never hold a device with a
+  (a vetoed stop is a FAILED line). An entry that would cut a network path
+  is refused, never planned: the Dante NIC, every adapter with an IPv4
+  address (the remote path: dsg's LAN89 VLAN adapter, a Tailscale adapter),
+  a device they hang on (their `CM_Get_Parent` chains: USB hub, host
+  controller, PCI bridge) and a device hanging below them (0.1.135). A
+  device whose state or parents are not read is never disabled. Without the
+  NIC's chain or the adapter list nothing is checked or disabled. Never hold a device with a
   raw `Enum\...\ConfigFlags` `[[registry]]` entry (exact DWORD, clobbers
   other bits, only at boot): dsg's 16 move to `[[device]]` at its next
   deploy. Read a PC's devices with `Get-PnpDevice` (InstanceId, Status,
