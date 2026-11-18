@@ -617,6 +617,16 @@ if (-not $TestClock) {
     if ($LASTEXITCODE -ne 0) { Write-Output "WARNING: powercfg /setactive failed ($LASTEXITCODE): the power plan values take effect at the next reboot" }
     & gpupdate.exe /target:computer /force | Out-Null
     if ($LASTEXITCODE -ne 0) { Write-Output "WARNING: gpupdate failed ($LASTEXITCODE): the QoS policies (mDNS cap) take effect at the next reboot" }
+    # The forced refresh can drop a policy value the apply above wrote: on
+    # mbc (18.11.2026) it removed Windows Defender's DisableAntiSpyware
+    # seconds after the apply had set it (dasio#24). Apply again, so the
+    # install ends with the profile as it should be; it writes only what
+    # drifted and needs no second refresh (the QoS values are unchanged).
+    & (Join-Path $here "dasio.exe") pc-profile apply
+    $applied = $LASTEXITCODE
+    if ($applied -eq 2) {
+        throw "the baseline step after the Group Policy refresh: dasio pc-profile apply left must-have items unset (the MUST-HAVE line above); dasio does not run without them, so the instance stays stopped: set them and run the install again"
+    }
     if ($applied -ne 0) { Write-Output "the PC profile still has problems (listed above): see dasio#128" }
 }
 # A bridge instance (`[bridge]` in its config, dasio#106) carries Dante to a
