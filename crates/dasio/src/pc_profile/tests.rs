@@ -4,6 +4,7 @@ use super::*;
 
 mod absent_caller;
 mod absent_kind;
+mod device_guard;
 mod device_kind;
 mod fold;
 mod hold;
@@ -43,12 +44,8 @@ struct Pc {
     absent_err: Option<String>,
     /// The Dante NIC's hardware IDs.
     hardware_ids: Vec<String>,
-    /// The Dante NIC's device instance path, then its parents'.
-    nic_chain: Vec<String>,
-    /// Devices by instance path (upper case), for `[[device]]`.
-    devices: HashMap<String, DevState>,
-    /// `device()` fails with this.
-    device_err: Option<String>,
+    /// The PC's devices, for `[[device]]`.
+    dev: device_kind::Fake,
 }
 
 impl Reader for Pc {
@@ -58,14 +55,8 @@ impl Reader for Pc {
     fn nic_hardware_ids(&self) -> Vec<String> {
         self.hardware_ids.clone()
     }
-    fn nic_chain(&self) -> Vec<String> {
-        self.nic_chain.clone()
-    }
-    fn device(&self, id: &str) -> Result<Option<DevState>, String> {
-        if let Some(err) = &self.device_err {
-            return Err(err.clone());
-        }
-        Ok(self.devices.get(&id.to_ascii_uppercase()).copied())
+    fn devices(&self) -> &dyn Devices {
+        &self.dev
     }
     fn absent(&self, e: &AbsentEntry) -> Result<Vec<String>, String> {
         if let Some(err) = &self.absent_err {
