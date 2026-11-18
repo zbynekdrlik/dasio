@@ -109,12 +109,22 @@ fn each_direction_takes_its_own_target_into_the_spec() {
     assert_eq!(spec.app_buffer_ns, Some(5_000_000));
     assert_eq!(spec.to_asio_app_buffer_ns, None);
     assert_eq!(spec.from_asio_app_buffer_ns, Some(2_000_000));
+    // Below dlink's 1 ms (dstack issue 422): a direction's own target
+    // reaches dstack's spec as written, never raised to 1 ms here.
+    let b = bridge_of(&format!(
+        "{FULL}to_asio_app_buffer_ns = 500000\nfrom_asio_app_buffer_ns = 750000\n"
+    ));
+    let spec = b.spec(&device()).unwrap();
+    assert_eq!(spec.to_asio_app_buffer_ns, Some(500_000));
+    assert_eq!(spec.from_asio_app_buffer_ns, Some(750_000));
 }
 
 #[test]
-fn a_directions_target_is_held_to_dlinks_range_under_its_own_name() {
+fn a_directions_target_is_held_to_the_bridges_range_under_its_own_name() {
+    // dstack issue 422 (v0.6.185): a direction's own target goes down to
+    // 0.5 ms (dlink's 1 ms floor is a dlink app's; dasio#190).
     for key in ["to_asio_app_buffer_ns", "from_asio_app_buffer_ns"] {
-        for ok in [1_000_000_u64, 150_000_000] {
+        for ok in [500_000_u64, 750_000, 999_999, 1_000_000, 150_000_000] {
             let b = bridge_of(&format!("driver = \"Test ASIO\"\n{key} = {ok}"));
             let got = match key {
                 "to_asio_app_buffer_ns" => b.to_asio_app_buffer_ns,
@@ -122,11 +132,15 @@ fn a_directions_target_is_held_to_dlinks_range_under_its_own_name() {
             };
             assert_eq!(got, Some(ok), "{key}");
         }
-        for bad in ["999999", "150000001", "0"] {
+        for bad in ["499999", "150000001", "0"] {
             let e = refusal(&format!("driver = \"Test ASIO\"\n{key} = {bad}"));
             assert!(e.starts_with(&format!("[bridge] {key}: ")), "{bad}: {e}");
-            assert!(e.contains("1 to 150 ms"), "{bad}: {e}");
+            assert!(e.ends_with("; 0.5 to 150 ms"), "{bad}: {e}");
         }
+        assert_eq!(
+            refusal(&format!("driver = \"Test ASIO\"\n{key} = 499999")),
+            format!("[bridge] {key}: 499999 ns (0.499999 ms); 0.5 to 150 ms")
+        );
         let e = refusal(&format!("driver = \"Test ASIO\"\n{key} = -5"));
         assert_eq!(e, format!("[bridge] `{key}` = -5: a negative time"));
         let e = refusal(&format!("driver = \"Test ASIO\"\n{key} = 1.5"));

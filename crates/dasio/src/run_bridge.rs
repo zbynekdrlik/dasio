@@ -184,14 +184,18 @@ pub fn run(
             return Err(e);
         }
     };
-    // From now on the device answers dcontroller's figures read (dstack issue 391).
+    // From now on the device answers dcontroller's figures read (dstack issue 391),
+    // with the ASIO driver's name (dstack issue 419, dasio#187).
     lock(&shared).publish_figures(media.bridge_figures(), Arc::clone(&status));
+    media.bridge_figures().set_driver(&bridge.driver);
     // The PC profile's problems (dasio#5, #120); u32::MAX while there is none.
     let pc_problems = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
     // The measured RX packet age at arrival (dasio#128): information
     // only, the latency stays the owner's decision.
     let mut rx_arrival = crate::rx_arrival::Watch::default();
-    {
+    // The bridge's facts as read now: the status JSON and the counts tick's
+    // figures for dcontroller (the delay each way, dasio#187) read the same.
+    let facts: Arc<dyn Fn() -> BridgeFacts + Send + Sync> = {
         let kernel_tx = tuning.kernel_tx;
         let rx_figures = rx_arrival.arrival();
         let (status, to_stats, from_stats, driver, pc_problems, age, from_pull) = (
@@ -203,9 +207,9 @@ pub fn run(
             Arc::clone(&age),
             from_pull.clone(),
         );
-        media.set_app_status(move || {
+        Arc::new(move || {
             let s = lock(&status).clone();
-            crate::app_status::bridge_json(&BridgeFacts {
+            BridgeFacts {
                 rx: rx_figures.report(),
                 from_asio_pull: from_pull.as_ref().map(|p| p.view()),
                 to_asio_converter_delay_ns: to_stats.converter_delay_ns(),
@@ -224,8 +228,12 @@ pub fn run(
                     crate::run::tx_path(kernel_tx),
                     age.report(),
                 )
-            })
-        });
+            }
+        })
+    };
+    {
+        let facts = Arc::clone(&facts);
+        media.set_app_status(move || crate::app_status::bridge_json(&facts()));
     }
     info!(
         instance,
@@ -305,6 +313,13 @@ pub fn run(
                 from_stats.target_ms(),
             );
             underruns.publish(media.bridge_figures());
+            // The delay each way (dasio#187, dstack issue 419): dcontroller's
+            // two lines; 0 while not known.
+            let (asio_to_dante, dante_to_asio) =
+                crate::app_status::path_us(crate::app_status::delays(&facts()).as_ref());
+            media
+                .bridge_figures()
+                .set_path(asio_to_dante, dante_to_asio);
             let v = stats.view();
             info!(
                 state = ?s.state,

@@ -113,9 +113,14 @@ paths:
   against dlink's range under the key's own name. A value outside it STOPS the
   service at start ("[bridge] to_asio_app_buffer_ns: 750000 ns (0.75 ms); 1
   to 150 ms", dsg 18.11.2026: ~20 s of silence until the old file was back):
-  check a new target against 1-150 ms before restarting; below 1 ms needs
-  dstack (asked, dasio#190). dtray's `Fields::read`
-  (dstack issue 387) learns these key names.
+  check a new target against its range before restarting. Since 0.1.139
+  (dstack v0.6.185, dstack issue 422) a direction's own target
+  (`to_asio_app_buffer_ns`, `from_asio_app_buffer_ns`) takes 0.5-150 ms
+  (`dstack_asio::bridge::direction_target_problem`); `app_buffer_ns` and
+  the from-ASIO DEFAULT (buffer + one pump block, not checked here) keep
+  dlink's 1 ms floor, so a 32-frame SoundGrid buffer needs an explicit
+  `from_asio_app_buffer_ns` (dstack's measure: >= 0.75 ms seeded + the
+  driver's callback lateness at 128 frames, 0.25-0.375 ms at 64). dtray (dstack's crate, v0.6.185) reads both keys and checks a direction's target against `MIN_BRIDGE_TARGET_NS` (0.5 ms).
 - The ASRC seed (dstack v0.6.172): `asrc_seed::path` = the instance
   folder's `asrc-seed-<driver>.toml` (driver name kept to `[A-Za-z0-9_-]`),
   `Seed::read` + `Bridge::seed_from` before `spawn_runner`, and
@@ -191,8 +196,14 @@ paths:
   " ASIO" / " ASIO Driver") and served as `bridge_asio_to_dante_us` /
   `bridge_dante_to_asio_us` in the status JSON; only while the driver runs
   and has told its latencies. The driver's latencies are what it declares,
-  not measured on the wire. dcontroller shows them once dstack's figures
-  carry them (dcontroller#117).
+  not measured on the wire. Since 0.1.139 (dstack v0.6.184, dstack issue
+  419) the counts tick hands them to dstack's figures
+  (`FigureSlot::set_path`, u32 us, 0 while not known, `path_us`) and the
+  start hands the driver's name (`set_driver`): dcontroller (v0.1.77+)
+  shows "<driver> → Dante X ms". The status JSON and the tick read one
+  `facts` closure. Every dstack app sharing a PC's info port must be on
+  v0.6.184+ (an older manager drops a v2 reply): FOH's and mbc's dsend and
+  dlisten before their dasio moves.
 - **The SoundGrid ASIO buffer** (dsg 18.11.2026, #190): `SoundGridAsio.dll`
   reads it from the HKCU of the process that loads it, value `Buffer
   Size(Samples)` (REG_BINARY, little-endian u32) under `Software\Waves\
