@@ -7,19 +7,19 @@ publish = false
 description = "dasio's device process: one Dante device per instance, its audio through the shared memory to the ASIO driver"
 
 [dependencies]
-dstack-audio-io = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.177" }
-dstack = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.177" }
+dstack-audio-io = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.178" }
+dstack = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.178" }
 # The bridge instance kind (dasio#106): the ASIO host, its lifecycle and
 # the two sides of a Dante <-> ASIO bridge (dstack#243); dlink for the
 # bridge FIFO target's check (`AppBuffer`, dstack#247). azo, the host's
 # Windows layer, comes only on Windows.
-dstack-asio = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.177" }
-dlink = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.177" }
+dstack-asio = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.178" }
+dlink = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.178" }
 # The rate converter behind dlink's `Rated` and the bridge's players: the
 # `[bridge] converter_taps` check takes its step (`TAPS_STEP`, dstack issue
 # 382); the tests check an app rate's exact ratio against it and time it
 # alone (tests/bench_bridge.rs, dasio#107).
-dstack-resample = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.177" }
+dstack-resample = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.178" }
 shm = { path = "../shm" }
 asio-driver = { path = "../asio-driver" }
 serde = { version = "1.0", features = ["derive"] }
@@ -49,7 +49,7 @@ windows-service = "0.8.1"
 # The device's control-port slot (`slots::pick`, the rule dsend and dlisten
 # use, dasio#89). Windows only: it brings cpal, which on Linux needs ALSA's
 # headers, and only the device start (run.rs, Windows) calls it.
-dstack-endpoint = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.177" }
+dstack-endpoint = { git = "https://github.com/zbynekdrlik/dstack", tag = "v0.6.178" }
 
 [dev-dependencies]
 # The bridge's real-time proof (tests/rt_bridge.rs, dasio#28 E13): counts

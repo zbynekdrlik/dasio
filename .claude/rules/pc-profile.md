@@ -205,7 +205,12 @@ paths:
   `Start` (0.1.131, `hold::registry_fallback`); a protected service may
   also refuse the stop. Prove a held service on dsg first: set its `Start`
   by hand, wait for the next check (10 min) and read the "held off" line
-  before deploying to FOH or mbc. Windows Update still
+  before deploying to FOH or mbc. install.ps1's `gpupdate /force` (for
+  the QoS policies) removes Defender's `DisableAntiSpyware` policy value on
+  mbc (24H2, a Local GPO Registry.pol with QoS entries): the install applies
+  the profile again after it (0.1.132, dasio#24) and refuses on exit 2;
+  a drift seen only in the service's first check after an install points
+  at that refresh. Windows Update still
   works: dasio's update runs (`wu.ps1`, dasio#109) use the Windows Update
   Agent API through `wuauserv` (manual start), not UsoSvc (mbc 13.11: 5
   updates installed with UsoSvc disabled and stopped). Never hold
