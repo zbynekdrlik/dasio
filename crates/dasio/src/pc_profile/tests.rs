@@ -13,6 +13,7 @@ mod must;
 mod nic_driver_kind;
 mod power;
 mod process_integrity;
+mod system_hive;
 
 /// A PC as a test sets it up: the reader the check sees.
 #[derive(Default)]

@@ -82,6 +82,13 @@ paths:
   any more (renew hung; switch sniff: nothing on 67/68), so the device
   came up on link-local: give a Dante leg with a reserved lease its
   static address instead (10.77.7.50/24, no gateway).
+- **A value in SYSTEM's own hive** (dasio#191, 0.1.137+): `[[registry]]`
+  takes `HKU\S-1-5-18\...` besides `HKLM\...`. dasio runs as SYSTEM, so
+  that hive is the HKCU of dasio's process, where an ASIO driver dasio
+  loads keeps its per-user settings (dsg's SoundGrid ASIO buffer, #190).
+  Another user's hive (`HKU\S-1-5-21-...`, also `HKU\.DEFAULT`) refuses
+  the whole profile: it is loaded only while that user is logged on. An
+  older dasio reports such an entry as one problem ("only HKLM\ keys").
 - **A device the PC does not need is a `[[device]]` entry** (dasio#181,
   0.1.134+; an older dasio refuses the whole profile): `instance_id` (Device
   Manager's "Device instance path", site data), `name`, `why`, `absent_ok`.
