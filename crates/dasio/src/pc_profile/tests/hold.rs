@@ -1,6 +1,9 @@
 //! The services the service holds off itself (dasio#158).
 
-use super::super::hold::{DISABLED, Fix, HELD, Held, decide, describe, not_held, start_name};
+use super::super::hold::{
+    ACCESS_DENIED, DISABLED, Fix, HELD, Held, decide, describe, not_held, registry_fallback,
+    start_name,
+};
 use super::super::*;
 
 const USO: Held = Held {
@@ -204,4 +207,17 @@ fn the_check_thread_holds_before_it_checks() {
         .expect("the thread's CPUs");
     assert!(off < hold, "off the media CPUs before the hold");
     assert_eq!(watch.matches("hold_services()").count(), 1);
+}
+
+/// DoSvc is a protected service (`sc qprotection DoSvc`: WINDOWS LIGHT): the
+/// SCM refuses its start type even to SYSTEM ("Access is denied. (os error
+/// 5)", dsg 18.11.2026 07:10:43Z), while SYSTEM may write its registry key.
+/// Only that refusal goes to the registry; any other SCM error stays one.
+#[test]
+fn only_an_access_denied_start_goes_to_the_registry() {
+    assert_eq!(ACCESS_DENIED, 5);
+    assert!(registry_fallback(Some(5)));
+    assert!(!registry_fallback(Some(1060)));
+    assert!(!registry_fallback(Some(1072)));
+    assert!(!registry_fallback(None));
 }
