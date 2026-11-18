@@ -311,8 +311,11 @@ pub fn run(
                 buffer_frames = s.buffer_frames,
                 callbacks = s.callbacks,
                 late_callbacks = s.late_callbacks,
-                // 0.25 ms bins under two periods (dstack v0.6.173).
+                // 0.25 ms bins under two periods (dstack v0.6.173), and
+                // the run's peak lateness behind the driver's schedule,
+                // how far the top bin reached (dstack v0.6.178, #393).
                 late_bins = ?s.late_bins,
+                late_max_us = s.late_max_us,
                 fast_callbacks = s.fast_callbacks,
                 overloads = s.overloads,
                 faults = s.faults,
