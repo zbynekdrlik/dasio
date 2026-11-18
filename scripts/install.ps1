@@ -556,21 +556,25 @@ try {
 # for the copy and started again after it, also when a step fails.
 $keepTask = "dasio-pc-keep"
 $keepExe = Join-Path $bin "dasio-keep.exe"
+$keepStop = Join-Path $env:ProgramData "dasio\pc-keep.stop"
 try {
     if (Get-ScheduledTask -TaskName $keepTask -ErrorAction SilentlyContinue) {
         # Off first: its 5-min trigger must not start it again mid-copy.
         Disable-ScheduledTask -TaskName $keepTask | Out-Null
-        Stop-ScheduledTask -TaskName $keepTask
     }
-    # The task's stop may leave its process (CI: the copy found
-    # dasio-keep.exe still in use right after it): end any keeper left.
-    $left = @(Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue)
-    if ($left.Count -gt 0) {
-        Write-Output "ending the process keeper ($($left.Count) process(es) left after the task's stop)"
-        # It may end on its own between the read and the stop: checked after.
-        $left | Stop-Process -Force -ErrorAction SilentlyContinue
-        @(Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue) | Wait-Process -Timeout 15 -ErrorAction SilentlyContinue
-        if (Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue) { throw "the process keeper did not end within 15 s" }
+    # The keeper ends by itself within 2 s of this file (a task's stop left
+    # it running in CI); killed only when it does not.
+    Set-Content -Path $keepStop -Value "install"
+    $keepDeadline = (Get-Date).AddSeconds(15)
+    while (Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue) {
+        if ((Get-Date) -gt $keepDeadline) {
+            Write-Output "the process keeper did not end by its stop file within 15 s: killing it"
+            Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep -Seconds 2
+            if (Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue) { throw "the process keeper did not end" }
+            break
+        }
+        Start-Sleep -Milliseconds 250
     }
     # A scanner can hold a just-ended exe a moment: a few tries, then fail.
     for ($try = 1; ; $try++) {
@@ -585,6 +589,7 @@ try {
     $keepSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
     Register-ScheduledTask -TaskName $keepTask -Action $keepAction -Trigger $keepTriggers -Settings $keepSettings -User SYSTEM -RunLevel Highest -Force | Out-Null
 } finally {
+    if (Test-Path $keepStop) { Remove-Item $keepStop }
     if (Get-ScheduledTask -TaskName $keepTask -ErrorAction SilentlyContinue) {
         Enable-ScheduledTask -TaskName $keepTask | Out-Null
         Start-ScheduledTask -TaskName $keepTask

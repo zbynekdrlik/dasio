@@ -18,6 +18,12 @@ pub const EVERY_MS: u64 = 2000;
 /// The keeper's log: one line per change, size-bounded ([`LOG_MAX_BYTES`]).
 pub const LOG_PATH: &str = r"C:\ProgramData\dasio\pc-keep.log";
 
+/// While this file exists the keeper ends at its next pass (within
+/// [`EVERY_MS`]): install.ps1 and uninstall.ps1 stop it this way before
+/// they replace or remove its exe (a scheduled task's stop left it running
+/// in CI), and remove the file before they start it again.
+pub const STOP_PATH: &str = r"C:\ProgramData\dasio\pc-keep.stop";
+
 /// Past this size the log moves to `.1` (the older `.1` goes).
 pub const LOG_MAX_BYTES: u64 = 1_048_576;
 

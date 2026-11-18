@@ -193,3 +193,23 @@ fn no_ini_drops_the_baseline_s_and_the_site_s_entries_for_that_file() {
         .collect();
     assert_eq!(keys, ["A", "B", "C"]);
 }
+
+#[test]
+fn install_and_uninstall_stop_the_keeper_through_its_own_stop_file() {
+    // The scripts name the file the keeper looks for: under ProgramData,
+    // in dasio's folder.
+    let tail = crate::pc_profile::keep::STOP_PATH
+        .strip_prefix(r"C:\ProgramData\")
+        .expect("the stop file is under ProgramData");
+    for script in ["install.ps1", "uninstall.ps1"] {
+        let text = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("../../scripts/{script}")),
+        )
+        .unwrap();
+        assert!(
+            text.contains(&format!("Join-Path $env:ProgramData \"{tail}\"")),
+            "{script} does not name {tail}"
+        );
+    }
+}

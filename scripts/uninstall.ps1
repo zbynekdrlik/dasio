@@ -82,16 +82,22 @@ if (-not (Get-Service -Name "dasio-*" -ErrorAction SilentlyContinue) -and (Test-
 if (-not (Get-Service -Name "dasio-*" -ErrorAction SilentlyContinue)) {
     if (Get-ScheduledTask -TaskName "dasio-pc-keep" -ErrorAction SilentlyContinue) {
         Disable-ScheduledTask -TaskName "dasio-pc-keep" | Out-Null
-        Stop-ScheduledTask -TaskName "dasio-pc-keep"
     }
-    $left = @(Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue)
-    if ($left.Count -gt 0) {
-        # It may end on its own between the read and the stop: checked after.
-        $left | Stop-Process -Force -ErrorAction SilentlyContinue
-        @(Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue) | Wait-Process -Timeout 15 -ErrorAction SilentlyContinue
-        if (Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue) {
-            throw "the process keeper did not end within 15 s; its task stays disabled: run the uninstall again"
+    # The keeper ends by itself within 2 s of its stop file; killed only
+    # when it does not.
+    $keepStop = Join-Path $env:ProgramData "dasio\pc-keep.stop"
+    Set-Content -Path $keepStop -Value "uninstall"
+    $deadline = (Get-Date).AddSeconds(15)
+    while (Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue) {
+        if ((Get-Date) -gt $deadline) {
+            Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep -Seconds 2
+            if (Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue) {
+                throw "the process keeper did not end within 15 s; its task stays disabled: run the uninstall again"
+            }
+            break
         }
+        Start-Sleep -Milliseconds 250
     }
     if (Get-ScheduledTask -TaskName "dasio-pc-keep" -ErrorAction SilentlyContinue) {
         Unregister-ScheduledTask -TaskName "dasio-pc-keep" -Confirm:$false
@@ -101,5 +107,6 @@ if (-not (Get-Service -Name "dasio-*" -ErrorAction SilentlyContinue)) {
         try { Remove-Item $keepExe -ErrorAction Stop }
         catch { if ($try -ge 10) { throw "removing dasio-keep.exe failed 10 times: $($_.Exception.Message)" }; Start-Sleep -Milliseconds 500 }
     }
+    Remove-Item $keepStop
 }
 Write-Output "dasio instance $Instance removed"

@@ -566,6 +566,10 @@ fn pc_keep(path: &str) -> ExitCode {
     let mut failed = std::collections::HashSet::new();
     let start = std::time::Instant::now();
     loop {
+        if std::path::Path::new(keep::STOP_PATH).exists() {
+            log("the stop file is there: the keeper ends");
+            return ExitCode::SUCCESS;
+        }
         let modified = std::fs::metadata(file).and_then(|m| m.modified()).ok();
         // A load only at start and when the file changes: a profile that
         // does not load is not parsed again every pass.

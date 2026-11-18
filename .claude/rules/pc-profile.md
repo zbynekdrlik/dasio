@@ -155,10 +155,13 @@ paths:
   Lasso did, dasio does): `dasio pc-profile keep`, run as the SYSTEM task
   `dasio-pc-keep` at boot and every 5 min, one at a time (a task's
   restart-on-failure covers only a failed start, so the repetition brings a
-  dead keeper back). install.ps1 copies dasio.exe as `dasio-keep.exe`
-  (stops the task and ends any keeper left, copy with a few tries, starts
-  it again even on a failed step, refuses when it does not run or ends at
-  once); uninstall.ps1 removes it with the last instance. Every 2 s it
+  dead keeper back). install.ps1 copies dasio.exe as `dasio-keep.exe`:
+  task off, the keeper ended through its stop file
+  `C:\ProgramData\dasio\pc-keep.stop` (it exits within 2 s; killed only
+  after 15 s: `Stop-ScheduledTask` left it running in CI), copy with a few
+  tries, then in a `finally` the stop file removed, task on and started,
+  refused when it does not run or ends at once; uninstall.ps1 removes it
+  with the last instance the same way. Every 2 s it
   sets what differs on every running process of the entry's exe, through
   one handle per process (image name checked, so a reused pid is never
   touched), affinity first (a mask naming a CPU the PC lacks is refused)
