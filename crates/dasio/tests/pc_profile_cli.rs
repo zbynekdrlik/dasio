@@ -426,6 +426,14 @@ fn a_value_in_system_s_own_hive_is_set_and_read_back_there() {
     use dasio::pc_profile::{Action, Reader, Value, parse, windows::Pc};
     let sub = format!(r"Software\dasio-ci-{}", std::process::id());
     let key = format!(r"HKU\S-1-5-18\{sub}");
+    // Removed also when an assert below fails.
+    struct Remove(String);
+    impl Drop for Remove {
+        fn drop(&mut self) {
+            let _ = Command::new("reg").args(["delete", &self.0, "/f"]).status();
+        }
+    }
+    let _remove = Remove(key.clone());
     let pc = Pc::new(&parse("name = \"ci\"\n").unwrap());
     assert_eq!(pc.reg(&key, "Buffer Size(Samples)"), Ok(None));
     let value = Value::Binary(vec![0x80, 0, 0, 0]);
@@ -435,16 +443,22 @@ fn a_value_in_system_s_own_hive_is_set_and_read_back_there() {
         value: value.clone(),
     })
     .unwrap();
-    let back = pc.reg(&key, "Buffer Size(Samples)");
-    // In SYSTEM's hive, not HKLM's.
-    let hklm = pc.reg(&format!(r"HKLM\{sub}"), "Buffer Size(Samples)");
-    let removed = Command::new("reg")
-        .args(["delete", &format!(r"HKU\S-1-5-18\{sub}"), "/f"])
-        .status()
+    assert_eq!(pc.reg(&key, "Buffer Size(Samples)"), Ok(Some(value)));
+    // In SYSTEM's hive, not HKLM's: reg.exe finds it there too.
+    assert_eq!(
+        pc.reg(&format!(r"HKLM\{sub}"), "Buffer Size(Samples)"),
+        Ok(None)
+    );
+    let q = Command::new("reg")
+        .args(["query", &key, "/v", "Buffer Size(Samples)"])
+        .output()
         .unwrap();
-    assert_eq!(back, Ok(Some(value)));
-    assert_eq!(hklm, Ok(None));
-    assert!(removed.success(), "reg delete {key}");
+    assert!(q.status.success(), "reg query {key}");
+    assert!(
+        String::from_utf8_lossy(&q.stdout).contains("REG_BINARY    80000000"),
+        "{}",
+        String::from_utf8_lossy(&q.stdout)
+    );
     // Another user's hive is refused before anything is touched.
     assert!(
         pc.reg(r"HKU\S-1-5-21-1-2-3-1001\Software\X", "Y")

@@ -86,9 +86,10 @@ paths:
   takes `HKU\S-1-5-18\...` besides `HKLM\...`. dasio runs as SYSTEM, so
   that hive is the HKCU of dasio's process, where an ASIO driver dasio
   loads keeps its per-user settings (dsg's SoundGrid ASIO buffer, #190).
-  Another user's hive (`HKU\S-1-5-21-...`, also `HKU\.DEFAULT`) refuses
-  the whole profile: it is loaded only while that user is logged on. An
-  older dasio reports such an entry as one problem ("only HKLM\ keys").
+  Anything else under `HKU\` (another user's hive, loaded only while that
+  user is logged on; `HKU\.DEFAULT`, a lowercase SID) is a problem of its
+  entry, never a refused profile (that would stop the device). An older
+  dasio reports such an entry as one problem too ("only HKLM\ keys").
 - **A device the PC does not need is a `[[device]]` entry** (dasio#181,
   0.1.134+; an older dasio refuses the whole profile): `instance_id` (Device
   Manager's "Device instance path", site data), `name`, `why`, `absent_ok`.

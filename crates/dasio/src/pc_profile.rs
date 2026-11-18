@@ -377,9 +377,10 @@ pub enum Root {
 }
 
 /// `key` as its root and the path under it: `HKLM\x` is `x` under
-/// HKLM, `HKU\S-1-5-18\x` is `S-1-5-18\x` under HKEY_USERS. Another
-/// user's hive is refused (loaded only while that user is logged on), so
-/// is any other root.
+/// HKLM, `HKU\S-1-5-18\x` is `S-1-5-18\x` under HKEY_USERS. Anything
+/// else under HKU\ (another user's hive, loaded only while that user is
+/// logged on, or SYSTEM's spelled otherwise) is refused, so is any other
+/// root: a problem of that entry, the rest of the profile stays.
 pub fn split_root(key: &str) -> Result<(Root, &str), String> {
     if let Some(rest) = key.strip_prefix(r"HKLM\") {
         return Ok((Root::Machine, rest));
@@ -389,7 +390,7 @@ pub fn split_root(key: &str) -> Result<(Root, &str), String> {
     }
     if key.starts_with(r"HKU\") {
         return Err(format!(
-            "{key}: under HKU\\ only SYSTEM's own hive ({SYSTEM_HIVE}): another user's hive is loaded only while that user is logged on"
+            "{key}: under HKU\\ only SYSTEM's own hive, written {SYSTEM_HIVE}... (another user's hive is loaded only while that user is logged on)"
         ));
     }
     Err(format!("{key}: only HKLM\\ or {SYSTEM_HIVE} keys"))
@@ -427,11 +428,6 @@ fn parse_with(text: &str, need_nic_guid: bool) -> Result<Profile, String> {
             && p.nic_guid.is_none()
         {
             return Err(format!("registry {}: needs nic_guid", r.key));
-        }
-        // dasio#191: a key under HKU\ names SYSTEM's own hive or the
-        // profile is refused (other roots stay a problem of the entry).
-        if r.key.starts_with(r"HKU\") {
-            split_root(&r.key).map_err(|e| format!("registry {e}"))?;
         }
     }
     for e in &p.process {

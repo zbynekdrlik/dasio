@@ -31,12 +31,19 @@ fn a_key_names_its_root() {
 fn another_user_s_hive_or_another_root_is_refused_naming_why() {
     assert_eq!(
         split_root(r"HKU\S-1-5-21-1-2-3-1001\Software\X"),
-        Err(r"HKU\S-1-5-21-1-2-3-1001\Software\X: under HKU\ only SYSTEM's own hive (HKU\S-1-5-18\): another user's hive is loaded only while that user is logged on".into())
+        Err(r"HKU\S-1-5-21-1-2-3-1001\Software\X: under HKU\ only SYSTEM's own hive, written HKU\S-1-5-18\... (another user's hive is loaded only while that user is logged on)".into())
     );
-    // .DEFAULT is SYSTEM's hive under another name: one spelling only.
-    assert!(split_root(r"HKU\.DEFAULT\Software\X").is_err());
-    // A hive whose name only starts like SYSTEM's.
-    assert!(split_root(r"HKU\S-1-5-18_Classes\X").is_err());
+    // SYSTEM's hive under another spelling, and a hive whose name only
+    // starts like SYSTEM's: refused, saying how to write it.
+    for key in [
+        r"HKU\.DEFAULT\Software\X",
+        r"HKU\s-1-5-18\Software\X",
+        r"HKU\S-1-5-18",
+        r"HKU\S-1-5-18_Classes\X",
+    ] {
+        let err = split_root(key).unwrap_err();
+        assert!(err.contains(r"written HKU\S-1-5-18\..."), "{err}");
+    }
     assert_eq!(
         split_root(r"HKCU\Software\X"),
         Err(r"HKCU\Software\X: only HKLM\ or HKU\S-1-5-18\ keys".into())
@@ -44,16 +51,13 @@ fn another_user_s_hive_or_another_root_is_refused_naming_why() {
 }
 
 #[test]
-fn a_profile_takes_system_s_hive_and_refuses_another_user_s() {
+fn a_profile_takes_system_s_hive_and_any_other_key_stays_a_problem_of_its_entry() {
     let p = parse(&entry(SG)).unwrap();
     assert_eq!(p.registry[0].key, SG);
-    let err = parse(&entry(r"HKU\S-1-5-21-1-2-3-1001\Software\X")).unwrap_err();
-    assert!(
-        err.starts_with(r"registry HKU\S-1-5-21-1-2-3-1001\Software\X: under HKU\ only"),
-        "{err}"
-    );
-    // Any other root stays a problem of its entry, as before: a profile
-    // that loaded before still loads.
+    // Another user's hive or root: the profile still loads (a refused
+    // profile stops the device); the Windows reader names the entry's
+    // problem from split_root.
+    assert!(parse(&entry(r"HKU\S-1-5-21-1-2-3-1001\Software\X")).is_ok());
     assert!(parse(&entry(r"HKCU\Software\X")).is_ok());
 }
 
