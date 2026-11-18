@@ -522,10 +522,20 @@ fn pc_keep(path: &str) -> ExitCode {
     use std::io::Write;
     let log = |line: &str| {
         let p = std::path::Path::new(keep::LOG_PATH);
-        if std::fs::metadata(p).is_ok_and(|m| m.len() > keep::LOG_MAX_BYTES) {
-            let _ = std::fs::rename(p, p.with_extension("log.1"));
+        let size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+        if size > keep::LOG_MAX_BYTES && std::fs::rename(p, p.with_extension("log.1")).is_err() {
+            // A reader holds it without delete sharing: start it over past
+            // twice the cap rather than let it grow.
+            if size > 2 * keep::LOG_MAX_BYTES {
+                let _ = std::fs::File::create(p);
+            }
         }
-        let stamp = chrono_free_utc();
+        let stamp = keep::utc_stamp(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        );
         match std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -544,16 +554,23 @@ fn pc_keep(path: &str) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // The system CPUs do not depend on the instance count: placed before
+    // the profile loads, so a profile that never loads leaves it placed.
+    log(&place_keeper(Layout::of(cpus, 1).system_mask()));
     let file = std::path::Path::new(path);
     let mut profile: Option<dasio::pc_profile::Profile> = None;
     let mut stamp = None;
-    let mut placed = false;
-    let mut quiet = keep::Quiet::default();
+    let mut tried = false;
+    let mut last_error = None;
+    let mut fights = keep::Fights::default();
     let mut failed = std::collections::HashSet::new();
     let start = std::time::Instant::now();
     loop {
         let modified = std::fs::metadata(file).and_then(|m| m.modified()).ok();
-        if profile.is_none() || modified != stamp {
+        // A load only at start and when the file changes: a profile that
+        // does not load is not parsed again every pass.
+        if !tried || modified != stamp {
+            tried = true;
             stamp = modified;
             match load(file, cpus) {
                 Ok(p) => {
@@ -566,21 +583,25 @@ fn pc_keep(path: &str) -> ExitCode {
                             .collect::<Vec<_>>()
                             .join(", ")
                     ));
-                    if !placed {
-                        let layout = Layout::of(cpus, p.instances.unwrap_or(1));
-                        log(&place_keeper(layout.system_mask()));
-                        placed = true;
-                    }
                     profile = Some(p);
+                    last_error = None;
                 }
-                Err(e) => log(&format!(
-                    "the PC profile does not load, the keeper keeps the last one: {e}"
-                )),
+                Err(e) => {
+                    if last_error.as_ref() != Some(&e) {
+                        let held = if profile.is_some() {
+                            "it keeps the last one that loaded"
+                        } else {
+                            "it holds nothing until one loads"
+                        };
+                        log(&format!("the PC profile does not load, {held}: {e}"));
+                    }
+                    last_error = Some(e);
+                }
             }
         }
         if let Some(p) = &profile {
             let now = start.elapsed().as_millis() as u64;
-            for line in pass(p, &mut quiet, &mut failed, now) {
+            for line in pass(p, &mut fights, &mut failed, now) {
                 log(&line);
             }
         }
@@ -600,16 +621,6 @@ fn place_keeper(mask: u64) -> String {
     // SAFETY: as above; a mask of this PC's CPUs from its layout.
     let aff = unsafe { SetProcessAffinityMask(GetCurrentProcess(), mask as usize) } != 0;
     format!("the keeper runs below normal ({prio}) on CPUs 0x{mask:X} ({aff})")
-}
-
-/// Now in UTC as `YYYY-MM-DDTHH:MM:SSZ`, from the system clock.
-#[cfg(windows)]
-fn chrono_free_utc() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    dasio::pc_profile::keep::utc_stamp(secs)
 }
 
 #[cfg(not(windows))]

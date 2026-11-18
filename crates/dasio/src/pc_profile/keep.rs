@@ -19,7 +19,7 @@ pub const EVERY_MS: u64 = 2000;
 pub const LOG_PATH: &str = r"C:\ProgramData\dasio\pc-keep.log";
 
 /// Past this size the log moves to `.1` (the older `.1` goes).
-pub const LOG_MAX_BYTES: u64 = 1 << 20;
+pub const LOG_MAX_BYTES: u64 = 1_048_576;
 
 /// What the keeper sets on one process.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,54 +65,74 @@ pub fn line(exe: &str, pid: u32, s: &ProcState, set: &Set) -> String {
     format!("kept {exe} (pid {pid}): {}", parts.join(", "))
 }
 
-/// How often a change to the same process is logged: a process something
-/// else keeps setting back (ProBalance, a second keeper) logs one line a
-/// minute with the count, not one every pass.
-pub const QUIET_MS: u64 = 60_000;
+/// A process set back this many times within [`FIGHT_WINDOW_MS`] is given
+/// up: something else sets it (ProBalance, a second rule), and an endless
+/// fight helps nobody. The 10-min profile check shows what is left.
+pub const FIGHT_LIMIT: u32 = 5;
 
-/// Which changes to log, per process id.
-#[derive(Debug, Default)]
-pub struct Quiet {
-    /// Per pid: when its last change was logged, and the changes since.
-    seen: std::collections::HashMap<u32, (u64, u32)>,
+/// The window [`FIGHT_LIMIT`] counts in, in ms.
+pub const FIGHT_WINDOW_MS: u64 = 600_000;
+
+/// What a change to a process means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Note {
+    /// Logged and kept on holding it.
+    Changed,
+    /// The [`FIGHT_LIMIT`]-th change in its window: logged, then given up.
+    GiveUp,
 }
 
-impl Quiet {
-    /// A change was made to `pid` at `now_ms`: `Some(n)` when it is to be
-    /// logged (`n` the changes since the last logged one, this one
-    /// included), `None` while it falls within [`QUIET_MS`] of that.
-    pub fn note(&mut self, pid: u32, now_ms: u64) -> Option<u32> {
-        match self.seen.get_mut(&pid) {
-            Some((at, n)) if now_ms.saturating_sub(*at) < QUIET_MS => {
-                *n += 1;
-                None
-            }
-            Some((at, n)) => {
-                let count = *n + 1;
-                *at = now_ms;
-                *n = 0;
-                Some(count)
-            }
-            None => {
-                self.seen.insert(pid, (now_ms, 0));
-                Some(1)
-            }
+/// The changes made per process id, to give up a fight.
+#[derive(Debug, Default)]
+pub struct Fights {
+    /// Per pid: when its window began, and the changes in it.
+    seen: std::collections::HashMap<u32, (u64, u32)>,
+    gave_up: std::collections::HashSet<u32>,
+}
+
+impl Fights {
+    /// Whether the keeper gave `pid` up.
+    pub fn gave_up(&self, pid: u32) -> bool {
+        self.gave_up.contains(&pid)
+    }
+
+    /// A change was made to `pid` at `now_ms`.
+    pub fn note(&mut self, pid: u32, now_ms: u64) -> Note {
+        let (start, n) = self.seen.entry(pid).or_insert((now_ms, 0));
+        if now_ms.saturating_sub(*start) >= FIGHT_WINDOW_MS {
+            *start = now_ms;
+            *n = 0;
+        }
+        *n += 1;
+        if *n >= FIGHT_LIMIT {
+            self.gave_up.insert(pid);
+            Note::GiveUp
+        } else {
+            Note::Changed
         }
     }
 
     /// Forgets processes that are gone (their ids come back for others).
     pub fn keep_only(&mut self, alive: &[u32]) {
         self.seen.retain(|pid, _| alive.contains(pid));
+        self.gave_up.retain(|pid| alive.contains(pid));
     }
 }
 
-/// The log line of a change, with how many changes it stands for.
-pub fn counted(line: String, n: u32) -> String {
-    if n > 1 {
-        format!("{line} ({n} changes since the last line: something else sets it back)")
-    } else {
-        line
-    }
+/// The log line of a process given up.
+pub fn gave_up_line(exe: &str, pid: u32) -> String {
+    format!(
+        "gave up keeping {exe} (pid {pid}): something else set it back {FIGHT_LIMIT} times in {} min; the PC profile check shows what differs",
+        FIGHT_WINDOW_MS / 60_000
+    )
+}
+
+/// Why `mask` cannot be set on this PC, whose CPUs are `system`: a CPU it
+/// does not have.
+pub fn mask_outside(mask: u64, system: u64) -> Option<String> {
+    (mask & !system != 0).then(|| {
+        format!("affinity 0x{mask:X} names CPUs this PC does not have (it has 0x{system:X})")
+    })
 }
 
 /// `unix_s` as `YYYY-MM-DDTHH:MM:SSZ` (UTC), the keeper log's stamp.

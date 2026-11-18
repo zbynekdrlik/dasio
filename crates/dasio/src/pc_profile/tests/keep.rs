@@ -96,28 +96,58 @@ fn a_change_logs_what_moved_from_what() {
 }
 
 #[test]
-fn a_process_set_back_again_logs_once_a_minute_with_the_count() {
-    let mut q = Quiet::default();
-    assert_eq!(q.note(5, 1_000), Some(1));
-    assert_eq!(q.note(5, 3_000), None);
-    assert_eq!(q.note(5, 1_000 + QUIET_MS - 1), None);
-    // A minute after the logged one: this change and the two quieted.
-    assert_eq!(q.note(5, 1_000 + QUIET_MS), Some(3));
-    assert_eq!(q.note(5, 1_000 + QUIET_MS + 10), None);
+fn a_process_set_back_again_and_again_is_given_up() {
+    let mut f = Fights::default();
+    for n in 1..FIGHT_LIMIT {
+        assert_eq!(f.note(5, u64::from(n) * 2_000), Note::Changed, "change {n}");
+    }
+    assert!(!f.gave_up(5));
+    assert_eq!(f.note(5, 20_000), Note::GiveUp);
+    assert!(f.gave_up(5));
     // Another process is its own.
-    assert_eq!(q.note(6, 3_000), Some(1));
-    // A process gone is forgotten: its id logs at once when it comes back.
-    q.keep_only(&[6]);
-    assert_eq!(q.note(5, 1_000 + QUIET_MS + 20), Some(1));
-    assert_eq!(q.note(6, 4_000), None);
+    assert!(!f.gave_up(6));
+    assert_eq!(f.note(6, 20_000), Note::Changed);
+    // A process gone is forgotten: its id is held again when it comes back.
+    f.keep_only(&[6]);
+    assert!(!f.gave_up(5));
+    assert_eq!(f.note(5, 22_000), Note::Changed);
 }
 
 #[test]
-fn a_counted_line_says_something_sets_it_back() {
-    assert_eq!(counted("kept a".into(), 1), "kept a");
+fn changes_further_apart_than_the_window_never_add_up() {
+    let mut f = Fights::default();
+    for n in 0..(2 * FIGHT_LIMIT) {
+        assert_eq!(
+            f.note(
+                9,
+                u64::from(n) * (FIGHT_WINDOW_MS / u64::from(FIGHT_LIMIT - 1))
+            ),
+            Note::Changed,
+            "change {n}"
+        );
+    }
+    assert!(!f.gave_up(9));
+}
+
+#[test]
+fn a_given_up_process_names_why() {
     assert_eq!(
-        counted("kept a".into(), 3),
-        "kept a (3 changes since the last line: something else sets it back)"
+        gave_up_line("AbletonLiveMaster.exe", 12),
+        "gave up keeping AbletonLiveMaster.exe (pid 12): something else set it back 5 times in 10 min; the PC profile check shows what differs"
+    );
+}
+
+#[test]
+fn a_mask_naming_a_cpu_the_pc_lacks_is_refused() {
+    assert_eq!(mask_outside(0x1, 0xF), None);
+    assert_eq!(mask_outside(0xF, 0xF), None);
+    assert_eq!(
+        mask_outside(0xFFFF_0000, 0xFFFF),
+        Some("affinity 0xFFFF0000 names CPUs this PC does not have (it has 0xFFFF)".into())
+    );
+    assert_eq!(
+        mask_outside(0x11, 0x1),
+        Some("affinity 0x11 names CPUs this PC does not have (it has 0x1)".into())
     );
 }
 

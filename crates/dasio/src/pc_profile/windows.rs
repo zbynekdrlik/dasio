@@ -802,6 +802,15 @@ fn find_process(exe: &str) -> Option<u32> {
 
 /// The ids of every process whose exe file name is `exe` (case ignored).
 pub(super) fn find_processes(exe: &str) -> Result<Vec<u32>, String> {
+    Ok(snapshot()?
+        .into_iter()
+        .filter(|(_, n)| n.eq_ignore_ascii_case(exe))
+        .map(|(pid, _)| pid)
+        .collect())
+}
+
+/// Every running process: its id and its exe file name.
+pub(super) fn snapshot() -> Result<Vec<(u32, String)>, String> {
     // SAFETY: a process snapshot, closed below.
     let snap: HANDLE = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snap == INVALID_HANDLE_VALUE {
@@ -813,17 +822,15 @@ pub(super) fn find_processes(exe: &str) -> Result<Vec<u32>, String> {
     // SAFETY: a zeroed entry with its size set, as the API wants.
     let mut e: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
     e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-    let mut pids = Vec::new();
+    let mut procs = Vec::new();
     // SAFETY: a valid snapshot and entry.
     let mut ok = unsafe { Process32FirstW(snap, &mut e) } != 0;
     while ok {
-        if from_wide(&e.szExeFile).eq_ignore_ascii_case(exe) {
-            pids.push(e.th32ProcessID);
-        }
+        procs.push((e.th32ProcessID, from_wide(&e.szExeFile)));
         // SAFETY: as above.
         ok = unsafe { Process32NextW(snap, &mut e) } != 0;
     }
     // SAFETY: the snapshot opened above.
     unsafe { CloseHandle(snap) };
-    Ok(pids)
+    Ok(procs)
 }

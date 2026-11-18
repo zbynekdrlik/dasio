@@ -336,30 +336,44 @@ fn install_ps1_installs_the_nic_driver_only_when_asked_and_only_a_checked_packag
 
 /// The process keeper (dasio#185): install.ps1 stops its task before the
 /// copy of dasio.exe as dasio-keep.exe (the running keeper holds that
-/// file), then registers it as a SYSTEM boot task running `pc-profile
-/// keep`, restarted on failure, starts it and refuses when it is not
-/// running.
+/// file), registers it as a SYSTEM task running `pc-profile keep` at boot
+/// and every 5 min (one at a time: a dead keeper comes back), starts it
+/// again even when a step fails, and refuses when it does not run (or ends
+/// at once). uninstall.ps1 removes it with the last instance.
 #[test]
 fn install_ps1_restarts_the_process_keeper_around_its_copy() {
-    let s = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/install.ps1"),
-    )
-    .unwrap()
-    .replace("\r\n", "\n");
+    let read = |f: &str| {
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(f))
+            .unwrap()
+            .replace("\r\n", "\n")
+    };
+    let s = read("../../scripts/install.ps1");
     let at = |needle: &str| {
         s.find(needle)
             .unwrap_or_else(|| panic!("install.ps1 has no {needle}"))
     };
     let stop = at("Stop-ScheduledTask -TaskName $keepTask");
-    let copy = at("Copy-Item (Join-Path $here \"dasio.exe\") $keepExe -Force");
+    let ended_left = at("$left | Stop-Process -Force");
+    let copy = at("try { Copy-Item (Join-Path $here \"dasio.exe\") $keepExe -Force; break }");
     let register = at("Register-ScheduledTask -TaskName $keepTask");
-    let start = at("Start-ScheduledTask -TaskName $keepTask");
-    let refuse = at("throw \"the process keeper ($keepTask) did not start\"");
-    assert!(stop < copy && copy < register && register < start && start < refuse);
+    let finally = at(
+        "} finally {\n    if (Get-ScheduledTask -TaskName $keepTask -ErrorAction SilentlyContinue) { Start-ScheduledTask -TaskName $keepTask }",
+    );
+    let start = at("throw \"the process keeper ($keepTask) did not start\"");
+    let ended = at("throw \"the process keeper ($keepTask) ended right after its start");
+    assert!(
+        stop < copy && copy < register && register < finally && finally < start && start < ended
+    );
     assert!(s.contains("New-ScheduledTaskAction -Execute $keepExe -Argument \"pc-profile keep\""));
-    assert!(s.contains("-Trigger (New-ScheduledTaskTrigger -AtStartup)"));
-    assert!(s.contains("-RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)"));
+    assert!(s.contains("(New-ScheduledTaskTrigger -AtStartup)"));
+    assert!(s.contains("-RepetitionInterval (New-TimeSpan -Minutes 5)"));
+    assert!(s.contains("-MultipleInstances IgnoreNew"));
     assert!(s.contains("-User SYSTEM -RunLevel Highest"));
     // Before the instance's own service is (re)made.
-    assert!(start < at("New-Service -Name $service"));
+    assert!(ended < at("New-Service -Name $service"));
+    let u = read("../../scripts/uninstall.ps1");
+    let gone = u
+        .find("Unregister-ScheduledTask -TaskName \"dasio-pc-keep\" -Confirm:$false")
+        .expect("uninstall.ps1 removes the keeper");
+    assert!(u[..gone].contains("Stop-ScheduledTask -TaskName \"dasio-pc-keep\""));
 }

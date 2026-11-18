@@ -382,7 +382,7 @@ fn the_dante_nic_s_parent_chain_is_read_up_to_the_root() {
 fn the_keeper_gives_a_running_process_its_entry_s_priority_and_affinity() {
     // dasio#185: one pass of `dasio pc-profile keep` over a real process
     // of the runner (a waiting ping, started here), read back.
-    use dasio::pc_profile::{Reader, keep::Quiet, parse, windows::Pc, windows::keep::pass};
+    use dasio::pc_profile::{Reader, keep::Fights, parse, windows::Pc, windows::keep::pass};
     let mut child = Command::new("ping")
         .args(["-n", "60", "127.0.0.1"])
         .stdout(std::process::Stdio::null())
@@ -394,11 +394,11 @@ fn the_keeper_gives_a_running_process_its_entry_s_priority_and_affinity() {
     .unwrap();
     let pc = Pc::new(&p);
     let before = pc.process("ping.exe");
-    let mut quiet = Quiet::default();
+    let mut fights = Fights::default();
     let mut failed = std::collections::HashSet::new();
-    let lines = pass(&p, &mut quiet, &mut failed, 0);
+    let lines = pass(&p, &mut fights, &mut failed, 0);
     let after = pc.process("ping.exe");
-    let again = pass(&p, &mut quiet, &mut failed, 2_000);
+    let again = pass(&p, &mut fights, &mut failed, 2_000);
     child.kill().unwrap();
     child.wait().unwrap();
     let before = before.expect("the ping runs");

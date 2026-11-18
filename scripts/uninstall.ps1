@@ -74,4 +74,12 @@ if (-not (Get-Service -Name "dasio-*" -ErrorAction SilentlyContinue) -and (Test-
     & $dtrayCli --autostart off
     if ($LASTEXITCODE -ne 0) { throw "dtray-cli --autostart off failed ($LASTEXITCODE)" }
 }
+# The last instance gone: no process keeper either (dasio#185).
+if (-not (Get-Service -Name "dasio-*" -ErrorAction SilentlyContinue) -and (Get-ScheduledTask -TaskName "dasio-pc-keep" -ErrorAction SilentlyContinue)) {
+    Stop-ScheduledTask -TaskName "dasio-pc-keep"
+    Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue | Wait-Process -Timeout 15
+    Unregister-ScheduledTask -TaskName "dasio-pc-keep" -Confirm:$false
+    $keepExe = Join-Path $env:ProgramFiles "dasio\dasio-keep.exe"
+    if (Test-Path $keepExe) { Remove-Item $keepExe }
+}
 Write-Output "dasio instance $Instance removed"

@@ -46,8 +46,9 @@
 # - puts the device config at C:\ProgramData\dasio\instance-<n>\device.toml,
 #   and moves aside a state file another config left at its state path,
 # - copies dasio.exe as dasio-keep.exe and (re)starts the SYSTEM task
-#   dasio-pc-keep (`dasio pc-profile keep`, dasio#185): the [[process]]
-#   entries' affinity and priority, held by dasio (what Process Lasso did);
+#   dasio-pc-keep (`dasio pc-profile keep`, dasio#185, at boot and every
+#   5 min): the [[process]] entries' affinity and priority, held by dasio
+#   (what Process Lasso did);
 # - copies dtray.exe and dtray-cli.exe (dstack's tray: every local dstack device, with dasio's
 #   line per instance) and starts it at the installing user's logon
 #   (`dtray-cli --autostart on`); removes the former dasio-tray; writes the
@@ -548,23 +549,49 @@ try {
 }
 # The process keeper (dasio#185): dasio-keep.exe, its own copy of dasio.exe
 # (so a new dasio.exe never waits on it), run by the SYSTEM task
-# dasio-pc-keep at boot and restarted on failure, holds every [[process]]
-# entry's affinity and priority class (what Process Lasso did). Stopped for
-# the copy, started again after it.
+# dasio-pc-keep, holds every [[process]] entry's affinity and priority class
+# (what Process Lasso did). The task starts it at boot and every 5 min, one
+# at a time (a task's restart-on-failure covers only a failed start, not a
+# keeper that ended), so a keeper that died is back within 5 min. Stopped
+# for the copy and started again after it, also when a step fails.
 $keepTask = "dasio-pc-keep"
 $keepExe = Join-Path $bin "dasio-keep.exe"
-if (Get-ScheduledTask -TaskName $keepTask -ErrorAction SilentlyContinue) {
-    Stop-ScheduledTask -TaskName $keepTask
-    Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue | Wait-Process -Timeout 15
+try {
+    if (Get-ScheduledTask -TaskName $keepTask -ErrorAction SilentlyContinue) {
+        Stop-ScheduledTask -TaskName $keepTask
+    }
+    # The task's stop may leave its process (CI: the copy found
+    # dasio-keep.exe still in use right after it): end any keeper left.
+    $left = @(Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue)
+    if ($left.Count -gt 0) {
+        Write-Output "ending the process keeper ($($left.Count) process(es) left after the task's stop)"
+        $left | Stop-Process -Force
+        $left | Wait-Process -Timeout 15
+    }
+    # A scanner can hold a just-ended exe a moment: a few tries, then fail.
+    for ($try = 1; ; $try++) {
+        try { Copy-Item (Join-Path $here "dasio.exe") $keepExe -Force; break }
+        catch { if ($try -ge 10) { throw "copying dasio-keep.exe failed 10 times: $($_.Exception.Message)" }; Start-Sleep -Milliseconds 500 }
+    }
+    $keepAction = New-ScheduledTaskAction -Execute $keepExe -Argument "pc-profile keep"
+    $keepTriggers = @(
+        (New-ScheduledTaskTrigger -AtStartup),
+        (New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5))
+    )
+    $keepSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
+    Register-ScheduledTask -TaskName $keepTask -Action $keepAction -Trigger $keepTriggers -Settings $keepSettings -User SYSTEM -RunLevel Highest -Force | Out-Null
+} finally {
+    if (Get-ScheduledTask -TaskName $keepTask -ErrorAction SilentlyContinue) { Start-ScheduledTask -TaskName $keepTask }
 }
-Copy-Item (Join-Path $here "dasio.exe") $keepExe -Force
-$keepAction = New-ScheduledTaskAction -Execute $keepExe -Argument "pc-profile keep"
-$keepSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
-Register-ScheduledTask -TaskName $keepTask -Action $keepAction -Trigger (New-ScheduledTaskTrigger -AtStartup) -Settings $keepSettings -User SYSTEM -RunLevel Highest -Force | Out-Null
-Start-ScheduledTask -TaskName $keepTask
+# Running, and still running 2 s later: a keeper that ends at once is none.
+$keepDeadline = (Get-Date).AddSeconds(10)
+while (-not (Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue)) {
+    if ((Get-Date) -gt $keepDeadline) { throw "the process keeper ($keepTask) did not start" }
+    Start-Sleep -Milliseconds 500
+}
+Start-Sleep -Seconds 2
 if (-not (Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue)) {
-    Start-Sleep -Seconds 2
-    if (-not (Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue)) { throw "the process keeper ($keepTask) did not start" }
+    throw "the process keeper ($keepTask) ended right after its start (see C:\ProgramData\dasio\pc-keep.log)"
 }
 
 # dtray, dstack's tray for every local dstack device (dasio's line per
