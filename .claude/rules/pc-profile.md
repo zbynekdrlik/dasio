@@ -81,10 +81,8 @@ paths:
   state (`on`, `off until the next boot`, `not connected, on when
   connected`). `apply` runs `CM_Disable_DevNode(PERSIST)` and sets the flag
   (a vetoed stop is a FAILED line). An entry that would cut a network path
-  is refused, never planned: the Dante NIC, every network adapter that is
-  up or has an address (the remote path: dsg's LAN89 VLAN adapter, a
-  Tailscale adapter; dsg's SoundGrid port, up with no IPv4; the adapter a
-  virtual one rides on, which has no address of its own),
+  is refused, never planned: the Dante NIC, every adapter with an IPv4
+  address (the remote path: dsg's LAN89 VLAN adapter, a Tailscale adapter),
   a device they hang on (their `CM_Get_Parent` chains: USB hub, host
   controller, PCI bridge) and a device hanging below them (0.1.135). A
   device whose state or parents are not read is never disabled. Without the

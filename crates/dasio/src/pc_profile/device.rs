@@ -9,12 +9,11 @@
 //! "disabled") and whether it stays off across a boot (CONFIGFLAG_DISABLED
 //! in its Enum key's `ConfigFlags`); `apply` disables it now and for every
 //! boot. An entry that would cut a network path is refused: the Dante
-//! NIC, any network adapter that is up or has an address (the remote path,
-//! e.g. dsg's LAN VLAN adapter; dsg's SoundGrid port, up with no IPv4; an
-//! adapter a virtual one rides on), a device they hang on (USB hub, host
-//! controller, PCI bridge) or one hanging below them; disabling it cuts a
-//! remote PC off (mbc has no other NIC). Without the NIC's path or the
-//! adapters, nothing is disabled at all.
+//! NIC, any adapter with an IPv4 address (the remote path, e.g. dsg's LAN
+//! VLAN adapter), a device they hang on (USB hub, host controller, PCI
+//! bridge) or one hanging below them; disabling it cuts a remote PC off
+//! (mbc has no other NIC). Without the NIC's path or the adapters, nothing
+//! is disabled at all.
 //!
 //! The portable part (validation, the check, the plan) is here; reading
 //! and disabling the device is [`windows`](super::windows).
@@ -110,9 +109,9 @@ pub fn validate(e: &DeviceEntry) -> Result<(), String> {
 struct Guard {
     /// The Dante NIC's path, then its parents'.
     nic: Vec<String>,
-    /// Each network adapter that is up or has an address (the PC's network
-    /// paths, the remote one among them): its path, then its parents'.
-    live: Vec<Vec<String>>,
+    /// Each network adapter with an IPv4 address (the PC's network paths,
+    /// the remote one among them): its path, then its parents'.
+    addressed: Vec<Vec<String>>,
 }
 
 impl Guard {
@@ -123,10 +122,10 @@ impl Guard {
         if nic.is_empty() {
             return Err("not checked: the Dante NIC's device path was not read".into());
         }
-        let live = r
-            .live()
+        let addressed = r
+            .addressed()
             .map_err(|e| format!("not checked: the PC's network adapters were not read ({e})"))?;
-        Ok(Guard { nic, live })
+        Ok(Guard { nic, addressed })
     }
 
     /// What `id` is to a network path: `Some` when disabling it cuts one.
@@ -137,17 +136,17 @@ impl Guard {
             Some(_) => return Some("a device the Dante NIC hangs on"),
             None => {}
         }
-        match self.live.iter().filter_map(|c| at(c.as_slice())).min() {
-            Some(0) => Some("a network adapter that is up or has an address (a path of the PC)"),
-            Some(_) => Some("a device a live network adapter hangs on"),
+        match self.addressed.iter().filter_map(|c| at(c.as_slice())).min() {
+            Some(0) => Some("a network adapter with an address (a path to the PC)"),
+            Some(_) => Some("a device a network adapter with an address hangs on"),
             None => None,
         }
     }
 
-    /// Whether a device with these parents hangs below the Dante NIC or a
-    /// live adapter.
+    /// Whether a device with these parents hangs below the Dante NIC or an
+    /// adapter with an address.
     fn below(&self, parents: &[String]) -> bool {
-        let adapters = std::iter::once(&self.nic).chain(&self.live);
+        let adapters = std::iter::once(&self.nic).chain(&self.addressed);
         adapters
             .filter_map(|c| c.first())
             .any(|a| parents.iter().any(|p| p.eq_ignore_ascii_case(a)))
@@ -182,7 +181,7 @@ fn judge(e: &DeviceEntry, r: &dyn Reader, g: &Guard) -> Judged {
     };
     match r.parents(&e.instance_id) {
         Ok(p) if g.below(&p) => {
-            Judged::Refused("a device below the Dante NIC or a live network adapter")
+            Judged::Refused("a device below the Dante NIC or a network adapter with an address")
         }
         Ok(_) => Judged::On(s.describe()),
         Err(err) => Judged::Unreadable(format!("its parents: {err}")),
@@ -192,7 +191,7 @@ fn judge(e: &DeviceEntry, r: &dyn Reader, g: &Guard) -> Judged {
 /// Each entry against the PC: one problem (WARN, never must-have) for a
 /// device that is not off, one for a missing one (unless `absent_ok`), one
 /// for an unreadable one, and one for an entry that would cut a network
-/// path (the Dante NIC, a live network adapter, a device they hang on
+/// path (the Dante NIC, an adapter with an address, a device they hang on
 /// or that hangs below them). Without the NIC's path or the adapters, one
 /// problem for them all (and [`plan`] disables nothing).
 pub fn check(entries: &[DeviceEntry], r: &dyn Reader) -> Vec<Problem> {
@@ -205,7 +204,7 @@ pub fn check(entries: &[DeviceEntry], r: &dyn Reader) -> Vec<Problem> {
             return vec![Problem {
                 what: format!("the {} [[device]] entries", entries.len()),
                 found,
-                want: "the Dante NIC's device, every live network adapter and their parents, so no entry can cut the PC off".into(),
+                want: "the Dante NIC's device, every adapter with an address and their parents, so no entry can cut the PC off".into(),
                 why: "no device is disabled without them (dasio#181)".into(),
                 must: false,
             }];

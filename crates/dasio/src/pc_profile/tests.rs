@@ -47,9 +47,9 @@ struct Pc {
     /// `device()` fails with this.
     device_err: Option<String>,
     /// Each adapter with an address: its path, then its parents'.
-    live: Vec<Vec<String>>,
-    /// `live()` fails with this.
-    live_err: Option<String>,
+    addressed: Vec<Vec<String>>,
+    /// `addressed()` fails with this.
+    addressed_err: Option<String>,
     /// Devices' parents by instance path (upper case); none when not named.
     parents: HashMap<String, Vec<String>>,
     /// `parents()` fails with this.
@@ -66,10 +66,10 @@ impl Reader for Pc {
     fn nic_chain(&self) -> Vec<String> {
         self.nic_chain.clone()
     }
-    fn live(&self) -> Result<Vec<Vec<String>>, String> {
-        match &self.live_err {
+    fn addressed(&self) -> Result<Vec<Vec<String>>, String> {
+        match &self.addressed_err {
             Some(e) => Err(e.clone()),
-            None => Ok(self.live.clone()),
+            None => Ok(self.addressed.clone()),
         }
     }
     fn parents(&self, id: &str) -> Result<Vec<String>, String> {

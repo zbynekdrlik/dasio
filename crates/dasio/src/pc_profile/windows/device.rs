@@ -144,13 +144,13 @@ pub fn parents(id: &str) -> Result<Vec<String>, String> {
     walk(id).map(|c| c.into_iter().skip(1).collect())
 }
 
-/// Each network adapter that is up or has an address (its NetCfgInstanceId from
+/// Each network adapter with an IPv4 address (its NetCfgInstanceId from
 /// GetAdaptersAddresses, its device from the Net class key): its path,
 /// then its parents'. An adapter with no class key (the loopback) has no
 /// device and is left out.
-pub fn live() -> Result<Vec<Vec<String>>, String> {
+pub fn addressed() -> Result<Vec<Vec<String>>, String> {
     let mut out = Vec::new();
-    for guid in super::live_adapter_guids()? {
+    for guid in super::addressed_adapter_guids()? {
         let Some(class) = super::find_nic_class(&guid) else {
             continue;
         };
