@@ -24,8 +24,8 @@ use windows_sys::Win32::System::Registry::{
 use windows_sys::Win32::System::Threading::{
     ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, GetPriorityClass,
     GetProcessAffinityMask, HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
-    OpenProcess, OpenProcessToken, PROCESS_NAME_WIN32, PROCESS_QUERY_INFORMATION,
-    PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW, REALTIME_PRIORITY_CLASS,
+    OpenProcess, OpenProcessToken, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    QueryFullProcessImageNameW, REALTIME_PRIORITY_CLASS,
 };
 
 use super::absent::{self, AbsentEntry, Fallback, Removal, Step, Target};
@@ -783,14 +783,11 @@ fn find_nic_class(guid: &str) -> Option<String> {
 /// The affinity, priority class and integrity of process `pid`, and what
 /// else `e` names; `None` when it cannot be opened for a limited query (or
 /// is gone). An entry naming I/O, memory or GPU priority or the boost
-/// needs a full query handle.
+/// needs more access ([`extras::access`]); nothing is set through it.
 pub(super) fn proc_state(pid: u32, e: &ProcEntry) -> Option<ProcState> {
-    let access = if extras::named(e) {
-        PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION
-    } else {
-        PROCESS_QUERY_LIMITED_INFORMATION
-    };
-    // SAFETY: a query-only handle, closed below.
+    let access = PROCESS_QUERY_LIMITED_INFORMATION | extras::access(e);
+    // SAFETY: a handle for queries (the GPU class's read needs the set
+    // right too), closed below.
     let h = unsafe { OpenProcess(access, 0, pid) };
     if h.is_null() {
         return None;

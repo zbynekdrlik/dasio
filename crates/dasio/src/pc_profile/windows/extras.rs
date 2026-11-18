@@ -15,7 +15,8 @@ use windows_sys::Win32::System::LibraryLoader::{
 };
 use windows_sys::Win32::System::Threading::{
     GetProcessInformation, GetProcessPriorityBoost, MEMORY_PRIORITY_INFORMATION,
-    ProcessMemoryPriority, SetProcessInformation, SetProcessPriorityBoost,
+    PROCESS_QUERY_INFORMATION, PROCESS_SET_INFORMATION, ProcessMemoryPriority,
+    SetProcessInformation, SetProcessPriorityBoost,
 };
 
 use super::super::keep::Set;
@@ -176,8 +177,19 @@ fn set_boost(h: HANDLE, on: bool) -> Result<(), String> {
         .ok_or_else(|| std::io::Error::last_os_error().to_string())
 }
 
-/// Whether `e` names anything read here (its handle then needs
-/// PROCESS_QUERY_INFORMATION).
+/// The access a handle needs, beyond a limited query, to read what `e`
+/// names: a full query, and for the GPU class the set right too (gdi32's
+/// get refuses a handle without it: STATUS_ACCESS_DENIED with 0x400 alone,
+/// class read with 0x600, dsg 18.11.2026).
+pub(super) fn access(e: &ProcEntry) -> u32 {
+    match (named(e), e.gpu_priority.is_some()) {
+        (_, true) => PROCESS_QUERY_INFORMATION | PROCESS_SET_INFORMATION,
+        (true, false) => PROCESS_QUERY_INFORMATION,
+        (false, false) => 0,
+    }
+}
+
+/// Whether `e` names anything read here.
 pub(super) fn named(e: &ProcEntry) -> bool {
     e.io_priority.is_some()
         || e.memory_priority.is_some()
