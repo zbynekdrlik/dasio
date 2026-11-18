@@ -113,8 +113,14 @@ paths:
   against dlink's range under the key's own name. A value outside it STOPS the
   service at start ("[bridge] to_asio_app_buffer_ns: 750000 ns (0.75 ms); 1
   to 150 ms", dsg 18.11.2026: ~20 s of silence until the old file was back):
-  check a new target against 1-150 ms before restarting; below 1 ms needs
-  dstack (asked, dasio#190). dtray's `Fields::read`
+  check a new target against its range before restarting. Since 0.1.139
+  (dstack v0.6.185, dstack issue 422) a direction's own target
+  (`to_asio_app_buffer_ns`, `from_asio_app_buffer_ns`) takes 0.5-150 ms
+  (`dstack_asio::bridge::direction_target_problem`); `app_buffer_ns` and
+  the from-ASIO DEFAULT (buffer + one pump block, not checked here) keep
+  dlink's 1 ms floor, so a 32-frame SoundGrid buffer needs an explicit
+  `from_asio_app_buffer_ns` (dstack's measure: >= 0.75 ms seeded + the
+  driver's callback lateness at 128 frames, 0.25-0.375 ms at 64). dtray's `Fields::read`
   (dstack issue 387) learns these key names.
 - The ASRC seed (dstack v0.6.172): `asrc_seed::path` = the instance
   folder's `asrc-seed-<driver>.toml` (driver name kept to `[A-Za-z0-9_-]`),
