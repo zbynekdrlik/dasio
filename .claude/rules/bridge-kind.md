@@ -168,3 +168,12 @@ paths:
   dsg (18.11.2026): dasio-dsg alone holds 8700, no dlisten or dsend.
   `app_status/tests/bridge_figures.rs` guards both calls as text and checks
   that the tick's counts and causes are what the slot answers.
+- Check the network read yourself, without dcontroller: from dev1's Dante
+  leg (`enp38s0.70`, 10.77.7.112) send one UDP datagram to `<device>:8700`:
+  `ff ff 00 20 <seq u16> 00 00`, 8 zero bytes, `Audinate`, `07 31 d5 b1 00
+  00 00 00` (32 bytes). The reply's opcode (bytes 24-31) is `07 2a d5 b0
+  00 00 00 00`, its body (from byte 32) the 120-byte version 1 table of
+  `dstack::info::bridge` (big-endian). Its `sequence` counts every answered
+  read since the device's start, so it also shows whether dcontroller reads
+  (dsg 17.11.2026 23:49Z: sequence 200 after 15 min, values equal to the
+  counts line).

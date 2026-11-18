@@ -1,8 +1,10 @@
 //! Services Windows turns back on by itself, held off by the service
 //! (dasio#158). Windows' own servicing (WaaSMedic, SYSTEM) sets UsoSvc, the
 //! Update Orchestrator, back to automatic start at boot (FOH, SCM event
-//! 7040 on 8.11 and 15.11.2026), so a profile check alone only reports it
-//! after the fact, and `apply` runs by hand. The service's profile thread
+//! 7040 on 8.11 and 15.11.2026), and DoSvc, Delivery Optimization, back to
+//! manual with it (FOH 18.11.2026 after an SPP start, a direct registry
+//! write, dasio#26), so a profile check alone only reports it after the
+//! fact, and `apply` runs by hand. The service's profile thread
 //! runs [`decide`] for each [`HELD`] service right before every check (the
 //! first one after start, then every [`CHECK_EVERY_S`](super::CHECK_EVERY_S))
 //! and the Windows side sets the start type back and stops it, through the
@@ -33,10 +35,19 @@ pub struct Held {
 /// The services Windows resets by itself. Each one's start type is the
 /// baseline's `Services\<name>\Start` entry too (a test keeps them equal);
 /// widen the list here, under review, never from a profile.
-pub const HELD: &[Held] = &[Held {
-    service: "UsoSvc",
-    start: 4,
-}];
+pub const HELD: &[Held] = &[
+    Held {
+        service: "UsoSvc",
+        start: 4,
+    },
+    // Delivery Optimization: set back to manual by Windows' servicing with
+    // UsoSvc, by a direct registry write (FOH 18.11.2026 05:03 CET, after
+    // an SPP start; dasio#26).
+    Held {
+        service: "DoSvc",
+        start: 4,
+    },
+];
 
 /// What to do to a held service.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

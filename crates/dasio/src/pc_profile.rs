@@ -34,7 +34,7 @@
 //!   installs it ([`nic_driver`]).
 //!
 //! Besides, the service holds the services Windows turns back on by itself
-//! (UsoSvc, dasio#158) off before each check ([`hold`]).
+//! (UsoSvc, dasio#158; DoSvc, dasio#26) off before each check ([`hold`]).
 //!
 //! Every PC is held to the built-in baseline merged with its own profile
 //! ([`baseline`](self::baseline), dasio#128); the baseline's CPU masks are
