@@ -73,6 +73,15 @@ paths:
   `[[nic_driver]]` with the same `family` wins (dsg measuring 10.80); it
   needs 0.1.121+ on the PC. A new pinned package: read its files' SHA256
   and the catalog's `Get-AuthenticodeSignature` on a PC running it.
+  dsg 18.11.2026 (10.79.20 -> 10.79.50.1003, from a dead-man task: the
+  old package stays in the driver store, so `pnputil /delete-driver
+  <new oem> /uninstall /force` rolls back): the new driver set a second
+  NIC's Green Ethernet, Gigabit Lite, Power Saving and Shutdown WOL back
+  ON (hold every property of a NIC that matters, the SoundGrid port too,
+  in the site profile), and the Dante leg's DHCP client sent no request
+  any more (renew hung; switch sniff: nothing on 67/68), so the device
+  came up on link-local: give a Dante leg with a reserved lease its
+  static address instead (10.77.7.50/24, no gateway).
 - **A device the PC does not need is a `[[device]]` entry** (dasio#181,
   0.1.134+; an older dasio refuses the whole profile): `instance_id` (Device
   Manager's "Device instance path", site data), `name`, `why`, `absent_ok`.
