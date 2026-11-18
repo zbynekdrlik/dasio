@@ -467,13 +467,34 @@ fn a_value_in_system_s_own_hive_is_set_and_read_back_there() {
     );
 }
 
+/// Windows' own answer for `pid`'s GPU scheduling class, read apart from
+/// dasio (PowerShell's P/Invoke, a handle with query + set rights):
+/// `Ok(class)` or `Err(NTSTATUS)`.
+fn gpu_class_by_powershell(pid: u32) -> Result<u32, String> {
+    let script = format!(
+        r##"Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class G {{ [DllImport("gdi32.dll")] public static extern int D3DKMTGetProcessSchedulingPriorityClass(IntPtr h, out int c); [DllImport("kernel32.dll")] public static extern IntPtr OpenProcess(uint a, bool i, uint p); }}'; $h = [G]::OpenProcess(0x600, $false, {pid}); $c = -1; $st = [G]::D3DKMTGetProcessSchedulingPriorityClass($h, [ref]$c); "$st $c""##
+    );
+    let out = Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let (st, class) = text.split_once(' ').unwrap_or_else(|| panic!("{text:?}"));
+    if st == "0" {
+        Ok(class.parse().unwrap())
+    } else {
+        Err(format!("NTSTATUS {st}"))
+    }
+}
+
 #[test]
 fn the_keeper_gives_a_running_process_its_io_memory_and_gpu_priority_and_boost() {
     // dasio#185: what Process Lasso set on FOH beyond affinity and priority
     // class, set by one keeper pass on a real process of the runner (a
     // waiting ping, started here) and read back through the check's reader.
     use dasio::pc_profile::{
-        Extras, Reader, keep::Fights, parse, windows::Pc, windows::keep::pass,
+        Extras, GPU_PRIORITIES, Reader, check, keep::Fights, parse, windows::Pc,
+        windows::keep::pass,
     };
     let mut child = Command::new("ping")
         .args(["-n", "60", "127.0.0.1"])
@@ -492,19 +513,33 @@ fn the_keeper_gives_a_running_process_its_io_memory_and_gpu_priority_and_boost()
     let before = Pc::new(&probe)
         .process(&probe.process[0])
         .expect("the ping runs");
+    // The GPU class as Windows itself answers it: a PC without a GPU
+    // scheduler (the runner's VM) refuses the read, dsg's Intel GPU answers.
+    let windows_gpu = gpu_class_by_powershell(child.id());
+    assert_eq!(
+        before.extra.gpu,
+        windows_gpu
+            .as_ref()
+            .ok()
+            .map(|c| GPU_PRIORITIES[*c as usize].to_string()),
+        "dasio's read against Windows' own ({windows_gpu:?})"
+    );
     let other = |now: &Option<String>, a: &'static str, b: &'static str| {
         if now.as_deref() == Some(a) { b } else { a }
     };
+    let gpu_target = other(&before.extra.gpu, "below normal", "idle");
     let want = Extras {
         io: Some(other(&before.extra.io, "very low", "low").into()),
         memory: Some(other(&before.extra.memory, "very low", "low").into()),
-        gpu: Some(other(&before.extra.gpu, "below normal", "idle").into()),
+        // Unreadable stays unreadable: the keeper sets nothing it did not
+        // read.
+        gpu: windows_gpu.is_ok().then(|| gpu_target.to_string()),
         boost: Some(!before.extra.boost.expect("its boost reads")),
     };
     let p = entry(
         want.io.as_deref().unwrap(),
         want.memory.as_deref().unwrap(),
-        want.gpu.as_deref().unwrap(),
+        gpu_target,
         want.boost.unwrap(),
     );
     let pc = Pc::new(&p);
@@ -512,6 +547,7 @@ fn the_keeper_gives_a_running_process_its_io_memory_and_gpu_priority_and_boost()
     let mut failed = std::collections::HashSet::new();
     let lines = pass(&p, &mut fights, &mut failed, 0);
     let after = pc.process(&p.process[0]);
+    let problems = check(&p, &pc);
     let again = pass(&p, &mut fights, &mut failed, 2_000);
     child.kill().unwrap();
     child.wait().unwrap();
@@ -528,6 +564,29 @@ fn the_keeper_gives_a_running_process_its_io_memory_and_gpu_priority_and_boost()
         want.io.as_deref().unwrap()
     );
     assert!(lines.iter().any(|l| l.starts_with(&changed)), "{lines:?}");
+    assert_eq!(
+        lines.iter().any(|l| l.contains("gpu priority")),
+        windows_gpu.is_ok(),
+        "{lines:?}"
+    );
+    // The check: held, except a GPU class Windows will not read.
+    let rows: Vec<(String, String)> = problems
+        .into_iter()
+        .filter(|x| x.what.starts_with("process ping.exe"))
+        .map(|x| (x.what, x.found))
+        .collect();
+    let unreadable = vec![(
+        "process ping.exe gpu priority".to_string(),
+        "unreadable".to_string(),
+    )];
+    assert_eq!(
+        rows,
+        if windows_gpu.is_ok() {
+            Vec::new()
+        } else {
+            unreadable
+        }
+    );
     // Held already: the second pass sets and logs nothing.
     assert_eq!(again, Vec::<String>::new());
 }
