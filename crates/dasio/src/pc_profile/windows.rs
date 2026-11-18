@@ -29,10 +29,11 @@ use windows_sys::Win32::System::Threading::{
 };
 
 use super::absent::{self, AbsentEntry, Fallback, Removal, Step, Target};
-use super::{Action, DevState, ProcState, Profile, Reader, Value, get_ini, set_ini};
+use super::{Action, DevState, ProcEntry, ProcState, Profile, Reader, Value, get_ini, set_ini};
 
 mod device;
 mod exe;
+mod extras;
 pub mod keep;
 
 const NET_CLASS: &str =
@@ -278,8 +279,8 @@ impl Reader for Pc {
         Ok(get_ini(&text, key))
     }
 
-    fn process(&self, exe: &str) -> Option<ProcState> {
-        proc_state(find_process(exe)?)
+    fn process(&self, e: &ProcEntry) -> Option<ProcState> {
+        proc_state(find_process(&e.exe)?, e)
     }
 
     fn free_bytes(&self, drive: &str) -> Result<u64, String> {
@@ -779,9 +780,12 @@ fn find_nic_class(guid: &str) -> Option<String> {
     found
 }
 
-/// The affinity, priority class and integrity of process `pid`; `None`
-/// when it cannot be opened for a limited query (or is gone).
-pub(super) fn proc_state(pid: u32) -> Option<ProcState> {
+/// The affinity, priority class and integrity of process `pid`, and what
+/// else `e` names; `None` when it cannot be opened for a limited query (or
+/// is gone). What else `e` names is read through a handle of its own
+/// ([`extras::open`]): a process that refuses it reads those as
+/// unreadable, never as not running.
+pub(super) fn proc_state(pid: u32, e: &ProcEntry) -> Option<ProcState> {
     // SAFETY: a query-only handle, closed below.
     let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if h.is_null() {
@@ -793,6 +797,7 @@ pub(super) fn proc_state(pid: u32) -> Option<ProcState> {
     // SAFETY: a valid handle.
     let class = unsafe { GetPriorityClass(h) };
     let integrity = integrity(h);
+    let extra = extras::read(extras::open(pid, e, false).as_ref(), e);
     // SAFETY: the handle opened above, closed once.
     unsafe { CloseHandle(h) };
     if !ok || class == 0 {
@@ -811,6 +816,7 @@ pub(super) fn proc_state(pid: u32) -> Option<ProcState> {
         affinity: mask as u64,
         priority: priority.to_string(),
         integrity,
+        extra,
     })
 }
 

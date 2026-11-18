@@ -1,6 +1,7 @@
 //! The process keeper's Windows glue (dasio#185): one pass over the
 //! process list, setting what [`keep::wanted`](super::super::keep::wanted)
-//! says. Toolhelp and process handles only: no child process.
+//! says. Toolhelp and process handles only: no child process. I/O, memory
+//! and GPU priority and the boost are [`extras`](super::extras).
 
 use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, GetLastError, HANDLE};
 use windows_sys::Win32::System::Threading::{
@@ -11,8 +12,8 @@ use windows_sys::Win32::System::Threading::{
 };
 
 use super::super::keep::{Fights, Note, Set, gave_up_line, held, line, mask_outside, wanted};
-use super::super::{ProcState, Profile};
-use super::from_wide;
+use super::super::{ProcEntry, ProcState, Profile};
+use super::{extras, from_wide};
 
 /// A priority name's class.
 fn class(name: &str) -> Result<u32, String> {
@@ -96,8 +97,9 @@ impl Proc {
             .is_some_and(|f| f.eq_ignore_ascii_case(exe))
     }
 
-    /// Its affinity and priority, with the PC's CPUs.
-    fn state(&self) -> Option<(ProcState, u64)> {
+    /// Its affinity and priority, and what else `e` names through `x`
+    /// (its own handle), with the PC's CPUs.
+    fn state(&self, x: Option<&extras::Handle>, e: &ProcEntry) -> Option<(ProcState, u64)> {
         let (mut mask, mut system) = (0usize, 0usize);
         // SAFETY: a valid handle and two writable masks.
         let ok = unsafe { GetProcessAffinityMask(self.0, &mut mask, &mut system) } != 0;
@@ -109,6 +111,7 @@ impl Proc {
                     affinity: mask as u64,
                     priority: name(class).to_string(),
                     integrity: Err("not read by the keeper".into()),
+                    extra: extras::read(x, e),
                 },
                 system as u64,
             )
@@ -117,13 +120,11 @@ impl Proc {
 
     /// Sets `set`: the affinity first (a mask naming a CPU the PC does not
     /// have is refused), the priority only after it, read back (realtime
-    /// without the privilege becomes high). Returns what it set, and why
-    /// the rest was not.
-    fn set(&self, set: &Set, system: u64) -> (Set, Option<String>) {
-        let mut done = Set {
-            affinity: None,
-            priority: None,
-        };
+    /// without the privilege becomes high), then I/O, memory and GPU
+    /// priority and the boost through `x`, each read back. Returns what it
+    /// set, and why the rest was not.
+    fn set(&self, x: Option<&extras::Handle>, set: &Set, system: u64) -> (Set, Option<String>) {
+        let mut done = Set::default();
         if let Some(m) = set.affinity {
             if let Some(why) = mask_outside(m, system) {
                 return (done, Some(why));
@@ -153,7 +154,8 @@ impl Proc {
             }
             done.priority = Some(p.clone());
         }
-        (done, None)
+        let err = extras::set(x, set, &mut done);
+        (done, err)
     }
 }
 
@@ -201,13 +203,15 @@ pub fn pass(
             if !h.image_is(&e.exe) {
                 continue;
             }
-            let Some((s, system)) = h.state() else {
+            // The pid stays this process while `h` is open.
+            let x = extras::open(pid, e, true);
+            let Some((s, system)) = h.state(x.as_ref(), e) else {
                 continue;
             };
             let Some(set) = wanted(e, &s) else { continue };
-            let (done, err) = h.set(&set, system);
+            let (done, err) = h.set(x.as_ref(), &set, system);
             // What was set is logged and counted, also beside a failure.
-            if done.affinity.is_some() || done.priority.is_some() {
+            if !done.is_empty() {
                 lines.push(line(&e.exe, pid, &s, &done));
                 if fights.note(pid, now_ms) == Note::GiveUp {
                     lines.push(gave_up_line(&e.exe, pid));

@@ -2,9 +2,10 @@
 //! robilo lasso riesit interne tak to rob interne"): what Process Lasso did
 //! on a dasio PC, done by dasio. `dasio pc-profile keep` (a SYSTEM task,
 //! `dasio-pc-keep`) walks the process list every [`EVERY_MS`] and gives
-//! every running process of each `[[process]]` entry the entry's affinity
-//! and priority class. The catch-all Lasso rule (everything else on the
-//! system CPUs) is Windows' own `ReservedCpuSets` already.
+//! every running process of each `[[process]]` entry the entry's affinity,
+//! priority class, I/O, memory and GPU priority and thread priority boost.
+//! The catch-all Lasso rule (everything else on the system CPUs) is
+//! Windows' own `ReservedCpuSets` already.
 //!
 //! The decision is here; listing, reading and setting processes is
 //! [`windows`](super::windows).
@@ -28,45 +29,84 @@ pub const STOP_PATH: &str = r"C:\ProgramData\dasio\pc-keep.stop";
 pub const LOG_MAX_BYTES: u64 = 1_048_576;
 
 /// What the keeper sets on one process.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Set {
     pub affinity: Option<u64>,
     /// One of [`super::PRIORITIES`].
     pub priority: Option<String>,
+    /// One of [`super::IO_PRIORITIES`].
+    pub io: Option<String>,
+    /// One of [`super::MEMORY_PRIORITIES`].
+    pub memory: Option<String>,
+    /// One of [`super::GPU_PRIORITIES`].
+    pub gpu: Option<String>,
+    /// The thread priority boost on or off.
+    pub boost: Option<bool>,
 }
 
-/// The entries the keeper holds: those naming an affinity or a priority
+impl Set {
+    /// Whether it sets nothing.
+    pub fn is_empty(&self) -> bool {
+        *self == Set::default()
+    }
+}
+
+/// The entries the keeper holds: those naming anything it sets
 /// (`integrity` is only checked: a running process is never de-elevated).
 pub fn held(p: &Profile) -> Vec<&ProcEntry> {
-    p.process
-        .iter()
-        .filter(|e| e.affinity.is_some() || e.priority.is_some())
-        .collect()
+    p.process.iter().filter(|e| e.holds()).collect()
 }
 
-/// What `e` wants changed on a process in state `s`: each of affinity and
-/// priority only when the process differs; `None` when nothing does.
+/// What `e` wants changed on a process in state `s`: each field only when
+/// the process differs; one read as unreadable (`None` in [`super::Extras`])
+/// is left alone (the profile check names it). `None` when nothing differs.
 pub fn wanted(e: &ProcEntry, s: &ProcState) -> Option<Set> {
-    let affinity = e
-        .affinity
-        .as_deref()
-        .and_then(parse_mask)
-        .filter(|m| *m != s.affinity);
-    let priority = e.priority.clone().filter(|p| *p != s.priority);
-    if affinity.is_none() && priority.is_none() {
-        return None;
+    fn differs<T: PartialEq + Clone>(want: &Option<T>, found: &Option<T>) -> Option<T> {
+        match (want, found) {
+            (Some(w), Some(f)) if w != f => Some(w.clone()),
+            _ => None,
+        }
     }
-    Some(Set { affinity, priority })
+    let set = Set {
+        affinity: e
+            .affinity
+            .as_deref()
+            .and_then(parse_mask)
+            .filter(|m| *m != s.affinity),
+        priority: e.priority.clone().filter(|p| *p != s.priority),
+        io: differs(&e.io_priority, &s.extra.io),
+        memory: differs(&e.memory_priority, &s.extra.memory),
+        gpu: differs(&e.gpu_priority, &s.extra.gpu),
+        boost: differs(&e.priority_boost, &s.extra.boost),
+    };
+    (!set.is_empty()).then_some(set)
 }
 
 /// The log line of one change made: what moved, from what.
 pub fn line(exe: &str, pid: u32, s: &ProcState, set: &Set) -> String {
+    let was = |v: &Option<String>| v.clone().unwrap_or_else(|| "?".into());
     let mut parts = Vec::new();
     if let Some(p) = &set.priority {
         parts.push(format!("priority {} -> {p}", s.priority));
     }
     if let Some(m) = set.affinity {
         parts.push(format!("affinity 0x{:X} -> 0x{m:X}", s.affinity));
+    }
+    if let Some(v) = &set.io {
+        parts.push(format!("io priority {} -> {v}", was(&s.extra.io)));
+    }
+    if let Some(v) = &set.memory {
+        parts.push(format!("memory priority {} -> {v}", was(&s.extra.memory)));
+    }
+    if let Some(v) = &set.gpu {
+        parts.push(format!("gpu priority {} -> {v}", was(&s.extra.gpu)));
+    }
+    if let Some(v) = set.boost {
+        parts.push(format!(
+            "priority boost {} -> {}",
+            was(&s.extra.boost.map(super::boost_name)),
+            super::boost_name(v)
+        ));
     }
     format!("kept {exe} (pid {pid}): {}", parts.join(", "))
 }

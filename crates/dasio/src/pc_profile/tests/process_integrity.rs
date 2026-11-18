@@ -15,6 +15,7 @@ fn running(integrity: Result<String, String>) -> Pc {
             affinity: 0xFFFF_0000,
             priority: "realtime".into(),
             integrity,
+            extra: Extras::default(),
         },
     );
     pc

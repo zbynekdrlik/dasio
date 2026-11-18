@@ -16,7 +16,8 @@
 //!   its per-user settings (the SoundGrid ASIO buffer).
 //! - `[[ini]]`: one `key=value` line of an ini file (Process Lasso's).
 //! - `[[process]]`: what a running process must have (affinity, priority
-//!   class), held by dasio's keeper (`dasio pc-profile keep`, [`keep`],
+//!   class, I/O, memory and GPU priority, its thread priority boost), held
+//!   by dasio's keeper (`dasio pc-profile keep`, [`keep`],
 //!   dasio#185, what Process Lasso did), and its integrity level (a DAW at
 //!   medium, not elevated: dasio#128, checked only); skipped while the
 //!   process does not run.
@@ -74,7 +75,10 @@ pub use layout::{Layout, resolve};
 pub use nic_driver::NicDriverEntry;
 pub use os_text::{parse_bcdedit, parse_task_xml};
 pub use power::{PowerSetting, describe, power_setting, powercfg_commands};
-pub use process::{INTEGRITIES, ProcEntry, ProcState, integrity_name};
+pub use process::{
+    ExtraAccess, Extras, GPU_PRIORITIES, INTEGRITIES, IO_PRIORITIES, IO_READ, MEMORY_PRIORITIES,
+    ProcEntry, ProcState, boost_name, integrity_name, level_name, level_value,
+};
 
 /// Where the service looks for the profile.
 pub const DEFAULT_PATH: &str = r"C:\ProgramData\dasio\pc-profile.toml";
@@ -275,10 +279,11 @@ pub trait Reader {
     fn reg(&self, key: &str, name: &str) -> Result<Option<Value>, String>;
     /// The value of the first `key=` line of `file`; `Ok(None)` without one.
     fn ini(&self, file: &str, key: &str) -> Result<Option<String>, String>;
-    /// The first running process with image `exe`; `None` when none runs
+    /// The first running process with `e`'s image; `None` when none runs
     /// (or it cannot be opened for a limited query, which a SYSTEM or admin
-    /// reader always can for a DAW: it counts as not running).
-    fn process(&self, exe: &str) -> Option<ProcState>;
+    /// reader always can for a DAW: it counts as not running). Of the
+    /// [`Extras`] only what `e` names is read.
+    fn process(&self, e: &ProcEntry) -> Option<ProcState>;
     /// The free bytes on `drive` (e.g. `C:`) for the reading account.
     fn free_bytes(&self, drive: &str) -> Result<u64, String>;
     /// The running boot entry's settings, name and value
@@ -454,6 +459,24 @@ fn parse_with(text: &str, need_nic_guid: bool) -> Result<Profile, String> {
                 "process {}: integrity {i} is not one of {INTEGRITIES:?}",
                 e.exe
             ));
+        }
+        for (key, value, names) in [
+            ("io_priority", &e.io_priority, &IO_PRIORITIES[..]),
+            (
+                "memory_priority",
+                &e.memory_priority,
+                &MEMORY_PRIORITIES[..],
+            ),
+            ("gpu_priority", &e.gpu_priority, &GPU_PRIORITIES[..]),
+        ] {
+            if let Some(v) = value
+                && !names.contains(&v.as_str())
+            {
+                return Err(format!(
+                    "process {}: {key} {v} is not one of {names:?}",
+                    e.exe
+                ));
+            }
         }
     }
     for d in &p.disk {
@@ -946,11 +969,22 @@ pub enum ChildCheck {
 /// instance checks in its own process, since a child started while an
 /// ASIO driver is loaded makes SoundGrid resync (dasio#106, dasio#120).
 /// `[[bcd]]` and `[[task]]` need `bcdedit` / `schtasks`: they are left to
-/// `dasio pc-profile check` and the boot-time `pc-profile apply`.
+/// `dasio pc-profile check` and the boot-time `pc-profile apply`. A
+/// `gpu_priority` is left to them too: its read loads gdi32, never into a
+/// media process (dasio#185).
 pub fn in_process(p: &Profile) -> Profile {
     Profile {
         bcd: Vec::new(),
         task: Vec::new(),
+        process: p
+            .process
+            .iter()
+            .map(|e| ProcEntry {
+                gpu_priority: None,
+                ..e.clone()
+            })
+            .filter(ProcEntry::checks)
+            .collect(),
         ..p.clone()
     }
 }
