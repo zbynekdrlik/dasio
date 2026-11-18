@@ -107,59 +107,34 @@ fn device_id(dev: u32) -> Result<String, String> {
     Ok(from_wide(&buf))
 }
 
-/// Device `id`'s path, then each of its parents' up to the root.
-fn walk(id: &str) -> Result<Vec<String>, String> {
-    let (mut dev, _) = locate(id)?.ok_or_else(|| format!("{id}: not found"))?;
-    let mut out = vec![id.to_string()];
-    for _ in 0..=MAX_DEPTH {
-        let mut parent = 0u32;
-        // SAFETY: an out handle and a devnode handle from CM_Locate_DevNode
-        // or an earlier CM_Get_Parent.
-        match unsafe { CM_Get_Parent(&mut parent, dev, 0) } {
-            CR_SUCCESS => {}
-            CR_NO_SUCH_DEVNODE => return Ok(out),
-            cr => return Err(cr_text("CM_Get_Parent", cr)),
-        }
-        out.push(device_id(parent)?);
-        dev = parent;
-    }
-    Err(format!("{id}: more than {MAX_DEPTH} parents"))
-}
-
 /// The Dante NIC's instance path `id`, then each of its parents' up to the
 /// root; empty when the NIC or a parent was not read (then `[[device]]`
 /// disables nothing).
 pub fn chain(id: &str) -> Vec<String> {
-    match walk(id) {
+    let walk = || -> Result<Vec<String>, String> {
+        let (mut dev, _) = locate(id)?.ok_or("not found")?;
+        let mut out = vec![id.to_string()];
+        for _ in 0..=MAX_DEPTH {
+            let mut parent = 0u32;
+            // SAFETY: an out handle and a devnode handle from CM_Locate_DevNode
+            // or an earlier CM_Get_Parent.
+            match unsafe { CM_Get_Parent(&mut parent, dev, 0) } {
+                CR_SUCCESS => {}
+                CR_NO_SUCH_DEVNODE => return Ok(out),
+                cr => return Err(cr_text("CM_Get_Parent", cr)),
+            }
+            out.push(device_id(parent)?);
+            dev = parent;
+        }
+        Err(format!("more than {MAX_DEPTH} parents"))
+    };
+    match walk() {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(nic = id, error = %e, "the Dante NIC's device path was not read: no [[device]] entry is disabled (dasio#181)");
             Vec::new()
         }
     }
-}
-
-/// The parents of device `id` up to the root, nearest first.
-pub fn parents(id: &str) -> Result<Vec<String>, String> {
-    walk(id).map(|c| c.into_iter().skip(1).collect())
-}
-
-/// Each network adapter with an IPv4 address (its NetCfgInstanceId from
-/// GetAdaptersAddresses, its device from the Net class key): its path,
-/// then its parents'. An adapter with no class key (the loopback) has no
-/// device and is left out.
-pub fn addressed() -> Result<Vec<Vec<String>>, String> {
-    let mut out = Vec::new();
-    for guid in super::addressed_adapter_guids()? {
-        let Some(class) = super::find_nic_class(&guid) else {
-            continue;
-        };
-        match super::read(&class, "DeviceInstanceID")? {
-            Some(super::Value::String(id)) => out.push(walk(&id)?),
-            _ => return Err(format!("adapter {guid}: its class key names no device")),
-        }
-    }
-    Ok(out)
 }
 
 /// The device with instance path `id`; `None` when the PC has no such

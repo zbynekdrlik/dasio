@@ -34,7 +34,7 @@
 //!   installs it ([`nic_driver`]).
 //! - `[[device]]`: a device the PC does not need, held off (by its device
 //!   instance path, site data, dasio#181); `apply` disables it now and for
-//!   every boot, never a device on a network path ([`device`]).
+//!   every boot, never the Dante NIC or a device it hangs on ([`device`]).
 //!
 //! Besides, the service holds the services Windows turns back on by itself
 //! (UsoSvc, dasio#158; DoSvc, dasio#26) off before each check ([`hold`]).
@@ -292,11 +292,6 @@ pub trait Reader {
     /// to the root (`[[device]]` never disables one); empty when the NIC or
     /// a parent was not read.
     fn nic_chain(&self) -> Vec<String>;
-    /// Each network adapter with an IPv4 address: its device instance path,
-    /// then its parents' up to the root (`[[device]]` never disables one).
-    fn addressed(&self) -> Result<Vec<Vec<String>>, String>;
-    /// The parents of device `id` up to the root, nearest first.
-    fn parents(&self, id: &str) -> Result<Vec<String>, String>;
     /// The device with instance path `id` ([`device`]); `Ok(None)` when the
     /// PC has no such device (no Enum key).
     fn device(&self, id: &str) -> Result<Option<DevState>, String>;
