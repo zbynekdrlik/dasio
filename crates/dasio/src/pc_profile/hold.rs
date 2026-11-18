@@ -86,6 +86,22 @@ pub fn registry_fallback(scm_error: Option<i32>) -> bool {
     scm_error == Some(ACCESS_DENIED)
 }
 
+/// A held service's start type set: `scm` is the SCM's answer, `write`
+/// writes it to the service's registry `Start`, run only when the SCM
+/// refused it with [`ACCESS_DENIED`] ([`registry_fallback`]); the result is
+/// what [`describe`] reports.
+pub fn set_start_with(
+    scm: Result<(), std::io::Error>,
+    write: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    match scm {
+        Ok(()) => Ok(()),
+        Err(e) if registry_fallback(e.raw_os_error()) => write()
+            .map_err(|w| format!("the SCM refused it ({e}) and the registry write failed: {w}")),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// A start type as a word.
 pub fn start_name(start: u32) -> &'static str {
     match start {

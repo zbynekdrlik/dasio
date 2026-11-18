@@ -3,7 +3,7 @@
 //! `windows-service` crate (the start type alone through
 //! `ChangeServiceConfigW`: the crate's `change_config` wants every field).
 //! A protected service whose start type the SCM refuses (DoSvc) gets it in
-//! its registry key instead ([`registry_fallback`]).
+//! its registry key instead ([`super::registry_fallback`]).
 //! The decisions and the log lines are the portable [`super`].
 
 use std::time::{Duration, Instant};
@@ -14,7 +14,7 @@ use windows_sys::Win32::System::Services::{ChangeServiceConfigW, SERVICE_NO_CHAN
 
 use super::super::Value;
 use super::super::windows::{read, write};
-use super::{HELD, Held, decide, describe, not_held, registry_fallback};
+use super::{HELD, Held, decide, describe, not_held, set_start_with};
 
 /// How long a pending state may last before the hold gives up on it.
 const PENDING: Duration = Duration::from_secs(30);
@@ -80,14 +80,11 @@ fn state(svc: &Service) -> Result<ServiceState, String> {
 }
 
 /// The start type through the SCM, or, for a protected service the SCM
-/// refuses ([`registry_fallback`]), in its registry key `key`.
+/// refuses ([`super::registry_fallback`]), in its registry key `key`.
 fn set_start(svc: &Service, key: &str, start: u32) -> Result<(), String> {
-    match scm_set_start(svc, start) {
-        Ok(()) => Ok(()),
-        Err(e) if registry_fallback(e.raw_os_error()) => write(key, "Start", &Value::Dword(start))
-            .map_err(|w| format!("the SCM refused it ({e}) and the registry write failed: {w}")),
-        Err(e) => Err(e.to_string()),
-    }
+    set_start_with(scm_set_start(svc, start), || {
+        write(key, "Start", &Value::Dword(start))
+    })
 }
 
 /// The start type through the SCM (as `sc config <name> start= ...`), so
