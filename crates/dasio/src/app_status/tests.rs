@@ -854,3 +854,20 @@ fn the_bridge_instance_hands_the_from_asio_side_to_the_tx_thread() {
 /// dstack v0.6.173 / v0.6.174's bridge figures (dasio#120): lateness bins,
 /// converter delays, the underrun tick; v0.6.176's network read of them.
 mod bridge_figures;
+
+#[test]
+fn the_bridge_counts_line_logs_the_peak_lateness_beside_the_bins() {
+    // dstack v0.6.178 (dstack issues 393, 399): the run's peak lateness
+    // behind the driver's schedule goes in the counts line right after the
+    // bins, so the top bin's reach is read beside its count.
+    let src = include_str!("../run_bridge.rs").replace("\r\n", "\n");
+    let bins = src
+        .find("late_bins = ?s.late_bins,\n")
+        .expect("the bins in the counts line");
+    let peak = src
+        .find("late_max_us = s.late_max_us,\n")
+        .expect("the peak lateness in the counts line");
+    assert!(bins < peak && peak - bins < 80, "right after the bins");
+    let line = src[..bins].rfind("info!(").expect("the counts line");
+    assert!(src[line..bins].contains("late_callbacks = s.late_callbacks,"));
+}
