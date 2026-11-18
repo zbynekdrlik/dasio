@@ -6,7 +6,7 @@
 //! process off the media CPUs ([`ChildCheck`]), and reports what differs;
 //! `dasio pc-profile apply` sets what differs.
 //!
-//! Eight kinds of entries:
+//! Nine kinds of entries:
 //! - `[[registry]]`: one value under `HKLM\...` (a DWORD, a string, a
 //!   list of strings (REG_MULTI_SZ, e.g. a NIC's `SubnetMask`), or binary
 //!   as hex). `{nic_class}` and `{nic_device}` in a key stand for
@@ -32,6 +32,9 @@
 //! - `[[nic_driver]]`: the driver package a family of Dante NICs must run
 //!   (by hardware ID, dasio#128); checked only, `install.ps1 -NicDriver`
 //!   installs it ([`nic_driver`]).
+//! - `[[device]]`: a device the PC does not need, held off (by its device
+//!   instance path, site data, dasio#181); `apply` disables it now and for
+//!   every boot, never the Dante NIC or a device it hangs on ([`device`]).
 //!
 //! Besides, the service holds the services Windows turns back on by itself
 //! (UsoSvc, dasio#158; DoSvc, dasio#26) off before each check ([`hold`]).
@@ -48,6 +51,7 @@ use serde::Deserialize;
 
 pub mod absent;
 mod baseline;
+pub mod device;
 pub mod hold;
 pub mod layout;
 pub mod nic_driver;
@@ -61,6 +65,7 @@ pub use absent::{AbsentEntry, Removal};
 pub use baseline::{
     BASELINE, MUST_HAVE, baseline, baseline_only, load, load_merged, merge, must_have_failure,
 };
+pub use device::{DevState, DeviceEntry};
 pub use layout::{Layout, resolve};
 pub use nic_driver::NicDriverEntry;
 pub use os_text::{parse_bcdedit, parse_task_xml};
@@ -105,6 +110,9 @@ pub struct Profile {
     /// dasio#128).
     #[serde(default)]
     pub nic_driver: Vec<NicDriverEntry>,
+    /// The devices that must be off ([`device`], dasio#181).
+    #[serde(default)]
+    pub device: Vec<DeviceEntry>,
 }
 
 impl Profile {
@@ -118,6 +126,7 @@ impl Profile {
             + self.task.len()
             + self.absent.len()
             + self.nic_driver.len()
+            + self.device.len()
     }
 }
 
@@ -279,6 +288,13 @@ pub trait Reader {
     /// The Dante NIC's PnP hardware IDs (its Enum key's `HardwareID`),
     /// most specific first; empty when the NIC was not found.
     fn nic_hardware_ids(&self) -> Vec<String>;
+    /// The Dante NIC's device instance path, then each of its parents' up
+    /// to the root (`[[device]]` never disables one); empty when the NIC or
+    /// a parent was not read.
+    fn nic_chain(&self) -> Vec<String>;
+    /// The device with instance path `id` ([`device`]); `Ok(None)` when the
+    /// PC has no such device (no Enum key).
+    fn device(&self, id: &str) -> Result<Option<DevState>, String>;
 }
 
 /// Whether `e` applies on the PC `r` reads: an entry for one NIC driver
@@ -436,6 +452,15 @@ fn parse_with(text: &str, need_nic_guid: bool) -> Result<Profile, String> {
     }
     for e in &p.nic_driver {
         nic_driver::validate(e)?;
+    }
+    for (i, e) in p.device.iter().enumerate() {
+        device::validate(e)?;
+        if p.device[..i]
+            .iter()
+            .any(|d| d.instance_id.eq_ignore_ascii_case(&e.instance_id))
+        {
+            return Err(format!("device {:?} is named twice", e.instance_id));
+        }
     }
     Ok(p)
 }
@@ -681,6 +706,7 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
     }
     out.extend(absent::check(&p.absent, r));
     out.extend(nic_driver::check(&p.nic_driver, r));
+    out.extend(device::check(&p.device, r));
     out
 }
 
@@ -706,6 +732,9 @@ pub enum Action {
     },
     /// Removes what an `[[absent]]` entry names (dasio#128).
     Remove(Removal),
+    /// Disables the device with this instance path, now and for every boot
+    /// (dasio#181).
+    Disable(String),
 }
 
 /// What has to change for the PC to match (processes are only checked:
@@ -751,6 +780,7 @@ pub fn plan(p: &Profile, r: &dyn Reader) -> Vec<Action> {
         }
     }
     out.extend(absent::plan(&p.absent, r).into_iter().map(Action::Remove));
+    out.extend(device::plan(&p.device, r).into_iter().map(Action::Disable));
     out
 }
 
@@ -810,6 +840,9 @@ pub fn takes_effect(a: &Action) -> &'static str {
             "nothing more (a service still held open goes at the next reboot)"
         }
         Action::Remove(_) => "nothing more",
+        Action::Disable(_) => {
+            "nothing more (the device stops now; ConfigFlags keeps it off at every boot)"
+        }
         Action::Reg { .. } => "nothing more",
     }
 }
