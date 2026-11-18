@@ -161,7 +161,12 @@ impl Pc {
             nic_device,
             nic_service,
             nic_hardware_ids,
-            nic_chain: instance.as_deref().map(device::chain).unwrap_or_default(),
+            // Walked only for a profile with devices: no entry, nothing to
+            // guard (and no warning for a NIC not read).
+            nic_chain: match instance.as_deref() {
+                Some(id) if !p.device.is_empty() => device::chain(id),
+                _ => Vec::new(),
+            },
         }
     }
 

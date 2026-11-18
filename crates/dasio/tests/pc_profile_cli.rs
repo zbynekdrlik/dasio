@@ -171,38 +171,86 @@ fn a_process_s_integrity_is_read_from_its_token() {
     }
 }
 
-/// A ROOT-enumerated device of the runner that runs without a problem, as
-/// PowerShell's PnpDevice module reads it.
-fn running_root_device() -> String {
+/// The tests that change a device run only on a GitHub runner (thrown away
+/// after the job): on a dasio PC they would hold a real device off.
+fn on_the_runner() {
+    assert_eq!(
+        std::env::var("GITHUB_ACTIONS").as_deref(),
+        Ok("true"),
+        "this test disables a device: run it on a GitHub runner only"
+    );
+}
+
+/// The ROOT-enumerated devices of the runner that run without a problem,
+/// as PowerShell's PnpDevice module reads them.
+fn running_root_devices() -> Vec<String> {
     let out = Command::new("powershell")
         .args([
             "-NoProfile",
             "-Command",
-            "(Get-PnpDevice -PresentOnly -Status OK | Where-Object { $_.InstanceId -like 'ROOT\\*' } | Select-Object -First 1).InstanceId",
+            "Get-PnpDevice -PresentOnly -Status OK | Where-Object { $_.InstanceId -like 'ROOT\\*' } | ForEach-Object { $_.InstanceId }",
         ])
         .output()
         .unwrap();
-    let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let ids: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|id| id.split('\\').count() >= 3)
+        .map(String::from)
+        .collect();
     assert!(
-        id.split('\\').count() >= 3,
-        "no running ROOT device on the runner: {id:?} {}",
+        !ids.is_empty(),
+        "no running ROOT device on the runner: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    id
+    ids
+}
+
+/// An adapter of the runner that is up: its NetCfgInstanceId (the
+/// profile's `nic_guid`) and its device instance path.
+fn runner_nic() -> (String, String) {
+    let out = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "$a = Get-NetAdapter | Where-Object Status -eq 'Up' | Sort-Object ifIndex | Select-Object -First 1; $a.InterfaceGuid; $a.PnPDeviceID",
+        ])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+    match (lines.next(), lines.next()) {
+        (Some(guid), Some(pnp)) => (guid.to_string(), pnp.to_string()),
+        _ => panic!("no adapter that is up on the runner: {text:?}"),
+    }
 }
 
 #[test]
 fn check_reads_a_device_through_the_configuration_manager_and_plan_names_the_disable() {
-    // dasio#181: the real reader. Read only: --plan disables nothing.
-    let running = running_root_device();
+    // dasio#181: the real reader, with the runner's adapter as the Dante
+    // NIC (without its device path nothing is checked). Read only: --plan
+    // disables nothing.
+    use dasio::pc_profile::{Reader, parse, windows::Pc};
+    let (guid, _) = runner_nic();
     let missing = r"ROOT\DASIO_CI_NONE\0000";
     let entry = |id: &str, name: &str| {
         format!("[[device]]\ninstance_id = '{id}'\nname = \"{name}\"\nwhy = \"ci\"\n")
     };
+    let head = format!("name = \"ci\"\nnic_guid = \"{guid}\"\n");
+    let chain =
+        Pc::new(&parse(&format!("{head}{}", entry(missing, "missing"))).unwrap()).nic_chain();
+    assert!(
+        !chain.is_empty(),
+        "the runner's adapter {guid}: no device path"
+    );
+    let running = running_root_devices()
+        .into_iter()
+        .find(|id| !chain.iter().any(|c| c.eq_ignore_ascii_case(id)))
+        .unwrap_or_else(|| panic!("every running ROOT device is on the NIC's chain {chain:?}"));
     let (dir, file) = profile(
         "device",
         &format!(
-            "name = \"ci\"\n{}{}",
+            "{head}{}{}",
             entry(&running, "running"),
             entry(missing, "missing")
         ),
@@ -233,6 +281,7 @@ fn check_reads_a_device_through_the_configuration_manager_and_plan_names_the_dis
 
 #[test]
 fn apply_disables_a_device_now_and_for_every_boot() {
+    on_the_runner();
     // dasio#181: the real disable, on the runner's kernel-debug NIC (no
     // job of the runner uses it). Through the library, not `pc-profile
     // apply`: that would apply the whole baseline to the runner.
@@ -263,6 +312,7 @@ fn apply_disables_a_device_now_and_for_every_boot() {
 
 #[test]
 fn apply_holds_an_unplugged_device_off_for_when_it_comes_back() {
+    on_the_runner();
     // dasio#181: a device known but not connected (a phantom devnode, like
     // mbc's Wi-Fi) gets CONFIGFLAG_DISABLED, so it stays off when it comes
     // back. On a phantom of the runner that is not held off yet.
@@ -302,4 +352,26 @@ fn apply_holds_an_unplugged_device_off_for_when_it_comes_back() {
         }),
         "{id}"
     );
+}
+
+#[test]
+fn the_dante_nic_s_parent_chain_is_read_up_to_the_root() {
+    // dasio#181: the [[device]] guard's chain on a real adapter of the
+    // runner, read as Pc::new reads it from the profile's nic_guid.
+    use dasio::pc_profile::{Reader, parse, windows::Pc};
+    let (guid, pnp) = runner_nic();
+    let entry =
+        "[[device]]\ninstance_id = 'ROOT\\DASIO_CI_NONE\\0000'\nname = \"x\"\nwhy = \"ci\"\n";
+    let pc = Pc::new(&parse(&format!("name = \"ci\"\nnic_guid = \"{guid}\"\n{entry}")).unwrap());
+    let chain = pc.nic_chain();
+    assert!(chain.len() >= 2, "{chain:?}");
+    assert!(chain[0].eq_ignore_ascii_case(&pnp), "{chain:?} vs {pnp}");
+    assert_eq!(
+        chain.last().map(String::as_str),
+        Some(r"HTREE\ROOT\0"),
+        "{chain:?}"
+    );
+    // Without a [[device]] entry the chain is not walked.
+    let none = Pc::new(&parse(&format!("name = \"ci\"\nnic_guid = \"{guid}\"\n")).unwrap());
+    assert_eq!(none.nic_chain(), Vec::<String>::new());
 }

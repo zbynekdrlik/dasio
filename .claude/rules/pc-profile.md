@@ -83,7 +83,10 @@ paths:
   (a vetoed stop is a FAILED line). An entry naming the Dante NIC or a
   device it hangs on (its USB hub, host controller, PCI bridge: the NIC's
   `CM_Get_Parent` chain) is refused, never planned: disabling it cuts the PC
-  off. Without that chain (NIC not read) nothing is checked or disabled. Never hold a device with a
+  off. Without that chain (NIC not read) nothing is checked or disabled.
+  Not guarded (dasio#181 open item): an adapter stacked over the NIC (the
+  LAN VLAN adapter of layout B, a bridge) or the remote path's own adapter:
+  never name a Net-class device that carries an address. Never hold a device with a
   raw `Enum\...\ConfigFlags` `[[registry]]` entry (exact DWORD, clobbers
   other bits, only at boot): dsg's 16 move to `[[device]]` at its next
   deploy. Read a PC's devices with `Get-PnpDevice` (InstanceId, Status,

@@ -14,8 +14,8 @@ use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
 use super::super::device::{DevState, PROBLEM_DISABLED};
 use super::{from_wide, wide};
 
-/// The most parents walked from the Dante NIC: far more than any device
-/// tree has between a NIC and its root.
+/// The most parents walked from the Dante NIC (the root's included): far
+/// more than any device tree has between a NIC and its root.
 const MAX_DEPTH: usize = 64;
 
 /// A CONFIGRET as an error text.
@@ -114,7 +114,7 @@ pub fn chain(id: &str) -> Vec<String> {
     let walk = || -> Result<Vec<String>, String> {
         let (mut dev, _) = locate(id)?.ok_or("not found")?;
         let mut out = vec![id.to_string()];
-        for _ in 0..MAX_DEPTH {
+        for _ in 0..=MAX_DEPTH {
             let mut parent = 0u32;
             // SAFETY: an out handle and a devnode handle from CM_Locate_DevNode
             // or an earlier CM_Get_Parent.
