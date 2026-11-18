@@ -2,7 +2,7 @@
 //! process list, setting what [`keep::wanted`](super::super::keep::wanted)
 //! says. Toolhelp and process handles only: no child process.
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, GetLastError, HANDLE};
 use windows_sys::Win32::System::Threading::{
     ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, GetPriorityClass,
     GetProcessAffinityMask, HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
@@ -52,10 +52,16 @@ impl Drop for Proc {
     }
 }
 
+/// Why a process was not opened.
+enum NotOpened {
+    /// Access denied: a protected process, said once.
+    Denied,
+    /// Gone meanwhile: nothing to keep.
+    Gone,
+}
+
 impl Proc {
-    /// `None` when the process is gone or cannot be opened (a protected
-    /// one): nothing to keep.
-    fn open(pid: u32) -> Option<Proc> {
+    fn open(pid: u32) -> Result<Proc, NotOpened> {
         // SAFETY: plain arguments; the handle is closed by Drop.
         let h = unsafe {
             OpenProcess(
@@ -64,7 +70,15 @@ impl Proc {
                 pid,
             )
         };
-        if h.is_null() { None } else { Some(Proc(h)) }
+        if !h.is_null() {
+            return Ok(Proc(h));
+        }
+        // SAFETY: no arguments; the open's error.
+        if unsafe { GetLastError() } == ERROR_ACCESS_DENIED {
+            Err(NotOpened::Denied)
+        } else {
+            Err(NotOpened::Gone)
+        }
     }
 
     /// Whether its image's file name is `exe` (case ignored).
@@ -103,40 +117,51 @@ impl Proc {
 
     /// Sets `set`: the affinity first (a mask naming a CPU the PC does not
     /// have is refused), the priority only after it, read back (realtime
-    /// without the privilege becomes high).
-    fn set(&self, set: &Set, system: u64) -> Result<(), String> {
-        let class = set.priority.as_deref().map(class).transpose()?;
+    /// without the privilege becomes high). Returns what it set, and why
+    /// the rest was not.
+    fn set(&self, set: &Set, system: u64) -> (Set, Option<String>) {
+        let mut done = Set {
+            affinity: None,
+            priority: None,
+        };
         if let Some(m) = set.affinity {
             if let Some(why) = mask_outside(m, system) {
-                return Err(why);
+                return (done, Some(why));
             }
             // SAFETY: a valid handle with PROCESS_SET_INFORMATION.
             if unsafe { SetProcessAffinityMask(self.0, m as usize) } == 0 {
-                return Err(format!(
-                    "affinity 0x{m:X}: {}",
-                    std::io::Error::last_os_error()
-                ));
+                let e = std::io::Error::last_os_error();
+                return (done, Some(format!("affinity 0x{m:X}: {e}")));
             }
+            done.affinity = Some(m);
         }
-        if let Some(c) = class {
+        if let Some(p) = &set.priority {
+            let c = match class(p) {
+                Ok(c) => c,
+                Err(e) => return (done, Some(e)),
+            };
             // SAFETY: as above.
             if unsafe { SetPriorityClass(self.0, c) } == 0 {
-                return Err(format!("priority: {}", std::io::Error::last_os_error()));
+                let e = std::io::Error::last_os_error();
+                return (done, Some(format!("priority: {e}")));
             }
             // SAFETY: as above.
             let now = unsafe { GetPriorityClass(self.0) };
             if now != c {
-                return Err(format!("priority {} reads back as {}", name(c), name(now)));
+                let why = format!("priority {} reads back as {}", name(c), name(now));
+                return (done, Some(why));
             }
+            done.priority = Some(p.clone());
         }
-        Ok(())
+        (done, None)
     }
 }
 
 /// One pass at `now_ms`: every held entry's running processes get what
-/// differs. Returns the log lines: each change, each process given up
-/// ([`Fights`]) and each new failure (once per process and error in
-/// `failed`; a list error once until a list read works).
+/// differs. Returns the log lines: each change (also a partial one beside
+/// a failure), each process given up ([`Fights`]) and each new failure
+/// (once per process and error in `failed`; a list error once until a
+/// list read works).
 pub fn pass(
     p: &Profile,
     fights: &mut Fights,
@@ -162,7 +187,17 @@ pub fn pass(
             if fights.gave_up(pid) {
                 continue;
             }
-            let Some(h) = Proc::open(pid) else { continue };
+            let h = match Proc::open(pid) {
+                Ok(h) => h,
+                Err(NotOpened::Gone) => continue,
+                Err(NotOpened::Denied) => {
+                    let why = "cannot open it to set it (access denied: a protected process)";
+                    if failed.insert((pid, why.to_string())) {
+                        lines.push(format!("could not keep {} (pid {pid}): {why}", e.exe));
+                    }
+                    continue;
+                }
+            };
             if !h.image_is(&e.exe) {
                 continue;
             }
@@ -170,18 +205,18 @@ pub fn pass(
                 continue;
             };
             let Some(set) = wanted(e, &s) else { continue };
-            match h.set(&set, system) {
-                Ok(()) => {
-                    lines.push(line(&e.exe, pid, &s, &set));
-                    if fights.note(pid, now_ms) == Note::GiveUp {
-                        lines.push(gave_up_line(&e.exe, pid));
-                    }
+            let (done, err) = h.set(&set, system);
+            // What was set is logged and counted, also beside a failure.
+            if done.affinity.is_some() || done.priority.is_some() {
+                lines.push(line(&e.exe, pid, &s, &done));
+                if fights.note(pid, now_ms) == Note::GiveUp {
+                    lines.push(gave_up_line(&e.exe, pid));
                 }
-                Err(err) => {
-                    if failed.insert((pid, err.clone())) {
-                        lines.push(format!("could not keep {} (pid {pid}): {err}", e.exe));
-                    }
-                }
+            }
+            if let Some(err) = err
+                && failed.insert((pid, err.clone()))
+            {
+                lines.push(format!("could not keep {} (pid {pid}): {err}", e.exe));
             }
         }
     }

@@ -558,6 +558,8 @@ $keepTask = "dasio-pc-keep"
 $keepExe = Join-Path $bin "dasio-keep.exe"
 try {
     if (Get-ScheduledTask -TaskName $keepTask -ErrorAction SilentlyContinue) {
+        # Off first: its 5-min trigger must not start it again mid-copy.
+        Disable-ScheduledTask -TaskName $keepTask | Out-Null
         Stop-ScheduledTask -TaskName $keepTask
     }
     # The task's stop may leave its process (CI: the copy found
@@ -570,7 +572,7 @@ try {
     }
     # A scanner can hold a just-ended exe a moment: a few tries, then fail.
     for ($try = 1; ; $try++) {
-        try { Copy-Item (Join-Path $here "dasio.exe") $keepExe -Force; break }
+        try { Copy-Item (Join-Path $here "dasio.exe") $keepExe -Force -ErrorAction Stop; break }
         catch { if ($try -ge 10) { throw "copying dasio-keep.exe failed 10 times: $($_.Exception.Message)" }; Start-Sleep -Milliseconds 500 }
     }
     $keepAction = New-ScheduledTaskAction -Execute $keepExe -Argument "pc-profile keep"
@@ -581,7 +583,10 @@ try {
     $keepSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
     Register-ScheduledTask -TaskName $keepTask -Action $keepAction -Trigger $keepTriggers -Settings $keepSettings -User SYSTEM -RunLevel Highest -Force | Out-Null
 } finally {
-    if (Get-ScheduledTask -TaskName $keepTask -ErrorAction SilentlyContinue) { Start-ScheduledTask -TaskName $keepTask }
+    if (Get-ScheduledTask -TaskName $keepTask -ErrorAction SilentlyContinue) {
+        Enable-ScheduledTask -TaskName $keepTask | Out-Null
+        Start-ScheduledTask -TaskName $keepTask
+    }
 }
 # Running, and still running 2 s later: a keeper that ends at once is none.
 $keepDeadline = (Get-Date).AddSeconds(10)

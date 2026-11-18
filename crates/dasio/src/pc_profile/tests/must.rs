@@ -352,12 +352,16 @@ fn install_ps1_restarts_the_process_keeper_around_its_copy() {
         s.find(needle)
             .unwrap_or_else(|| panic!("install.ps1 has no {needle}"))
     };
+    let disable = at("Disable-ScheduledTask -TaskName $keepTask | Out-Null");
     let stop = at("Stop-ScheduledTask -TaskName $keepTask");
+    assert!(disable < stop);
     let ended_left = at("$left | Stop-Process -Force");
-    let copy = at("try { Copy-Item (Join-Path $here \"dasio.exe\") $keepExe -Force; break }");
+    let copy = at(
+        "try { Copy-Item (Join-Path $here \"dasio.exe\") $keepExe -Force -ErrorAction Stop; break }",
+    );
     let register = at("Register-ScheduledTask -TaskName $keepTask");
     let finally = at(
-        "} finally {\n    if (Get-ScheduledTask -TaskName $keepTask -ErrorAction SilentlyContinue) { Start-ScheduledTask -TaskName $keepTask }",
+        "} finally {\n    if (Get-ScheduledTask -TaskName $keepTask -ErrorAction SilentlyContinue) {\n        Enable-ScheduledTask -TaskName $keepTask | Out-Null\n        Start-ScheduledTask -TaskName $keepTask",
     );
     let start = at("throw \"the process keeper ($keepTask) did not start\"");
     let ended = at("throw \"the process keeper ($keepTask) ended right after its start");
@@ -380,5 +384,8 @@ fn install_ps1_restarts_the_process_keeper_around_its_copy() {
     let gone = u
         .find("Unregister-ScheduledTask -TaskName \"dasio-pc-keep\" -Confirm:$false")
         .expect("uninstall.ps1 removes the keeper");
+    assert!(u[..gone].contains("Disable-ScheduledTask -TaskName \"dasio-pc-keep\""));
     assert!(u[..gone].contains("Stop-ScheduledTask -TaskName \"dasio-pc-keep\""));
+    assert!(u[..gone].contains("$left | Stop-Process -Force"));
+    assert!(u[gone..].contains("throw \"removing dasio-keep.exe failed 10 times"));
 }

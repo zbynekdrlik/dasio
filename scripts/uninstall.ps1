@@ -2,9 +2,10 @@
 #   .\uninstall.ps1 -Instance 1 [-Ip <its address>]
 # Stops and removes its service and its own binary (and a logon task an
 # older install made) and its expected-device file for dtray; with the last
-# instance gone, dtray no longer starts at logon,
+# instance gone, dtray no longer starts at logon and the process keeper
+# (task dasio-pc-keep, dasio-keep.exe, dasio#185) is removed,
 # unregisters its driver entry, removes the extra address an older install.ps1
-# added (installs now add none). The
+# added (installs now add none). The other
 # files in C:\Program Files\dasio stay (other instances use them); its
 # data folder stays (the device's names).
 param(
@@ -74,12 +75,27 @@ if (-not (Get-Service -Name "dasio-*" -ErrorAction SilentlyContinue) -and (Test-
     & $dtrayCli --autostart off
     if ($LASTEXITCODE -ne 0) { throw "dtray-cli --autostart off failed ($LASTEXITCODE)" }
 }
-# The last instance gone: no process keeper either (dasio#185).
-if (-not (Get-Service -Name "dasio-*" -ErrorAction SilentlyContinue) -and (Get-ScheduledTask -TaskName "dasio-pc-keep" -ErrorAction SilentlyContinue)) {
-    Stop-ScheduledTask -TaskName "dasio-pc-keep"
-    Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue | Wait-Process -Timeout 15
-    Unregister-ScheduledTask -TaskName "dasio-pc-keep" -Confirm:$false
+# The last instance gone: no process keeper either (dasio#185): off (its
+# 5-min trigger must not start it again), stopped, any keeper left ended,
+# the task removed, then its exe (a few tries: a scanner can hold a
+# just-ended exe a moment), also on a rerun after a failed removal.
+if (-not (Get-Service -Name "dasio-*" -ErrorAction SilentlyContinue)) {
+    if (Get-ScheduledTask -TaskName "dasio-pc-keep" -ErrorAction SilentlyContinue) {
+        Disable-ScheduledTask -TaskName "dasio-pc-keep" | Out-Null
+        Stop-ScheduledTask -TaskName "dasio-pc-keep"
+    }
+    $left = @(Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue)
+    if ($left.Count -gt 0) {
+        $left | Stop-Process -Force
+        $left | Wait-Process -Timeout 15
+    }
+    if (Get-ScheduledTask -TaskName "dasio-pc-keep" -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName "dasio-pc-keep" -Confirm:$false
+    }
     $keepExe = Join-Path $env:ProgramFiles "dasio\dasio-keep.exe"
-    if (Test-Path $keepExe) { Remove-Item $keepExe }
+    for ($try = 1; Test-Path $keepExe; $try++) {
+        try { Remove-Item $keepExe -ErrorAction Stop }
+        catch { if ($try -ge 10) { throw "removing dasio-keep.exe failed 10 times: $($_.Exception.Message)" }; Start-Sleep -Milliseconds 500 }
+    }
 }
 Write-Output "dasio instance $Instance removed"

@@ -585,6 +585,10 @@ fn pc_keep(path: &str) -> ExitCode {
                     ));
                     profile = Some(p);
                     last_error = None;
+                    // The keeper's own changes after an edit are no fight,
+                    // and a failure may be gone with the new entries.
+                    fights = keep::Fights::default();
+                    failed.clear();
                 }
                 Err(e) => {
                     if last_error.as_ref() != Some(&e) {
