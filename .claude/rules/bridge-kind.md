@@ -120,8 +120,7 @@ paths:
   the from-ASIO DEFAULT (buffer + one pump block, not checked here) keep
   dlink's 1 ms floor, so a 32-frame SoundGrid buffer needs an explicit
   `from_asio_app_buffer_ns` (dstack's measure: >= 0.75 ms seeded + the
-  driver's callback lateness at 128 frames, 0.25-0.375 ms at 64). dtray's `Fields::read`
-  (dstack issue 387) learns these key names.
+  driver's callback lateness at 128 frames, 0.25-0.375 ms at 64). dtray (dstack's crate, v0.6.185) reads both keys and checks a direction's target against `MIN_BRIDGE_TARGET_NS` (0.5 ms).
 - The ASRC seed (dstack v0.6.172): `asrc_seed::path` = the instance
   folder's `asrc-seed-<driver>.toml` (driver name kept to `[A-Za-z0-9_-]`),
   `Seed::read` + `Bridge::seed_from` before `spawn_runner`, and
