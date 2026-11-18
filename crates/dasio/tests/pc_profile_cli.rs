@@ -206,14 +206,16 @@ fn running_root_devices() -> Vec<String> {
     ids
 }
 
-/// An adapter of the runner that is up: its NetCfgInstanceId (the
-/// profile's `nic_guid`) and its device instance path.
+/// An adapter of the runner that is up and has a device (a virtual one
+/// without a PnP device, which a runner image can list first, has no
+/// device path): its NetCfgInstanceId (the profile's `nic_guid`) and its
+/// device instance path.
 fn runner_nic() -> (String, String) {
     let out = Command::new("powershell")
         .args([
             "-NoProfile",
             "-Command",
-            "$a = Get-NetAdapter | Where-Object Status -eq 'Up' | Sort-Object ifIndex | Select-Object -First 1; $a.InterfaceGuid; $a.PnPDeviceID",
+            "$a = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.PnPDeviceID } | Sort-Object ifIndex | Select-Object -First 1; $a.InterfaceGuid; $a.PnPDeviceID",
         ])
         .output()
         .unwrap();
@@ -374,4 +376,43 @@ fn the_dante_nic_s_parent_chain_is_read_up_to_the_root() {
     // Without a [[device]] entry the chain is not walked.
     let none = Pc::new(&parse(&format!("name = \"ci\"\nnic_guid = \"{guid}\"\n")).unwrap());
     assert_eq!(none.nic_chain(), Vec::<String>::new());
+}
+
+#[test]
+fn the_keeper_gives_a_running_process_its_entry_s_priority_and_affinity() {
+    // dasio#185: one pass of `dasio pc-profile keep` over a real process
+    // of the runner (a waiting ping, started here), read back.
+    use dasio::pc_profile::{Reader, keep::Fights, parse, windows::Pc, windows::keep::pass};
+    let mut child = Command::new("ping")
+        .args(["-n", "60", "127.0.0.1"])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let p = parse(
+        "name = \"ci\"\n[[process]]\nexe = \"ping.exe\"\naffinity = \"0x1\"\npriority = \"below normal\"\n",
+    )
+    .unwrap();
+    let pc = Pc::new(&p);
+    let before = pc.process("ping.exe");
+    let mut fights = Fights::default();
+    let mut failed = std::collections::HashSet::new();
+    let lines = pass(&p, &mut fights, &mut failed, 0);
+    let after = pc.process("ping.exe");
+    let again = pass(&p, &mut fights, &mut failed, 2_000);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let before = before.expect("the ping runs");
+    let after = after.expect("the ping still runs");
+    assert_eq!(
+        (after.affinity, after.priority.as_str()),
+        (0x1, "below normal")
+    );
+    let changed = format!("kept ping.exe (pid {}): ", child.id());
+    assert!(
+        lines.iter().any(|l| l.starts_with(&changed)),
+        "{lines:?} (before: {before:?})"
+    );
+    // Held already: the second pass sets and logs nothing.
+    assert_eq!(again, Vec::<String>::new());
+    assert!(failed.is_empty(), "{failed:?}");
 }

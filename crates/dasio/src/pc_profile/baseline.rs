@@ -56,6 +56,9 @@ pub fn merge(base: &Profile, site: &Profile) -> Profile {
         .cloned()
         .collect();
     ini.extend(site.ini.iter().cloned());
+    // A file the PC does not have (Process Lasso replaced by dasio's
+    // keeper, dasio#185): none of its entries, the baseline's or the site's.
+    ini.retain(|e| !site.no_ini.iter().any(|f| f.eq_ignore_ascii_case(&e.file)));
     out.ini = ini;
     // A site entry takes over only the fields it sets: the baseline's
     // integrity stays checked next to a site's Lasso affinity for the same
@@ -188,6 +191,7 @@ pub fn baseline_only(base: &Profile) -> Profile {
         absent: Vec::new(),
         nic_driver: Vec::new(),
         device: Vec::new(),
+        no_ini: Vec::new(),
     };
     merge(base, &empty)
 }

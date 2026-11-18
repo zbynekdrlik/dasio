@@ -333,3 +333,68 @@ fn install_ps1_installs_the_nic_driver_only_when_asked_and_only_a_checked_packag
         "only in the opt-in step"
     );
 }
+
+/// The process keeper (dasio#185): install.ps1 turns its task off, ends
+/// the keeper through its stop file (killing it only when it does not
+/// end), copies dasio.exe as dasio-keep.exe (a few tries), registers the
+/// SYSTEM task running `pc-profile keep` at boot and every 5 min (one at a
+/// time: a dead keeper comes back), and in a `finally` removes the stop
+/// file, turns the task on and starts it; then refuses when the keeper
+/// does not run or ends at once. uninstall.ps1 removes it with the last
+/// instance, in order.
+#[test]
+fn install_ps1_restarts_the_process_keeper_around_its_copy() {
+    let read = |f: &str| {
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(f))
+            .unwrap()
+            .replace("\r\n", "\n")
+    };
+    let s = read("../../scripts/install.ps1");
+    let at = |needle: &str| {
+        s.find(needle)
+            .unwrap_or_else(|| panic!("install.ps1 has no {needle}"))
+    };
+    let disable = at("Disable-ScheduledTask -TaskName $keepTask | Out-Null");
+    let stop = at("Set-Content -Path $keepStop -Value \"install\"");
+    let kill =
+        at("Get-Process -Name \"dasio-keep\" -ErrorAction SilentlyContinue | Stop-Process -Force");
+    let copy = at(
+        "try { Copy-Item (Join-Path $here \"dasio.exe\") $keepExe -Force -ErrorAction Stop; break }",
+    );
+    let register = at("Register-ScheduledTask -TaskName $keepTask");
+    let finally = at(
+        "} finally {\n    if (Test-Path $keepStop) { Remove-Item $keepStop }\n    if (Get-ScheduledTask -TaskName $keepTask -ErrorAction SilentlyContinue) {\n        Enable-ScheduledTask -TaskName $keepTask | Out-Null\n        Start-ScheduledTask -TaskName $keepTask",
+    );
+    let start = at("throw \"the process keeper ($keepTask) did not start\"");
+    let ended = at("throw \"the process keeper ($keepTask) ended right after its start");
+    assert!(
+        disable < stop
+            && stop < kill
+            && kill < copy
+            && copy < register
+            && register < finally
+            && finally < start
+            && start < ended
+    );
+    assert!(s.contains("$keepStop = Join-Path $env:ProgramData \"dasio\\pc-keep.stop\""));
+    assert!(s.contains("New-ScheduledTaskAction -Execute $keepExe -Argument \"pc-profile keep\""));
+    assert!(s.contains("(New-ScheduledTaskTrigger -AtStartup)"));
+    assert!(s.contains("-RepetitionInterval (New-TimeSpan -Minutes 5)"));
+    assert!(s.contains("-MultipleInstances IgnoreNew"));
+    assert!(s.contains("-User SYSTEM -RunLevel Highest"));
+    // Before the instance's own service is (re)made.
+    assert!(ended < at("New-Service -Name $service"));
+    let u = read("../../scripts/uninstall.ps1");
+    let uat = |needle: &str| {
+        u.find(needle)
+            .unwrap_or_else(|| panic!("uninstall.ps1 has no {needle}"))
+    };
+    let off = uat("Disable-ScheduledTask -TaskName \"dasio-pc-keep\" | Out-Null");
+    let stopped = uat("Set-Content -Path $keepStop -Value \"uninstall\"");
+    let not_ended =
+        uat("throw \"the process keeper did not end within 15 s; its task stays disabled");
+    let gone = uat("Unregister-ScheduledTask -TaskName \"dasio-pc-keep\" -Confirm:$false");
+    let exe = uat("throw \"removing dasio-keep.exe failed 10 times");
+    let unstop = uat("    Remove-Item $keepStop\n}");
+    assert!(off < stopped && stopped < not_ended && not_ended < gone && gone < exe && exe < unstop);
+}

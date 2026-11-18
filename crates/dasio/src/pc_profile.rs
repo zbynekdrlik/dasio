@@ -14,9 +14,10 @@
 //!   from `nic_guid`.
 //! - `[[ini]]`: one `key=value` line of an ini file (Process Lasso's).
 //! - `[[process]]`: what a running process must have (affinity, priority
-//!   class), to see that the tool which sets it (Lasso) did, and its
-//!   integrity level (a DAW at medium, not elevated: dasio#128); checked
-//!   only, never applied, and skipped while the process does not run.
+//!   class), held by dasio's keeper (`dasio pc-profile keep`, [`keep`],
+//!   dasio#185, what Process Lasso did), and its integrity level (a DAW at
+//!   medium, not elevated: dasio#128, checked only); skipped while the
+//!   process does not run.
 //! - `[[disk]]`: a floor of free space on a drive, so a filling disk shows
 //!   as a problem before it hurts (FOH's C: had 26.5 GB left, owner
 //!   9.11.2026, dasio#1); checked only, never applied.
@@ -53,6 +54,7 @@ pub mod absent;
 mod baseline;
 pub mod device;
 pub mod hold;
+pub mod keep;
 pub mod layout;
 pub mod nic_driver;
 mod os_text;
@@ -113,6 +115,11 @@ pub struct Profile {
     /// The devices that must be off ([`device`], dasio#181).
     #[serde(default)]
     pub device: Vec<DeviceEntry>,
+    /// Ini files this PC does not have: the baseline's and its own
+    /// `[[ini]]` entries for them are left out (dasio#185: a PC whose
+    /// Process Lasso dasio's keeper replaced).
+    #[serde(default)]
+    pub no_ini: Vec<String>,
 }
 
 impl Profile {

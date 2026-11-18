@@ -150,9 +150,38 @@ paths:
   `dasio pc-profile apply --plan`, then `dasio pc-profile apply`. The
   service checks it at start and every 10 min: each problem is a WARN line
   in the instance log, and dtray's line shows `PC profile: N problems`.
-- `[[process]]` entries only check what Process Lasso applied (affinity,
-  priority class). The setting itself is Lasso's ini, which the profile
-  holds key by key.
+- `[[process]]` entries (affinity, priority class) are HELD by dasio's
+  process keeper since 0.1.135 (dasio#185, owner 18.11.2026: what Process
+  Lasso did, dasio does): `dasio pc-profile keep`, run as the SYSTEM task
+  `dasio-pc-keep` at boot and every 5 min, one at a time (a task's
+  restart-on-failure covers only a failed start, so the repetition brings a
+  dead keeper back). install.ps1 copies dasio.exe as `dasio-keep.exe`:
+  task off, the keeper ended through its stop file
+  `C:\ProgramData\dasio\pc-keep.stop` (it exits within 2 s; killed only
+  after 15 s: `Stop-ScheduledTask` left it running in CI), copy with a few
+  tries, then in a `finally` the stop file removed, task on and started,
+  refused when it does not run or ends at once; uninstall.ps1 removes it
+  with the last instance the same way. Every 2 s it
+  sets what differs on every running process of the entry's exe, through
+  one handle per process (image name checked, so a reused pid is never
+  touched), affinity first (a mask naming a CPU the PC lacks is refused)
+  and the priority after it, read back; below normal on the system CPUs,
+  outside the media process. A process something sets back 5 times in
+  10 min is given up with one line (the 10-min check shows the rest).
+  Log: `C:\ProgramData\dasio\pc-keep.log` (1 MB, then `.log.1`).
+  `integrity` stays check-only.
+- What the keeper does NOT cover yet (before a PC's Lasso goes): Lasso's
+  `DefaultPriorities` for exes without a `[[process]]` entry (FOH: dsend,
+  dlisten above normal, cg below normal, dvs_service high), its I/O, GPU
+  and memory priorities, and its catch-all `*` affinity where
+  `ReservedCpuSets` does not cover the DAW CPUs (mbc: baseline
+  `dasio_cpus` only, Lasso also kept everything off Live's 4-11). Add the
+  `[[process]]` entries and reserve the DAW CPUs first. dsg needs none of
+  that (ReservedCpuSets 1-3, its only priority rule is SGDawNodeService).
+  Then the site profile names `no_ini = ['C:\ProgramData\ProcessLasso\config\prolasso.ini']`
+  (0.1.135+; an older dasio refuses the whole profile): every `[[ini]]`
+  entry for that file, the baseline's 150 and the site's, is left out.
+  While a PC still runs Lasso, both set the same values from the profile.
 - `[[process]]` also takes `integrity = "low"|"medium"|"high"|"system"`
   (dasio#128, 0.1.126+): the token's level (`OpenProcessToken` +
   `TokenIntegrityLevel`, a limited query handle is enough). Checked only,

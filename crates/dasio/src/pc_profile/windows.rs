@@ -33,6 +33,7 @@ use super::{Action, DevState, ProcState, Profile, Reader, Value, get_ini, set_in
 
 mod device;
 mod exe;
+pub mod keep;
 
 const NET_CLASS: &str =
     r"SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}";
@@ -274,37 +275,7 @@ impl Reader for Pc {
     }
 
     fn process(&self, exe: &str) -> Option<ProcState> {
-        let pid = find_process(exe)?;
-        // SAFETY: a query-only handle, closed below.
-        let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-        if h.is_null() {
-            return None;
-        }
-        let (mut mask, mut system) = (0usize, 0usize);
-        // SAFETY: a valid handle and two writable masks.
-        let ok = unsafe { GetProcessAffinityMask(h, &mut mask, &mut system) } != 0;
-        // SAFETY: a valid handle.
-        let class = unsafe { GetPriorityClass(h) };
-        let integrity = integrity(h);
-        // SAFETY: the handle opened above, closed once.
-        unsafe { CloseHandle(h) };
-        if !ok || class == 0 {
-            return None;
-        }
-        let priority = match class {
-            IDLE_PRIORITY_CLASS => "idle",
-            BELOW_NORMAL_PRIORITY_CLASS => "below normal",
-            NORMAL_PRIORITY_CLASS => "normal",
-            ABOVE_NORMAL_PRIORITY_CLASS => "above normal",
-            HIGH_PRIORITY_CLASS => "high",
-            REALTIME_PRIORITY_CLASS => "realtime",
-            _ => "unknown",
-        };
-        Some(ProcState {
-            affinity: mask as u64,
-            priority: priority.to_string(),
-            integrity,
-        })
+        proc_state(find_process(exe)?)
     }
 
     fn free_bytes(&self, drive: &str) -> Result<u64, String> {
@@ -789,13 +760,57 @@ fn find_nic_class(guid: &str) -> Option<String> {
     found
 }
 
+/// The affinity, priority class and integrity of process `pid`; `None`
+/// when it cannot be opened for a limited query (or is gone).
+pub(super) fn proc_state(pid: u32) -> Option<ProcState> {
+    // SAFETY: a query-only handle, closed below.
+    let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if h.is_null() {
+        return None;
+    }
+    let (mut mask, mut system) = (0usize, 0usize);
+    // SAFETY: a valid handle and two writable masks.
+    let ok = unsafe { GetProcessAffinityMask(h, &mut mask, &mut system) } != 0;
+    // SAFETY: a valid handle.
+    let class = unsafe { GetPriorityClass(h) };
+    let integrity = integrity(h);
+    // SAFETY: the handle opened above, closed once.
+    unsafe { CloseHandle(h) };
+    if !ok || class == 0 {
+        return None;
+    }
+    let priority = match class {
+        IDLE_PRIORITY_CLASS => "idle",
+        BELOW_NORMAL_PRIORITY_CLASS => "below normal",
+        NORMAL_PRIORITY_CLASS => "normal",
+        ABOVE_NORMAL_PRIORITY_CLASS => "above normal",
+        HIGH_PRIORITY_CLASS => "high",
+        REALTIME_PRIORITY_CLASS => "realtime",
+        _ => "unknown",
+    };
+    Some(ProcState {
+        affinity: mask as u64,
+        priority: priority.to_string(),
+        integrity,
+    })
+}
+
 /// The pid of the first process with image `exe` (case ignored).
 fn find_process(exe: &str) -> Option<u32> {
     find_processes(exe).ok()?.into_iter().next()
 }
 
 /// The ids of every process whose exe file name is `exe` (case ignored).
-fn find_processes(exe: &str) -> Result<Vec<u32>, String> {
+pub(super) fn find_processes(exe: &str) -> Result<Vec<u32>, String> {
+    Ok(snapshot()?
+        .into_iter()
+        .filter(|(_, n)| n.eq_ignore_ascii_case(exe))
+        .map(|(pid, _)| pid)
+        .collect())
+}
+
+/// Every running process: its id and its exe file name.
+pub(super) fn snapshot() -> Result<Vec<(u32, String)>, String> {
     // SAFETY: a process snapshot, closed below.
     let snap: HANDLE = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snap == INVALID_HANDLE_VALUE {
@@ -807,17 +822,15 @@ fn find_processes(exe: &str) -> Result<Vec<u32>, String> {
     // SAFETY: a zeroed entry with its size set, as the API wants.
     let mut e: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
     e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-    let mut pids = Vec::new();
+    let mut procs = Vec::new();
     // SAFETY: a valid snapshot and entry.
     let mut ok = unsafe { Process32FirstW(snap, &mut e) } != 0;
     while ok {
-        if from_wide(&e.szExeFile).eq_ignore_ascii_case(exe) {
-            pids.push(e.th32ProcessID);
-        }
+        procs.push((e.th32ProcessID, from_wide(&e.szExeFile)));
         // SAFETY: as above.
         ok = unsafe { Process32NextW(snap, &mut e) } != 0;
     }
     // SAFETY: the snapshot opened above.
     unsafe { CloseHandle(snap) };
-    Ok(pids)
+    Ok(procs)
 }

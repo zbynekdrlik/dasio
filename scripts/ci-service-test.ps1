@@ -420,6 +420,8 @@ Write-Output "a failed install: the instance runs again as it was ($why)"
 & (Join-Path $newer "uninstall.ps1") -Instance $second -Ip $ip -Name "ci-asio-dante-2"
 Wait-Until { -not (Get-Service -Name "dasio-$second" -ErrorAction SilentlyContinue) } 15 "the second service's removal"
 if (Test-Path $own2) { throw "uninstall left the second instance's binary" }
+# Another instance is left: the process keeper stays (dasio#185).
+if (-not (Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue)) { throw "the process keeper stopped with an instance still installed" }
 
 cmd /c exit 7
 & (Join-Path $Bundle "uninstall.ps1") -Instance $instance -Ip $ip -Name "ci-asio-dante"
@@ -429,5 +431,9 @@ if (Test-Path "HKLM:\SOFTWARE\ASIO\ci-asio-dante") { throw "the driver's ASIO en
 if (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name "dasio-tray" -ErrorAction SilentlyContinue) { throw "the tray still starts at logon with no instance left" }
 if (Test-Path $expected) { throw "uninstall left the expected-device file" }
 if (Get-ItemProperty $runKey -Name "dtray" -ErrorAction SilentlyContinue) { throw "dtray still starts at logon with no instance left" }
+# The last instance gone: no process keeper (dasio#185).
+if (Get-ScheduledTask -TaskName "dasio-pc-keep" -ErrorAction SilentlyContinue) { throw "the process keeper's task is still there with no instance left" }
+if (Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue) { throw "the process keeper still runs with no instance left" }
+if (Test-Path (Join-Path $env:ProgramFiles "dasio\dasio-keep.exe")) { throw "uninstall left dasio-keep.exe" }
 Get-Content (Join-Path $env:ProgramData "dasio\instance-$instance\dasio.log") | Select-Object -Last 15
 Write-Output "service test passed"
