@@ -20,3 +20,9 @@ paths:
 - dstack judges a packet late against its FLOW's playout (`RxPlan.latency`, at least the device latency), so a peak above `latency_ns` is not by itself a late packet: read it next to the late counts.
 - A bridge instance pulls its RX at the ASIO driver's buffer switch (dstack v0.6.155, dasio issue 120). Up to dstack v0.6.156 the age at placement included up to one driver buffer period of that wait; since v0.6.157 (dstack issue 350) the age is the arrival's again (on Windows bracketed by the reads: an on-time packet reads at most one packet interval high, a late burst just before a read shows in dstack's `lateness_at_read_peak`, not `lateness_peak`) and the wait is the separate ASIO pull wait.
 - dstack's `read_wait_peak_us` is in µs while the sums are ns: a slot can count waits with a 0 µs peak, so a wait is measured when it is counted OR has a peak (`measure_since`); the mutation gate needs a test for each side of that `||` alone (PR 160).
+- Reading a device status `rx` entry by hand: `latency`, `playout`, `delay`,
+  `late_after`, `advertised`, `lateness`, `lateness_peak` are SAMPLES at the
+  device rate, not us (dsg 18.11.2026: `latency 803, late_after 864` at
+  96 kHz = 8.36 / 9.0 ms; misread as 0.8 ms it blamed songplayer-pp's sender
+  for packets the network had delayed 6-9 ms, dstack #424/#425). The `_ns`
+  and `_us` keys are what they say.
