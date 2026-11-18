@@ -782,13 +782,12 @@ fn find_nic_class(guid: &str) -> Option<String> {
 
 /// The affinity, priority class and integrity of process `pid`, and what
 /// else `e` names; `None` when it cannot be opened for a limited query (or
-/// is gone). An entry naming I/O, memory or GPU priority or the boost
-/// needs more access ([`extras::access`]); nothing is set through it.
+/// is gone). What else `e` names is read through a handle of its own
+/// ([`extras::open`]): a process that refuses it reads those as
+/// unreadable, never as not running.
 pub(super) fn proc_state(pid: u32, e: &ProcEntry) -> Option<ProcState> {
-    let access = PROCESS_QUERY_LIMITED_INFORMATION | extras::access(e);
-    // SAFETY: a handle for queries (the GPU class's read needs the set
-    // right too), closed below.
-    let h = unsafe { OpenProcess(access, 0, pid) };
+    // SAFETY: a query-only handle, closed below.
+    let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if h.is_null() {
         return None;
     }
@@ -798,7 +797,7 @@ pub(super) fn proc_state(pid: u32, e: &ProcEntry) -> Option<ProcState> {
     // SAFETY: a valid handle.
     let class = unsafe { GetPriorityClass(h) };
     let integrity = integrity(h);
-    let extra = extras::read(h, e);
+    let extra = extras::read(extras::open(pid, e, false).as_ref(), e);
     // SAFETY: the handle opened above, closed once.
     unsafe { CloseHandle(h) };
     if !ok || class == 0 {

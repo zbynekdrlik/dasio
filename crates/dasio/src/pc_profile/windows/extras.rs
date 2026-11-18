@@ -3,26 +3,28 @@
 //! class), read for the profile check and the keeper and set by the
 //! keeper. ntdll's I/O priority calls and gdi32's GPU calls are looked up
 //! at run time; gdi32 is loaded only for an entry naming `gpu_priority`,
-//! so a media process (a bridge checks its profile in process) never loads
-//! it.
+//! which a bridge's in-process check leaves out
+//! ([`in_process`](super::super::in_process)), so no media process loads
+//! it. Each runs through a handle of its own ([`open`]): a process that
+//! refuses those rights still has its affinity and priority kept.
 
 use std::ffi::c_void;
 use std::sync::OnceLock;
 
-use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 use windows_sys::Win32::System::LibraryLoader::{
     GetModuleHandleW, GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
 };
 use windows_sys::Win32::System::Threading::{
-    GetProcessInformation, GetProcessPriorityBoost, MEMORY_PRIORITY_INFORMATION,
-    PROCESS_QUERY_INFORMATION, PROCESS_SET_INFORMATION, ProcessMemoryPriority,
-    SetProcessInformation, SetProcessPriorityBoost,
+    GetProcessInformation, GetProcessPriorityBoost, MEMORY_PRIORITY_INFORMATION, OpenProcess,
+    PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
+    ProcessMemoryPriority, SetProcessInformation, SetProcessPriorityBoost,
 };
 
 use super::super::keep::Set;
 use super::super::{
-    Extras, GPU_PRIORITIES, IO_PRIORITIES, MEMORY_PRIORITIES, ProcEntry, boost_name, level_name,
-    level_value,
+    ExtraAccess, Extras, GPU_PRIORITIES, IO_READ, MEMORY_PRIORITIES, ProcEntry, boost_name,
+    level_name, level_value,
 };
 use super::wide;
 
@@ -177,24 +179,30 @@ fn set_boost(h: HANDLE, on: bool) -> Result<(), String> {
         .ok_or_else(|| std::io::Error::last_os_error().to_string())
 }
 
-/// The access a handle needs, beyond a limited query, to read what `e`
-/// names: a full query, and for the GPU class the set right too (gdi32's
-/// get refuses a handle without it: STATUS_ACCESS_DENIED with 0x400 alone,
-/// class read with 0x600, dsg 18.11.2026).
-pub(super) fn access(e: &ProcEntry) -> u32 {
-    match (named(e), e.gpu_priority.is_some()) {
-        (_, true) => PROCESS_QUERY_INFORMATION | PROCESS_SET_INFORMATION,
-        (true, false) => PROCESS_QUERY_INFORMATION,
-        (false, false) => 0,
+/// A handle to `pid` for what `e` names (closed on drop); `None` when `e`
+/// names nothing here or the process refuses the rights (then each reads
+/// as unreadable). `set` adds the set right the keeper needs.
+pub(super) struct Handle(HANDLE);
+
+impl Drop for Handle {
+    fn drop(&mut self) {
+        // SAFETY: the handle `open` returned, closed once.
+        unsafe { CloseHandle(self.0) };
     }
 }
 
-/// Whether `e` names anything read here.
-pub(super) fn named(e: &ProcEntry) -> bool {
-    e.io_priority.is_some()
-        || e.memory_priority.is_some()
-        || e.gpu_priority.is_some()
-        || e.priority_boost.is_some()
+pub(super) fn open(pid: u32, e: &ProcEntry, set: bool) -> Option<Handle> {
+    let mut rights = match e.extra_access() {
+        ExtraAccess::None => return None,
+        ExtraAccess::Query => PROCESS_QUERY_INFORMATION,
+        ExtraAccess::QueryAndSet => PROCESS_QUERY_INFORMATION | PROCESS_SET_INFORMATION,
+    };
+    if set {
+        rights |= PROCESS_SET_INFORMATION;
+    }
+    // SAFETY: plain arguments; the handle is closed by Drop.
+    let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | rights, 0, pid) };
+    (!h.is_null()).then_some(Handle(h))
 }
 
 /// One priority kind: its names by value from `first`, read and set
@@ -209,7 +217,7 @@ struct Level {
 
 const IO: Level = Level {
     what: "io priority",
-    names: &IO_PRIORITIES,
+    names: &IO_READ,
     first: 0,
     get: io,
     put: set_io,
@@ -255,8 +263,12 @@ impl Level {
     }
 }
 
-/// What `e` names, read through `h`.
-pub(super) fn read(h: HANDLE, e: &ProcEntry) -> Extras {
+/// What `e` names, read through `h` (none: all unreadable).
+pub(super) fn read(h: Option<&Handle>, e: &ProcEntry) -> Extras {
+    let Some(Handle(h)) = h else {
+        return Extras::default();
+    };
+    let h = *h;
     Extras {
         io: e.io_priority.as_ref().and_then(|_| IO.read(h)),
         memory: e.memory_priority.as_ref().and_then(|_| MEMORY.read(h)),
@@ -267,7 +279,14 @@ pub(super) fn read(h: HANDLE, e: &ProcEntry) -> Extras {
 
 /// Sets `want`'s I/O, memory and GPU priority and boost through `h`, each
 /// read back, into `done`; the first failure stops it and says why.
-pub(super) fn set(h: HANDLE, want: &Set, done: &mut Set) -> Option<String> {
+pub(super) fn set(h: Option<&Handle>, want: &Set, done: &mut Set) -> Option<String> {
+    let wants =
+        want.io.is_some() || want.memory.is_some() || want.gpu.is_some() || want.boost.is_some();
+    let h = match h {
+        Some(Handle(h)) => *h,
+        None if wants => return Some("no handle to set it through".into()),
+        None => return None,
+    };
     for (level, v, slot) in [
         (&IO, &want.io, &mut done.io),
         (&MEMORY, &want.memory, &mut done.memory),

@@ -49,6 +49,21 @@ impl ProcEntry {
         self.holds() || self.integrity.is_some()
     }
 
+    /// The rights a process handle needs, beyond a limited query, to read
+    /// the [`Extras`] it names.
+    pub fn extra_access(&self) -> ExtraAccess {
+        if self.gpu_priority.is_some() {
+            ExtraAccess::QueryAndSet
+        } else if self.io_priority.is_some()
+            || self.memory_priority.is_some()
+            || self.priority_boost.is_some()
+        {
+            ExtraAccess::Query
+        } else {
+            ExtraAccess::None
+        }
+    }
+
     /// Whether it names anything the keeper sets (all but `integrity`).
     pub fn holds(&self) -> bool {
         self.affinity.is_some()
@@ -63,6 +78,10 @@ impl ProcEntry {
 /// I/O priorities by value (ntdll's ProcessIoPriority, 0-3; 4, critical,
 /// is the memory manager's, never wanted).
 pub const IO_PRIORITIES: [&str; 4] = ["very low", "low", "normal", "high"];
+
+/// I/O priorities as read: [`IO_PRIORITIES`] and 4, critical, so a process
+/// at critical reads as that, never as unreadable.
+pub const IO_READ: [&str; 5] = ["very low", "low", "normal", "high", "critical"];
 
 /// Memory priorities, value 1 first (`MEMORY_PRIORITY_VERY_LOW` 1 to
 /// `MEMORY_PRIORITY_NORMAL` 5).
@@ -90,6 +109,19 @@ pub fn level_value(names: &[&str], first: u32, name: &str) -> Option<u32> {
         .iter()
         .position(|n| *n == name)
         .map(|i| first + i as u32)
+}
+
+/// The rights a handle needs to read an entry's [`Extras`], beyond a
+/// limited query: a full query for I/O or memory priority or the boost; for
+/// the GPU class the set right too (gdi32's get refuses a handle without
+/// it: STATUS_ACCESS_DENIED with the query right alone, the class read with
+/// both, dsg 18.11.2026). Read through a handle of their own, so a process
+/// that refuses them still has its affinity and priority kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtraAccess {
+    None,
+    Query,
+    QueryAndSet,
 }
 
 /// What a running process has beyond affinity and priority class, read

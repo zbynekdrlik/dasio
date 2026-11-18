@@ -515,6 +515,8 @@ fn the_keeper_gives_a_running_process_its_io_memory_and_gpu_priority_and_boost()
         .expect("the ping runs");
     // The GPU class as Windows itself answers it: a PC without a GPU
     // scheduler (the runner's VM) refuses the read, dsg's Intel GPU answers.
+    // On the runner this proves the unreadable path; the set path is
+    // proven on dsg after the deploy (dasio#185).
     let windows_gpu = gpu_class_by_powershell(child.id());
     assert_eq!(
         before.extra.gpu,

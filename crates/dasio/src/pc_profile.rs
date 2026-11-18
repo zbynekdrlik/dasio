@@ -76,8 +76,8 @@ pub use nic_driver::NicDriverEntry;
 pub use os_text::{parse_bcdedit, parse_task_xml};
 pub use power::{PowerSetting, describe, power_setting, powercfg_commands};
 pub use process::{
-    Extras, GPU_PRIORITIES, INTEGRITIES, IO_PRIORITIES, MEMORY_PRIORITIES, ProcEntry, ProcState,
-    boost_name, integrity_name, level_name, level_value,
+    ExtraAccess, Extras, GPU_PRIORITIES, INTEGRITIES, IO_PRIORITIES, IO_READ, MEMORY_PRIORITIES,
+    ProcEntry, ProcState, boost_name, integrity_name, level_name, level_value,
 };
 
 /// Where the service looks for the profile.
@@ -969,11 +969,22 @@ pub enum ChildCheck {
 /// instance checks in its own process, since a child started while an
 /// ASIO driver is loaded makes SoundGrid resync (dasio#106, dasio#120).
 /// `[[bcd]]` and `[[task]]` need `bcdedit` / `schtasks`: they are left to
-/// `dasio pc-profile check` and the boot-time `pc-profile apply`.
+/// `dasio pc-profile check` and the boot-time `pc-profile apply`. A
+/// `gpu_priority` is left to them too: its read loads gdi32, never into a
+/// media process (dasio#185).
 pub fn in_process(p: &Profile) -> Profile {
     Profile {
         bcd: Vec::new(),
         task: Vec::new(),
+        process: p
+            .process
+            .iter()
+            .map(|e| ProcEntry {
+                gpu_priority: None,
+                ..e.clone()
+            })
+            .filter(ProcEntry::checks)
+            .collect(),
         ..p.clone()
     }
 }

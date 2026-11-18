@@ -242,3 +242,56 @@ fn a_boost_reads_on_or_off() {
     assert_eq!(boost_name(true), "on");
     assert_eq!(boost_name(false), "off");
 }
+
+#[test]
+fn an_entry_names_the_rights_its_extras_need() {
+    let p = parse(
+        "name = \"x\"\n\
+         [[process]]\nexe = \"a.exe\"\naffinity = \"0x1\"\npriority = \"high\"\n\
+         [[process]]\nexe = \"b.exe\"\nio_priority = \"high\"\n\
+         [[process]]\nexe = \"c.exe\"\nmemory_priority = \"low\"\n\
+         [[process]]\nexe = \"d.exe\"\npriority_boost = false\n\
+         [[process]]\nexe = \"e.exe\"\ngpu_priority = \"high\"\n\
+         [[process]]\nexe = \"f.exe\"\nio_priority = \"low\"\ngpu_priority = \"idle\"\n",
+    )
+    .unwrap();
+    let rights: Vec<ExtraAccess> = p.process.iter().map(ProcEntry::extra_access).collect();
+    assert_eq!(
+        rights,
+        [
+            ExtraAccess::None,
+            ExtraAccess::Query,
+            ExtraAccess::Query,
+            ExtraAccess::Query,
+            ExtraAccess::QueryAndSet,
+            ExtraAccess::QueryAndSet,
+        ]
+    );
+}
+
+#[test]
+fn a_process_at_critical_io_reads_as_critical_never_wanted() {
+    assert_eq!(level_name(&IO_READ, 0, 4), Some("critical"));
+    assert_eq!(&IO_READ[..4], &IO_PRIORITIES[..]);
+    assert!(
+        parse("name = \"x\"\n[[process]]\nexe = \"a.exe\"\nio_priority = \"critical\"\n").is_err()
+    );
+}
+
+#[test]
+fn the_bridge_s_in_process_check_reads_no_gpu_class() {
+    // Its read loads gdi32: never into a media process.
+    let p = parse(
+        "name = \"x\"\n\
+         [[process]]\nexe = \"a.exe\"\ngpu_priority = \"high\"\nio_priority = \"high\"\n\
+         [[process]]\nexe = \"b.exe\"\ngpu_priority = \"high\"\n",
+    )
+    .unwrap();
+    let inside = in_process(&p);
+    assert_eq!(inside.process.len(), 1, "b.exe checks nothing else: gone");
+    assert_eq!(inside.process[0].exe, "a.exe");
+    assert_eq!(inside.process[0].gpu_priority, None);
+    assert_eq!(inside.process[0].io_priority.as_deref(), Some("high"));
+    // The full check keeps it.
+    assert_eq!(p.process[1].gpu_priority.as_deref(), Some("high"));
+}
