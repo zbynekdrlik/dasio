@@ -128,6 +128,14 @@ Owner rules from dasio#1. They hold for every change on a PC running dasio.
   and metric 900; the LAN VLAN adapter takes a new random MAC at every base
   restart, so its lease is not stable. Opening Realtek's 8169DiagV2 window
   resets the base NIC twice (~5 s link drops each).
+  Give that LAN VLAN adapter a STATIC address outside the site's DHCP pool
+  (dsg at Poprad: 10.77.8.209/23, switched with a dead-man, keep written
+  through the new address): it then survives a reboot or a new random MAC
+  without anyone pinning the VMAC (18.11.2026, dasio#184). Dante Virtual
+  Soundcard cannot use a Realtek VLAN adapter at all (its interface list
+  offers only the physical NIC): a PC whose Dante is DVS needs Dante
+  untagged on the physical NIC, or no DVS (resolume-pp 18.11.2026: DVS
+  stopped after a move to its Dante70 VLAN adapter; owner: no DVS at PP).
 - **A long remote job** (an installer, dante-leg.ps1, a network change)
   runs as a SYSTEM scheduled task, or with an MCP Shell `timeout` large
   enough (the fleet Shell takes any timeout; a 120 s value cut dsg's
