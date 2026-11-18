@@ -197,6 +197,15 @@ paths:
   `ThreadPriorityBoosts=<exe>;0`). Each is set only when read and
   different, then read back; an unreadable one is the check's problem, not
   a set. Lasso's numbers: IO 0-3 = the names in order, memory 1-5, GPU 0-5.
+- Removing Lasso (dsg 18.11, FOH 19.11.2026): its uninstaller DELETES its
+  Bitsum Highest Performance plan and makes another plan active (dsg: High
+  performance, FOH: Balanced). Before the removal copy the active plan
+  (`powercfg /duplicatescheme <bitsum> <new guid>`, compare `powercfg
+  /query` of both), set the copy active, pin the profile's
+  `ActivePowerScheme` to it; after the removal set it active again and
+  read `powercfg /getactivescheme`. `apply` prints FAILED ("ProcessLasso.exe
+  is still there", uninstaller exit 0) while the uninstaller finishes in
+  the background: check again a minute later.
 - What the keeper does NOT cover yet (before a PC's Lasso goes): Lasso's
   `DefaultPriorities` for exes without a `[[process]]` entry (FOH: dsend,
   dlisten above normal, cg below normal, dvs_service high), its I/O, GPU
