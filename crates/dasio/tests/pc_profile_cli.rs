@@ -206,14 +206,16 @@ fn running_root_devices() -> Vec<String> {
     ids
 }
 
-/// An adapter of the runner that is up: its NetCfgInstanceId (the
-/// profile's `nic_guid`) and its device instance path.
+/// An adapter of the runner that is up and has a device (a virtual one
+/// without a PnP device, which a runner image can list first, has no
+/// device path): its NetCfgInstanceId (the profile's `nic_guid`) and its
+/// device instance path.
 fn runner_nic() -> (String, String) {
     let out = Command::new("powershell")
         .args([
             "-NoProfile",
             "-Command",
-            "$a = Get-NetAdapter | Where-Object Status -eq 'Up' | Sort-Object ifIndex | Select-Object -First 1; $a.InterfaceGuid; $a.PnPDeviceID",
+            "$a = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.PnPDeviceID } | Sort-Object ifIndex | Select-Object -First 1; $a.InterfaceGuid; $a.PnPDeviceID",
         ])
         .output()
         .unwrap();
