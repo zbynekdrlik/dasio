@@ -624,6 +624,9 @@ if (-not $TestClock) {
     # drifted and needs no second refresh (the QoS values are unchanged).
     & (Join-Path $here "dasio.exe") pc-profile apply
     $applied = $LASTEXITCODE
+    if ($applied -eq 2) {
+        throw "the baseline step after the Group Policy refresh: dasio pc-profile apply left must-have items unset (the MUST-HAVE line above); dasio does not run without them, so the instance stays stopped: set them and run the install again"
+    }
     if ($applied -ne 0) { Write-Output "the PC profile still has problems (listed above): see dasio#128" }
 }
 # A bridge instance (`[bridge]` in its config, dasio#106) carries Dante to a
