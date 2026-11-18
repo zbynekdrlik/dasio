@@ -7,14 +7,17 @@
 
 use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
     CM_DISABLE_PERSIST, CM_DISABLE_UI_NOT_OK, CM_DRP_CONFIGFLAGS, CM_Disable_DevNode,
-    CM_GETIDLIST_FILTER_CLASS, CM_GETIDLIST_FILTER_PRESENT, CM_GETIDLIST_FILTER_REMOVALRELATIONS,
-    CM_Get_Child, CM_Get_DevNode_Registry_PropertyW, CM_Get_DevNode_Status,
-    CM_Get_Device_ID_List_SizeW, CM_Get_Device_ID_ListW, CM_Get_Device_IDW, CM_Get_Parent,
-    CM_Get_Sibling, CM_LOCATE_DEVNODE_NORMAL, CM_LOCATE_DEVNODE_PHANTOM, CM_Locate_DevNodeW,
-    CM_Set_DevNode_Registry_PropertyW, CONFIGFLAG_DISABLED, CONFIGRET, CR_BUFFER_SMALL,
-    CR_NO_SUCH_DEVNODE, CR_NO_SUCH_VALUE, CR_REMOVE_VETOED, CR_SUCCESS, DN_HAS_PROBLEM,
-    MAX_DEVICE_ID_LEN,
+    CM_GETIDLIST_FILTER_CLASS, CM_GETIDLIST_FILTER_PRESENT, CM_Get_DevNode_PropertyW,
+    CM_Get_DevNode_Registry_PropertyW, CM_Get_DevNode_Status, CM_Get_Device_ID_List_SizeW,
+    CM_Get_Device_ID_ListW, CM_Get_Device_IDW, CM_Get_Parent, CM_LOCATE_DEVNODE_NORMAL,
+    CM_LOCATE_DEVNODE_PHANTOM, CM_Locate_DevNodeW, CM_Set_DevNode_Registry_PropertyW,
+    CONFIGFLAG_DISABLED, CONFIGRET, CR_BUFFER_SMALL, CR_NO_SUCH_DEVNODE, CR_NO_SUCH_VALUE,
+    CR_REMOVE_VETOED, CR_SUCCESS, DN_HAS_PROBLEM, MAX_DEVICE_ID_LEN,
 };
+use windows_sys::Win32::Devices::Properties::{
+    DEVPKEY_Device_Children, DEVPKEY_Device_RemovalRelations, DEVPROP_TYPE_STRING_LIST,
+};
+use windows_sys::Win32::Foundation::DEVPROPKEY;
 
 use super::super::device::{Adapter, DevState, Devices, PROBLEM_DISABLED};
 use super::super::multi_sz_from_wide;
@@ -23,9 +26,6 @@ use super::{Pc, from_wide, wide};
 /// The most parents walked from a device (the root's included): far more
 /// than any device tree has between a device and its root.
 const MAX_DEPTH: usize = 64;
-
-/// The most children read of one device: far more than any device has.
-const MAX_CHILDREN: usize = 4096;
 
 /// The network adapters' setup class (GUID_DEVCLASS_NET).
 const NET_CLASS_GUID: &str = "{4d36e972-e325-11ce-bfc1-08002be10318}";
@@ -155,11 +155,12 @@ pub fn chain(id: &str) -> Vec<String> {
     }
 }
 
-/// The instance paths `CM_Get_Device_ID_List` gives for `filter` and
-/// `flags`, read again (a few times) when the list grew between its size
-/// and its read.
-fn id_list(filter: &str, flags: u32) -> Result<Vec<String>, String> {
-    let w = wide(filter);
+/// The present devices of the network adapters' setup class
+/// (`CM_Get_Device_ID_List`, class + present filter), read again (a few
+/// times) when the list grew between its size and its read.
+fn net_ids() -> Result<Vec<String>, String> {
+    let w = wide(NET_CLASS_GUID);
+    let flags = CM_GETIDLIST_FILTER_CLASS | CM_GETIDLIST_FILTER_PRESENT;
     for _ in 0..LIST_TRIES {
         let mut len = 0u32;
         // SAFETY: an out length and a NUL-terminated filter.
@@ -185,23 +186,52 @@ fn id_list(filter: &str, flags: u32) -> Result<Vec<String>, String> {
 }
 
 /// Every present Net-class device (whatever its address or link), each
-/// with its parents; an error when one was not read (then nothing is
-/// disabled).
+/// with its parents; an error when one was not read, or when Windows lists
+/// none (a dasio PC has its Dante NIC at least), so nothing is disabled.
 pub fn net_adapters() -> Result<Vec<Adapter>, String> {
-    id_list(
-        NET_CLASS_GUID,
-        CM_GETIDLIST_FILTER_CLASS | CM_GETIDLIST_FILTER_PRESENT,
-    )?
-    .into_iter()
-    .map(|id| match walk_up(&id) {
-        Ok(parents) => Ok(Adapter { id, parents }),
-        Err(e) => Err(format!("{id}: {e}")),
-    })
-    .collect()
+    let ids = net_ids()?;
+    if ids.is_empty() {
+        return Err("CM_Get_Device_ID_List: no present network adapter listed".into());
+    }
+    ids.into_iter()
+        .map(|id| match walk_up(&id) {
+            Ok(parents) => Ok(Adapter { id, parents }),
+            Err(e) => Err(format!("{id}: {e}")),
+        })
+        .collect()
+}
+
+/// The string-list property `key` (`what`) of devnode `dev`, read in one
+/// call (a list Windows keeps whole, never walked one handle at a time);
+/// empty when the device has none (CR_NO_SUCH_VALUE: a device without
+/// children or removal relations answers so, runner 19.11.2026).
+fn string_list(dev: u32, key: &DEVPROPKEY, what: &str) -> Result<Vec<String>, String> {
+    // Bytes Windows asks for; 2 at first, so the first call gives the size.
+    let mut want = 2u32;
+    for _ in 0..LIST_TRIES {
+        // One more UTF-16 unit than asked: the list ends in two NULs.
+        let mut buf = vec![0u16; (want as usize).div_ceil(2) + 1];
+        let mut len = (buf.len() * 2) as u32;
+        let mut kind = 0u32;
+        // SAFETY: a devnode handle from CM_Locate_DevNode, a property key,
+        // an out type, and a buffer of `len` bytes.
+        let cr = unsafe {
+            CM_Get_DevNode_PropertyW(dev, key, &mut kind, buf.as_mut_ptr().cast(), &mut len, 0)
+        };
+        match cr {
+            CR_SUCCESS if kind == DEVPROP_TYPE_STRING_LIST => return Ok(multi_sz_from_wide(&buf)),
+            CR_SUCCESS => return Err(format!("{what}: property type {kind}, not a string list")),
+            CR_NO_SUCH_VALUE => return Ok(Vec::new()),
+            CR_BUFFER_SMALL => want = len,
+            cr => return Err(cr_text(what, cr)),
+        }
+    }
+    Err(format!("{what}: still growing after {LIST_TRIES} reads"))
 }
 
 /// What stops with `id` when it stops, one step: its children and its
-/// removal relations; empty for a device not connected.
+/// removal relations (DEVPKEY_Device_Children, _RemovalRelations); empty
+/// for a device not connected.
 pub fn removes(id: &str) -> Result<Vec<String>, String> {
     let w = wide(id);
     let mut dev = 0u32;
@@ -211,27 +241,13 @@ pub fn removes(id: &str) -> Result<Vec<String>, String> {
         CR_NO_SUCH_DEVNODE => return Ok(Vec::new()),
         cr => return Err(cr_text("CM_Locate_DevNode", cr)),
     }
-    let mut out = Vec::new();
-    let mut child = 0u32;
-    // SAFETY: an out handle and a devnode handle from CM_Locate_DevNode.
-    let mut cr = unsafe { CM_Get_Child(&mut child, dev, 0) };
-    for _ in 0..MAX_CHILDREN {
-        match cr {
-            CR_SUCCESS => {}
-            CR_NO_SUCH_DEVNODE => {
-                out.extend(id_list(id, CM_GETIDLIST_FILTER_REMOVALRELATIONS)?);
-                return Ok(out);
-            }
-            cr => return Err(cr_text("CM_Get_Child/CM_Get_Sibling", cr)),
-        }
-        out.push(device_id(child)?);
-        let mut next = 0u32;
-        // SAFETY: an out handle and a devnode handle from CM_Get_Child or
-        // an earlier CM_Get_Sibling.
-        cr = unsafe { CM_Get_Sibling(&mut next, child, 0) };
-        child = next;
-    }
-    Err(format!("more than {MAX_CHILDREN} children"))
+    let mut out = string_list(dev, &DEVPKEY_Device_Children, "its children")?;
+    out.extend(string_list(
+        dev,
+        &DEVPKEY_Device_RemovalRelations,
+        "its removal relations",
+    )?);
+    Ok(out)
 }
 
 /// The real PC's devices, for `[[device]]`.

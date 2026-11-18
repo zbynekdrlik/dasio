@@ -26,6 +26,7 @@
 use serde::Deserialize;
 
 use std::cell::OnceCell;
+use std::collections::HashSet;
 
 use super::Problem;
 
@@ -216,8 +217,10 @@ fn judge(
         return Verdict::Refused(format!("a device below the network adapter {}", a.id));
     }
     // What stops with it: its subtree and removal relations, and theirs,
-    // as Windows removes them.
+    // as Windows removes them. `seen` holds them upper case (one lookup
+    // each, also in the media process's check).
     let mut reach = vec![id.to_string()];
+    let mut seen = HashSet::from([id.to_ascii_uppercase()]);
     for at in 0..MAX_REACH {
         let Some(x) = reach.get(at) else {
             return Verdict::Free;
@@ -229,7 +232,7 @@ fn judge(
             }
         };
         for y in next {
-            if reach.iter().any(|r| same(r, &y)) {
+            if !seen.insert(y.to_ascii_uppercase()) {
                 continue;
             }
             if let Some(a) = taken(adapters, &y) {
@@ -330,9 +333,11 @@ pub fn check(entries: &[DeviceEntry], d: &dyn Devices) -> Vec<Problem> {
 }
 
 /// The instance paths `apply` disables: every device that is there and not
-/// off, an unreadable one too (the disable says why it fails), each only
-/// when the guard finds it off every network path; nothing without the
-/// NIC's path.
+/// off, each only when the guard finds it off every network path; nothing
+/// without the NIC's path. A device whose state is unread goes through the
+/// guard too: planned only when its parents and what stops with it are
+/// read (then the disable says why it fails); on Windows a device that
+/// cannot be located has no parents read either, so it stays alone.
 pub fn plan(entries: &[DeviceEntry], d: &dyn Devices) -> Vec<String> {
     let chain = d.nic_chain();
     if chain.is_empty() {

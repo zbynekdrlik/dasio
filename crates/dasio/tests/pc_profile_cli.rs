@@ -283,34 +283,33 @@ fn check_reads_a_device_through_the_configuration_manager_and_plan_names_the_dis
     // dasio#181: the real reader, with the runner's adapter as the Dante
     // NIC (without its device path nothing is checked). Read only: --plan
     // disables nothing.
-    use dasio::pc_profile::{Devices, parse, windows::Pc};
+    use dasio::pc_profile::{Action, Devices, parse, plan, windows::Pc};
     let (guid, _) = runner_nic();
     let missing = r"ROOT\DASIO_CI_NONE\0000";
     let entry = device_entry;
     let head = format!("name = \"ci\"\nnic_guid = \"{guid}\"\n");
-    let probe = Pc::new(&parse(&format!("{head}{}", entry(missing, "missing"))).unwrap());
-    let chain = probe.nic_chain();
+    // A device the guard leaves free (dasio#181 refuses every one that can
+    // cut a network path), as the library plans it; never KDNIC, which
+    // another test disables meanwhile.
+    let candidates: String = running_root_devices()
+        .iter()
+        .filter(|id| !id.eq_ignore_ascii_case(KDNIC))
+        .enumerate()
+        .map(|(i, id)| entry(id, &format!("c{i}")))
+        .collect();
+    let probe_profile = parse(&format!("{head}{candidates}")).unwrap();
+    let probe = Pc::new(&probe_profile);
     assert!(
-        !chain.is_empty(),
+        !probe.nic_chain().is_empty(),
         "the runner's adapter {guid}: no device path"
     );
-    // A device off every network path (dasio#181's guard refuses the
-    // rest), never KDNIC, which another test disables meanwhile.
-    let adapters = probe.net_adapters().unwrap();
-    let on_a_path = |id: &str| {
-        chain
-            .iter()
-            .chain(
-                adapters
-                    .iter()
-                    .flat_map(|a| std::iter::once(&a.id).chain(&a.parents)),
-            )
-            .any(|c| c.eq_ignore_ascii_case(id))
-    };
-    let running = running_root_devices()
+    let running = plan(&probe_profile, &probe)
         .into_iter()
-        .find(|id| !id.eq_ignore_ascii_case(KDNIC) && !on_a_path(id))
-        .unwrap_or_else(|| panic!("every running ROOT device is on a network path {adapters:?}"));
+        .find_map(|a| match a {
+            Action::Disable(id) => Some(id),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the guard frees no running ROOT device: {candidates}"));
     let (dir, file) = profile(
         "device",
         &format!(
@@ -465,19 +464,21 @@ fn every_present_network_adapter_is_read_with_its_parents() {
     for a in &adapters {
         assert_eq!(a.parents.last().map(String::as_str), Some(ROOT), "{a:?}");
     }
-    // The runner's adapter that is up: its parents as `parents` reads
-    // them, the first one Windows' DEVPKEY_Device_Parent.
+    // The runner's adapter that is up: its parents, nearest first, as
+    // Windows gives each one's DEVPKEY_Device_Parent up to the root.
     let (_, pnp) = runner_nic();
     let nic = adapters
         .iter()
         .find(|a| a.id.eq_ignore_ascii_case(&pnp))
         .unwrap_or_else(|| panic!("{pnp} is not among {adapters:?}"));
-    assert_eq!(pc.parents(&pnp).unwrap(), nic.parents);
-    let parent = ps(&format!(
-        "(Get-PnpDeviceProperty -InstanceId {} -KeyName DEVPKEY_Device_Parent).Data",
+    let windows = ps(&format!(
+        "$id = {}; foreach ($i in 1..64) {{ $id = (Get-PnpDeviceProperty -InstanceId $id -KeyName DEVPKEY_Device_Parent).Data; if (-not $id) {{ break }}; $id }}",
         quoted(&pnp)
     ));
-    assert_eq!(id_set(&parent), id_set(&nic.parents[..1]), "{nic:?}");
+    let upper =
+        |v: &[String]| -> Vec<String> { v.iter().map(|s| s.to_ascii_uppercase()).collect() };
+    assert_eq!(upper(&nic.parents), upper(&windows), "{nic:?}");
+    assert_eq!(pc.parents(&pnp).unwrap(), nic.parents);
 }
 
 #[test]
