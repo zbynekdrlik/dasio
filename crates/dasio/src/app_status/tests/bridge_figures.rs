@@ -99,6 +99,10 @@ fn a_bridge_json_with_every_figure_is_one_object_within_dstack_s_cap() {
             }),
         }),
         from_asio_pull: Some(pull(u64::MAX, u64::MAX, u64::MAX, u64::MAX)),
+        driver_input_latency_frames: u32::MAX,
+        driver_output_latency_frames: u32::MAX,
+        to_asio_target_ns: u64::MAX,
+        from_asio_target_ns: u64::MAX,
         ..bridge_running()
     };
     let j = bridge_json(&full);
@@ -111,6 +115,8 @@ fn a_bridge_json_with_every_figure_is_one_object_within_dstack_s_cap() {
         "\"late_2000us\":18446744073709551615",
         "\"to_asio_converter_delay_us\":1333",
         "\"from_asio_converter_delay_us\":1333",
+        "\"bridge_asio_to_dante_us\":",
+        "\"bridge_dante_to_asio_us\":",
     ] {
         assert!(j.contains(key), "{key} missing in {j}");
     }

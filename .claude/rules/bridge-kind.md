@@ -177,3 +177,15 @@ paths:
   read since the device's start, so it also shows whether dcontroller reads
   (dsg 17.11.2026 23:49Z: sequence 200 after 15 min, values equal to the
   counts line).
+- The bridge's delay each way (dasio#187, owner 18.11.2026: one plain
+  number per direction): `app_status::delays` = ASIO card -> Dante NIC: the
+  driver's input latency (frames at its rate) + the from-ASIO hold (the
+  measured block age, else the target) + the converter; Dante NIC -> ASIO
+  card: the to-ASIO hold (the measured read wait, else the target) + the
+  converter + the driver's output latency. Shown in dtray's line as
+  "<card> → Dante 7.3 ms · Dante → <card> 7.7 ms" (`side_name` drops
+  " ASIO" / " ASIO Driver") and served as `bridge_asio_to_dante_us` /
+  `bridge_dante_to_asio_us` in the status JSON; only while the driver runs
+  and has told its latencies. The driver's latencies are what it declares,
+  not measured on the wire. dcontroller shows them once dstack's figures
+  carry them (dcontroller#117).
