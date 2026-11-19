@@ -20,7 +20,8 @@
 //!   by dasio's keeper (`dasio pc-profile keep`, [`keep`],
 //!   dasio#185, what Process Lasso did), and its integrity level (a DAW at
 //!   medium, not elevated: dasio#128, checked only); skipped while the
-//!   process does not run.
+//!   process does not run. `others_affinity` is Lasso's `*` rule: the
+//!   affinity of every process no entry names, held by the keeper too.
 //! - `[[disk]]`: a floor of free space on a drive, so a filling disk shows
 //!   as a problem before it hurts (FOH's C: had 26.5 GB left, owner
 //!   9.11.2026, dasio#1); checked only, never applied.
@@ -126,6 +127,13 @@ pub struct Profile {
     /// Process Lasso dasio's keeper replaced).
     #[serde(default)]
     pub no_ini: Vec<String>,
+    /// The affinity of every running process no `[[process]]` entry names
+    /// (dasio#185, Process Lasso's `*` rule): a hex mask or a layout
+    /// placeholder, as a process entry's `affinity`. The keeper sets it on
+    /// a process still on every CPU, never on one that set its own
+    /// ([`keep::catch_all_takes`], [`keep::others_wanted`]).
+    #[serde(default)]
+    pub others_affinity: Option<String>,
 }
 
 impl Profile {
@@ -140,6 +148,7 @@ impl Profile {
             + self.absent.len()
             + self.nic_driver.len()
             + self.device.len()
+            + usize::from(self.others_affinity.is_some())
     }
 }
 
@@ -304,6 +313,10 @@ pub trait Reader {
     fn nic_hardware_ids(&self) -> Vec<String>;
     /// The PC's devices, for `[[device]]` ([`device`]).
     fn devices(&self) -> &dyn Devices;
+    /// Every running process the keeper could open to set, with the PC's
+    /// CPUs, for `others_affinity` ([`keep::others_problem`], dasio#185);
+    /// read only for a profile naming it.
+    fn processes(&self) -> Result<keep::Processes, String>;
 }
 
 /// Whether `e` applies on the PC `r` reads: an entry for one NIC driver
@@ -472,6 +485,16 @@ fn parse_with(text: &str, need_nic_guid: bool) -> Result<Profile, String> {
                     e.exe
                 ));
             }
+        }
+    }
+    if let Some(a) = &p.others_affinity {
+        if !layout::affinity_ok(a) {
+            return Err(format!(
+                "others_affinity {a} is not a hex mask, {{system}}, {{dasio:N}} or {{daw}}"
+            ));
+        }
+        if parse_mask(a) == Some(0) {
+            return Err(format!("others_affinity {a} names no CPU"));
         }
     }
     for d in &p.disk {
@@ -678,6 +701,7 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
         });
     }
     process::problems(p, r, &mut out);
+    out.extend(keep::others_problem(p, r, std::process::id()));
     for e in &p.disk {
         // The text stays the same while the drive stays under its floor:
         // the service logs a problem again only when its text changes, so

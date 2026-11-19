@@ -1,17 +1,29 @@
 //! The process keeper's Windows glue (dasio#185): one pass over the
 //! process list, setting what [`keep::wanted`](super::super::keep::wanted)
-//! says. Toolhelp and process handles only: no child process. I/O, memory
-//! and GPU priority and the boost are [`extras`](super::extras).
+//! says for each `[[process]]` entry and what
+//! [`keep::others_wanted`](super::super::keep::others_wanted) says for the
+//! rest (`others_affinity`). Toolhelp and process handles only: no child
+//! process. I/O, memory and GPU priority and the boost are
+//! [`extras`](super::extras).
 
-use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, GetLastError, HANDLE};
+use std::collections::HashSet;
+
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_ACCESS_DENIED, FILETIME, GetLastError, HANDLE,
+};
+use windows_sys::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
 use windows_sys::Win32::System::Threading::{
-    ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, GetPriorityClass,
-    GetProcessAffinityMask, HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
-    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
-    QueryFullProcessImageNameW, REALTIME_PRIORITY_CLASS, SetPriorityClass, SetProcessAffinityMask,
+    ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, GetPriorityClass,
+    GetProcessAffinityMask, GetProcessTimes, HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS,
+    NORMAL_PRIORITY_CLASS, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_SET_INFORMATION, QueryFullProcessImageNameW, REALTIME_PRIORITY_CLASS, SetPriorityClass,
+    SetProcessAffinityMask,
 };
 
-use super::super::keep::{Fights, Note, Set, gave_up_line, held, line, mask_outside, wanted};
+use super::super::keep::{
+    Fights, Note, Processes, Seen, Set, age_ms, catch_all_takes, gave_up_line, held, line,
+    mask_outside, others, others_line, others_wanted, wanted,
+};
 use super::super::{ProcEntry, ProcState, Profile};
 use super::{extras, from_wide};
 
@@ -39,6 +51,26 @@ fn name(class: u32) -> &'static str {
         REALTIME_PRIORITY_CLASS => "realtime",
         _ => "unknown",
     }
+}
+
+/// A FILETIME as one count of 100 ns units.
+fn ticks(t: &FILETIME) -> u64 {
+    crate::cpu_snap::filetime(t.dwHighDateTime, t.dwLowDateTime)
+}
+
+/// A zero FILETIME, to be written by a call.
+const ZERO: FILETIME = FILETIME {
+    dwLowDateTime: 0,
+    dwHighDateTime: 0,
+};
+
+/// Every CPU of the PC (the system affinity mask, read through this
+/// process); `None` when unreadable.
+pub fn system_mask() -> Option<u64> {
+    let (mut mask, mut system) = (0usize, 0usize);
+    // SAFETY: this process's pseudo-handle and two writable masks.
+    let ok = unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut mask, &mut system) } != 0;
+    ok.then_some(system as u64)
 }
 
 /// One process, opened once: its image checked, read and set through the
@@ -97,32 +129,49 @@ impl Proc {
             .is_some_and(|f| f.eq_ignore_ascii_case(exe))
     }
 
-    /// Its affinity and priority, and what else `e` names through `x`
-    /// (its own handle), with the PC's CPUs.
-    fn state(&self, x: Option<&extras::Handle>, e: &ProcEntry) -> Option<(ProcState, u64)> {
+    /// Its affinity and the PC's CPUs.
+    fn affinity(&self) -> Option<(u64, u64)> {
         let (mut mask, mut system) = (0usize, 0usize);
         // SAFETY: a valid handle and two writable masks.
         let ok = unsafe { GetProcessAffinityMask(self.0, &mut mask, &mut system) } != 0;
+        ok.then_some((mask as u64, system as u64))
+    }
+
+    /// When it started, in 100 ns units since 1601 (FILETIME).
+    fn created(&self) -> Option<u64> {
+        let (mut created, mut exited, mut kernel, mut user) = (ZERO, ZERO, ZERO, ZERO);
+        // SAFETY: a valid handle (a limited query is enough) and four
+        // writable FILETIMEs.
+        let ok =
+            unsafe { GetProcessTimes(self.0, &mut created, &mut exited, &mut kernel, &mut user) }
+                != 0;
+        ok.then(|| ticks(&created))
+    }
+
+    /// Its affinity and priority, and what else `e` names through `x`
+    /// (its own handle), with the PC's CPUs.
+    fn state(&self, x: Option<&extras::Handle>, e: &ProcEntry) -> Option<(ProcState, u64)> {
+        let (mask, system) = self.affinity()?;
         // SAFETY: a valid handle.
         let class = unsafe { GetPriorityClass(self.0) };
-        (ok && class != 0).then(|| {
+        (class != 0).then(|| {
             (
                 ProcState {
-                    affinity: mask as u64,
+                    affinity: mask,
                     priority: name(class).to_string(),
                     integrity: Err("not read by the keeper".into()),
                     extra: extras::read(x, e),
                 },
-                system as u64,
+                system,
             )
         })
     }
 
     /// Sets `set`: the affinity first (a mask naming a CPU the PC does not
-    /// have is refused), the priority only after it, read back (realtime
-    /// without the privilege becomes high), then I/O, memory and GPU
-    /// priority and the boost through `x`, each read back. Returns what it
-    /// set, and why the rest was not.
+    /// have is refused), read back, the priority only after it, read back
+    /// (realtime without the privilege becomes high), then I/O, memory and
+    /// GPU priority and the boost through `x`, each read back. Returns what
+    /// it set, and why the rest was not.
     fn set(&self, x: Option<&extras::Handle>, set: &Set, system: u64) -> (Set, Option<String>) {
         let mut done = Set::default();
         if let Some(m) = set.affinity {
@@ -133,6 +182,16 @@ impl Proc {
             if unsafe { SetProcessAffinityMask(self.0, m as usize) } == 0 {
                 let e = std::io::Error::last_os_error();
                 return (done, Some(format!("affinity 0x{m:X}: {e}")));
+            }
+            match self.affinity() {
+                Some((now, _)) if now == m => {}
+                Some((now, _)) => {
+                    return (
+                        done,
+                        Some(format!("affinity 0x{m:X} reads back as 0x{now:X}")),
+                    );
+                }
+                None => return (done, Some(format!("affinity 0x{m:X} does not read back"))),
             }
             done.affinity = Some(m);
         }
@@ -159,72 +218,180 @@ impl Proc {
     }
 }
 
-/// One pass at `now_ms`: every held entry's running processes get what
-/// differs. Returns the log lines: each change (also a partial one beside
-/// a failure), each process given up ([`Fights`]) and each new failure
-/// (once per process and error in `failed`; a list error once until a
-/// list read works).
+/// One pass's bookkeeping: the lines it logs, the processes it saw (for
+/// [`Fights`] and the failures said once), shared by the entries and the
+/// catch-all.
+struct Pass<'a> {
+    fights: &'a mut Fights,
+    failed: &'a mut HashSet<(u32, String)>,
+    lines: Vec<String>,
+    alive: Vec<u32>,
+    now_ms: u64,
+}
+
+impl Pass<'_> {
+    /// `pid`, opened to be kept as `exe`: `None` when the keeper gave it
+    /// up, it is gone, it refuses the open (said once) or its image is
+    /// another one now (a reused id).
+    fn open(&mut self, pid: u32, exe: &str) -> Option<Proc> {
+        self.alive.push(pid);
+        if self.fights.gave_up(pid) {
+            return None;
+        }
+        let h = match Proc::open(pid) {
+            Ok(h) => h,
+            Err(NotOpened::Gone) => return None,
+            Err(NotOpened::Denied) => {
+                let why = "cannot open it to set it (access denied: a protected process)";
+                if self.failed.insert((pid, why.to_string())) {
+                    self.lines
+                        .push(format!("could not keep {exe} (pid {pid}): {why}"));
+                }
+                return None;
+            }
+        };
+        // The pid stays this process while `h` is open.
+        h.image_is(exe).then_some(h)
+    }
+
+    /// What was set on `pid` (`changed`, its log line), logged and counted
+    /// toward a fight, also beside a failure; a failure logged once per
+    /// process and error.
+    fn record(&mut self, exe: &str, pid: u32, changed: Option<String>, err: Option<String>) {
+        if let Some(l) = changed {
+            self.lines.push(l);
+            if self.fights.note(pid, self.now_ms) == Note::GiveUp {
+                self.lines.push(gave_up_line(exe, pid));
+            }
+        }
+        if let Some(err) = err
+            && self.failed.insert((pid, err.clone()))
+        {
+            self.lines
+                .push(format!("could not keep {exe} (pid {pid}): {err}"));
+        }
+    }
+}
+
+/// One pass at `now_ms` over the running processes ([`pass_over`]).
+/// Returns the log lines; a list error once until a list read works.
 pub fn pass(
     p: &Profile,
     fights: &mut Fights,
-    failed: &mut std::collections::HashSet<(u32, String)>,
+    failed: &mut HashSet<(u32, String)>,
     now_ms: u64,
 ) -> Vec<String> {
-    let mut lines = Vec::new();
-    let procs = match super::snapshot() {
-        Ok(procs) => procs,
+    match super::snapshot() {
+        Ok(procs) => pass_over(p, &procs, fights, failed, now_ms),
+        // Process id 0 is never a held one: the list error's key.
         Err(e) => {
-            // Process id 0 is never a held one: the list error's key.
             if failed.insert((0, e.clone())) {
-                lines.push(e);
+                vec![e]
+            } else {
+                Vec::new()
             }
-            return lines;
         }
+    }
+}
+
+/// One pass at `now_ms` over `procs` (id and exe file name, as the process
+/// list gives them): every held entry's processes get what differs; then,
+/// with `others_affinity`, every process the catch-all takes that still
+/// runs on every CPU gets that affinity, read back. Returns the log lines:
+/// each change (also a partial one beside a failure), each process given
+/// up ([`Fights`]) and each new failure (once per process and error in
+/// `failed`).
+pub fn pass_over(
+    p: &Profile,
+    procs: &[(u32, String)],
+    fights: &mut Fights,
+    failed: &mut HashSet<(u32, String)>,
+    now_ms: u64,
+) -> Vec<String> {
+    let mut k = Pass {
+        fights,
+        failed,
+        lines: Vec::new(),
+        alive: Vec::new(),
+        now_ms,
     };
-    let mut alive = Vec::new();
     for e in held(p) {
         for (pid, _) in procs.iter().filter(|(_, n)| n.eq_ignore_ascii_case(&e.exe)) {
-            let pid = *pid;
-            alive.push(pid);
-            if fights.gave_up(pid) {
+            let Some(h) = k.open(*pid, &e.exe) else {
                 continue;
-            }
-            let h = match Proc::open(pid) {
-                Ok(h) => h,
-                Err(NotOpened::Gone) => continue,
-                Err(NotOpened::Denied) => {
-                    let why = "cannot open it to set it (access denied: a protected process)";
-                    if failed.insert((pid, why.to_string())) {
-                        lines.push(format!("could not keep {} (pid {pid}): {why}", e.exe));
-                    }
-                    continue;
-                }
             };
-            if !h.image_is(&e.exe) {
-                continue;
-            }
-            // The pid stays this process while `h` is open.
-            let x = extras::open(pid, e, true);
+            let x = extras::open(*pid, e, true);
             let Some((s, system)) = h.state(x.as_ref(), e) else {
                 continue;
             };
             let Some(set) = wanted(e, &s) else { continue };
             let (done, err) = h.set(x.as_ref(), &set, system);
-            // What was set is logged and counted, also beside a failure.
-            if !done.is_empty() {
-                lines.push(line(&e.exe, pid, &s, &done));
-                if fights.note(pid, now_ms) == Note::GiveUp {
-                    lines.push(gave_up_line(&e.exe, pid));
-                }
-            }
-            if let Some(err) = err
-                && failed.insert((pid, err.clone()))
-            {
-                lines.push(format!("could not keep {} (pid {pid}): {err}", e.exe));
-            }
+            let changed = (!done.is_empty()).then(|| line(&e.exe, *pid, &s, &done));
+            k.record(&e.exe, *pid, changed, err);
         }
     }
+    // A mask naming a CPU the PC lacks is said once, at the profile load
+    // (`keep::others_loaded`), never once per process.
+    if let Some(want) = system_mask().and_then(|s| others(p, s).ok().flatten()) {
+        let own = std::process::id();
+        for (pid, exe) in procs
+            .iter()
+            .filter(|(pid, exe)| catch_all_takes(p, exe, *pid, own))
+        {
+            let Some(h) = k.open(*pid, exe) else { continue };
+            let Some((found, system)) = h.affinity() else {
+                continue;
+            };
+            let Some(m) = others_wanted(want, found, system) else {
+                continue;
+            };
+            let only = Set {
+                affinity: Some(m),
+                ..Set::default()
+            };
+            let (done, err) = h.set(None, &only, system);
+            let changed = done.affinity.map(|to| others_line(exe, *pid, found, to));
+            k.record(exe, *pid, changed, err);
+        }
+    }
+    let Pass {
+        fights,
+        failed,
+        lines,
+        alive,
+        ..
+    } = k;
     fights.keep_only(&alive);
     failed.retain(|(pid, _)| alive.contains(pid));
     lines
+}
+
+/// Every running process the keeper could open to set, with the PC's
+/// CPUs: the profile check's read for `others_affinity`
+/// ([`keep::others_problem`](super::super::keep::others_problem)). Opened
+/// with the keeper's own rights, so a process it cannot hold is not
+/// counted.
+pub fn processes() -> Result<Processes, String> {
+    let system = system_mask().ok_or("the PC's CPUs are unreadable")?;
+    let mut now = ZERO;
+    // SAFETY: one writable FILETIME.
+    unsafe { GetSystemTimeAsFileTime(&mut now) };
+    let now = ticks(&now);
+    let mut list = Vec::new();
+    for (pid, exe) in super::snapshot()? {
+        let Ok(h) = Proc::open(pid) else { continue };
+        if !h.image_is(&exe) {
+            continue;
+        }
+        let (Some((affinity, _)), Some(created)) = (h.affinity(), h.created()) else {
+            continue;
+        };
+        list.push(Seen {
+            pid,
+            exe,
+            affinity,
+            age_ms: age_ms(created, now),
+        });
+    }
+    Ok(Processes { system, list })
 }
