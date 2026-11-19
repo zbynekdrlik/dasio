@@ -170,6 +170,19 @@ fn two_instance_entries_on_a_common_cpu_share_it() {
             &format!("CPUs 4-7 share 6-7 with {MASTER}")
         )]
     );
+    assert_eq!(
+        shares(&p)[0].want,
+        "one instance's CPUs (dasio:1 4-7), the DAW's beside them"
+    );
+    // Without a computed layout only the other instance's exe counts.
+    let raw = parse(&format!(
+        "name = \"pc\"\n{}{}",
+        entry(BAND, "0xF0"),
+        entry(MASTER, "0x3C0")
+    ))
+    .unwrap();
+    assert_eq!(shares(&raw).len(), 1);
+    assert_eq!(shares(&raw)[0].want, "CPUs no other instance's exe names");
     // Apart, they are fine.
     let apart = on(32, &[entry(BAND, "0xF0"), entry(MASTER, "0xF00")].concat());
     assert!(shares(&apart).is_empty(), "{:?}", lines(&apart));
@@ -184,8 +197,13 @@ fn an_instance_entry_on_two_instances_cpus_is_a_share() {
         found(&p),
         vec![pair(
             &format!("process {BAND} affinity"),
-            "CPUs 4-11 span two instances: 4-7 of dasio:1, 8-11 of dasio:2"
+            "CPUs 4-11 span 2 instances: 4-7 of dasio:1, 8-11 of dasio:2"
         )]
+    );
+    // An instance's entry may name one instance's CPUs and the DAW's.
+    assert_eq!(
+        shares(&p)[0].want,
+        "one instance's CPUs (dasio:1 4-7, dasio:2 8-11), the DAW's beside them"
     );
     // One instance and the DAW's CPUs is fine: dsg's bridge.
     let dsg = on(4, &entry("dasio-dsg.exe", "0xE"));
@@ -372,7 +390,8 @@ fn a_second_instance_on_foh_waits_until_master_live_moves() {
 #[test]
 fn another_instance_s_entry_on_its_cpus_refuses_it() {
     // Band spread over 4-11 before the second instance comes: instance 2
-    // (master's exe) has no CPUs of its own; band itself keeps its room.
+    // (master's exe) has no CPUs of its own, and band's own entry runs it
+    // on instance 2's CPUs too.
     let p = on(32, &format!("instances = 2\n{}", entry(BAND, "0xFF0")));
     assert_eq!(
         instance_room(&p, 2, MASTER),
@@ -380,7 +399,40 @@ fn another_instance_s_entry_on_its_cpus_refuses_it() {
             "instance 2's CPUs 8-11 are pinned to {BAND} (4-11) too: move them off in the site profile first (several dasio on one PC must not fight, dasio#199)"
         ))
     );
-    assert!(instance_room(&p, 1, BAND).is_ok());
+    assert_eq!(
+        instance_room(&p, 1, BAND),
+        Err(format!(
+            "instance 1's own entry {BAND} runs it on CPUs 4-11, not on its CPUs 4-7 (and the DAW's 12-31): set it to {{dasio:1}} in the site profile first (dasio#199)"
+        ))
+    );
+}
+
+#[test]
+fn the_instance_s_own_entry_must_run_it_on_its_cpus() {
+    let two = |master: &str| on(32, &format!("instances = 2\n{}", entry(MASTER, master)));
+    let refused = |cpus: &str| {
+        format!(
+            "instance 2's own entry {MASTER} runs it on CPUs {cpus}, not on its CPUs 8-11 (and the DAW's 12-31): set it to {{dasio:2}} in the site profile first (dasio#199)"
+        )
+    };
+    // On band's CPUs (none of its own, none of the DAW's).
+    assert_eq!(instance_room(&two("0xF0"), 2, MASTER), Err(refused("4-7")));
+    // Its own and band's.
+    assert_eq!(
+        instance_room(&two("0xFF0"), 2, MASTER),
+        Err(refused("4-11"))
+    );
+    // The DAW's alone: none of its own.
+    assert_eq!(
+        instance_room(&two("0xF000"), 2, MASTER),
+        Err(refused("12-15"))
+    );
+    // Its own, and its own with the DAW's beside them: fine.
+    assert!(instance_room(&two("0xF00"), 2, MASTER).is_ok());
+    assert!(instance_room(&two("0xFF00"), 2, MASTER).is_ok());
+    // dsg's bridge on 1-3 (its own 1-2 and the DAW's 3).
+    let dsg = on(4, &entry("dasio-dsg.exe", "0xE"));
+    assert!(instance_room(&dsg, 1, "dasio-dsg.exe").is_ok());
 }
 
 #[test]

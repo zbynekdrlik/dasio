@@ -283,8 +283,10 @@ pub fn instance_exe(exe: &str) -> bool {
 /// was loaded for (dasio#199), before install.ps1 touches anything: the
 /// layout must hold it (`instances` at least `n`, its CPUs on the PC) and
 /// no `[[process]]` entry but `exe`'s own, another instance's exe
-/// included, nor `others_affinity`, may name its CPUs. The line says which
-/// CPUs are its own, or what to change first.
+/// included, nor `others_affinity`, may name its CPUs; its own entry, when
+/// there is one, must run it on some of its CPUs and nothing but them and
+/// the DAW's. The line says which CPUs are its own, or what to change
+/// first.
 pub fn instance_room(p: &Profile, n: usize, exe: &str) -> Result<String, String> {
     let l = p
         .layout
@@ -321,6 +323,27 @@ pub fn instance_room(p: &Profile, n: usize, exe: &str) -> Result<String, String>
             cpus(own),
             takers.join(", ")
         ));
+    }
+    // The instance's own entry, when the profile has one, must run it on
+    // its CPUs: on some of them, and on nothing but them and the DAW's (a
+    // bridge is its own DAW: dsg's 1-3).
+    let daw = l.daw_mask().unwrap_or(0);
+    let mine = p
+        .process
+        .iter()
+        .filter(|e| e.exe.eq_ignore_ascii_case(exe))
+        .filter_map(|e| parse_mask(e.affinity.as_deref()?));
+    for m in mine {
+        // `!own & !daw`, never `!(own | daw)`: the two never overlap, so
+        // `|` there would have an equivalent `^` mutant.
+        if m & own == 0 || m & !own & !daw != 0 {
+            return Err(format!(
+                "instance {n}'s own entry {exe} runs it on CPUs {}, not on its CPUs {} (and the DAW's {}): set it to {{dasio:{n}}} in the site profile first (dasio#199)",
+                cpus(m),
+                cpus(own),
+                cpus(daw)
+            ));
+        }
     }
     Ok(format!(
         "instance {n} ({exe}): CPUs {} are its own ({})",
@@ -369,10 +392,24 @@ pub fn shares(p: &Profile) -> Vec<super::Problem> {
         .map(|(o, m)| format!("{o} {}", cpus(*m)))
         .collect();
     let want = format!("none of dasio's CPUs ({})", list.join(", "));
-    let problem = |what: String, found: String| super::Problem {
+    // What an instance's own entry may name: one instance's CPUs (and the
+    // DAW's beside them), never another instance exe's.
+    let instances: Vec<String> = layout
+        .iter()
+        .map(|(o, m)| format!("{o} {}", cpus(*m)))
+        .collect();
+    let own_want = if instances.is_empty() {
+        "CPUs no other instance's exe names".to_string()
+    } else {
+        format!(
+            "one instance's CPUs ({}), the DAW's beside them",
+            instances.join(", ")
+        )
+    };
+    let problem = |what: String, found: String, want: &str| super::Problem {
         what,
         found,
-        want: want.clone(),
+        want: want.to_string(),
         why: SHARE_WHY.into(),
         must: false,
     };
@@ -393,6 +430,7 @@ pub fn shares(p: &Profile) -> Vec<super::Problem> {
             out.push(problem(
                 what,
                 format!("CPUs {} share {}", cpus(mask), hits.join(", ")),
+                &want,
             ));
         }
     };
@@ -410,6 +448,7 @@ pub fn shares(p: &Profile) -> Vec<super::Problem> {
                 out.push(problem(
                     format!("process {a} affinity"),
                     format!("CPUs {} share {} with {b}", cpus(*ma), cpus(ma & mb)),
+                    &own_want,
                 ));
             }
         }
@@ -422,10 +461,12 @@ pub fn shares(p: &Profile) -> Vec<super::Problem> {
             out.push(problem(
                 format!("process {a} affinity"),
                 format!(
-                    "CPUs {} span two instances: {}",
+                    "CPUs {} span {} instances: {}",
                     cpus(*ma),
+                    spanned.len(),
                     spanned.join(", ")
                 ),
+                &own_want,
             ));
         }
     }
