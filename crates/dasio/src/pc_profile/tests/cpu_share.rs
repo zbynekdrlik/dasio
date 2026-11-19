@@ -430,6 +430,14 @@ fn the_instance_s_own_entry_must_run_it_on_its_cpus() {
     // Its own, and its own with the DAW's beside them: fine.
     assert!(instance_room(&two("0xF00"), 2, MASTER).is_ok());
     assert!(instance_room(&two("0xFF00"), 2, MASTER).is_ok());
+    // A layout with no CPU left for the DAW says so.
+    let full = on(5, &format!("instances = 2\n{}", entry(MASTER, "0x6")));
+    assert_eq!(
+        instance_room(&full, 2, MASTER),
+        Err(format!(
+            "instance 2's own entry {MASTER} runs it on CPUs 1-2, not on its CPUs 3-4 (and the DAW's none): set it to {{dasio:2}} in the site profile first (dasio#199)"
+        ))
+    );
     // dsg's bridge on 1-3 (its own 1-2 and the DAW's 3).
     let dsg = on(4, &entry("dasio-dsg.exe", "0xE"));
     assert!(instance_room(&dsg, 1, "dasio-dsg.exe").is_ok());

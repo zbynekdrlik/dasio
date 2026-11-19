@@ -341,7 +341,11 @@ pub fn instance_room(p: &Profile, n: usize, exe: &str) -> Result<String, String>
                 "instance {n}'s own entry {exe} runs it on CPUs {}, not on its CPUs {} (and the DAW's {}): set it to {{dasio:{n}}} in the site profile first (dasio#199)",
                 cpus(m),
                 cpus(own),
-                cpus(daw)
+                if daw == 0 {
+                    "none".to_string()
+                } else {
+                    cpus(daw)
+                }
             ));
         }
     }
