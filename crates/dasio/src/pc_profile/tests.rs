@@ -386,6 +386,31 @@ fn what_each_change_needs_before_it_takes_effect() {
 }
 
 #[test]
+fn virtualization_based_security_takes_effect_at_a_reboot() {
+    // dasio#201: Windows reads DeviceGuard (VBS, HVCI) only at boot; FOH's
+    // 0.1.142 install said "nothing more" for both.
+    let reg = |key: &str, name: &str| Action::Reg {
+        key: key.into(),
+        name: name.into(),
+        value: Value::Dword(0),
+    };
+    assert_eq!(
+        takes_effect(&reg(
+            r"HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard",
+            "EnableVirtualizationBasedSecurity"
+        )),
+        "a reboot"
+    );
+    assert_eq!(
+        takes_effect(&reg(
+            r"HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity",
+            "Enabled"
+        )),
+        "a reboot"
+    );
+}
+
+#[test]
 fn an_ini_line_is_set_in_place_and_a_missing_one_added() {
     let text = "[A]\r\nX=1\r\nDefaultAffinitiesEx=old\r\nY=2\r\n";
     let set = set_ini(text, "DefaultAffinitiesEx", "new,0,4-7");
