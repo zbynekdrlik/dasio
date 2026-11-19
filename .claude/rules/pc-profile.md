@@ -240,6 +240,11 @@ paths:
   read `powercfg /getactivescheme`. `apply` prints FAILED ("ProcessLasso.exe
   is still there", uninstaller exit 0) while the uninstaller finishes in
   the background: check again a minute later.
+  On a Modern Standby laptop (mbc 19.11.2026) the uninstaller deleted
+  EVERY plan but Balanced, the copy too, and CLEARED `ReservedCpuSets`:
+  `powercfg /export` Lasso's plan first, `/import` it under a NEW GUID
+  after (the deleted copy's GUID is refused), pin that, and set reserved
+  CPUs only after Lasso is gone (a second `apply`).
 - What the keeper does NOT cover yet (before a PC's Lasso goes): Lasso's
   `DefaultPriorities` for exes without a `[[process]]` entry (FOH: dsend,
   dlisten above normal, cg below normal, dvs_service high), its I/O, GPU
