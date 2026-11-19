@@ -511,10 +511,11 @@ fn what_stops_with_a_device_is_its_children_and_its_removal_relations() {
         stops.iter().any(|c| c.eq_ignore_ascii_case(&pnp)),
         "{parent}: {stops:?}"
     );
-    // A device not connected stops nothing.
+    // A node Windows does not know at all is unread, never one that stops
+    // nothing (review of PR #196: the guard then fails closed).
     assert_eq!(
         pc.removes(r"ROOT\DASIO_CI_NONE\0000"),
-        Ok(Vec::<String>::new())
+        Err(r"ROOT\DASIO_CI_NONE\0000: no such device node".to_string())
     );
 }
 
