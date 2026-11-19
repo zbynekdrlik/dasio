@@ -279,6 +279,10 @@ impl Reader for Pc {
         proc_state(find_process(&e.exe)?, e)
     }
 
+    fn processes(&self) -> Result<super::keep::Processes, String> {
+        keep::processes()
+    }
+
     fn free_bytes(&self, drive: &str) -> Result<u64, String> {
         let root = wide(&format!("{drive}\\"));
         let mut free = 0u64;
