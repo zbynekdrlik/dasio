@@ -212,7 +212,8 @@ fn mask_hex(mask: u64) -> String {
 
 /// `p` with its computed values put in, for a PC of `cpus` logical CPUs:
 /// each `computed` registry entry gets its value, each placeholder
-/// affinity its hex mask. The error names an entry the layout cannot fill.
+/// affinity (a process entry's, `others_affinity`) its hex mask. The error
+/// names an entry the layout cannot fill.
 pub fn resolve(p: &mut Profile, cpus: usize) -> Result<(), String> {
     let layout = Layout::of(cpus, p.instances.unwrap_or(1));
     for e in &mut p.registry {
@@ -238,6 +239,12 @@ pub fn resolve(p: &mut Profile, cpus: usize) -> Result<(), String> {
             let mask = mask.map_err(|err| format!("process {}: {err}", e.exe))?;
             e.affinity = Some(format!("0x{mask:X}"));
         }
+    }
+    if let Some(a) = &p.others_affinity
+        && let Some(mask) = layout.placeholder(a)
+    {
+        let mask = mask.map_err(|err| format!("others_affinity: {err}"))?;
+        p.others_affinity = Some(format!("0x{mask:X}"));
     }
     Ok(())
 }

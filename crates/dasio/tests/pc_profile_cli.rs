@@ -789,3 +789,139 @@ fn the_keeper_gives_a_running_process_its_io_memory_and_gpu_priority_and_boost()
     // Held already: the second pass sets and logs nothing.
     assert_eq!(again, Vec::<String>::new());
 }
+
+/// A PowerShell that waits a minute: a process of the runner that no other
+/// test's keeper pass touches (those name ping.exe only).
+fn sleeper() -> std::process::Child {
+    Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Start-Sleep -Seconds 60",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap()
+}
+
+#[test]
+fn the_keeper_gives_every_other_process_the_catch_all_unless_it_set_its_own() {
+    // dasio#185: Process Lasso's `*` rule. Two processes of the runner,
+    // started here: one on every CPU gets `others_affinity` in one pass,
+    // one the test pinned itself is left alone, and a second pass sets and
+    // logs nothing. The pass goes over these two only (`pass_over`): over
+    // the whole list it would pin every process of the runner, the other
+    // tests' too.
+    use dasio::pc_profile::{
+        Reader,
+        keep::Fights,
+        parse, resolve,
+        windows::{Pc, cpu_count, keep::pass_over},
+    };
+    use std::os::windows::io::AsRawHandle;
+    let cpus = cpu_count().unwrap();
+    let mut p = parse("name = \"ci\"\nothers_affinity = \"{system}\"\n").unwrap();
+    resolve(&mut p, cpus).unwrap();
+    let want = Layout::of(cpus, 1).system_mask();
+    // The catch-all must be fewer CPUs than the runner's, and the last CPU
+    // outside it: a runner too small for that fails here, by name.
+    let every = if cpus >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << cpus) - 1
+    };
+    assert!(
+        want != every && want & (1u64 << (cpus - 1)) == 0,
+        "the runner's {cpus} CPUs leave no CPU outside the system mask 0x{want:X}"
+    );
+    assert_eq!(p.others_affinity, Some(format!("0x{want:X}")));
+    // The last CPU: never a system CPU (they come first), never every CPU.
+    let pinned = 1u64 << (cpus - 1);
+    let mut free = sleeper();
+    let mut own = sleeper();
+    // SAFETY: the child's own process handle (all access) and a mask of
+    // one of the runner's CPUs.
+    let ok = unsafe {
+        windows_sys::Win32::System::Threading::SetProcessAffinityMask(
+            own.as_raw_handle(),
+            pinned as usize,
+        )
+    };
+    assert_ne!(ok, 0, "{}", std::io::Error::last_os_error());
+    let pc = Pc::new(&p);
+    let read = |pid: u32| {
+        let all = pc.processes().expect("the process list reads");
+        let me = all.list.iter().find(|s| s.pid == pid).map(|s| s.affinity);
+        (me, all.system)
+    };
+    let (free_before, all) = read(free.id());
+    let (own_before, _) = read(own.id());
+    let procs = [
+        (free.id(), "powershell.exe".to_string()),
+        (own.id(), "powershell.exe".to_string()),
+    ];
+    let mut fights = Fights::default();
+    let mut failed = std::collections::HashSet::new();
+    let lines = pass_over(&p, &procs, &mut fights, &mut failed, 0);
+    let again = pass_over(&p, &procs, &mut fights, &mut failed, 2_000);
+    let (free_after, _) = read(free.id());
+    let (own_after, _) = read(own.id());
+    for c in [&mut free, &mut own] {
+        c.kill().unwrap();
+        c.wait().unwrap();
+    }
+    assert_eq!(
+        free_before,
+        Some(all),
+        "a process started here runs on every CPU"
+    );
+    assert_eq!(own_before, Some(pinned));
+    assert_eq!(
+        lines,
+        [format!(
+            "kept powershell.exe (pid {}): affinity 0x{all:X} -> 0x{want:X} (others_affinity)",
+            free.id()
+        )]
+    );
+    assert_eq!(free_after, Some(want));
+    assert_eq!(
+        own_after,
+        Some(pinned),
+        "a process with its own affinity is left alone"
+    );
+    // Held already: the second pass sets and logs nothing.
+    assert_eq!(again, Vec::<String>::new());
+    assert!(failed.is_empty(), "{failed:?}");
+}
+
+#[test]
+fn check_names_the_processes_the_catch_all_does_not_hold_in_one_line() {
+    // dasio#185: the runner's processes run on every CPU (no keeper runs
+    // there): `check` reads them with the keeper's own rights and says so
+    // in ONE problem, never one per process.
+    let (dir, file) = profile("others", "name = \"ci\"\nothers_affinity = \"{system}\"\n");
+    let out = Command::new(exe())
+        .args(["pc-profile", "check", "--profile"])
+        .arg(&file)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    let cpus = dasio::pc_profile::windows::cpu_count().unwrap();
+    let want = Layout::of(cpus, 1).system_mask();
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("PROBLEM others_affinity"))
+        .collect();
+    assert_eq!(lines.len(), 1, "{text}");
+    assert!(
+        lines[0].starts_with("PROBLEM others_affinity: not held: "),
+        "{text}"
+    );
+    assert!(
+        lines[0].contains(&format!("(the profile wants 0x{want:X})")),
+        "{text}"
+    );
+}

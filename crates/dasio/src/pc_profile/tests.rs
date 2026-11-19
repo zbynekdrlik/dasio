@@ -10,6 +10,7 @@ mod fold;
 mod hold;
 mod keep;
 mod keep_extras;
+mod keep_others;
 mod layout;
 mod must;
 mod nic_driver_kind;
@@ -46,6 +47,12 @@ struct Pc {
     hardware_ids: Vec<String>,
     /// The PC's devices, for `[[device]]`.
     dev: device_kind::Fake,
+    /// The running processes, for `others_affinity`; `processes()` fails
+    /// with `processes_err`.
+    running: super::keep::Processes,
+    processes_err: Option<String>,
+    /// How often `processes()` was called.
+    processes_reads: std::cell::Cell<u32>,
 }
 
 impl Reader for Pc {
@@ -112,6 +119,13 @@ impl Reader for Pc {
         match &self.bcd_err {
             Some(e) => Err(e.clone()),
             None => Ok(self.bcd.clone()),
+        }
+    }
+    fn processes(&self) -> Result<super::keep::Processes, String> {
+        self.processes_reads.set(self.processes_reads.get() + 1);
+        match &self.processes_err {
+            Some(e) => Err(e.clone()),
+            None => Ok(self.running.clone()),
         }
     }
 }

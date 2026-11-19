@@ -142,6 +142,13 @@ paths:
   other bits, only at boot): dsg's 16 move to `[[device]]` at its next
   deploy. Read a PC's devices with `Get-PnpDevice` (InstanceId, Status,
   Problem) before writing entries.
+- **Never reserve the DAW's CPUs on a PC with 2 system CPUs** (mbc
+  19.11.2026): ReservedCpuSets confines KERNEL threads too, unlike Lasso's
+  catch-all (user processes only). mbc with 2-11 reserved ran its USB NIC's
+  work on CPUs 0-1 only: CPU0 79 %, System 71 % of a CPU, kernel TX
+  max_out 200, RX packets late and missing at stream-obs. Reverted to the
+  baseline's dasio CPUs (2-3); keeping other processes off the DAW's CPUs
+  is the keeper's job: the site profile's `others_affinity` (#185, below).
 - **Reserved CPUs** (dasio#120): the baseline's `ReservedCpuSets`
   (`Session Manager\kernel`, `computed = "dasio_cpus"`, read at boot) keeps
   every thread off dasio's CPUs unless its process asks (CPU sets) or is
@@ -179,7 +186,10 @@ paths:
   `layout`) is tested through the built exe in `tests/pc_profile_cli.rs`.
   A process check there reads the exe's own process (`dasio.exe`, running
   while it checks); the runner's integrity level is not pinned, so the
-  integrity test asserts exactly one of medium / high holds.
+  integrity test asserts exactly one of medium / high holds. Inside
+  `pc_profile/tests.rs`, `keep::X` is the TEST module `tests/keep.rs`, not
+  `pc_profile::keep`: write `super::keep::X` there (a bare `keep::` broke
+  every test build, #185).
 
 - Every Windows, NIC, driver-parameter or Process Lasso change on a dasio
   PC goes into that PC's profile in the same step. A change that lives only
@@ -216,7 +226,7 @@ paths:
   sets what differs on every running process of the entry's exe, through
   one handle per process (image name checked, so a reused pid is never
   touched), affinity first (a mask naming a CPU the PC lacks is refused)
-  and the priority after it, read back; below normal on the system CPUs,
+  and the priority after it, each read back; below normal on the system CPUs,
   outside the media process. A process something sets back 5 times in
   10 min is given up with one line (the 10-min check shows the rest).
   Log: `C:\ProgramData\dasio\pc-keep.log` (1 MB, then `.log.1`).
@@ -231,6 +241,47 @@ paths:
   `ThreadPriorityBoosts=<exe>;0`). Each is set only when read and
   different, then read back; an unreadable one is the check's problem, not
   a set. Lasso's numbers: IO 0-3 = the names in order, memory 1-5, GPU 0-5.
+- **The keeper's catch-all** (dasio#185, Lasso's `*,0,0-1` on mbc; needs
+  dasio 0.1.141+, an older dasio refuses the whole profile): the site
+  profile's top-level `others_affinity = "{system}"` (a hex mask or a
+  layout placeholder, as a process `affinity`; parse refuses anything else
+  and `0x0`, a placeholder the layout cannot fill refuses the load). Every
+  2 s the keeper sets it on every running process that runs on EVERY CPU
+  (one on another mask set its own, Lasso's
+  DoNotAdjustAffinityIfCustomized, or the keeper set it), affinity only,
+  read back, one log line per process (`... (others_affinity)`), inside
+  the fight limit; one it cannot open: one `could not keep` line (per
+  process id: a protected service started again logs again). Never taken
+  (`keep::catch_all_takes`): an exe ANY `[[process]]` entry names (a
+  check-only one too), the keeper itself, every dasio exe (`dasio.exe`,
+  `dasio-*`), a name without `.exe` (System, Idle, Registry, Memory
+  Compression, Secure System, vmmem) and the session-0 core
+  `keep::NEVER` (smss, csrss, wininit, services, lsass, winlogon; their
+  children are taken; widened only in code). The kernel's threads are
+  never touched (that is why it is not `ReservedCpuSets`).
+  - A child inherits its parent's mask, as under Lasso: a DAW started from
+    a pinned explorer or task begins on the catch-all's CPUs. Only an
+    entry's `affinity` moves it (within one pass), so with
+    `others_affinity` every DAW needs an affinity entry (`{daw}`), never
+    only the baseline's integrity one; what it started before the move,
+    and every child of an entry's process (mbc's Ableton Index on Live's
+    4-11), keeps that mask: name such a child in an entry to move it
+    (FOH: crashpad_handler, max helper).
+  - A changed value reaches a process at its next start.
+  - The keeper's start line says what it holds, or why not (a mask naming
+    CPUs the PC lacks, the PC's CPUs unreadable).
+  - The check shows at most ONE problem, `others_affinity: not held:
+    a.exe, b.exe ... on every CPU`: processes it takes still on every CPU,
+    older than 10 s, distinct exe names (5 named), read with the checking
+    process's rights (the service's check runs as SYSTEM like the keeper;
+    an admin shell counts fewer). A bridge's in-process check leaves it
+    out (it opens every process): `dasio pc-profile check` shows it.
+  - The runner test passes over its own two processes only
+    (`windows::keep::pass_over`): a whole-list pass pins the runner.
+  - Rollout on a PC: dasio 0.1.141+ there first (an older one refuses the
+    profile and the device does not start), then the key; read the
+    keeper's pass, Live's mask after a start and the late RX before and
+    after.
 - Removing Lasso (dsg 18.11, FOH 19.11.2026): its uninstaller DELETES its
   Bitsum Highest Performance plan and makes another plan active (dsg: High
   performance, FOH: Balanced). Before the removal copy the active plan
@@ -240,14 +291,19 @@ paths:
   read `powercfg /getactivescheme`. `apply` prints FAILED ("ProcessLasso.exe
   is still there", uninstaller exit 0) while the uninstaller finishes in
   the background: check again a minute later.
-- What the keeper does NOT cover yet (before a PC's Lasso goes): Lasso's
-  `DefaultPriorities` for exes without a `[[process]]` entry (FOH: dsend,
-  dlisten above normal, cg below normal, dvs_service high), its I/O, GPU
-  and memory priorities, and its catch-all `*` affinity where
-  `ReservedCpuSets` does not cover the DAW CPUs (mbc: baseline
-  `dasio_cpus` only, Lasso also kept everything off Live's 4-11). Add the
-  `[[process]]` entries and reserve the DAW CPUs first. dsg needs none of
-  that (ReservedCpuSets 1-3, its only priority rule is SGDawNodeService).
+  On a Modern Standby laptop (mbc 19.11.2026) the uninstaller deleted
+  EVERY plan but Balanced, the copy too, and CLEARED `ReservedCpuSets`:
+  `powercfg /export` Lasso's plan first, `/import` it under a NEW GUID
+  after (the deleted copy's GUID is refused), pin that, and set reserved
+  CPUs only after Lasso is gone (a second `apply`).
+- Before a PC's Lasso goes: Lasso's `DefaultPriorities` for exes without
+  a `[[process]]` entry (FOH: dsend, dlisten above normal, cg below
+  normal, dvs_service high) and its I/O, GPU and memory priorities become
+  `[[process]]` entries; its catch-all `*` affinity becomes
+  `others_affinity` where `ReservedCpuSets` does not cover the DAW CPUs
+  (mbc: `{system}`; never reserve the DAW's CPUs there, above). dsg needs
+  none of that (ReservedCpuSets 1-3, its only priority rule is
+  SGDawNodeService).
   Then the site profile names `no_ini = ['C:\ProgramData\ProcessLasso\config\prolasso.ini']`
   (0.1.135+; an older dasio refuses the whole profile): every `[[ini]]`
   entry for that file, the baseline's 150 and the site's, is left out.

@@ -508,7 +508,8 @@ fn pc_layout(_path: &str) -> ExitCode {
 
 /// `dasio pc-profile keep` (dasio#185, the `dasio-pc-keep` SYSTEM task
 /// install.ps1 registers): every running process of each `[[process]]`
-/// entry gets the entry's affinity and priority class, every
+/// entry gets the entry's affinity and priority class, and every other
+/// process still on every CPU the profile's `others_affinity`, every
 /// [`keep::EVERY_MS`](dasio::pc_profile::keep::EVERY_MS), what Process
 /// Lasso did. Runs until stopped, on the system CPUs below normal; reloads
 /// the profile when its file changes; logs each change to
@@ -517,7 +518,10 @@ fn pc_layout(_path: &str) -> ExitCode {
 fn pc_keep(path: &str) -> ExitCode {
     use dasio::pc_profile::{
         Layout, keep, load,
-        windows::{cpu_count, keep::pass},
+        windows::{
+            cpu_count,
+            keep::{pass, system_mask},
+        },
     };
     use std::io::Write;
     let log = |line: &str| {
@@ -587,6 +591,11 @@ fn pc_keep(path: &str) -> ExitCode {
                             .collect::<Vec<_>>()
                             .join(", ")
                     ));
+                    // Lasso's `*` rule (dasio#185): what it holds, or why
+                    // not, said once per load.
+                    if let Some(l) = keep::others_loaded(&p, system_mask()) {
+                        log(&l);
+                    }
                     profile = Some(p);
                     last_error = None;
                     // The keeper's own changes after an edit are no fight,
