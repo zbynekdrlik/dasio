@@ -95,6 +95,17 @@ fn the_site_s_catch_all_wins_over_the_baseline_s() {
 }
 
 #[test]
+fn a_media_process_s_own_check_never_reads_every_process() {
+    // A bridge checks in its own process: the catch-all's read is left to
+    // `dasio pc-profile check` and the keeper.
+    let p = mbc();
+    assert_eq!(in_process(&p).others_affinity, None);
+    let pc = fake(vec![seen(PID, "notepad.exe", 0xFFF, OLD)]);
+    assert!(check(&in_process(&p), &pc).is_empty());
+    assert_eq!(pc.processes_reads.get(), 0);
+}
+
+#[test]
 fn the_key_counts_as_one_entry() {
     let with = parse("name = \"x\"\nothers_affinity = \"0x3\"\n").unwrap();
     assert_eq!(with.entries(), 1);
@@ -220,21 +231,24 @@ fn a_mask_naming_cpus_the_pc_lacks_is_no_catch_all() {
 fn the_keeper_says_its_catch_all_once_at_a_load_and_each_process_set() {
     let p = mbc();
     assert_eq!(
-        others_loaded(&p, 0xFFF).as_deref(),
+        others_loaded(&p, Some(0xFFF)).as_deref(),
         Some(
             "every process no [[process]] entry names goes on 0x3 (others_affinity), unless it set its own affinity"
         )
     );
     assert_eq!(
-        others_loaded(&p, 0x1).as_deref(),
+        others_loaded(&p, Some(0x1)).as_deref(),
         Some(
             "the catch-all holds nothing: others_affinity 0x3 names CPUs this PC does not have (it has 0x1)"
         )
     );
     assert_eq!(
-        others_loaded(&parse("name = \"x\"\n").unwrap(), 0xFFF),
-        None
+        others_loaded(&p, None).as_deref(),
+        Some("the catch-all holds nothing: the PC's CPUs are unreadable")
     );
+    let plain = parse("name = \"x\"\n").unwrap();
+    assert_eq!(others_loaded(&plain, Some(0xFFF)), None);
+    assert_eq!(others_loaded(&plain, None), None);
     assert_eq!(
         others_line("notepad.exe", 12, 0xFFF, 0x3),
         "kept notepad.exe (pid 12): affinity 0xFFF -> 0x3 (others_affinity)"

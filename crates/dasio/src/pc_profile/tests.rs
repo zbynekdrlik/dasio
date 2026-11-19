@@ -49,7 +49,7 @@ struct Pc {
     dev: device_kind::Fake,
     /// The running processes, for `others_affinity`; `processes()` fails
     /// with `processes_err`.
-    running: keep::Processes,
+    running: super::keep::Processes,
     processes_err: Option<String>,
     /// How often `processes()` was called.
     processes_reads: std::cell::Cell<u32>,
@@ -121,7 +121,7 @@ impl Reader for Pc {
             None => Ok(self.bcd.clone()),
         }
     }
-    fn processes(&self) -> Result<keep::Processes, String> {
+    fn processes(&self) -> Result<super::keep::Processes, String> {
         self.processes_reads.set(self.processes_reads.get() + 1);
         match &self.processes_err {
             Some(e) => Err(e.clone()),

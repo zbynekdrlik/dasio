@@ -487,15 +487,8 @@ fn parse_with(text: &str, need_nic_guid: bool) -> Result<Profile, String> {
             }
         }
     }
-    if let Some(a) = &p.others_affinity {
-        if !layout::affinity_ok(a) {
-            return Err(format!(
-                "others_affinity {a} is not a hex mask, {{system}}, {{dasio:N}} or {{daw}}"
-            ));
-        }
-        if parse_mask(a) == Some(0) {
-            return Err(format!("others_affinity {a} names no CPU"));
-        }
+    if let Some(why) = keep::others_invalid(&p) {
+        return Err(why);
     }
     for d in &p.disk {
         let b = d.drive.as_bytes();
@@ -994,11 +987,13 @@ pub enum ChildCheck {
 /// `[[bcd]]` and `[[task]]` need `bcdedit` / `schtasks`: they are left to
 /// `dasio pc-profile check` and the boot-time `pc-profile apply`. A
 /// `gpu_priority` is left to them too: its read loads gdi32, never into a
-/// media process (dasio#185).
+/// media process (dasio#185). So is `others_affinity`: its read opens every
+/// process of the PC, not work for a media process.
 pub fn in_process(p: &Profile) -> Profile {
     Profile {
         bcd: Vec::new(),
         task: Vec::new(),
+        others_affinity: None,
         process: p
             .process
             .iter()

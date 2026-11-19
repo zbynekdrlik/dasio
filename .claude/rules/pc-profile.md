@@ -247,22 +247,38 @@ paths:
   (one on another mask set its own, Lasso's
   DoNotAdjustAffinityIfCustomized, or the keeper set it), affinity only,
   read back, one log line per process (`... (others_affinity)`), inside
-  the fight limit; one it cannot open: one `could not keep` line. Never
-  taken (`keep::catch_all_takes`): an exe ANY `[[process]]` entry names (a
-  check-only one too: the baseline's integrity entries keep both Lives off
-  the system CPUs), the keeper itself, every dasio exe (`dasio.exe`,
+  the fight limit; one it cannot open: one `could not keep` line (per
+  process id: a protected service started again logs again). Never taken
+  (`keep::catch_all_takes`): an exe ANY `[[process]]` entry names (a
+  check-only one too), the keeper itself, every dasio exe (`dasio.exe`,
   `dasio-*`), a name without `.exe` (System, Idle, Registry, Memory
   Compression, Secure System, vmmem) and the session-0 core
   `keep::NEVER` (smss, csrss, wininit, services, lsass, winlogon; their
   children are taken; widened only in code). The kernel's threads are
-  never touched (that is why it is not `ReservedCpuSets`). A changed value
-  reaches a process at its next start. The keeper's start line says what
-  it holds (or why not: a mask naming CPUs the PC lacks). The check shows
-  at most ONE problem, `others_affinity: not held: a.exe, b.exe ... on
-  every CPU`: processes it takes still on every CPU, older than 10 s,
-  openable with the keeper's rights, distinct exe names (5 named). The
-  runner test passes over its own two processes only
-  (`windows::keep::pass_over`): a whole-list pass pins the runner.
+  never touched (that is why it is not `ReservedCpuSets`).
+  - A child inherits its parent's mask, as under Lasso: a DAW started from
+    a pinned explorer or task begins on the catch-all's CPUs. Only an
+    entry's `affinity` moves it (within one pass), so with
+    `others_affinity` every DAW needs an affinity entry (`{daw}`), never
+    only the baseline's integrity one; what it started before the move,
+    and every child of an entry's process (mbc's Ableton Index on Live's
+    4-11), keeps that mask: name such a child in an entry to move it
+    (FOH: crashpad_handler, max helper).
+  - A changed value reaches a process at its next start.
+  - The keeper's start line says what it holds, or why not (a mask naming
+    CPUs the PC lacks, the PC's CPUs unreadable).
+  - The check shows at most ONE problem, `others_affinity: not held:
+    a.exe, b.exe ... on every CPU`: processes it takes still on every CPU,
+    older than 10 s, distinct exe names (5 named), read with the checking
+    process's rights (the service's check runs as SYSTEM like the keeper;
+    an admin shell counts fewer). A bridge's in-process check leaves it
+    out (it opens every process): `dasio pc-profile check` shows it.
+  - The runner test passes over its own two processes only
+    (`windows::keep::pass_over`): a whole-list pass pins the runner.
+  - Rollout on a PC: dasio 0.1.141+ there first (an older one refuses the
+    profile and the device does not start), then the key; read the
+    keeper's pass, Live's mask after a start and the late RX before and
+    after.
 - Removing Lasso (dsg 18.11, FOH 19.11.2026): its uninstaller DELETES its
   Bitsum Highest Performance plan and makes another plan active (dsg: High
   performance, FOH: Balanced). Before the removal copy the active plan

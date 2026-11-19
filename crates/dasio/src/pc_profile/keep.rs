@@ -224,11 +224,14 @@ pub fn dasio_exe(exe: &str) -> bool {
 /// Whether the catch-all (`others_affinity`) takes the process `pid`
 /// named `exe` (its file name, as the process list gives it); `own` is the
 /// caller's process id. Never one any `[[process]]` entry names (a
-/// check-only one too: the baseline names both Lives for `integrity`, so a
-/// DAW never lands on the system CPUs), the caller itself, a dasio exe, the
-/// [`NEVER`] list, or a name without `.exe`: the kernel's pseudo-processes
-/// (`[System Process]` (idle), `System`, `Registry`, `Memory Compression`,
-/// `Secure System`, `vmmem`) have no image file.
+/// check-only one too: the catch-all never moves a Live itself), the caller
+/// itself, a dasio exe, the [`NEVER`] list, or a name without `.exe`: the
+/// kernel's pseudo-processes (`[System Process]` (idle), `System`,
+/// `Registry`, `Memory Compression`, `Secure System`, `vmmem`) have no
+/// image file. A child inherits its parent's mask, though: a DAW started
+/// from a pinned explorer begins on the catch-all's CPUs, and only an
+/// entry's `affinity` moves it (within one pass; what it started before
+/// stays there, a mask of its own).
 pub fn catch_all_takes(p: &Profile, exe: &str, pid: u32, own: u32) -> bool {
     pid != own
         && exe.to_ascii_lowercase().ends_with(".exe")
@@ -269,14 +272,35 @@ pub fn others_line(exe: &str, pid: u32, from: u64, to: u64) -> String {
 }
 
 /// The keeper's line at a profile load about its catch-all, on a PC whose
-/// CPUs are `system`; `None` without `others_affinity`.
-pub fn others_loaded(p: &Profile, system: u64) -> Option<String> {
+/// CPUs are `system` (`None`: unreadable, so it holds nothing); `None`
+/// without `others_affinity`.
+pub fn others_loaded(p: &Profile, system: Option<u64>) -> Option<String> {
+    // Without the key, nothing to say.
+    p.others_affinity.as_ref()?;
+    let Some(system) = system else {
+        return Some("the catch-all holds nothing: the PC's CPUs are unreadable".into());
+    };
     Some(match others(p, system).transpose()? {
         Ok(mask) => format!(
             "every process no [[process]] entry names goes on 0x{mask:X} (others_affinity), unless it set its own affinity"
         ),
         Err(why) => format!("the catch-all holds nothing: {why}"),
     })
+}
+
+/// The `why` of the catch-all's problem.
+const OTHERS_WHY: &str = "every process no [[process]] entry names, held by dasio's keeper as Process Lasso's * rule did (dasio#185)";
+
+/// Why a profile's `others_affinity` is refused at parse: a value that is
+/// not a hex mask or a layout placeholder, or a mask naming no CPU.
+pub fn others_invalid(p: &Profile) -> Option<String> {
+    let a = p.others_affinity.as_ref()?;
+    if !super::layout::affinity_ok(a) {
+        return Some(format!(
+            "others_affinity {a} is not a hex mask, {{system}}, {{dasio:N}} or {{daw}}"
+        ));
+    }
+    (parse_mask(a) == Some(0)).then(|| format!("others_affinity {a} names no CPU"))
 }
 
 /// A running process as the catch-all's check reads it.
@@ -316,18 +340,18 @@ pub fn age_ms(created: u64, now: u64) -> u64 {
 /// CPU, older than [`GRACE_MS`], by distinct exe name in name order (at most
 /// [`SHOWN`] named), so its text stays the same while the same exes stay
 /// unheld (the service logs a problem again only when its text changes).
-/// `own`: the checking process. `None` without the key (nothing is read)
-/// or when every such process is held.
+/// Read with the checking process's rights: the service's check runs as
+/// SYSTEM like the keeper; from an admin shell fewer processes open, so
+/// fewer are counted. `own`: the checking process. `None` without the key
+/// (nothing is read) or when every such process is held.
 pub fn others_problem(p: &Profile, r: &dyn Reader, own: u32) -> Option<Problem> {
     let text = p.others_affinity.as_ref()?;
-    let problem = |found: String, want: String| {
-        Problem {
+    let problem = |found: String, want: String| Problem {
         what: "others_affinity".into(),
         found,
         want,
-        why: "every process no [[process]] entry names, held by dasio's keeper as Process Lasso's * rule did (dasio#185)".into(),
+        why: OTHERS_WHY.into(),
         must: false,
-    }
     };
     let procs = match r.processes() {
         Ok(procs) => procs,

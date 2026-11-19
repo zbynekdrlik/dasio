@@ -593,7 +593,7 @@ fn pc_keep(path: &str) -> ExitCode {
                     ));
                     // Lasso's `*` rule (dasio#185): what it holds, or why
                     // not, said once per load.
-                    if let Some(l) = system_mask().and_then(|s| keep::others_loaded(&p, s)) {
+                    if let Some(l) = keep::others_loaded(&p, system_mask()) {
                         log(&l);
                     }
                     profile = Some(p);

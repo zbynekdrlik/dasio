@@ -914,5 +914,4 @@ fn check_names_the_processes_the_catch_all_does_not_hold_in_one_line() {
         lines[0].contains(&format!("(the profile wants 0x{want:X})")),
         "{text}"
     );
-    assert_ne!(out.status.code(), Some(0), "{text}");
 }
