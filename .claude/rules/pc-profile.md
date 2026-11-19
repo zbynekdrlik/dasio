@@ -142,6 +142,13 @@ paths:
   other bits, only at boot): dsg's 16 move to `[[device]]` at its next
   deploy. Read a PC's devices with `Get-PnpDevice` (InstanceId, Status,
   Problem) before writing entries.
+- **Never reserve the DAW's CPUs on a PC with 2 system CPUs** (mbc
+  19.11.2026): ReservedCpuSets confines KERNEL threads too, unlike Lasso's
+  catch-all (user processes only). mbc with 2-11 reserved ran its USB NIC's
+  work on CPUs 0-1 only: CPU0 79 %, System 71 % of a CPU, kernel TX
+  max_out 200, RX packets late and missing at stream-obs. Reverted to the
+  baseline's dasio CPUs (2-3); keeping other processes off the DAW's CPUs
+  is the keeper's job (#185).
 - **Reserved CPUs** (dasio#120): the baseline's `ReservedCpuSets`
   (`Session Manager\kernel`, `computed = "dasio_cpus"`, read at boot) keeps
   every thread off dasio's CPUs unless its process asks (CPU sets) or is
