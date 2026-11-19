@@ -117,8 +117,9 @@ fn zeros_within_the_tolerance_count_and_beyond_it_do_not() {
 
 #[test]
 fn a_long_mute_then_signal_is_no_break() {
+    // A whole number of blocks, but far more than MAX_BLOCKS.
     let mut s = signal(96_000 * 3, 5);
-    s[1_000..96_000 * 2].fill(0.0);
+    s[1_000..1_000 + 1_500 * HOST].fill(0.0);
     assert_eq!(run(&[s], 0), vec![]);
 }
 
@@ -295,6 +296,28 @@ fn breaks_far_apart_or_of_another_kind_are_their_own_groups() {
 }
 
 #[test]
+fn a_group_takes_the_longest_break_lists_each_channel_once_ascending() {
+    let b = |channel, at, len| Break {
+        channel,
+        kind: Kind::Zero,
+        at,
+        len,
+    };
+    assert_eq!(
+        group(
+            &[b(1, 2_000, 128), b(0, 2_003, 130), b(1, 2_050, 126)],
+            HOST
+        ),
+        vec![Group {
+            kind: Kind::Zero,
+            at: 2_000,
+            len: 130,
+            channels: vec![0, 1]
+        }]
+    );
+}
+
+#[test]
 fn the_ring_counts_what_it_lost_and_keeps_the_newest() {
     let events = Events::default();
     let b = |at| Break {
@@ -354,7 +377,7 @@ fn a_break_round_trips_through_a_slot() {
 }
 
 #[test]
-fn watched_hands_the_block_on_and_checks_it_first() {
+fn watched_checks_the_block_and_hands_it_on() {
     struct Count(usize, usize);
     impl Process for Count {
         fn process(&mut self, _: &mut Block<'_>) {
@@ -518,10 +541,58 @@ fn loud_is_strictly_above_the_floor() {
 }
 
 #[test]
-fn a_repeat_is_long_from_a_block_less_the_tolerance() {
-    assert!(long_repeat(HOST - TOLERANCE, HOST));
-    assert!(!long_repeat(HOST - TOLERANCE - 1, HOST));
-    assert!(long_repeat(3 * HOST, HOST));
+fn a_repeat_has_a_block_less_the_tolerance_to_max_blocks() {
+    assert!(repeat_length(HOST - TOLERANCE, HOST));
+    assert!(!repeat_length(HOST - TOLERANCE - 1, HOST));
+    assert!(repeat_length(3 * HOST, HOST));
+    assert!(repeat_length(MAX_BLOCKS * HOST + TOLERANCE, HOST));
+    assert!(!repeat_length(MAX_BLOCKS * HOST + TOLERANCE + 1, HOST));
+}
+
+#[test]
+fn a_signal_periodic_in_the_block_is_no_repeat() {
+    // A bit-exact tone of period 64 (1.5 kHz at 96 kHz) for 1 s inside
+    // noise: every sample equals the one a block before, for far longer
+    // than MAX_BLOCKS.
+    let mut s = signal(96_000 * 2, 22);
+    let table: Vec<f64> = (0..64)
+        .map(|i| 0.3 * (i as f64 * std::f64::consts::TAU / 64.0).sin() + 1e-3)
+        .collect();
+    for (k, x) in s[10_000..106_000].iter_mut().enumerate() {
+        *x = table[k % 64];
+    }
+    assert_eq!(run(&[s], 0), vec![]);
+}
+
+#[test]
+fn a_held_value_after_a_repeat_on_the_same_channel_is_no_break() {
+    let mut s = signal(96_000, 23);
+    let copy: Vec<f64> = s[30_000..30_000 + HOST].to_vec();
+    s[30_000 + HOST..30_000 + 2 * HOST].copy_from_slice(&copy);
+    s[40_000..40_000 + 4 * HOST].fill(0.25);
+    assert_eq!(
+        run(&[s], 0),
+        vec![Break {
+            channel: 0,
+            kind: Kind::Repeat,
+            at: 30_000 + HOST as u64,
+            len: HOST as u32
+        }]
+    );
+}
+
+#[test]
+fn a_read_counts_the_slots_the_writer_reached_again_as_lost() {
+    let c = CAPACITY as u64;
+    // Nothing pushed during the read: nothing lost.
+    assert_eq!(overwritten(10, 10 + c, 10 + c), 0);
+    assert_eq!(overwritten(0, 5, 5), 0);
+    // Three pushed during a full read: its three oldest are suspect.
+    assert_eq!(overwritten(10, 10 + c, 13 + c), 3);
+    // Never more than were read.
+    assert_eq!(overwritten(10, 12, 12 + 5 * c), 2);
+    // A read of a few with room left: none.
+    assert_eq!(overwritten(100, 110, 120), 0);
 }
 
 #[test]
@@ -547,7 +618,13 @@ fn the_peak_decays_with_its_time_constant() {
     // one time constant the peak is 0.5/e (counts); after 20 it is under
     // the floor (does not).
     let tau = (PEAK_HOLD_S * f64::from(RATE)) as usize;
-    for (gap, counted) in [(tau, true), (20 * tau, false)] {
+    // 0.5 e^-5 = 3.4e-3 counts; 0.5 e^-7 = 4.6e-4 is under the floor.
+    for (gap, counted) in [
+        (tau, true),
+        (5 * tau, true),
+        (7 * tau, false),
+        (20 * tau, false),
+    ] {
         let mut s = vec![1e-6; 1_000 + gap + HOST + 1_000];
         s[999] = 0.5;
         s[1_000 + gap..1_000 + gap + HOST].fill(0.0);
@@ -663,4 +740,35 @@ fn a_setup_s_watches_share_its_ring() {
             len: HOST as u32
         }]
     );
+}
+
+#[test]
+fn a_drain_drops_and_counts_what_the_writer_overwrote_meanwhile() {
+    let events = Events::default();
+    let b = |at| Break {
+        channel: 1,
+        kind: Kind::Zero,
+        at,
+        len: 128,
+    };
+    for at in 0..CAPACITY as u64 {
+        events.push(b(at));
+    }
+    let mut tail = 0;
+    let mut got = Vec::new();
+    // Three more pushed while the full ring is read: its three oldest
+    // slots are the new ones now, so they go, counted as lost.
+    let lost = events.drain_with(&mut tail, &mut got, || {
+        for at in 1_000..1_003 {
+            events.push(b(at));
+        }
+    });
+    assert_eq!(lost, 3);
+    assert_eq!(got.len(), CAPACITY - 3);
+    assert_eq!(got[0], b(3));
+    assert_eq!(tail, CAPACITY as u64);
+    // The next drain gets the three pushed meanwhile.
+    let mut next = Vec::new();
+    assert_eq!(events.drain(&mut tail, &mut next), 0);
+    assert_eq!(next, vec![b(1_000), b(1_001), b(1_002)]);
 }

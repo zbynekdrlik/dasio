@@ -9,7 +9,10 @@
 //!   ([`TOLERANCE`] samples either way, at most [`MAX_BLOCKS`]) where the
 //!   channel carried signal (its recent peak above [`FLOOR`]);
 //! - **repeat**: the samples of the block before, exactly, for at least a
-//!   block less [`TOLERANCE`], not zero and not one constant value.
+//!   block less [`TOLERANCE`] and at most [`MAX_BLOCKS`] blocks, varying
+//!   within the run (not zero, not one held value), on a channel whose
+//!   recent peak is above [`FLOOR`]. The upper bound keeps a signal that is
+//!   itself periodic in the block (a bit-exact test tone) out.
 //!
 //! Live audio never does either, and an RF drop on a microphone is never
 //! sample-exact. A Dante packet hole is not this either: dstack logs RX holes
@@ -181,9 +184,19 @@ pub fn loud(peak: f64) -> bool {
     peak > FLOOR
 }
 
-/// Whether an exact repeat of `run` samples is long enough to be a block.
-pub fn long_repeat(run: usize, block: usize) -> bool {
-    run + TOLERANCE >= block
+/// Whether an exact repeat of `run` samples has a host miss's length: a
+/// block less [`TOLERANCE`] up to [`MAX_BLOCKS`] blocks.
+pub fn repeat_length(run: usize, block: usize) -> bool {
+    run + TOLERANCE >= block && run <= MAX_BLOCKS * block + TOLERANCE
+}
+
+/// Of the slots read from `start` to `h`, how many the writer may have
+/// overwritten during the read when its head is `h2` by then: those older
+/// than `h2` less the ring's size.
+pub fn overwritten(start: u64, h: u64, h2: u64) -> u64 {
+    h2.saturating_sub(CAPACITY as u64)
+        .saturating_sub(start)
+        .min(h - start)
 }
 
 /// Whether a zero run of `len` samples is a whole number of `block`s.
@@ -246,18 +259,31 @@ impl Events {
 
     /// The reader's side: the breaks pushed since `tail` (the reader's own
     /// count), oldest first, into `out`; returns how many were lost to the
-    /// ring's size. `tail` moves to the head.
+    /// ring's size. A slot the writer reached again while it was read is
+    /// dropped and counted as lost. `tail` moves to the head.
     pub fn drain(&self, tail: &mut u64, out: &mut Vec<Break>) -> u64 {
+        self.drain_with(tail, out, || {})
+    }
+
+    /// [`Events::drain`] with `during` run between the read and the check of
+    /// the head: a test's stand-in for the writer pushing meanwhile.
+    fn drain_with(&self, tail: &mut u64, out: &mut Vec<Break>, during: impl FnOnce()) -> u64 {
         let h = self.head.load(Ordering::Acquire);
-        let lost = (h - *tail).saturating_sub(CAPACITY as u64);
-        *tail += lost;
-        for i in *tail..h {
+        let mut lost = (h - *tail).saturating_sub(CAPACITY as u64);
+        let start = *tail + lost;
+        let first = out.len();
+        for i in start..h {
             let slot = &self.slots[(i % CAPACITY as u64) as usize];
             out.push(unpack(
                 slot[0].load(Ordering::Relaxed),
                 slot[1].load(Ordering::Relaxed),
             ));
         }
+        during();
+        let h2 = self.head.load(Ordering::Acquire);
+        let bad = overwritten(start, h, h2);
+        out.drain(first..first + bad as usize);
+        lost += bad;
         *tail = h;
         lost
     }
@@ -332,16 +358,17 @@ impl Channel {
         }
         let before = self.ring[self.pos];
         if x != 0.0 && x == before {
+            // Variation counts only between samples of the run: the sample
+            // before it may differ (a step from one constant to another).
             if self.rrun == 0 {
                 self.rstart = at;
                 self.rvaries = false;
-            }
-            self.rrun += 1;
-            if x != self.last {
+            } else if x != self.last {
                 self.rvaries = true;
             }
+            self.rrun += 1;
         } else if self.rrun != 0 {
-            if self.rvaries && long_repeat(self.rrun, block) && loud(self.peak) {
+            if self.rvaries && repeat_length(self.rrun, block) && loud(self.peak) {
                 out.push(Break {
                     channel: ch,
                     kind: Kind::Repeat,
