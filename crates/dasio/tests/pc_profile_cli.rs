@@ -79,6 +79,77 @@ fn layout_prints_the_layout_of_the_pc_s_cpu_count() {
 }
 
 #[test]
+fn instance_cpus_passes_an_instance_with_its_own_cpus_and_refuses_one_without() {
+    // dasio#199: install.ps1's CPU step, through the built exe on the
+    // runner's own CPU count.
+    let run = |tag: &str, text: &str, n: &str| {
+        let (dir, file) = profile(tag, text);
+        let out = Command::new(exe())
+            .args(["pc-profile", "instance-cpus", "--instance", n])
+            .args(["--exe", "dasio-ci.exe", "--profile"])
+            .arg(&file)
+            .output()
+            .unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).trim_end().to_string(),
+        )
+    };
+    let cpus = std::thread::available_parallelism().unwrap().get();
+    let l = Layout::of(cpus, 1);
+    let own = dasio::pc_profile::layout::cpus(l.dasio_mask(1).unwrap());
+    let (code, line) = run("room-ok", "name = \"ci\"\n", "1");
+    assert_eq!(code, Some(0), "{line}");
+    assert_eq!(
+        line,
+        format!(
+            "instance 1 (dasio-ci.exe): CPUs {own} are its own ({})",
+            l.describe()
+        )
+    );
+    let (code, line) = run("room-two", "name = \"ci\"\n", "2");
+    assert_eq!(code, Some(2), "{line}");
+    assert_eq!(
+        line,
+        "REFUSED instance 2 has no CPUs of its own: the site profile has instances = 1 (set instances = 2 there first; dasio pc-profile layout shows the CPUs it then gives)"
+    );
+    let pinned = "name = \"ci\"\n[[process]]\nexe = \"Live.exe\"\naffinity = \"{dasio:1}\"\n";
+    let (code, line) = run("room-pinned", pinned, "1");
+    assert_eq!(code, Some(2), "{line}");
+    assert_eq!(
+        line,
+        format!(
+            "REFUSED instance 1's CPUs {own} are pinned to Live.exe ({own}) too: move them off in the site profile first (several dasio on one PC must not fight, dasio#199)"
+        )
+    );
+    // A profile that does not load: exit 1, nothing on stdout.
+    let (code, line) = run("room-bad", "name = \"ci\"\ninstances = 0\n", "1");
+    assert_eq!(code, Some(1), "{line}");
+    assert_eq!(line, "");
+    // Without --exe: the usage text on stderr, exit 2, nothing on stdout.
+    let (dir, file) = profile("room-noexe", "name = \"ci\"\n");
+    let out = Command::new(exe())
+        .args([
+            "pc-profile",
+            "instance-cpus",
+            "--instance",
+            "1",
+            "--profile",
+        ])
+        .arg(&file)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("pc-profile instance-cpus --instance <n> --exe <instance exe>")
+    );
+}
+
+#[test]
 fn an_existing_absent_exe_is_a_problem_and_apply_plan_names_its_uninstaller() {
     // dasio#128: the real reader on Windows. `--plan` runs nothing.
     let dir = std::env::temp_dir().join(format!("dasio-cli-absent-{}", std::process::id()));

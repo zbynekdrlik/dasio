@@ -395,6 +395,17 @@ if (-not $TestClock) {
     if ($profileGuid -ne $adapterGuid) {
         throw "the baseline step: $profilePath names the Dante NIC '$profileGuid', but the device runs on '$alias' ($adapterGuid): set nic_guid = `"$adapterGuid`" there; nothing changed"
     }
+    # The instance's own CPUs (dasio#199, owner 19.11.2026: several dasio on
+    # one PC must not fight): the profile's layout must hold instance
+    # $Instance (instances = N) and no process the profile pins but this
+    # instance's own exe may name its CPUs. Before the NIC driver step and
+    # anything else changes.
+    $room = @(& (Join-Path $here "dasio.exe") pc-profile instance-cpus --instance $Instance --exe $instExeName)
+    $roomExit = $LASTEXITCODE
+    $room | ForEach-Object { Write-Output $_ }
+    if ($roomExit -ne 0) {
+        throw "the CPU step: dasio refused instance $Instance (exit $roomExit, the line above); nothing changed"
+    }
     # The Dante NIC's pinned driver package (dasio#128), only when asked.
     # dasio decides whether the folder is exactly the baseline's package
     # (every file's SHA256, the catalog's signer) before pnputil touches
