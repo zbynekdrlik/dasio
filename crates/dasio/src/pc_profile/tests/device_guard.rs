@@ -315,3 +315,22 @@ fn an_endless_tree_below_an_entry_counts_as_unread() {
     assert_eq!(r.dev.endless.as_ref().map(Cell::get), Some(4096));
     assert_eq!(plan(&p, &r), Vec::<Action>::new());
 }
+
+#[test]
+fn a_removal_that_stops_the_dante_nic_s_path_is_refused() {
+    // Review of PR #196: the removal walk checks the Dante NIC's chain too,
+    // not only the adapter list (the NIC may be missing from that list).
+    let p = profile(&entry(OTHER, "other"));
+    let mut r = guarded_pc(&[(OTHER, ON)]);
+    // The NIC itself missing from the adapter list (a failed or partial
+    // Net-class read): only its chain still names it.
+    r.dev.adapters.retain(|a| !a.id.eq_ignore_ascii_case(NIC));
+    link(&mut r.dev.removes, OTHER, &[HUB]);
+    assert_eq!(
+        found(&p, &r),
+        [refused(&format!(
+            "a device whose removal stops the Dante NIC ({HUB} stops with it)"
+        ))]
+    );
+    assert_eq!(plan(&p, &r), Vec::<Action>::new());
+}

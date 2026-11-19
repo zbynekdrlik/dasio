@@ -378,7 +378,9 @@ fn a_missing_device_is_a_problem_unless_absent_ok_and_never_planned() {
 }
 
 #[test]
-fn an_unreadable_device_is_a_problem_and_apply_tries_it() {
+fn an_unreadable_device_is_a_problem_and_never_disabled() {
+    // Fail closed (dasio#181, review of PR #196): a device whose state was
+    // not read is never disabled, even when everything around it reads.
     let p = profile(&entry(AUDIO, "audio"));
     let mut r = pc(&[]);
     r.dev.device_err = Some("CM_Locate_DevNode: CONFIGRET 51".into());
@@ -386,13 +388,15 @@ fn an_unreadable_device_is_a_problem_and_apply_tries_it() {
         check(&p, &r),
         vec![Problem {
             what: format!("device audio ({AUDIO})"),
-            found: "unreadable (CM_Locate_DevNode: CONFIGRET 51)".into(),
+            found:
+                "unreadable (CM_Locate_DevNode: CONFIGRET 51); not disabled: its state was not read"
+                    .into(),
             want: "off".into(),
             why: "not needed (audio)".into(),
             must: false,
         }]
     );
-    assert_eq!(plan(&p, &r), vec![Action::Disable(AUDIO.into())]);
+    assert_eq!(plan(&p, &r), Vec::<Action>::new());
 }
 
 #[test]
