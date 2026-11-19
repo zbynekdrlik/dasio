@@ -85,7 +85,8 @@ fn instance_cpus_passes_an_instance_with_its_own_cpus_and_refuses_one_without() 
     let run = |tag: &str, text: &str, n: &str| {
         let (dir, file) = profile(tag, text);
         let out = Command::new(exe())
-            .args(["pc-profile", "instance-cpus", "--instance", n, "--profile"])
+            .args(["pc-profile", "instance-cpus", "--instance", n])
+            .args(["--exe", "dasio-ci.exe", "--profile"])
             .arg(&file)
             .output()
             .unwrap();
@@ -102,15 +103,16 @@ fn instance_cpus_passes_an_instance_with_its_own_cpus_and_refuses_one_without() 
     assert_eq!(code, Some(0), "{line}");
     assert_eq!(
         line,
-        format!("instance 1: CPUs {own} are its own ({})", l.describe())
+        format!(
+            "instance 1 (dasio-ci.exe): CPUs {own} are its own ({})",
+            l.describe()
+        )
     );
     let (code, line) = run("room-two", "name = \"ci\"\n", "2");
     assert_eq!(code, Some(2), "{line}");
-    assert!(
-        line.starts_with(
-            "REFUSED instance 2 has no CPUs of its own: the site profile has instances = 1"
-        ),
-        "{line}"
+    assert_eq!(
+        line,
+        "REFUSED instance 2 has no CPUs of its own: the site profile has instances = 1 (set instances = 2 there first; dasio pc-profile layout shows the CPUs it then gives)"
     );
     let pinned = "name = \"ci\"\n[[process]]\nexe = \"Live.exe\"\naffinity = \"{dasio:1}\"\n";
     let (code, line) = run("room-pinned", pinned, "1");
@@ -125,6 +127,26 @@ fn instance_cpus_passes_an_instance_with_its_own_cpus_and_refuses_one_without() 
     let (code, line) = run("room-bad", "name = \"ci\"\ninstances = 0\n", "1");
     assert_eq!(code, Some(1), "{line}");
     assert_eq!(line, "");
+    // Without --exe: the usage text on stderr, exit 2, nothing on stdout.
+    let (dir, file) = profile("room-noexe", "name = \"ci\"\n");
+    let out = Command::new(exe())
+        .args([
+            "pc-profile",
+            "instance-cpus",
+            "--instance",
+            "1",
+            "--profile",
+        ])
+        .arg(&file)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("pc-profile instance-cpus --instance <n> --exe <instance exe>")
+    );
 }
 
 #[test]
