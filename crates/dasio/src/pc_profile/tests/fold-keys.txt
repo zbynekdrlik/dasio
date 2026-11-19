@@ -208,3 +208,5 @@ bcd|testsigning
 registry|HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection|DisableRealtimeMonitoring
 registry|HKLM\SOFTWARE\Microsoft\Windows Defender\Scan|ScheduleDay
 nic_driver|PCI\VEN_10EC&DEV_8125
+registry|HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard|EnableVirtualizationBasedSecurity
+registry|HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity|Enabled
