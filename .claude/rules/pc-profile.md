@@ -34,6 +34,26 @@ paths:
   `{system}` / `{dasio:N}` / `{daw}` as a process affinity, `instances = N`
   (default 1) in the site profile. Never write a CPU mask by hand where the
   layout gives it.
+- **An instance's CPUs are its own** (dasio#199, owner 19.11.2026: several
+  dasio on one PC must not fight, now that Lasso is gone and the keeper
+  sets exactly what the profile says). `layout::shares` (in every check,
+  WARN + tray count, never must-have): a `[[process]]` entry that is not a
+  dasio exe (`keep::dasio_exe`), or `others_affinity`, naming CPUs of an
+  instance (`dasio:1..instances` from the layout `resolve` keeps in
+  `Profile::layout`, and each dasio exe entry's own mask), and two dasio
+  exe entries on a common CPU. A dasio exe's own entry may span more than
+  its instance (dsg's bridge 1-3 is its own DAW). install.ps1's CPU step
+  (`dasio pc-profile instance-cpus --instance N`, in the baseline step
+  before `apply` and the service stop; a test-clock install skips it)
+  refuses `-Instance N` beyond `instances` or with another entry on its
+  CPUs: instance N is the layout's `dasio:N`.
+- **A second instance on FOH** (the Yamaha AIC128-D replaced by dasio, for
+  master Live): FOH runs `instances` 1 while `dasio-2` (master-asio-dante)
+  stays disabled. To add it: `instances = 2` (layout 0-3 / 4-7 / 8-11 /
+  12-31), its exe on `{dasio:2}`, then master Live and AudioGridderServer
+  off 8-11 (both on 8-15 today; 12-15, or another split of 12-31 between
+  band and master decided with numbers then), reserved CPUs still 4-31;
+  `dasio pc-profile instance-cpus --instance 2` passes before the install.
 - **The Dante NIC's RSS range is computed too** (dasio#128, 17.11.2026):
   `computed = "rss_base_cpu"` / `"rss_max_cpu"` / `"rss_cpus"` give
   `*RssBaseProcNumber` / `*RssMaxProcNumber` / `*MaxRssProcessors` as
@@ -175,8 +195,9 @@ paths:
   adapter as `nic_guid` (it prints the GUID to write).
 - At rollout, a site entry for the NIC's interrupt affinity must use the
   `{nic_device}` key (or go): a literal `Enum\PCI\...` path (dsg's) is a
-  second entry for the same value, and the two fight. Give FOH's profile
-  `instances = 2`.
+  second entry for the same value, and the two fight. FOH's profile gets
+  `instances = 2` only with its second instance (above: master Live moves
+  off 8-11 first, dasio#199).
 - `computed`, `must`, `instances` and placeholder affinities need dasio
   0.1.107+ on the PC: an older one refuses the whole profile.
 - Tests: a site profile (`parse`/`load`) with a `{nic_class}`/`{nic_device}`
