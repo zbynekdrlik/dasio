@@ -87,6 +87,27 @@ pub fn run(
     // only, the latency stays the owner's decision.
     let mut rx_arrival = crate::rx_arrival::Watch::default();
     let turnaround = Arc::new(Mutex::new(Turnaround::default()));
+    // The watch on received outputs of another ASIO host (dasio#207): the
+    // instance folder's watch.toml. A config that does not read leaves the
+    // watch off and the device running.
+    let watch = match crate::miss_watch::setup(&minutes_dir, &cfg.rx) {
+        Ok(Some(c)) => {
+            info!(
+                watch = %c.name,
+                block = c.block,
+                rx = %c.rx.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>().join(", "),
+                "watching received outputs for an ASIO host's missed buffers (dasio#207)"
+            );
+            Some(crate::miss_watch::Setup::new(c))
+        }
+        Ok(None) => None,
+        Err(e) => {
+            warn!(err = %e, "the output watch is off: its config does not read (dasio#207)");
+            None
+        }
+    };
+    let mut watch_tail = 0u64;
+    let mut watch_breaks = Vec::new();
     let base = Base {
         instance,
         shape,
@@ -97,6 +118,7 @@ pub fn run(
         engine_tx: &engine_tx,
         stats: &stats,
         turnaround: &turnaround,
+        watch: watch.as_ref(),
     };
     // The rate a DAW asked before (the instance's directory outlives a
     // device restart under a DAW, dasio#107), else the device's own.
@@ -203,6 +225,35 @@ pub fn run(
                 late, ms, "the DAW's burst of missed blocks ended"
             ),
             None => {}
+        }
+        // The watched outputs' breaks since the last tick (dasio#207).
+        if let Some(w) = watch.as_ref() {
+            watch_breaks.clear();
+            let lost = w.events.drain(&mut watch_tail, &mut watch_breaks);
+            if lost > 0 {
+                warn!(
+                    lost,
+                    "the output watch lost breaks: more than its ring holds in 100 ms"
+                );
+            }
+            if !watch_breaks.is_empty() {
+                let now = media
+                    .clock
+                    .now_ns()
+                    .map(|ns| dstack::clock::to_samples(ns, cfg.sample_rate));
+                for g in crate::miss_watch::group(&watch_breaks, w.cfg.block) {
+                    warn!(
+                        watch = %w.cfg.name,
+                        kind = g.kind.name(),
+                        samples = g.len,
+                        ago_ms = now.map(|n| crate::miss_watch::age_ms(g.at, n, cfg.sample_rate)),
+                        channels = %crate::miss_watch::channel_names(&g, &w.cfg),
+                        broke = g.channels.len(),
+                        of = w.cfg.rx.len(),
+                        "a watched output broke like an ASIO host's missed buffer (dasio#207)"
+                    );
+                }
+            }
         }
         if profile_at.is_none_or(|t| {
             now.duration_since(t) >= Duration::from_secs(crate::pc_profile::CHECK_EVERY_S)

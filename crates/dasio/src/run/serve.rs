@@ -29,6 +29,8 @@ pub(super) struct Base<'a> {
     pub engine_tx: &'a [usize],
     pub stats: &'a Arc<PumpStats>,
     pub turnaround: &'a Arc<Mutex<Turnaround>>,
+    /// The watch on received outputs of another ASIO host (dasio#207).
+    pub watch: Option<&'a crate::miss_watch::Setup>,
 }
 
 /// What dtray's line and the run's loop read of the serving now.
@@ -173,6 +175,12 @@ impl Base<'_> {
             rx: (0..cfg.rx.len()).collect(),
             tx: self.engine_tx.to_vec(),
         };
+        // The watch reads the RX at the device rate, before any conversion
+        // to the app's rate (dasio#207).
+        let processor = crate::miss_watch::Watched::new(
+            processor,
+            self.watch.map(|w| w.watch(cfg.sample_rate)),
+        );
         let pump = Pump::new(
             processor,
             map,
