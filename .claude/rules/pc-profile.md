@@ -97,13 +97,47 @@ paths:
   (CONFIGFLAG_DISABLED), or unplugged with the flag; else a WARN naming the
   state (`on`, `off until the next boot`, `not connected, on when
   connected`). `apply` runs `CM_Disable_DevNode(PERSIST)` and sets the flag
-  (a vetoed stop is a FAILED line). An entry naming the Dante NIC or a
-  device it hangs on (its USB hub, host controller, PCI bridge: the NIC's
-  `CM_Get_Parent` chain) is refused, never planned: disabling it cuts the PC
-  off. Without that chain (NIC not read) nothing is checked or disabled.
-  Not guarded (dasio#181 open item): an adapter stacked over the NIC (the
-  LAN VLAN adapter of layout B, a bridge) or the remote path's own adapter:
-  never name a Net-class device that carries an address. Never hold a device with a
+  (a vetoed stop is a FAILED line).
+  - **The guard** (`device::judge`, one judge for check and plan): an entry
+    that would be disabled (on, off only until the boot, unplugged without
+    the flag, or unreadable) is refused, never planned, when disabling it
+    can cut a network path: the Dante NIC or a device it hangs on (its
+    `CM_Get_Parent` chain); any PRESENT Net-class device
+    (`CM_Get_Device_ID_List` class + present filter, whatever its address
+    or link: the remote path, layout B's LAN VLAN adapter, a VF under a
+    synthetic adapter, a Wintun adapter, KDNIC too), a device in its parent
+    chain or below it; a device whose removal stops one (its
+    `DEVPKEY_Device_Children` and `DEVPKEY_Device_RemovalRelations`, each
+    read whole in one `CM_Get_DevNode_PropertyW` call, followed down as
+    Windows removes them, at most `MAX_REACH` 4096 devices).
+  - A device with no children or no removal relations answers
+    CR_NO_SUCH_VALUE (CONFIGRET 37), not an empty list: read as none
+    (runner 19.11.2026; before that fix every entry read as unread).
+  - An entry already off is fine and never judged (dsg's KDNIC and Wi-Fi):
+    the Net list is read only for an entry that would be disabled. So a
+    Net-class device that is on (mbc's KDNIC) is never disabled by `apply`,
+    nor is a Bluetooth radio while its PAN/RFCOMM children (Net class) are
+    there: disable such a device by hand once (Device Manager, no flag);
+    it then reads `off until the next boot`, its Net children are gone, and
+    `apply` sets the flag.
+  - Not guarded: an unplugged device (both lists hold present devices only,
+    so an unplugged adapter, a spare USB NIC, is held off like any other
+    device), a dependency outside the device tree, and the moment between
+    `plan` and the disable (`disable()` does not judge again).
+  - Fail closed: without the NIC's chain nothing is checked or disabled; an
+    unread Net list, parents or relations leave the entry alone, its line
+    ending `; not disabled: <what was not read>`.
+  - `instance_id` holds PnP's charset only (printable ASCII, no space, no
+    comma), so the guard's ASCII case-blind compare is exact. A path outside
+    it is a parse error: the whole profile is refused (like any parse error,
+    the device does not start); a path copied from Device Manager never is.
+  - Tests: the decision is portable (`tests/device_guard.rs`, a fake
+    tree); the glue's reads are compared with `Get-PnpDevice` /
+    `Get-PnpDeviceProperty` on the runner. A device-changing test needs
+    `GITHUB_ACTIONS` and `RUNNER_ENVIRONMENT=github-hosted`; no test picks or
+    counts `ROOT\KDNIC\0000` (one disables it while the others run).
+
+  Never hold a device with a
   raw `Enum\...\ConfigFlags` `[[registry]]` entry (exact DWORD, clobbers
   other bits, only at boot): dsg's 16 move to `[[device]]` at its next
   deploy. Read a PC's devices with `Get-PnpDevice` (InstanceId, Status,

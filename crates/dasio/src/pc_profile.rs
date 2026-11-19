@@ -38,7 +38,7 @@
 //!   installs it ([`nic_driver`]).
 //! - `[[device]]`: a device the PC does not need, held off (by its device
 //!   instance path, site data, dasio#181); `apply` disables it now and for
-//!   every boot, never the Dante NIC or a device it hangs on ([`device`]).
+//!   every boot, never one that can cut a network path ([`device`]).
 //!
 //! Besides, the service holds the services Windows turns back on by itself
 //! (UsoSvc, dasio#158; DoSvc, dasio#26) off before each check ([`hold`]).
@@ -70,7 +70,7 @@ pub use absent::{AbsentEntry, Removal};
 pub use baseline::{
     BASELINE, MUST_HAVE, baseline, baseline_only, load, load_merged, merge, must_have_failure,
 };
-pub use device::{DevState, DeviceEntry};
+pub use device::{Adapter, DevState, DeviceEntry, Devices};
 pub use layout::{Layout, resolve};
 pub use nic_driver::NicDriverEntry;
 pub use os_text::{parse_bcdedit, parse_task_xml};
@@ -302,13 +302,8 @@ pub trait Reader {
     /// The Dante NIC's PnP hardware IDs (its Enum key's `HardwareID`),
     /// most specific first; empty when the NIC was not found.
     fn nic_hardware_ids(&self) -> Vec<String>;
-    /// The Dante NIC's device instance path, then each of its parents' up
-    /// to the root (`[[device]]` never disables one); empty when the NIC or
-    /// a parent was not read.
-    fn nic_chain(&self) -> Vec<String>;
-    /// The device with instance path `id` ([`device`]); `Ok(None)` when the
-    /// PC has no such device (no Enum key).
-    fn device(&self, id: &str) -> Result<Option<DevState>, String>;
+    /// The PC's devices, for `[[device]]` ([`device`]).
+    fn devices(&self) -> &dyn Devices;
 }
 
 /// Whether `e` applies on the PC `r` reads: an entry for one NIC driver
@@ -772,7 +767,7 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
     }
     out.extend(absent::check(&p.absent, r));
     out.extend(nic_driver::check(&p.nic_driver, r));
-    out.extend(device::check(&p.device, r));
+    out.extend(device::check(&p.device, r.devices()));
     out
 }
 
@@ -846,7 +841,11 @@ pub fn plan(p: &Profile, r: &dyn Reader) -> Vec<Action> {
         }
     }
     out.extend(absent::plan(&p.absent, r).into_iter().map(Action::Remove));
-    out.extend(device::plan(&p.device, r).into_iter().map(Action::Disable));
+    out.extend(
+        device::plan(&p.device, r.devices())
+            .into_iter()
+            .map(Action::Disable),
+    );
     out
 }
 

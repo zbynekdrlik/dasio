@@ -1,24 +1,102 @@
 //! `[[device]]` entries (dasio#181): a device the PC does not need, held
-//! off; never the Dante NIC.
+//! off; never the Dante NIC. The guard's other network paths are
+//! [`device_guard`](super::device_guard)'s.
+
+use std::cell::Cell;
+use std::collections::HashMap;
 
 use super::*;
 
-const AUDIO: &str = r"PCI\VEN_8086&DEV_54C8&SUBSYS_17951025&REV_00\3&11583659&0&FB";
-const BT: &str = r"USB\VID_8087&PID_0026\5&C99FFEC&0&10";
-const NIC: &str = r"USB\VID_0BDA&PID_8156\4F13000001";
+pub(super) const AUDIO: &str = r"PCI\VEN_8086&DEV_54C8&SUBSYS_17951025&REV_00\3&11583659&0&FB";
+pub(super) const BT: &str = r"USB\VID_8087&PID_0026\5&C99FFEC&0&10";
+pub(super) const NIC: &str = r"USB\VID_0BDA&PID_8156\4F13000001";
 /// The hub and the host controller mbc's USB Dante NIC hangs on.
-const HUB: &str = r"USB\ROOT_HUB30\5&1EF46A2D&0&0";
-const XHCI: &str = r"PCI\VEN_1022&DEV_1639&SUBSYS_387017AA&REV_00\4&2D99F355&0&0441";
+pub(super) const HUB: &str = r"USB\ROOT_HUB30\5&1EF46A2D&0&0";
+pub(super) const XHCI: &str = r"PCI\VEN_1022&DEV_1639&SUBSYS_387017AA&REV_00\4&2D99F355&0&0441";
+pub(super) const ROOT: &str = r"HTREE\ROOT\0";
 
-fn profile(entries: &str) -> Profile {
+/// The PC's devices as a test sets them up (paths upper case).
+#[derive(Default)]
+pub(super) struct Fake {
+    /// The Dante NIC's device instance path, then its parents'.
+    pub(super) nic_chain: Vec<String>,
+    /// Devices by instance path.
+    pub(super) devices: HashMap<String, DevState>,
+    /// `device()` fails with this.
+    pub(super) device_err: Option<String>,
+    /// The present network adapters; `net_err` fails their read.
+    pub(super) adapters: Vec<Adapter>,
+    pub(super) net_err: Option<String>,
+    /// How often the adapters were read.
+    pub(super) net_reads: Cell<u32>,
+    /// Each device's parents (none listed: none).
+    pub(super) parents: HashMap<String, Vec<String>>,
+    /// What stops with each device (none listed: nothing).
+    pub(super) removes: HashMap<String, Vec<String>>,
+    /// `parents()` and `removes()` fail for these.
+    pub(super) unread: Vec<String>,
+    /// Every device stops a new one with it (an endless tree): the n-th
+    /// call gives `ROOT\DEEP\n`.
+    pub(super) endless: Option<Cell<u32>>,
+}
+
+impl Fake {
+    fn read(&self, what: &str, id: &str) -> Result<(), String> {
+        if self.unread.contains(&id.to_ascii_uppercase()) {
+            return Err(format!("{what} {id}: CONFIGRET 13"));
+        }
+        Ok(())
+    }
+}
+
+impl Devices for Fake {
+    fn nic_chain(&self) -> Vec<String> {
+        self.nic_chain.clone()
+    }
+    fn device(&self, id: &str) -> Result<Option<DevState>, String> {
+        if let Some(err) = &self.device_err {
+            return Err(err.clone());
+        }
+        Ok(self.devices.get(&id.to_ascii_uppercase()).copied())
+    }
+    fn net_adapters(&self) -> Result<Vec<Adapter>, String> {
+        self.net_reads.set(self.net_reads.get() + 1);
+        match &self.net_err {
+            Some(err) => Err(err.clone()),
+            None => Ok(self.adapters.clone()),
+        }
+    }
+    fn parents(&self, id: &str) -> Result<Vec<String>, String> {
+        self.read("parents", id)?;
+        Ok(self
+            .parents
+            .get(&id.to_ascii_uppercase())
+            .cloned()
+            .unwrap_or_default())
+    }
+    fn removes(&self, id: &str) -> Result<Vec<String>, String> {
+        self.read("removes", id)?;
+        if let Some(n) = &self.endless {
+            n.set(n.get() + 1);
+            return Ok(vec![format!(r"ROOT\DEEP\{}", n.get())]);
+        }
+        Ok(self
+            .removes
+            .get(&id.to_ascii_uppercase())
+            .cloned()
+            .unwrap_or_default())
+    }
+}
+
+pub(super) fn profile(entries: &str) -> Profile {
     parse(&format!("name = \"dsg\"\n{entries}")).unwrap()
 }
 
-fn entry(id: &str, name: &str) -> String {
+pub(super) fn entry(id: &str, name: &str) -> String {
     format!("[[device]]\ninstance_id = '{id}'\nname = \"{name}\"\nwhy = \"not needed ({name})\"\n")
 }
 
-fn state(present: bool, problem: Option<u32>, config_disabled: bool) -> DevState {
+pub(super) fn state(present: bool, problem: Option<u32>, config_disabled: bool) -> DevState {
     DevState {
         present,
         problem,
@@ -26,18 +104,26 @@ fn state(present: bool, problem: Option<u32>, config_disabled: bool) -> DevState
     }
 }
 
-fn pc(devices: &[(&str, DevState)]) -> Pc {
+/// A PC with these devices; the Dante NIC is its only network adapter.
+pub(super) fn pc(devices: &[(&str, DevState)]) -> Pc {
     Pc {
-        devices: devices
-            .iter()
-            .map(|(id, s)| (id.to_ascii_uppercase(), *s))
-            .collect(),
-        nic_chain: vec![NIC.into(), HUB.into(), XHCI.into(), r"HTREE\ROOT\0".into()],
+        dev: Fake {
+            devices: devices
+                .iter()
+                .map(|(id, s)| (id.to_ascii_uppercase(), *s))
+                .collect(),
+            nic_chain: vec![NIC.into(), HUB.into(), XHCI.into(), ROOT.into()],
+            adapters: vec![Adapter {
+                id: NIC.into(),
+                parents: vec![HUB.into(), XHCI.into(), ROOT.into()],
+            }],
+            ..Fake::default()
+        },
         ..Pc::default()
     }
 }
 
-const OFF: DevState = DevState {
+pub(super) const OFF: DevState = DevState {
     present: true,
     problem: Some(22),
     config_disabled: true,
@@ -117,6 +203,41 @@ fn an_entry_must_name_one_device_by_its_whole_instance_path() {
             format!("{AUDIO}\\")
         )
     );
+}
+
+#[test]
+fn an_instance_path_holds_only_pnp_s_own_characters() {
+    // dasio#181: printable ASCII, no space, no comma, as Windows makes
+    // them; the guard's case-blind compare is then exact.
+    let err = |id: &str| {
+        parse(&format!(
+            "name = \"dsg\"\n[[device]]\ninstance_id = \"{id}\"\nname = \"a\"\nwhy = \"b\"\n"
+        ))
+        .unwrap_err()
+    };
+    let charset = |id: &str| {
+        format!(
+            "device {id:?}: give the device instance path as Device Manager shows it: printable ASCII, no spaces or commas"
+        )
+    };
+    for id in [
+        r"PCI\VEN_8086 &DEV_54C8\3&1",
+        r"USB\VID_1,PID_2\3&1",
+        "PCI\\VEN_8086\\3&1\t2",
+        r"PCI\VEN_8086&DEV_54C8\3&1é",
+        r"PCI\VEN_8086&DEV_54C8\3&1İ",
+    ] {
+        let toml_id = id.replace('\\', r"\\");
+        assert_eq!(err(&toml_id), charset(id), "{id:?}");
+    }
+    // Real paths with braces, dots, `#` and `&` are fine.
+    for id in [
+        r"SWD\MMDEVAPI\{0.0.0.00000000}.{A1B2C3D4-0000-4000-8000-00000000000A}",
+        r"STORAGE\VOLUME\{6B1D8E5A-1C4F-11EE-9B7E-806E6F6E6963}#0000000000100000",
+        r"HDAUDIO\FUNC_01&VEN_10EC&DEV_0257&SUBSYS_17AA22D2&REV_1000\4&D0DF0A3&0&0001",
+    ] {
+        assert_eq!(profile(&entry(id, "x")).device[0].instance_id, id);
+    }
 }
 
 #[test]
@@ -259,10 +380,8 @@ fn a_missing_device_is_a_problem_unless_absent_ok_and_never_planned() {
 #[test]
 fn an_unreadable_device_is_a_problem_and_apply_tries_it() {
     let p = profile(&entry(AUDIO, "audio"));
-    let r = Pc {
-        device_err: Some("CM_Locate_DevNode: CONFIGRET 51".into()),
-        ..pc(&[])
-    };
+    let mut r = pc(&[]);
+    r.dev.device_err = Some("CM_Locate_DevNode: CONFIGRET 51".into());
     assert_eq!(
         check(&p, &r),
         vec![Problem {
@@ -334,13 +453,11 @@ fn without_the_dante_nic_s_path_nothing_is_disabled() {
         entry(NIC, "dante nic"),
         entry(AUDIO, "audio")
     ));
-    let r = Pc {
-        nic_chain: Vec::new(),
-        ..pc(&[
-            (NIC, state(true, None, false)),
-            (AUDIO, state(true, None, false)),
-        ])
-    };
+    let mut r = pc(&[
+        (NIC, state(true, None, false)),
+        (AUDIO, state(true, None, false)),
+    ]);
+    r.dev.nic_chain = Vec::new();
     assert_eq!(
         check(&p, &r),
         vec![Problem {
