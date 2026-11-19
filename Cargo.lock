@@ -247,8 +247,8 @@ dependencies = [
 
 [[package]]
 name = "dlink"
-version = "0.6.185"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.185#55ac2c5ee6d50d9ef5821368d33d79cb1f8691a0"
+version = "0.6.194"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.194#0369b7978cd7202b2cdef0ca8b9031998699bbf1"
 dependencies = [
  "dstack",
  "dstack-audio-io",
@@ -259,8 +259,8 @@ dependencies = [
 
 [[package]]
 name = "dstack"
-version = "0.6.185"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.185#55ac2c5ee6d50d9ef5821368d33d79cb1f8691a0"
+version = "0.6.194"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.194#0369b7978cd7202b2cdef0ca8b9031998699bbf1"
 dependencies = [
  "dstack-audio-io",
  "dsync-ptp",
@@ -282,8 +282,8 @@ dependencies = [
 
 [[package]]
 name = "dstack-asio"
-version = "0.6.185"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.185#55ac2c5ee6d50d9ef5821368d33d79cb1f8691a0"
+version = "0.6.194"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.194#0369b7978cd7202b2cdef0ca8b9031998699bbf1"
 dependencies = [
  "azo",
  "dlink",
@@ -296,13 +296,13 @@ dependencies = [
 
 [[package]]
 name = "dstack-audio-io"
-version = "0.6.185"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.185#55ac2c5ee6d50d9ef5821368d33d79cb1f8691a0"
+version = "0.6.194"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.194#0369b7978cd7202b2cdef0ca8b9031998699bbf1"
 
 [[package]]
 name = "dstack-endpoint"
-version = "0.6.185"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.185#55ac2c5ee6d50d9ef5821368d33d79cb1f8691a0"
+version = "0.6.194"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.194#0369b7978cd7202b2cdef0ca8b9031998699bbf1"
 dependencies = [
  "cpal",
  "dlink",
@@ -315,16 +315,16 @@ dependencies = [
 
 [[package]]
 name = "dstack-resample"
-version = "0.6.185"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.185#55ac2c5ee6d50d9ef5821368d33d79cb1f8691a0"
+version = "0.6.194"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.194#0369b7978cd7202b2cdef0ca8b9031998699bbf1"
 dependencies = [
  "rubato",
 ]
 
 [[package]]
 name = "dsync-ptp"
-version = "1.33.1"
-source = "git+https://github.com/zbynekdrlik/dsync?tag=v1.33.1#f45090fb0be4eb756441f9eed3ed0c10d6ffeb0e"
+version = "1.35.14"
+source = "git+https://github.com/zbynekdrlik/dsync?tag=v1.35.14#10b75f07456c99886ac873beaf0094f266b23ead"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -548,7 +548,7 @@ dependencies = [
 [[package]]
 name = "mdns-sd"
 version = "0.21.6"
-source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.185#55ac2c5ee6d50d9ef5821368d33d79cb1f8691a0"
+source = "git+https://github.com/zbynekdrlik/dstack?tag=v0.6.194#0369b7978cd7202b2cdef0ca8b9031998699bbf1"
 dependencies = [
  "fastrand",
  "flume",
