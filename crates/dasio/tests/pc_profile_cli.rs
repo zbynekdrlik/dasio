@@ -822,10 +822,20 @@ fn the_keeper_gives_every_other_process_the_catch_all_unless_it_set_its_own() {
     };
     use std::os::windows::io::AsRawHandle;
     let cpus = cpu_count().unwrap();
-    assert!(cpus >= 2, "the runner has {cpus} CPU(s)");
     let mut p = parse("name = \"ci\"\nothers_affinity = \"{system}\"\n").unwrap();
     resolve(&mut p, cpus).unwrap();
     let want = Layout::of(cpus, 1).system_mask();
+    // The catch-all must be fewer CPUs than the runner's, and the last CPU
+    // outside it: a runner too small for that fails here, by name.
+    let every = if cpus >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << cpus) - 1
+    };
+    assert!(
+        want != every && want & (1u64 << (cpus - 1)) == 0,
+        "the runner's {cpus} CPUs leave no CPU outside the system mask 0x{want:X}"
+    );
     assert_eq!(p.others_affinity, Some(format!("0x{want:X}")));
     // The last CPU: never a system CPU (they come first), never every CPU.
     let pinned = 1u64 << (cpus - 1);

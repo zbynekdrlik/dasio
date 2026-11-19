@@ -514,10 +514,13 @@ absent_ok = true
 check_only = true
 why = "Defender's service off (FOH, owner 4.11.2026). Windows 11's Defender self-protection refuses the write (mbc 10.11, dasio#23), so it is checked, not set (dasio#128)"
 
-# dasio#181 (19.11.2026): virtualization-based security and HVCI off on every dasio PC. The hypervisor under
-# Windows adds an exit cost to every interrupt and timer; HVCI checks every kernel page. Read 19.11: dsg off
-# (keys 0, hypervisorlaunchtype Off), FOH off (keys absent), mbc ENABLED in config but not running (status 1,
-# HVCI configured, not running). Takes effect at the next boot only; changes nothing running now.
+# dasio#181 (19.11.2026): virtualization-based security and HVCI off on every dasio PC: HVCI checks every
+# kernel page a driver maps, and VBS needs the hypervisor under Windows. Read 19.11: dsg off (keys 0, and its
+# boot entry's hypervisorlaunchtype Off by hand), FOH off (keys absent, no hypervisorlaunchtype), mbc enabled
+# in its configuration but not running (VBS status 1, HVCI configured, not running; no UEFI lock: see #181).
+# These keys keep the security features off at the next boot; they do not stop a hypervisor another feature
+# (Hyper-V) asks for, which no dasio PC has. hypervisorlaunchtype is not held here (check-only [[bcd]] would
+# flag FOH and mbc, whose entries name none).
 [[registry]]
 key = 'HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard'
 name = "EnableVirtualizationBasedSecurity"

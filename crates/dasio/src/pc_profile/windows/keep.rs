@@ -13,11 +13,11 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
 use windows_sys::Win32::System::Threading::{
-    ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, GetPriorityClass,
-    GetProcessAffinityMask, GetProcessTimes, HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS,
-    NORMAL_PRIORITY_CLASS, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-    PROCESS_SET_INFORMATION, QueryFullProcessImageNameW, REALTIME_PRIORITY_CLASS, SetPriorityClass,
-    SetProcessAffinityMask,
+    ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, GetActiveProcessorGroupCount,
+    GetCurrentProcess, GetPriorityClass, GetProcessAffinityMask, GetProcessTimes,
+    HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS, OpenProcess,
+    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
+    QueryFullProcessImageNameW, REALTIME_PRIORITY_CLASS, SetPriorityClass, SetProcessAffinityMask,
 };
 
 use super::super::keep::{
@@ -65,8 +65,14 @@ const ZERO: FILETIME = FILETIME {
 };
 
 /// Every CPU of the PC (the system affinity mask, read through this
-/// process); `None` when unreadable.
+/// process); `None` when unreadable, or when the PC has more than one
+/// processor group: a mask is then relative to a process's group, and the
+/// same bits name other CPUs in another group (review of PR #198).
 pub fn system_mask() -> Option<u64> {
+    // SAFETY: no arguments.
+    if unsafe { GetActiveProcessorGroupCount() } != 1 {
+        return None;
+    }
     let (mut mask, mut system) = (0usize, 0usize);
     // SAFETY: this process's pseudo-handle and two writable masks.
     let ok = unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut mask, &mut system) } != 0;
@@ -183,6 +189,9 @@ impl Proc {
                 let e = std::io::Error::last_os_error();
                 return (done, Some(format!("affinity 0x{m:X}: {e}")));
             }
+            // Set: logged and counted toward a fight also when the read-back
+            // differs (review of PR #198).
+            done.affinity = Some(m);
             match self.affinity() {
                 Some((now, _)) if now == m => {}
                 Some((now, _)) => {
@@ -193,7 +202,6 @@ impl Proc {
                 }
                 None => return (done, Some(format!("affinity 0x{m:X} does not read back"))),
             }
-            done.affinity = Some(m);
         }
         if let Some(p) = &set.priority {
             let c = match class(p) {
@@ -231,9 +239,10 @@ struct Pass<'a> {
 
 impl Pass<'_> {
     /// `pid`, opened to be kept as `exe`: `None` when the keeper gave it
-    /// up, it is gone, it refuses the open (said once) or its image is
-    /// another one now (a reused id).
-    fn open(&mut self, pid: u32, exe: &str) -> Option<Proc> {
+    /// up, it is gone, it refuses the open (said once when `say_denied`:
+    /// an entry's process; the catch-all skips a protected one silently,
+    /// as the check does) or its image is another one now (a reused id).
+    fn open(&mut self, pid: u32, exe: &str, say_denied: bool) -> Option<Proc> {
         self.alive.push(pid);
         if self.fights.gave_up(pid) {
             return None;
@@ -241,6 +250,7 @@ impl Pass<'_> {
         let h = match Proc::open(pid) {
             Ok(h) => h,
             Err(NotOpened::Gone) => return None,
+            Err(NotOpened::Denied) if !say_denied => return None,
             Err(NotOpened::Denied) => {
                 let why = "cannot open it to set it (access denied: a protected process)";
                 if self.failed.insert((pid, why.to_string())) {
@@ -317,7 +327,7 @@ pub fn pass_over(
     };
     for e in held(p) {
         for (pid, _) in procs.iter().filter(|(_, n)| n.eq_ignore_ascii_case(&e.exe)) {
-            let Some(h) = k.open(*pid, &e.exe) else {
+            let Some(h) = k.open(*pid, &e.exe, true) else {
                 continue;
             };
             let x = extras::open(*pid, e, true);
@@ -338,7 +348,9 @@ pub fn pass_over(
             .iter()
             .filter(|(pid, exe)| catch_all_takes(p, exe, *pid, own))
         {
-            let Some(h) = k.open(*pid, exe) else { continue };
+            let Some(h) = k.open(*pid, exe, false) else {
+                continue;
+            };
             let Some((found, system)) = h.affinity() else {
                 continue;
             };

@@ -278,7 +278,9 @@ pub fn others_loaded(p: &Profile, system: Option<u64>) -> Option<String> {
     // Without the key, nothing to say.
     p.others_affinity.as_ref()?;
     let Some(system) = system else {
-        return Some("the catch-all holds nothing: the PC's CPUs are unreadable".into());
+        return Some(
+            "the catch-all holds nothing: the PC's CPUs are unreadable or in more than one processor group (a 64-bit mask cannot name them)".into(),
+        );
     };
     Some(match others(p, system).transpose()? {
         Ok(mask) => format!(

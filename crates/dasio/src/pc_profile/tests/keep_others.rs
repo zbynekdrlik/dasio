@@ -244,7 +244,9 @@ fn the_keeper_says_its_catch_all_once_at_a_load_and_each_process_set() {
     );
     assert_eq!(
         others_loaded(&p, None).as_deref(),
-        Some("the catch-all holds nothing: the PC's CPUs are unreadable")
+        Some(
+            "the catch-all holds nothing: the PC's CPUs are unreadable or in more than one processor group (a 64-bit mask cannot name them)"
+        )
     );
     let plain = parse("name = \"x\"\n").unwrap();
     assert_eq!(others_loaded(&plain, Some(0xFFF)), None);
