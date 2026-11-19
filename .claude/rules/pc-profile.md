@@ -186,7 +186,10 @@ paths:
   `layout`) is tested through the built exe in `tests/pc_profile_cli.rs`.
   A process check there reads the exe's own process (`dasio.exe`, running
   while it checks); the runner's integrity level is not pinned, so the
-  integrity test asserts exactly one of medium / high holds.
+  integrity test asserts exactly one of medium / high holds. Inside
+  `pc_profile/tests.rs`, `keep::X` is the TEST module `tests/keep.rs`, not
+  `pc_profile::keep`: write `super::keep::X` there (a bare `keep::` broke
+  every test build, #185).
 
 - Every Windows, NIC, driver-parameter or Process Lasso change on a dasio
   PC goes into that PC's profile in the same step. A change that lives only
