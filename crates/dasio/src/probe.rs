@@ -785,9 +785,10 @@ pub fn set_affinity(mask: usize) -> Result<(), String> {
 }
 
 /// The samples the host's timeline ran, the missed blocks in it (the
-/// driver's timeline), at the run's end.
+/// driver's timeline), at the run's end: `switch_body` moved `position`
+/// past the last block it served, so that is the end (dasio#203).
 fn samples_run(s: &State) -> u64 {
-    s.position + s.block as u64
+    s.position
 }
 
 #[cfg(test)]
