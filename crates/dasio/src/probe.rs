@@ -618,7 +618,7 @@ pub fn probe_at(instance: u32, seconds: u64, stall_ms: u64, rate: u32) -> Result
             .saturating_sub(missed_before);
     }
     let s = STATE.lock().unwrap().take().unwrap();
-    report.samples = s.position + s.block as u64;
+    report.samples = samples_run(&s);
     report.switches = SWITCHES.load(Ordering::Relaxed);
     report.max_gap_us = MAX_GAP_US.load(Ordering::Relaxed);
     report.max_switch_us = MAX_SWITCH_US.load(Ordering::Relaxed);
@@ -782,6 +782,58 @@ pub fn set_affinity(mask: usize) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// The samples the host's timeline ran, the missed blocks in it (the
+/// driver's timeline), at the run's end: `switch_body` moved `position`
+/// past the last block it served, so that is the end (dasio#203).
+fn samples_run(s: &State) -> u64 {
+    s.position
+}
+
+#[cfg(test)]
+mod samples_tests {
+    use super::*;
+
+    #[test]
+    fn the_samples_the_host_ran_end_with_its_last_block() {
+        // dasio#203 (CI 44494755515): 12000 switches of 32 ran 384000
+        // samples (4 s at 96 kHz), the report said 384032, and the e2e
+        // check wanted the 4 s impulse of a block that never ran.
+        let block = 32;
+        let mut halves = [[0i32; 32]; 2];
+        let bufs = vec![[
+            halves[0].as_mut_ptr() as usize,
+            halves[1].as_mut_ptr() as usize,
+        ]];
+        *STATE.lock().unwrap() = Some(State {
+            rate: 96_000,
+            bufs,
+            rx: 0,
+            block,
+            origin: None,
+            position: 0,
+            stall_ms: 0,
+            stalled: false,
+            watch: None,
+            next_emit: 96_000,
+            last_emit: None,
+            last_emit_us: 0,
+            lost: Vec::new(),
+            round_trips: Vec::new(),
+            emitted: 0,
+            skipped: 0,
+            peaks: Vec::new(),
+        });
+        for k in 0..3 {
+            // SAFETY: the two halves above, `block` samples each, live
+            // through the calls.
+            unsafe { switch_body(k % 2, 0, None) };
+        }
+        let s = STATE.lock().unwrap().take().unwrap();
+        assert_eq!(samples_run(&s), 3 * block as u64);
+        assert_eq!(s.emitted, 0);
+    }
 }
 
 #[cfg(test)]

@@ -67,6 +67,14 @@ Owner rules from dasio#1. They hold for every change on a PC running dasio.
     `curl.exe -o $b\artifact.zip '<url>'` (FOH: `--limit-rate 1M`), then
     `Expand-Archive`. The URL expires about 10 minutes after it is made,
     so make a new one for each PC.
+  - Fetch and check first, install at the announced time: after the
+    download and the SHA256SUMS check, run the BUNDLE's `dasio.exe
+    pc-profile check` (and `pc-profile instance-cpus --instance N --exe
+    <exe>`) against the live profile: the new code's verdict with no
+    restart (FOH 19.11.2026: 0.1.142's check and CPU step read before band
+    restarted). The deploy.ps1 that installs later checks SHA256SUMS again
+    and never downloads again: by then the URL has expired (a copy of an
+    older deploy.ps1 that curls first fails there).
   - `install.ps1` keeps `C:\ProgramData\dasio` admin-only, with Users
     allowed to read. It refuses a link in that folder, or an item there
     that someone else owns or may change, and names it. Check it by hand
