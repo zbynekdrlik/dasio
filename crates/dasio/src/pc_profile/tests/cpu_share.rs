@@ -190,6 +190,10 @@ fn an_instance_entry_on_two_instances_cpus_is_a_share() {
     // One instance and the DAW's CPUs is fine: dsg's bridge.
     let dsg = on(4, &entry("dasio-dsg.exe", "0xE"));
     assert!(shares(&dsg).is_empty(), "{:?}", lines(&dsg));
+    // So with two instances: band's own 4-7 and the DAW's 12 touch one
+    // instance's CPUs only.
+    let reach = on(32, &format!("instances = 2\n{}", entry(BAND, "0x10F0")));
+    assert!(shares(&reach).is_empty(), "{:?}", lines(&reach));
 }
 
 #[test]
