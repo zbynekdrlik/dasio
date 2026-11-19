@@ -230,17 +230,14 @@ fn string_list(dev: u32, key: &DEVPROPKEY, what: &str) -> Result<Vec<String>, St
 }
 
 /// What stops with `id` when it stops, one step: its children and its
-/// removal relations (DEVPKEY_Device_Children, _RemovalRelations); empty
-/// for a device not connected.
+/// removal relations (DEVPKEY_Device_Children, _RemovalRelations), of a
+/// present or a phantom node (one reached through a relation may be
+/// unplugged and still lead on); a node Windows does not know at all is
+/// unread (review of PR #196: never taken as stopping nothing).
 pub fn removes(id: &str) -> Result<Vec<String>, String> {
-    let w = wide(id);
-    let mut dev = 0u32;
-    // SAFETY: a NUL-terminated instance path and an out handle.
-    match unsafe { CM_Locate_DevNodeW(&mut dev, w.as_ptr(), CM_LOCATE_DEVNODE_NORMAL) } {
-        CR_SUCCESS => {}
-        CR_NO_SUCH_DEVNODE => return Ok(Vec::new()),
-        cr => return Err(cr_text("CM_Locate_DevNode", cr)),
-    }
+    let Some((dev, _present)) = locate(id)? else {
+        return Err(format!("{id}: no such device node"));
+    };
     let mut out = string_list(dev, &DEVPKEY_Device_Children, "its children")?;
     out.extend(string_list(
         dev,

@@ -235,6 +235,13 @@ fn judge(
             if !seen.insert(y.to_ascii_uppercase()) {
                 continue;
             }
+            // The Dante NIC's own path first: it is guarded also when the
+            // adapter list misses it.
+            if chain.iter().any(|c| same(c, &y)) {
+                return Verdict::Refused(format!(
+                    "a device whose removal stops the Dante NIC ({y} stops with it)"
+                ));
+            }
             if let Some(a) = taken(adapters, &y) {
                 return Verdict::Refused(format!(
                     "a device whose removal stops the network adapter {} ({y} stops with it)",
@@ -266,19 +273,21 @@ fn see(
     net: &OnceCell<Result<Vec<Adapter>, String>>,
     d: &dyn Devices,
 ) -> Seen {
-    let (found, connected) = match d.device(&e.instance_id) {
+    let (found, connected, unread_state) = match d.device(&e.instance_id) {
         Ok(Some(s)) if s.off() => return Seen::Fine,
-        Ok(Some(s)) => (s.describe(), s.present),
+        Ok(Some(s)) => (s.describe(), s.present, false),
         Ok(None) if e.absent_ok => return Seen::Fine,
         Ok(None) => return Seen::Missing,
-        // An unread state may be a connected device: the guard reads all.
-        Err(err) => (format!("unreadable ({err})"), true),
+        // An unread state may be a connected device: the guard reads all,
+        // and the device is never disabled (fail closed, review of PR #196).
+        Err(err) => (format!("unreadable ({err})"), true, true),
     };
     let net = net.get_or_init(|| d.net_adapters());
-    Seen::Would {
-        found,
-        verdict: judge(&e.instance_id, connected, chain, net, d),
-    }
+    let verdict = match judge(&e.instance_id, connected, chain, net, d) {
+        Verdict::Free if unread_state => Verdict::Unread("its state was not read".into()),
+        v => v,
+    };
+    Seen::Would { found, verdict }
 }
 
 /// Each entry against the PC: one problem (WARN, never must-have) for a
@@ -335,9 +344,7 @@ pub fn check(entries: &[DeviceEntry], d: &dyn Devices) -> Vec<Problem> {
 /// The instance paths `apply` disables: every device that is there and not
 /// off, each only when the guard finds it off every network path; nothing
 /// without the NIC's path. A device whose state is unread goes through the
-/// guard too: planned only when its parents and what stops with it are
-/// read (then the disable says why it fails); on Windows a device that
-/// cannot be located has no parents read either, so it stays alone.
+/// guard too and is never planned (fail closed).
 pub fn plan(entries: &[DeviceEntry], d: &dyn Devices) -> Vec<String> {
     let chain = d.nic_chain();
     if chain.is_empty() {
