@@ -25,6 +25,7 @@ pub mod kernel_tx;
 pub mod kind;
 pub mod logfile;
 pub mod minutes;
+pub mod miss_watch;
 pub mod pc_profile;
 pub mod place;
 #[cfg(windows)]
