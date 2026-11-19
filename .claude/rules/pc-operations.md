@@ -172,3 +172,17 @@ Owner rules from dasio#1. They hold for every change on a PC running dasio.
   fault showed in dtray as "expected, not running" for devices that were
   running. This holds until dstack#282 ships a rejoin. Check the receivers
   (stream-obs) after the restart, not only dasio's log.
+- **After a reboot of a PC whose Dante NIC is USB (mbc), check dsync
+  first** (19.11.2026): dsync and dasio's in-process follower can start
+  before Npcap lists the NIC ("Interface '{GUID}' not found. Available:
+  [loopback]" → "Service loop failed" in C:\ProgramData\dsync\dsync.log)
+  and neither retries (handed to dstack); the device's media clock then
+  never becomes ready, every TX flow request is dropped ("our TX clock was
+  not ready within 3 s") and its receivers get silence. dsync is the one
+  writer on its box: ask dstack for the dsync restart (peer); restart it
+  yourself (`Restart-Service dsync`) only while a receiver is silent and
+  dstack does not answer at once, and tell dstack. Then wait for "===
+  LOCKED ===" and the device's "TX flow started" lines; receivers still
+  see late packets for ~2 min while the clock converges (mbc 19.11:
+  stream-obs clean from 01:00:45Z, 2 min after the flow started). Fixes
+  pending: dstack#431 (the in-process follower retries), dsync's own.

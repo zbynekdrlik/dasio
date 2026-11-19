@@ -142,6 +142,13 @@ paths:
   other bits, only at boot): dsg's 16 move to `[[device]]` at its next
   deploy. Read a PC's devices with `Get-PnpDevice` (InstanceId, Status,
   Problem) before writing entries.
+- **Never reserve the DAW's CPUs on a PC with 2 system CPUs** (mbc
+  19.11.2026): ReservedCpuSets confines KERNEL threads too, unlike Lasso's
+  catch-all (user processes only). mbc with 2-11 reserved ran its USB NIC's
+  work on CPUs 0-1 only: CPU0 79 %, System 71 % of a CPU, kernel TX
+  max_out 200, RX packets late and missing at stream-obs. Reverted to the
+  baseline's dasio CPUs (2-3); keeping other processes off the DAW's CPUs
+  is the keeper's job (#185).
 - **Reserved CPUs** (dasio#120): the baseline's `ReservedCpuSets`
   (`Session Manager\kernel`, `computed = "dasio_cpus"`, read at boot) keeps
   every thread off dasio's CPUs unless its process asks (CPU sets) or is
@@ -240,6 +247,11 @@ paths:
   read `powercfg /getactivescheme`. `apply` prints FAILED ("ProcessLasso.exe
   is still there", uninstaller exit 0) while the uninstaller finishes in
   the background: check again a minute later.
+  On a Modern Standby laptop (mbc 19.11.2026) the uninstaller deleted
+  EVERY plan but Balanced, the copy too, and CLEARED `ReservedCpuSets`:
+  `powercfg /export` Lasso's plan first, `/import` it under a NEW GUID
+  after (the deleted copy's GUID is refused), pin that, and set reserved
+  CPUs only after Lasso is gone (a second `apply`).
 - What the keeper does NOT cover yet (before a PC's Lasso goes): Lasso's
   `DefaultPriorities` for exes without a `[[process]]` entry (FOH: dsend,
   dlisten above normal, cg below normal, dvs_service high), its I/O, GPU
