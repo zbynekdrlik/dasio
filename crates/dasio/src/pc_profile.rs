@@ -913,6 +913,11 @@ pub fn takes_effect(a: &Action) -> &'static str {
         {
             "a reboot"
         }
+        // Virtualization-based security and HVCI are set up at boot
+        // (dasio#201).
+        Action::Reg { key, .. } if key.to_ascii_lowercase().contains(r"\control\deviceguard") => {
+            "a reboot"
+        }
         Action::Reg { key, .. }
             if key
                 .to_ascii_lowercase()
