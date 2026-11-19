@@ -29,7 +29,7 @@ use windows_sys::Win32::System::Threading::{
 };
 
 use super::absent::{self, AbsentEntry, Fallback, Removal, Step, Target};
-use super::{Action, DevState, ProcEntry, ProcState, Profile, Reader, Value, get_ini, set_ini};
+use super::{Action, Devices, ProcEntry, ProcState, Profile, Reader, Value, get_ini, set_ini};
 
 mod device;
 mod exe;
@@ -242,12 +242,8 @@ impl Reader for Pc {
         self.nic_hardware_ids.clone()
     }
 
-    fn nic_chain(&self) -> Vec<String> {
-        self.nic_chain.clone()
-    }
-
-    fn device(&self, id: &str) -> Result<Option<DevState>, String> {
-        device::state(id)
+    fn devices(&self) -> &dyn Devices {
+        self
     }
 
     fn absent(&self, e: &AbsentEntry) -> Result<Vec<String>, String> {
