@@ -54,7 +54,9 @@ paths:
   checks, so before the NIC driver step, `apply` and the service stop; a
   test-clock install skips it) refuses `-Instance N` beyond `instances` or
   with any entry but its own exe's (another instance's included) or
-  `others_affinity` on its CPUs: instance N is the layout's `dasio:N`.
+  `others_affinity` on its CPUs, or with its own exe's entry off its CPUs
+  (some of them, nothing but them and the DAW's): instance N is the
+  layout's `dasio:N`.
   `cpus()` and every loop here are bounded (`for i in 0..=MAX_CPUS`): an
   unbounded `while` hung both CI mutation jobs (PR #200).
 - **A second instance on FOH** (the Yamaha AIC128-D replaced by dasio, for
