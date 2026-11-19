@@ -145,13 +145,16 @@ fn the_underrun_tick_names_a_rise_and_the_callbacks_lateness_meanwhile() {
     let quiet = minifuse([0; 8], 0);
     assert_eq!(underrun_tick(&mut watch, &quiet, 0, 0, 1.333333), None);
     // A from-ASIO underrun with a callback 1.0-1.25 ms late at a 1.333 ms
-    // target: the driver's.
+    // target: the target's since dstack v0.6.192 (dstack issue 393): the
+    // side's floor, half the 128-frame period (0.667 ms), plus 1.0 ms
+    // reaches the target, while 1.0 ms alone does not.
     let late = minifuse([0, 0, 0, 1, 0, 0, 0, 0], 0);
     assert_eq!(
         underrun_tick(&mut watch, &late, 0, 2, 1.333333).as_deref(),
         Some(
             "asio bridge underruns since the last check: from-ASIO 2 (target 1333 us), \
-             cause: driver callback lateness; driver callbacks late meanwhile: 1000-1250 us: 1"
+             cause: the target under the side's floor plus the callbacks' lateness; \
+             driver callbacks late meanwhile: 1000-1250 us: 1"
         )
     );
     // Nothing rose since: no line.
