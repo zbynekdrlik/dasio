@@ -210,6 +210,7 @@ pub fn baseline_only(base: &Profile) -> Profile {
         device: Vec::new(),
         no_ini: Vec::new(),
         others_affinity: None,
+        layout: None,
     };
     merge(base, &empty)
 }

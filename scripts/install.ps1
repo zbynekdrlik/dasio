@@ -461,6 +461,16 @@ if (-not $TestClock) {
         }
         Write-Output "the NIC driver step: '$alias' runs $inf $wantVersion"
     }
+    # The instance's own CPUs (dasio#199, owner 19.11.2026: several dasio on
+    # one PC must not fight): the profile's layout must hold instance
+    # $Instance (instances = N) and no other process the profile pins may
+    # name its CPUs, before anything changes.
+    $room = @(& (Join-Path $here "dasio.exe") pc-profile instance-cpus --instance $Instance)
+    $roomExit = $LASTEXITCODE
+    $room | ForEach-Object { Write-Output $_ }
+    if ($roomExit -ne 0) {
+        throw "the CPU step: dasio refused instance $Instance (exit $roomExit, the line above); nothing changed"
+    }
     & (Join-Path $here "dasio.exe") pc-profile apply
     $applied = $LASTEXITCODE
     if ($applied -eq 2) {

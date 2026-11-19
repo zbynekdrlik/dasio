@@ -246,5 +246,155 @@ pub fn resolve(p: &mut Profile, cpus: usize) -> Result<(), String> {
         let mask = mask.map_err(|err| format!("others_affinity: {err}"))?;
         p.others_affinity = Some(format!("0x{mask:X}"));
     }
+    p.layout = Some(layout);
     Ok(())
+}
+
+/// The CPUs of `mask` as runs, e.g. `4-7` or `0-3, 16-31`; empty for 0.
+pub fn cpus(mask: u64) -> String {
+    let mut runs = Vec::new();
+    let mut i = 0;
+    while i < MAX_CPUS {
+        if mask & (1u64 << i) == 0 {
+            i += 1;
+            continue;
+        }
+        let from = i;
+        while i < MAX_CPUS && mask & (1u64 << i) != 0 {
+            i += 1;
+        }
+        runs.push(span(from, i));
+    }
+    runs.join(", ")
+}
+
+/// Whether instance `n` has CPUs of its own on the PC `p` was loaded for
+/// (dasio#199), before install.ps1 touches it: the layout must hold it
+/// (`instances` at least `n`, its CPUs on the PC) and no `[[process]]`
+/// entry but a dasio exe's, nor `others_affinity`, may name its CPUs. The
+/// line says which CPUs are its own, or what to change first.
+pub fn instance_room(p: &Profile, n: usize) -> Result<String, String> {
+    let l = p
+        .layout
+        .ok_or_else(|| "the profile's CPU layout was not computed".to_string())?;
+    if n == 0 || n > l.instances {
+        return Err(format!(
+            "instance {n} has no CPUs of its own: the site profile has instances = {} (set instances = {n} there first; dasio pc-profile layout shows the CPUs it then gives)",
+            l.instances
+        ));
+    }
+    let own = l
+        .dasio_mask(n)
+        .map_err(|e| format!("instance {n} has no CPUs of its own: {e}"))?;
+    let mut takers: Vec<String> = p
+        .process
+        .iter()
+        .filter(|e| !super::keep::dasio_exe(&e.exe))
+        .filter_map(|e| {
+            let m = parse_mask(e.affinity.as_deref()?)?;
+            (m & own != 0).then(|| format!("{} ({})", e.exe, cpus(m)))
+        })
+        .collect();
+    if let Some(m) = p.others_affinity.as_deref().and_then(parse_mask)
+        && m & own != 0
+    {
+        takers.push(format!("others_affinity ({})", cpus(m)));
+    }
+    if !takers.is_empty() {
+        return Err(format!(
+            "instance {n}'s CPUs {} are pinned to {} too: move them off in the site profile first (several dasio on one PC must not fight, dasio#199)",
+            cpus(own),
+            takers.join(", ")
+        ));
+    }
+    Ok(format!(
+        "instance {n}: CPUs {} are its own ({})",
+        cpus(own),
+        l.describe()
+    ))
+}
+
+/// Why a dasio instance's CPUs are its own (dasio#199).
+pub const SHARE_WHY: &str = "a dasio instance's CPUs are its own: a DAW or a second instance pinned there takes the pump's time and the device misses its deadlines (dasio#199, owner 19.11.2026: several dasio on one PC must not fight)";
+
+/// The CPU shares in `p` (dasio#199), one problem each:
+/// - a `[[process]]` entry that is not a dasio exe, or `others_affinity`,
+///   whose affinity names a dasio instance's CPUs: the layout's instances
+///   (`instances`, when [`resolve`] put the layout in) and each dasio exe
+///   entry's own mask;
+/// - two dasio exe entries on a common CPU.
+///
+/// Only hex masks count: a placeholder [`resolve`] did not fill is the
+/// load's error, not a share. A dasio exe's own entry may span more than
+/// its instance (a bridge is its own DAW: dsg's 1-3).
+pub fn shares(p: &Profile) -> Vec<super::Problem> {
+    let mask_of = |a: &Option<String>| a.as_deref().and_then(parse_mask);
+    let dasio: Vec<(&str, u64)> = p
+        .process
+        .iter()
+        .filter(|e| super::keep::dasio_exe(&e.exe))
+        .filter_map(|e| Some((e.exe.as_str(), mask_of(&e.affinity)?)))
+        .collect();
+    let mut owners: Vec<(String, u64)> = Vec::new();
+    if let Some(l) = p.layout {
+        for n in 1..=l.instances {
+            if let Ok(m) = l.dasio_mask(n) {
+                owners.push((format!("dasio:{n}"), m));
+            }
+        }
+    }
+    owners.extend(dasio.iter().map(|(exe, m)| (exe.to_string(), *m)));
+    // Without an owner nothing is shared, so the list is never empty in a
+    // problem.
+    let list: Vec<String> = owners
+        .iter()
+        .map(|(o, m)| format!("{o} {}", cpus(*m)))
+        .collect();
+    let want = format!("none of dasio's CPUs ({})", list.join(", "));
+    let problem = |what: String, found: String| super::Problem {
+        what,
+        found,
+        want: want.clone(),
+        why: SHARE_WHY.into(),
+        must: false,
+    };
+    let mut out = Vec::new();
+    let mut judge = |what: String, mask: u64| {
+        // Each shared CPU once, named by its first owner: an instance's
+        // entry on the layout's own CPUs adds nothing to its line.
+        let mut seen = 0u64;
+        let mut hits = Vec::new();
+        for (owner, m) in &owners {
+            let shared = m & mask & !seen;
+            if shared != 0 {
+                hits.push(format!("{} with {owner}", cpus(shared)));
+                seen |= shared;
+            }
+        }
+        if !hits.is_empty() {
+            out.push(problem(
+                what,
+                format!("CPUs {} share {}", cpus(mask), hits.join(", ")),
+            ));
+        }
+    };
+    for e in p.process.iter().filter(|e| !super::keep::dasio_exe(&e.exe)) {
+        if let Some(mask) = mask_of(&e.affinity) {
+            judge(format!("process {} affinity", e.exe), mask);
+        }
+    }
+    if let Some(mask) = mask_of(&p.others_affinity) {
+        judge("others_affinity".into(), mask);
+    }
+    for (i, (a, ma)) in dasio.iter().enumerate() {
+        for (b, mb) in &dasio[i + 1..] {
+            if ma & mb != 0 {
+                out.push(problem(
+                    format!("process {a} affinity"),
+                    format!("CPUs {} share {} with {b}", cpus(*ma), cpus(ma & mb)),
+                ));
+            }
+        }
+    }
+    out
 }

@@ -4,6 +4,7 @@ use super::*;
 
 mod absent_caller;
 mod absent_kind;
+mod cpu_share;
 mod device_guard;
 mod device_kind;
 mod fold;

@@ -134,6 +134,11 @@ pub struct Profile {
     /// ([`keep::catch_all_takes`], [`keep::others_wanted`]).
     #[serde(default)]
     pub others_affinity: Option<String>,
+    /// The PC's CPU layout, put in by [`resolve`] (never read from a
+    /// file): the check judges each instance's CPUs by it
+    /// ([`layout::shares`], dasio#199).
+    #[serde(skip)]
+    pub layout: Option<Layout>,
 }
 
 impl Profile {
@@ -694,6 +699,7 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
         });
     }
     process::problems(p, r, &mut out);
+    out.extend(layout::shares(p));
     out.extend(keep::others_problem(p, r, std::process::id()));
     for e in &p.disk {
         // The text stays the same while the drive stays under its floor:

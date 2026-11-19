@@ -19,6 +19,7 @@ fn usage() -> ExitCode {
          dasio probe --instance <n> [--seconds <s>] [--affinity <hex mask>] [--rate <Hz>]\n       \
          dasio jitter --cpus <n,n,..> --seconds <s>\n       \
          dasio pc-profile check|apply|layout|keep [--profile <file>] [--plan]\n       \
+         dasio pc-profile instance-cpus --instance <n> [--profile <file>]\n       \
          dasio pc-profile nic-driver [--profile <file>] --hardware-id <id>... --file <name>=<sha256>... --signature <status> --signer <subject>\n       \
          dasio unregister --instance <n> [--name <shown to DAWs>]"
     );
@@ -87,6 +88,10 @@ fn main() -> ExitCode {
             Some("check") => pc_profile(&path, false, true),
             Some("apply") => pc_profile(&path, true, plan_only),
             Some("layout") => pc_layout(&path),
+            Some("instance-cpus") => match flag(&args, "--instance").and_then(|n| n.parse().ok()) {
+                Some(n) => pc_instance_cpus(&path, n),
+                None => usage(),
+            },
             Some("keep") => pc_keep(&path),
             Some("nic-driver") => pc_nic_driver(&path, &args[2..]),
             _ => usage(),
@@ -502,6 +507,39 @@ fn pc_layout(path: &str) -> ExitCode {
 
 #[cfg(not(windows))]
 fn pc_layout(_path: &str) -> ExitCode {
+    eprintln!("dasio: Windows only");
+    ExitCode::FAILURE
+}
+
+/// `dasio pc-profile instance-cpus --instance N` (dasio#199, run by
+/// install.ps1 before it touches the instance): instance N's CPUs are its
+/// own on this PC ([`dasio::pc_profile::layout::instance_room`]). One line
+/// on stdout; exit 0 when they are, 2 when not (the line says what to
+/// change), 1 when the profile does not load (stderr).
+#[cfg(windows)]
+fn pc_instance_cpus(path: &str, n: usize) -> ExitCode {
+    use dasio::pc_profile::{layout::instance_room, load, windows::cpu_count};
+    let p = match cpu_count().and_then(|cpus| load(std::path::Path::new(path), cpus)) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("dasio: the profile {path}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match instance_room(&p, n) {
+        Ok(line) => {
+            println!("{line}");
+            ExitCode::SUCCESS
+        }
+        Err(line) => {
+            println!("REFUSED {line}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn pc_instance_cpus(_path: &str, _n: usize) -> ExitCode {
     eprintln!("dasio: Windows only");
     ExitCode::FAILURE
 }
