@@ -15,6 +15,10 @@ paths:
 - A `while` walk over a buffer (`at += size`) hangs under its `*=`/`-=`
   mutants and the job is cancelled at 20 min with no log. Bound the loop by
   the most iterations the input allows (`for _ in 0..len.div_ceil(8)`).
+  The same for a walk over a mask's bits: `cpus()`'s `while i < 64` ran
+  forever under `i += 1` → `i *= 1` and an inverted bit test, and both
+  mutation jobs of PR #200 died ("runner has received a shutdown
+  signal"); it is `for i in 0..=64` now.
 - `a | b` on masks that never overlap is an equivalent mutant (`^`): either
   compute the mask another way (one `range`) or add the function to the
   `replace \| with \^ in (...)` exclusion with the reason.

@@ -36,24 +36,35 @@ paths:
   layout gives it.
 - **An instance's CPUs are its own** (dasio#199, owner 19.11.2026: several
   dasio on one PC must not fight, now that Lasso is gone and the keeper
-  sets exactly what the profile says). `layout::shares` (in every check,
-  WARN + tray count, never must-have): a `[[process]]` entry that is not a
-  dasio exe (`keep::dasio_exe`), or `others_affinity`, naming CPUs of an
-  instance (`dasio:1..instances` from the layout `resolve` keeps in
-  `Profile::layout`, and each dasio exe entry's own mask), and two dasio
-  exe entries on a common CPU. A dasio exe's own entry may span more than
-  its instance (dsg's bridge 1-3 is its own DAW). install.ps1's CPU step
-  (`dasio pc-profile instance-cpus --instance N`, in the baseline step
-  before `apply` and the service stop; a test-clock install skips it)
-  refuses `-Instance N` beyond `instances` or with another entry on its
-  CPUs: instance N is the layout's `dasio:N`.
+  sets exactly what the profile says). `layout::shares` (WARN + tray count,
+  never must-have), in every check; the bridge's in-process check leaves
+  `others_affinity` out, so its share shows only in `dasio pc-profile
+  check` and a DAW instance's check:
+  - a `[[process]]` entry that is not an instance's exe
+    (`layout::instance_exe`: `dasio-*.exe` but not `dasio-keep.exe` or
+    `dasio.exe`), or `others_affinity`, naming CPUs of an instance
+    (`dasio:1..instances` from the layout `resolve` keeps in
+    `Profile::layout`, and each instance exe entry's own mask);
+  - two instance exe entries on a common CPU;
+  - an instance exe entry on the CPUs of two or more layout instances. An
+    instance's own entry may reach into the DAW's CPUs (dsg's bridge 1-3 is
+    its own DAW).
+  install.ps1's CPU step (`dasio pc-profile instance-cpus --instance N
+  --exe <instance exe>`, in the baseline step right after the nic_guid
+  checks, so before the NIC driver step, `apply` and the service stop; a
+  test-clock install skips it) refuses `-Instance N` beyond `instances` or
+  with any entry but its own exe's (another instance's included) or
+  `others_affinity` on its CPUs: instance N is the layout's `dasio:N`.
+  `cpus()` and every loop here are bounded (`for i in 0..=MAX_CPUS`): an
+  unbounded `while` hung both CI mutation jobs (PR #200).
 - **A second instance on FOH** (the Yamaha AIC128-D replaced by dasio, for
   master Live): FOH runs `instances` 1 while `dasio-2` (master-asio-dante)
   stays disabled. To add it: `instances = 2` (layout 0-3 / 4-7 / 8-11 /
   12-31), its exe on `{dasio:2}`, then master Live and AudioGridderServer
   off 8-11 (both on 8-15 today; 12-15, or another split of 12-31 between
   band and master decided with numbers then), reserved CPUs still 4-31;
-  `dasio pc-profile instance-cpus --instance 2` passes before the install.
+  `dasio pc-profile instance-cpus --instance 2 --exe
+  dasio-master-asio-dante.exe` passes before the install.
 - **The Dante NIC's RSS range is computed too** (dasio#128, 17.11.2026):
   `computed = "rss_base_cpu"` / `"rss_max_cpu"` / `"rss_cpus"` give
   `*RssBaseProcNumber` / `*RssMaxProcNumber` / `*MaxRssProcessors` as
