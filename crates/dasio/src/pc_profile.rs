@@ -309,6 +309,10 @@ pub trait Reader {
     /// The Dante NIC's driver service (e.g. `rt640x64`); `None` when the
     /// NIC or its service was not found.
     fn nic_service(&self) -> Option<String>;
+    /// Whether the Dante NIC's keys (its class key, and its device key
+    /// through `DeviceInstanceID`) were found from the profile's GUID.
+    /// Without them no entry on the NIC's keys can be read (dasio#24).
+    fn nic_found(&self) -> bool;
     /// What of `e`'s thing the PC has ([`absent`]): the exe's path, the
     /// service's name, each task the pattern matches by its full path;
     /// empty when there is none.
@@ -322,6 +326,31 @@ pub trait Reader {
     /// CPUs, for `others_affinity` ([`keep::others_problem`], dasio#185);
     /// read only for a profile naming it.
     fn processes(&self) -> Result<keep::Processes, String>;
+}
+
+/// A key on the Dante NIC's own registry keys (its class or device key).
+fn on_nic(key: &str) -> bool {
+    key.contains("{nic_class}") || key.contains("{nic_device}")
+}
+
+/// The profile names a Dante NIC whose entries cannot be judged: its keys
+/// were not found from the GUID (e.g. a wrong GUID) while entries sit on
+/// them or need its driver, or its driver is unknown while driver-scoped
+/// entries need it. One problem says so (dasio#128).
+fn nic_missing(p: &Profile, r: &dyn Reader) -> bool {
+    p.nic_guid.is_some()
+        && ((!r.nic_found()
+            && p.registry
+                .iter()
+                .any(|e| on_nic(&e.key) || e.nic_service.is_some()))
+            || (r.nic_service().is_none() && p.registry.iter().any(|e| e.nic_service.is_some())))
+}
+
+/// An entry on the NIC's keys while those keys are not found: not read or
+/// written one by one (Windows reads each as unreadable), the missing-NIC
+/// problem stands for it, must-have included (dasio#24).
+fn nic_unread(e: &RegEntry, r: &dyn Reader) -> bool {
+    on_nic(&e.key) && !r.nic_found()
 }
 
 /// Whether `e` applies on the PC `r` reads: an entry for one NIC driver
@@ -441,10 +470,7 @@ fn parse_with(text: &str, need_nic_guid: bool) -> Result<Profile, String> {
                 r.key, r.name
             ));
         }
-        if need_nic_guid
-            && (r.key.contains("{nic_class}") || r.key.contains("{nic_device}"))
-            && p.nic_guid.is_none()
-        {
+        if need_nic_guid && on_nic(&r.key) && p.nic_guid.is_none() {
             return Err(format!("registry {}: needs nic_guid", r.key));
         }
     }
@@ -627,23 +653,31 @@ fn show(v: &Value) -> String {
 /// Every setting of `p` the PC does not have.
 pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
     let mut out = Vec::new();
-    // NIC-family entries need the NIC: a profile naming one the PC does not
-    // have (a wrong GUID, a swapped NIC) says so instead of skipping them.
+    // A profile naming a Dante NIC whose entries cannot be judged (e.g. a
+    // wrong GUID, or an unreadable driver service) says so in one line
+    // (`nic_missing`). A driver-scoped must-have, which the unknown driver
+    // leaves unjudged, makes that line must-have whether or not the NIC's
+    // keys are found. While they are not found, the line also stands for
+    // every entry on them (`nic_unread`), so a must-have among those makes
+    // that line must-have too; while they are found, those entries are
+    // judged on their own lines.
     if let Some(guid) = &p.nic_guid
-        && r.nic_service().is_none()
-        && p.registry.iter().any(|e| e.nic_service.is_some())
+        && nic_missing(p, r)
     {
         out.push(Problem {
             what: format!("the Dante NIC {guid}"),
             found: "not found (or its driver service unreadable)".into(),
             want: "the adapter with that NetCfgInstanceId".into(),
             why: "the baseline's NIC settings need it (dasio#128)".into(),
-            must: p.registry.iter().any(|e| e.must && e.nic_service.is_some()),
+            must: p
+                .registry
+                .iter()
+                .any(|e| e.must && (e.nic_service.is_some() || nic_unread(e, r))),
         });
     }
     for e in &p.registry {
         let Some(want) = want_reg(e) else { continue };
-        if !applies(e, r) {
+        if !applies(e, r) || nic_unread(e, r) {
             continue;
         }
         let found = r.reg(&e.key, &e.name);
@@ -823,12 +857,14 @@ pub enum Action {
 
 /// What has to change for the PC to match (processes are only checked:
 /// the tool that sets them, Lasso, is configured through its ini). An
-/// unreadable value is planned too: the write says why it fails.
+/// unreadable value is planned too: the write says why it fails. Entries
+/// on the keys of a Dante NIC not found are not planned (the check's
+/// missing-NIC problem names it).
 pub fn plan(p: &Profile, r: &dyn Reader) -> Vec<Action> {
     let mut out = Vec::new();
     for e in &p.registry {
         let Some(want) = want_reg(e) else { continue };
-        if !applies(e, r) || e.check_only {
+        if !applies(e, r) || e.check_only || nic_unread(e, r) {
             continue;
         }
         let fine = match r.reg(&e.key, &e.name) {

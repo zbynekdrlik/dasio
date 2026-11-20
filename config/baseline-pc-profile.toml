@@ -300,17 +300,17 @@ why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
 key = '{nic_class}'
 name = "*LsoV2IPv4"
 string = "0"
-nic_service = "rt640x64"
 must = true
-why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+absent_ok = true
+why = "large send offload off on the Dante NIC, whatever its driver: another sender's large sends delay our packets (late at a receiver; dstack warns). A standard NDIS keyword, so no driver scope; a NIC without LSO has none (mbc's USB Realtek ran it on, dasio#24)"
 
 [[registry]]
 key = '{nic_class}'
 name = "*LsoV2IPv6"
 string = "0"
-nic_service = "rt640x64"
 must = true
-why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+absent_ok = true
+why = "large send offload off on the Dante NIC, whatever its driver: another sender's large sends delay our packets (late at a receiver; dstack warns). A standard NDIS keyword, so no driver scope; a NIC without LSO has none (mbc's USB Realtek ran it on, dasio#24)"
 
 [[registry]]
 key = '{nic_class}'

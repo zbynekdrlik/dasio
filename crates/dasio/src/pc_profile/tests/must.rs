@@ -182,11 +182,16 @@ fn the_shipped_baseline_s_must_haves_are_the_nic_s_timing_and_test_signing() {
             assert!(!e.must, "{n}");
         }
     }
+    // Every must-have registry entry is on the Dante NIC's own keys: one
+    // driver family's setting, or a standard NDIS keyword every NIC reads
+    // the same (LSO, dasio#24). A driver-free one accepts an absent
+    // keyword: one driver's keyword must-have on every NIC would stop the
+    // device on any other NIC.
     assert!(
         b.registry
             .iter()
             .filter(|e| e.must)
-            .all(|e| e.nic_service.is_some())
+            .all(|e| on_nic(&e.key) && (e.nic_service.is_some() || e.absent_ok))
     );
     assert!(b.bcd.iter().any(|e| e.name == "testsigning" && e.must));
     assert!(
@@ -194,6 +199,188 @@ fn the_shipped_baseline_s_must_haves_are_the_nic_s_timing_and_test_signing() {
             .iter()
             .any(|e| e.name == "disabledynamictick" && e.must)
     );
+}
+
+/// LSO is a standard NDIS keyword: the baseline holds it off on the Dante
+/// NIC whatever its driver (mbc's USB Realtek ran it on while the check
+/// read fine, 19.11.2026, dasio#24), as a must-have, and a NIC without LSO
+/// (no keyword) is fine.
+#[test]
+fn the_baseline_holds_lso_off_on_every_dante_nic() {
+    let mut lso = baseline().unwrap();
+    lso.registry.retain(|e| e.name.starts_with("*LsoV2IPv"));
+    let only = Profile {
+        registry: lso.registry,
+        ..parse("name = \"pc\"\nnic_guid = \"{G}\"\n").unwrap()
+    };
+    assert_eq!(only.registry.len(), 2, "{:?}", only.registry);
+    let mut usb = Pc {
+        nic_service: Some("rtu56cx22x64".into()),
+        ..Pc::default()
+    };
+    let set = |pc: &mut Pc, v: &str| {
+        for name in ["*LsoV2IPv4", "*LsoV2IPv6"] {
+            pc.reg
+                .insert(("{nic_class}".into(), name.into()), Value::String(v.into()));
+        }
+    };
+    // A NIC without LSO has no keyword.
+    assert_eq!(texts(&check(&only, &usb)), Vec::<String>::new());
+    set(&mut usb, "1");
+    let on = texts(&check(&only, &usb));
+    assert_eq!(on.len(), 2, "{on:?}");
+    for (t, name) in on.iter().zip(["*LsoV2IPv4", "*LsoV2IPv6"]) {
+        assert!(
+            t.starts_with(&format!("must-have: registry {{nic_class}}\\{name}: \"1\"")),
+            "{t}"
+        );
+    }
+    assert!(must_have_failure(&on).is_some());
+    set(&mut usb, "0");
+    assert_eq!(texts(&check(&only, &usb)), Vec::<String>::new());
+    // FOH's and dsg's PCIe Realtek too.
+    let mut pcie = realtek();
+    set(&mut pcie, "1");
+    assert_eq!(texts(&check(&only, &pcie)).len(), 2);
+}
+
+/// A Dante NIC the PC does not have is ONE must-have problem: the entries
+/// on its keys are neither read one by one (Windows reads each as
+/// unreadable, the driver-free LSO entries too) nor written (dasio#24).
+#[test]
+fn a_missing_dante_nic_is_one_problem_with_driver_free_nic_entries() {
+    let mut nic = baseline().unwrap();
+    nic.registry.retain(|e| on_nic(&e.key));
+    assert!(
+        nic.registry
+            .iter()
+            .any(|e| e.nic_service.is_none() && e.must)
+    );
+    let only = Profile {
+        registry: nic.registry,
+        ..parse("name = \"pc\"\nnic_guid = \"{G}\"\n").unwrap()
+    };
+    let gone = Pc {
+        nic_gone: true,
+        ..Pc::default()
+    };
+    let found = check(&only, &gone);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].what, "the Dante NIC {G}");
+    assert!(found[0].must);
+    assert_eq!(plan(&only, &gone), Vec::new());
+    // With the NIC there, they are read and written again.
+    let mut usb = Pc {
+        nic_service: Some("rtu56cx22x64".into()),
+        ..Pc::default()
+    };
+    usb.reg.insert(
+        ("{nic_class}".into(), "*LsoV2IPv4".into()),
+        Value::String("1".into()),
+    );
+    let t = texts(&check(&only, &usb));
+    assert_eq!(t.len(), 1, "{t:?}");
+    assert!(
+        t[0].starts_with("must-have: registry {nic_class}\\*LsoV2IPv4: \"1\""),
+        "{t:?}"
+    );
+    assert_eq!(
+        plan(&only, &usb),
+        vec![Action::Reg {
+            key: "{nic_class}".into(),
+            name: "*LsoV2IPv4".into(),
+            value: Value::String("0".into()),
+        }]
+    );
+}
+
+/// FOH's site profile overrides every NIC-family entry with a driver-free
+/// copy. A Dante NIC not found is still one line there, must-have through
+/// the driver-free must-haves alone, and an entry off the NIC's keys is
+/// checked and planned as ever (dasio#24).
+#[test]
+fn a_missing_dante_nic_is_one_line_with_driver_free_site_copies_only() {
+    let site = parse(
+        "name = \"foh\"\nnic_guid = \"{G}\"\n\
+         [[registry]]\nkey = '{nic_class}'\nname = \"*LsoV2IPv4\"\nstring = \"0\"\nmust = true\n\
+         [[registry]]\nkey = '{nic_class}'\nname = \"*EEE\"\nstring = \"0\"\n\
+         [[registry]]\nkey = 'HKLM\\A'\nname = \"X\"\ndword = 1\n",
+    )
+    .unwrap();
+    assert!(site.registry.iter().all(|e| e.nic_service.is_none()));
+    let gone = Pc {
+        nic_gone: true,
+        nic_service: None,
+        ..Pc::default()
+    };
+    let t = texts(&check(&site, &gone));
+    assert_eq!(t.len(), 2, "{t:?}");
+    assert!(t[0].starts_with("must-have: the Dante NIC {G}"), "{t:?}");
+    assert!(t[1].starts_with("registry HKLM\\A\\X: absent"), "{t:?}");
+    assert_eq!(
+        plan(&site, &gone),
+        vec![Action::Reg {
+            key: "HKLM\\A".into(),
+            name: "X".into(),
+            value: Value::Dword(1),
+        }]
+    );
+    // Without a must-have on the NIC's keys the line is a plain one.
+    let plain = parse(
+        "name = \"foh\"\nnic_guid = \"{G}\"\n\
+         [[registry]]\nkey = '{nic_class}'\nname = \"*EEE\"\nstring = \"0\"\n",
+    )
+    .unwrap();
+    let found = check(&plain, &gone);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].what.starts_with("the Dante NIC {G}") && !found[0].must);
+    // The NIC there, its driver read or not: the entries are read.
+    let here = Pc::default();
+    assert_eq!(texts(&check(&plain, &here)).len(), 1);
+    assert!(texts(&check(&plain, &here))[0].starts_with("registry {nic_class}\\*EEE: absent"));
+}
+
+/// A Dante NIC found whose driver service is unreadable: the line names the
+/// driver-scoped entries it leaves unjudged, must-have only through a
+/// driver-scoped must-have, and a driver-free must-have on its keys is read
+/// and judged on its own line (FOH after its RSS rollout, dasio#24).
+#[test]
+fn a_found_nic_with_an_unknown_driver_is_must_have_only_through_its_driver_entries() {
+    let site = parse(
+        "name = \"foh\"\nnic_guid = \"{G}\"\n\
+         [[registry]]\nkey = '{nic_class}'\nname = \"*LsoV2IPv4\"\nstring = \"0\"\nmust = true\n\
+         [[registry]]\nkey = '{nic_class}'\nname = \"*RssBaseProcNumber\"\nstring = \"1\"\nnic_service = \"rt640x64\"\n",
+    )
+    .unwrap();
+    let mut here = Pc::default();
+    here.reg.insert(
+        ("{nic_class}".into(), "*LsoV2IPv4".into()),
+        Value::String("1".into()),
+    );
+    let found = check(&site, &here);
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert_eq!(found[0].what, "the Dante NIC {G}");
+    assert!(!found[0].must, "{found:?}");
+    // The driver-free must-have is read and judged on its own line.
+    assert_eq!(found[1].what, "registry {nic_class}\\*LsoV2IPv4");
+    assert!(found[1].must, "{found:?}");
+    assert_eq!(
+        plan(&site, &here),
+        vec![Action::Reg {
+            key: "{nic_class}".into(),
+            name: "*LsoV2IPv4".into(),
+            value: Value::String("0".into()),
+        }]
+    );
+    // A driver-scoped must-have it cannot judge makes the line one.
+    let musts = parse(
+        "name = \"foh\"\nnic_guid = \"{G}\"\n\
+         [[registry]]\nkey = '{nic_class}'\nname = \"*RSS\"\nstring = \"1\"\nnic_service = \"rt640x64\"\nmust = true\n",
+    )
+    .unwrap();
+    let found = check(&musts, &here);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].must, "{found:?}");
 }
 
 /// The service's loops (Windows glue, not compiled here) end the device on

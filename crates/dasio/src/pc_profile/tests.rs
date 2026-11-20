@@ -36,6 +36,9 @@ struct Pc {
     /// `task()` fails for these names.
     task_err: Vec<String>,
     nic_service: Option<String>,
+    /// The Dante NIC's class key is not found (Windows then reads every
+    /// entry on the NIC's keys as unreadable).
+    nic_gone: bool,
     /// `ini()` fails for these files.
     ini_err: Vec<String>,
     /// Files, services and tasks (full paths) the PC has, for `[[absent]]`.
@@ -59,6 +62,9 @@ struct Pc {
 impl Reader for Pc {
     fn nic_service(&self) -> Option<String> {
         self.nic_service.clone()
+    }
+    fn nic_found(&self) -> bool {
+        !self.nic_gone
     }
     fn nic_hardware_ids(&self) -> Vec<String> {
         self.hardware_ids.clone()
@@ -86,6 +92,9 @@ impl Reader for Pc {
         })
     }
     fn reg(&self, key: &str, name: &str) -> Result<Option<Value>, String> {
+        if self.nic_gone && (key.contains("{nic_class}") || key.contains("{nic_device}")) {
+            return Err("the Dante NIC's class key was not found".into());
+        }
         if self.unreadable.iter().any(|k| k == key) {
             return Err("access denied".into());
         }
