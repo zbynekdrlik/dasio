@@ -184,15 +184,15 @@ fn the_shipped_baseline_s_must_haves_are_the_nic_s_timing_and_test_signing() {
     }
     // Every must-have registry entry is on the Dante NIC's own keys: one
     // driver family's setting, or a standard NDIS keyword every NIC reads
-    // the same (LSO, dasio#24) that a NIC without it may lack.
+    // the same (LSO, dasio#24). A driver-free one accepts an absent
+    // keyword: one driver's keyword must-have on every NIC would stop the
+    // device on any other NIC.
     assert!(
         b.registry
             .iter()
             .filter(|e| e.must)
             .all(|e| on_nic(&e.key) && (e.nic_service.is_some() || e.absent_ok))
     );
-    // A driver-free one accepts an absent keyword: one driver's keyword
-    // must-have on every NIC would stop the device on any other NIC.
     assert!(b.bcd.iter().any(|e| e.name == "testsigning" && e.must));
     assert!(
         !b.bcd
@@ -260,8 +260,10 @@ fn a_missing_dante_nic_is_one_problem_with_driver_free_nic_entries() {
         registry: nic.registry,
         ..parse("name = \"pc\"\nnic_guid = \"{G}\"\n").unwrap()
     };
-    let mut gone = Pc::default();
-    gone.unreadable.push("{nic_class}".into());
+    let gone = Pc {
+        nic_gone: true,
+        ..Pc::default()
+    };
     let found = check(&only, &gone);
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found[0].what.starts_with("the Dante NIC {G}") && found[0].must);
@@ -275,8 +277,66 @@ fn a_missing_dante_nic_is_one_problem_with_driver_free_nic_entries() {
         ("{nic_class}".into(), "*LsoV2IPv4".into()),
         Value::String("1".into()),
     );
-    assert_eq!(check(&only, &usb).len(), 1);
-    assert_eq!(plan(&only, &usb).len(), 1);
+    let t = texts(&check(&only, &usb));
+    assert_eq!(t.len(), 1, "{t:?}");
+    assert!(
+        t[0].starts_with("must-have: registry {nic_class}\\*LsoV2IPv4: \"1\""),
+        "{t:?}"
+    );
+    assert_eq!(
+        plan(&only, &usb),
+        vec![Action::Reg {
+            key: "{nic_class}".into(),
+            name: "*LsoV2IPv4".into(),
+            value: Value::String("0".into()),
+        }]
+    );
+}
+
+/// FOH's site profile overrides every NIC-family entry with a driver-free
+/// copy. A Dante NIC not found is still one line there, must-have through
+/// the driver-free must-haves alone, and an entry off the NIC's keys is
+/// checked and planned as ever (dasio#24).
+#[test]
+fn a_missing_dante_nic_is_one_line_with_driver_free_site_copies_only() {
+    let site = parse(
+        "name = \"foh\"\nnic_guid = \"{G}\"\n\
+         [[registry]]\nkey = '{nic_class}'\nname = \"*LsoV2IPv4\"\nstring = \"0\"\nmust = true\n\
+         [[registry]]\nkey = '{nic_class}'\nname = \"*EEE\"\nstring = \"0\"\n\
+         [[registry]]\nkey = 'HKLM\\A'\nname = \"X\"\ndword = 1\n",
+    )
+    .unwrap();
+    assert!(site.registry.iter().all(|e| e.nic_service.is_none()));
+    let gone = Pc {
+        nic_gone: true,
+        nic_service: None,
+        ..Pc::default()
+    };
+    let t = texts(&check(&site, &gone));
+    assert_eq!(t.len(), 2, "{t:?}");
+    assert!(t[0].starts_with("must-have: the Dante NIC {G}"), "{t:?}");
+    assert!(t[1].starts_with("registry HKLM\\A\\X: absent"), "{t:?}");
+    assert_eq!(
+        plan(&site, &gone),
+        vec![Action::Reg {
+            key: "HKLM\\A".into(),
+            name: "X".into(),
+            value: Value::Dword(1),
+        }]
+    );
+    // Without a must-have on the NIC's keys the line is a plain one.
+    let plain = parse(
+        "name = \"foh\"\nnic_guid = \"{G}\"\n\
+         [[registry]]\nkey = '{nic_class}'\nname = \"*EEE\"\nstring = \"0\"\n",
+    )
+    .unwrap();
+    let found = check(&plain, &gone);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].what.starts_with("the Dante NIC {G}") && !found[0].must);
+    // The NIC there, its driver read or not: the entries are read.
+    let here = Pc::default();
+    assert_eq!(texts(&check(&plain, &here)).len(), 1);
+    assert!(texts(&check(&plain, &here))[0].starts_with("registry {nic_class}\\*EEE: absent"));
 }
 
 /// The service's loops (Windows glue, not compiled here) end the device on

@@ -309,6 +309,9 @@ pub trait Reader {
     /// The Dante NIC's driver service (e.g. `rt640x64`); `None` when the
     /// NIC or its service was not found.
     fn nic_service(&self) -> Option<String>;
+    /// Whether the Dante NIC's class key was found from the profile's GUID.
+    /// Without it no entry on the NIC's keys can be read (dasio#24).
+    fn nic_found(&self) -> bool;
     /// What of `e`'s thing the PC has ([`absent`]): the exe's path, the
     /// service's name, each task the pattern matches by its full path;
     /// empty when there is none.
@@ -329,14 +332,24 @@ fn on_nic(key: &str) -> bool {
     key.contains("{nic_class}") || key.contains("{nic_device}")
 }
 
-/// The profile names a Dante NIC with NIC-family entries and the PC reads
-/// no driver for it (a wrong GUID, a swapped NIC). One problem says so,
-/// and no entry on the NIC's keys is read or written one by one: Windows
-/// reads each as unreadable, a driver-free one (LSO) too (dasio#24).
+/// The profile names a Dante NIC whose entries cannot be judged: its class
+/// key was not found from the GUID (a wrong GUID, a swapped NIC) while
+/// entries sit on the NIC's keys, or its driver is unknown while
+/// NIC-family entries need it. One problem says so (dasio#128).
 fn nic_missing(p: &Profile, r: &dyn Reader) -> bool {
     p.nic_guid.is_some()
-        && r.nic_service().is_none()
-        && p.registry.iter().any(|e| e.nic_service.is_some())
+        && ((!r.nic_found()
+            && p.registry
+                .iter()
+                .any(|e| on_nic(&e.key) || e.nic_service.is_some()))
+            || (r.nic_service().is_none() && p.registry.iter().any(|e| e.nic_service.is_some())))
+}
+
+/// An entry on the NIC's keys while the NIC's class key is not found: not
+/// read or written one by one (Windows reads each as unreadable), the
+/// missing-NIC problem stands for it, must-have included (dasio#24).
+fn nic_unread(e: &RegEntry, r: &dyn Reader) -> bool {
+    on_nic(&e.key) && !r.nic_found()
 }
 
 /// Whether `e` applies on the PC `r` reads: an entry for one NIC driver
@@ -456,10 +469,7 @@ fn parse_with(text: &str, need_nic_guid: bool) -> Result<Profile, String> {
                 r.key, r.name
             ));
         }
-        if need_nic_guid
-            && (r.key.contains("{nic_class}") || r.key.contains("{nic_device}"))
-            && p.nic_guid.is_none()
-        {
+        if need_nic_guid && on_nic(&r.key) && p.nic_guid.is_none() {
             return Err(format!("registry {}: needs nic_guid", r.key));
         }
     }
@@ -644,9 +654,8 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
     let mut out = Vec::new();
     // NIC-family entries need the NIC: a profile naming one the PC does not
     // have (a wrong GUID, a swapped NIC) says so instead of skipping them.
-    let missing = nic_missing(p, r);
     if let Some(guid) = &p.nic_guid
-        && missing
+        && nic_missing(p, r)
     {
         out.push(Problem {
             what: format!("the Dante NIC {guid}"),
@@ -661,7 +670,7 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
     }
     for e in &p.registry {
         let Some(want) = want_reg(e) else { continue };
-        if !applies(e, r) || (missing && on_nic(&e.key)) {
+        if !applies(e, r) || nic_unread(e, r) {
             continue;
         }
         let found = r.reg(&e.key, &e.name);
@@ -841,13 +850,14 @@ pub enum Action {
 
 /// What has to change for the PC to match (processes are only checked:
 /// the tool that sets them, Lasso, is configured through its ini). An
-/// unreadable value is planned too: the write says why it fails.
+/// unreadable value is planned too: the write says why it fails. Entries
+/// on the keys of a Dante NIC not found are not planned (the check's
+/// missing-NIC problem names it).
 pub fn plan(p: &Profile, r: &dyn Reader) -> Vec<Action> {
     let mut out = Vec::new();
-    let missing = nic_missing(p, r);
     for e in &p.registry {
         let Some(want) = want_reg(e) else { continue };
-        if !applies(e, r) || e.check_only || (missing && on_nic(&e.key)) {
+        if !applies(e, r) || e.check_only || nic_unread(e, r) {
             continue;
         }
         let fine = match r.reg(&e.key, &e.name) {

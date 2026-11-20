@@ -238,6 +238,10 @@ impl Reader for Pc {
         self.nic_service.clone()
     }
 
+    fn nic_found(&self) -> bool {
+        self.nic_class.is_some()
+    }
+
     fn nic_hardware_ids(&self) -> Vec<String> {
         self.nic_hardware_ids.clone()
     }

@@ -26,8 +26,12 @@ paths:
   driver's keyword must-have on every NIC would stop the device on any
   other NIC. A site copy of such an entry replaces the baseline's whole,
   `absent_ok` included: FOH's, dsg's and mbc's site LSO entries go at
-  each PC's next rollout. A Dante NIC not found is one must-have line;
-  the entries on its keys are then neither read nor written.
+  each PC's next rollout. A Dante NIC whose class key is not found from
+  `nic_guid` is ONE line (must-have when a must-have entry sits on its
+  keys), and no entry on its keys is read or written, a driver-free one
+  included (FOH's site file overrides every NIC entry with a driver-free
+  copy); a NIC found but with an unreadable driver service is that line
+  too, and its keys are read as ever (`Reader::nic_found`).
 - **Power-plan values go through powercfg** (dasio#128, mbc 16.11.2026):
   `apply` sets an `{active_scheme}\<subgroup>\<setting>` `ACSettingIndex`
   / `DCSettingIndex` DWORD with `powercfg /setacvalueindex|/setdcvalueindex
@@ -89,8 +93,8 @@ paths:
   `nic_service = "rt640x64"` only: mbc's USB Realtek (`rtu56cx22x64`) has
   no RSS (`Get-NetAdapterRss` finds nothing), its receive DPCs are the
   USB controller's. Not must-have. `apply` writes the values but never
-  restarts the NIC (it prints "takes effect after: a restart of the
-  Dante NIC"), and the check reads the registry, not the running driver:
+  restarts the NIC (it prints `set ... (takes effect after a restart of
+  the Dante NIC)`), and the check reads the registry, not the running driver:
   a written NIC value reads fine before the restart. FOH's (0-3,
   base 0) and dsg's hand entries in their site profiles win until the
   rollout removes them; a site overrides all three or none (a lone base
