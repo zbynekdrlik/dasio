@@ -26,7 +26,8 @@ paths:
   device is a serious fail, 0.1.154): `*EEE` (NDIS standard) and Realtek's
   own `AdvancedEEE` and `EnableGreenEthernet` = "0" hold every Dante NIC
   that has them, `must` + `absent_ok`; those two names exist on Realtek
-  drivers only (rt640x64 and mbc's rtu56cx22x64 both, read 20.11), where 0
+  drivers only (rt640x64 from FOH's tuning, dasio#1; mbc's rtu56cx22x64
+  read 20.11), where 0
   is off. A driver that names EEE otherwise is not covered: read a new
   NIC's `Get-NetAdapterAdvancedProperty -AllProperties` first. A driver-free must-have needs `absent_ok` (a test holds it): one
   driver's keyword must-have on every NIC would stop the device on any

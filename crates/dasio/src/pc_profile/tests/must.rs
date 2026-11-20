@@ -245,7 +245,7 @@ fn the_baseline_holds_lso_off_on_every_dante_nic() {
     assert_eq!(texts(&check(&only, &pcie)).len(), 2);
 }
 
-/// EEE off on every Dante NIC, whatever its driver (owner 20.11.2026: EEE
+/// EEE off on every Dante NIC that has the keyword (owner 20.11.2026: EEE
 /// on any rig device is a serious fail; mbc's USB Realtek had it on while
 /// the baseline's entries were scoped to rt640x64, dasio#24): `*EEE`,
 /// Realtek's `AdvancedEEE` and `EnableGreenEthernet`, must-have, a NIC
