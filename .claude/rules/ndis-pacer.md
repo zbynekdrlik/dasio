@@ -147,13 +147,13 @@ paths:
   value measured on FOH (0 failures, 0 holes overnight). Media TX is never
   unbounded since 0.1.152: a missing, unreadable, 0, 4096 or larger
   Parameters value is 200 (all but missing flagged in ParamBad and logged
-  to the debug log), and `txset` refuses 0 and 4096. Frames over the bound
+  to the debug log), and `txset` refuses 0 and 4096 or more. Frames over the bound
   go to the socket and count in `TxNoSlot`.
 - Copy the WHOLE `drivers/ndis-pacer/scripts` folder to a PC, never single
   scripts: `rxd.ps1` and `rxring.ps1` load `records.ps1` beside them since
   0.1.152, and without it every action of theirs fails (`install.ps1
-  -RxdCpu`, `health.ps1`'s pacer status). The `pacer-package` artifact
-  carries no scripts.
+  -RxdCpu`, `health.ps1`'s pacer status). The `dasiopacer-<sha>` artifact
+  (sys, inf, cat, cer) carries no scripts.
 
 ## Test PCs and NIC drivers
 

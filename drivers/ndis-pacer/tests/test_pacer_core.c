@@ -796,8 +796,9 @@ static void params(void)
     pacer_params_read(fake_read, &f, 4096, &p);
     CHECK(p.rxd_enable == 0 && p.rxd_cpu == 3 && p.rx_ring_enable == 1);
     CHECK(p.bad == ((1u << PACER_PARAM_RXD_ENABLE) | (1u << PACER_PARAM_TX_MAX_OUT)));
-    /* An unreadable TxMaxOut is the measured bound, never every slot
-     * (unbounded media TX); at most the slots there are. */
+    /* An unreadable TxMaxOut is the measured bound, never every slot of
+     * the driver's 4096 (unbounded media TX); a ring of 200 slots or fewer
+     * caps it at its slots. */
     CHECK(p.tx_max_out == PACER_TX_MAX_OUT_FALLBACK && PACER_TX_MAX_OUT_FALLBACK == 200u);
     pacer_params_read(fake_read, &f, 150, &p);
     CHECK(p.tx_max_out == 150);

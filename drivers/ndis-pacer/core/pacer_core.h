@@ -243,16 +243,18 @@ struct pacer_params {
 };
 
 /* The bound on media frames out unless TxMaxOut gives a valid one: the
- * value install.ps1 writes (measured on FOH; at most `tx_slots`). Media TX
- * is never unbounded: with every slot out Realtek 10.79 failed frames
- * (NDIS_STATUS_RESOURCES once ~448 were out, dasio#1). */
+ * value install.ps1 writes (measured on FOH). Media TX is never unbounded:
+ * with every slot out Realtek 10.79 failed frames (NDIS_STATUS_RESOURCES
+ * once ~448 were out, dasio#1). Capped at `tx_slots`: only a ring of 200
+ * slots or fewer (never the driver's, KTX_SLOTS 4096) gets every slot. */
 #define PACER_TX_MAX_OUT_FALLBACK 200u
 
 /* Reads every parameter through `read` (one call per value; it returns
  * one of PACER_PARAM_READ / _MISSING / _BAD and sets `*value` on READ).
  * TxMaxOut 1..`tx_slots` - 1 is the bound; missing, unreadable, 0, or
- * `tx_slots` (every slot) and above, it is PACER_TX_MAX_OUT_FALLBACK (at
- * most `tx_slots` - 1), and flagged in `bad` unless it was missing. */
+ * `tx_slots` (every slot) and above, it is PACER_TX_MAX_OUT_FALLBACK
+ * (capped at `tx_slots`, see above), and flagged in `bad` unless it was
+ * missing. */
 void pacer_params_read(int (*read)(void *ctx, enum pacer_param which, uint32_t *value), void *ctx,
                        uint32_t tx_slots, struct pacer_params *out);
 

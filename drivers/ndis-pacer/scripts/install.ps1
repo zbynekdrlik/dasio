@@ -8,7 +8,7 @@
 #   (the service's Parameters: RxdEnable, RxdCpu); -RxdCpu -1 turns it off.
 #   -TxMaxOut <n>: media TX's bound on frames out at the miniport, 1..4095,
 #   kept across reboots (Parameters TxMaxOut; never every slot: the filter
-#   reads a missing, 0 or larger value as 200). The default 200 is the FOH
+#   reads a missing, 0, 4096 or larger value as 200). The default 200 is the FOH
 #   PC's measured value (dasio#1): with every slot (4096) out, Realtek
 #   10.79 failed frames with NDIS_STATUS_RESOURCES once ~448 were out; at
 #   200 it failed none.

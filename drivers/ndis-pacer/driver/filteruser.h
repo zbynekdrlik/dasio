@@ -230,7 +230,7 @@ typedef struct _DASIO_KTX_STATUS
     ULONG64         TxMaxBatch;       // most frames in one call
     // Version 3: the bound on media frames out, and the failed completions
     // (the miniport refused the frame: lost).
-    ULONG64         TxMaxOut;         // the bound: 1..4096 (200 when Parameters has none or an invalid one)
+    ULONG64         TxMaxOut;         // the bound: 1..4095 (200 when Parameters has none or an invalid one)
     ULONG64         MaxOut;           // most frames out at once, stream and media
     ULONG64         FailEvents;       // failures more than 1 s after the previous one
     ULONG64         LastFailStatus;   // NDIS_STATUS of the last failure
@@ -283,7 +283,7 @@ typedef struct _DASIO_RXD_STATUS
     ULONG64         Priority;         // NBLs indicated at once while rxd is on (not deferred)
     // Version 3: the service's Parameters values that were there but could
     // not be read when the driver loaded (another type than REG_DWORD), or
-    // were invalid (TxMaxOut 0 or above 4096): bit 0 RxdEnable, 1 RxdCpu,
+    // were invalid (TxMaxOut 0, or 4096 and above): bit 0 RxdEnable, 1 RxdCpu,
     // 2 TxMaxOut, 3 RxRingEnable. Each kept its default (TxMaxOut: 200);
     // 0 = all read or missing.
     ULONG64         ParamBad;
