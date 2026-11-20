@@ -279,6 +279,9 @@ impl Shape {
     }
 }
 
+mod lock;
+pub use lock::{LOCK_MARGIN, page_span, working_set};
+
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
