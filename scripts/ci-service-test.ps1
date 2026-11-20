@@ -152,6 +152,13 @@ Set-Content -Path $stateWin -Value "name = `"foreign-device`"`nconfig_name = `"f
 # the band's service and threw, as dtray.exe, a GUI program, leaves the
 # exit code of whatever ran before it).
 cmd /c exit 7
+# dasio#211: a per-user dtray Run value as an earlier install left it (FOH,
+# mbc): the machine-wide one replaces it, so the install removes it.
+$runKey = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+$runAll = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+$wantRun = '"' + (Join-Path $env:ProgramFiles "dasio\dtray.exe") + '"'
+if (-not (Test-Path $runKey)) { New-Item -Path $runKey | Out-Null }
+Set-ItemProperty -Path $runKey -Name "dtray" -Value $wantRun
 & (Join-Path $Bundle "install.ps1") -Instance $instance -Iface $iface -Config $cfg -Name "ci-asio-dante" -TestClock
 # dasio's data folder: protected from what ProgramData passes down (users
 # may add files and folders there); users read it and change nothing in it.
@@ -184,45 +191,14 @@ if (-not (Test-Path $dtray)) { throw "no dtray installed" }
 # dtray-cli: the console twin scripts call; its output and exit code reach us.
 $dtrayCli = Join-Path $env:ProgramFiles "dasio\dtray-cli.exe"
 if (-not (Test-Path $dtrayCli)) { throw "no dtray-cli installed" }
-$runKey = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
-if (-not (Get-ItemProperty $runKey -Name "dtray" -ErrorAction SilentlyContinue)) { throw "dtray does not start at logon" }
+# dasio#211: one machine-wide Run value, so every user's logon starts dtray,
+# whoever ran the install (the PCs: SYSTEM, whose HKCU is its own hive): the
+# quoted path, dtray's own run_value text. A user's second dtray exits at once
+# (dtray's per-session mutex), and the install removed the per-user duplicate.
+$gotRun = (Get-ItemProperty $runAll -Name "dtray" -ErrorAction SilentlyContinue).dtray
+if ($gotRun -ne $wantRun) { throw "dtray does not start at every user's logon: HKLM Run dtray is '$gotRun', not '$wantRun' (dasio#211)" }
+if (Get-ItemProperty $runKey -Name "dtray" -ErrorAction SilentlyContinue) { throw "the install left the user's own dtray Run value next to the machine-wide one (dasio#211)" }
 if (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name "dasio-tray" -ErrorAction SilentlyContinue) { throw "the former dasio-tray still starts at logon" }
-# dasio#211: the PCs install from a SYSTEM scheduled task, where HKCU is
-# SYSTEM's own hive. The tray's autostart must reach the hive of the user who
-# logs on: run the bundle's dtray-autostart.ps1 as SYSTEM, as the PCs do, and
-# read the runner user's own Run value.
-$userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$userRun = "Registry::HKEY_USERS\$userSid\Software\Microsoft\Windows\CurrentVersion\Run"
-$autostart = Join-Path $Bundle "dtray-autostart.ps1"
-$asSystemDone = Join-Path $env:ProgramData "dasio\ci-autostart.done"
-$asSystemScript = Join-Path $env:ProgramData "dasio\ci-autostart.ps1"
-function Invoke-AutostartAsSystem([string]$Mode) {
-    Remove-Item $asSystemDone, "$asSystemDone.log" -ErrorAction SilentlyContinue
-    Set-Content $asSystemScript @"
-try { & '$autostart' -$Mode -Exe '$dtray' *> '$asSystemDone.log'; Set-Content '$asSystemDone' 'ok' }
-catch { Set-Content '$asSystemDone' ('failed: ' + `$_) }
-"@
-    $act = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$asSystemScript`""
-    Register-ScheduledTask -TaskName "dasio-ci-autostart" -Action $act -Trigger (New-ScheduledTaskTrigger -Once -At (Get-Date).AddDays(-1)) -User SYSTEM -RunLevel Highest -Force | Out-Null
-    Start-ScheduledTask -TaskName "dasio-ci-autostart"
-    Wait-Until { Test-Path $asSystemDone } 60 "dtray-autostart.ps1 -$Mode run as SYSTEM"
-    Unregister-ScheduledTask -TaskName "dasio-ci-autostart" -Confirm:$false
-    $result = (Get-Content $asSystemDone -Raw).Trim()
-    $log = if (Test-Path "$asSystemDone.log") { Get-Content "$asSystemDone.log" -Raw } else { "" }
-    if ($result -ne "ok") { throw "dtray-autostart.ps1 -$Mode as SYSTEM: $result`n$log" }
-    Write-Output "dtray-autostart.ps1 -$Mode as SYSTEM:`n$log"
-}
-Remove-ItemProperty $userRun -Name "dtray" -ErrorAction SilentlyContinue
-Invoke-AutostartAsSystem "On"
-$wantRun = '"' + $dtray + '"'
-$gotRun = (Get-ItemProperty $userRun -Name "dtray" -ErrorAction SilentlyContinue).dtray
-if ($gotRun -ne $wantRun) { throw "an install as SYSTEM left the user's dtray autostart at '$gotRun', not '$wantRun' (dasio#211)" }
-Invoke-AutostartAsSystem "Off"
-if (Get-ItemProperty $userRun -Name "dtray" -ErrorAction SilentlyContinue) { throw "an uninstall as SYSTEM left the user's dtray autostart (dasio#211)" }
-# Back as the install left it: the uninstall at the end of this test checks
-# that it goes.
-Invoke-AutostartAsSystem "On"
-Remove-Item $asSystemScript, $asSystemDone, "$asSystemDone.log" -ErrorAction SilentlyContinue
 $expected = Join-Path $env:ProgramData "dstack\devices\test-device.device"
 if (-not (Test-Path $expected)) { throw "no expected-device file $expected" }
 Wait-Until { (& $dtrayCli --print 2>$null | Out-String) -match "(no DAW|DAW attached) .+ @ \d+ kHz .+ in [\d.]+ / out [\d.]+ ms .+ late \d+/min" } 30 "dtray's dasio line for the instance"
@@ -467,6 +443,7 @@ if (Test-Path "HKLM:\SOFTWARE\ASIO\ci-asio-dante") { throw "the driver's ASIO en
 if (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name "dasio-tray" -ErrorAction SilentlyContinue) { throw "the tray still starts at logon with no instance left" }
 if (Test-Path $expected) { throw "uninstall left the expected-device file" }
 if (Get-ItemProperty $runKey -Name "dtray" -ErrorAction SilentlyContinue) { throw "dtray still starts at logon with no instance left" }
+if (Get-ItemProperty $runAll -Name "dtray" -ErrorAction SilentlyContinue) { throw "dtray still starts at every logon with no instance left (dasio#211)" }
 # The last instance gone: no process keeper (dasio#185).
 if (Get-ScheduledTask -TaskName "dasio-pc-keep" -ErrorAction SilentlyContinue) { throw "the process keeper's task is still there with no instance left" }
 if (Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue) { throw "the process keeper still runs with no instance left" }
