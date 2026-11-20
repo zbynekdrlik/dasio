@@ -22,7 +22,12 @@ paths:
   `absent_ok` for a NIC without LSO), since mbc's USB Realtek
   (`rtu56cx22x64`) ran LSO on unseen (19.11.2026, dasio#24). Values that
   differ by driver (`*SpeedDuplex`, `*ReceiveBuffers`, ...) keep the
-  scope.
+  scope. A driver-free must-have needs `absent_ok` (a test holds it): one
+  driver's keyword must-have on every NIC would stop the device on any
+  other NIC. A site copy of such an entry replaces the baseline's whole,
+  `absent_ok` included: FOH's, dsg's and mbc's site LSO entries go at
+  each PC's next rollout. A Dante NIC not found is one must-have line;
+  the entries on its keys are then neither read nor written.
 - **Power-plan values go through powercfg** (dasio#128, mbc 16.11.2026):
   `apply` sets an `{active_scheme}\<subgroup>\<setting>` `ACSettingIndex`
   / `DCSettingIndex` DWORD with `powercfg /setacvalueindex|/setdcvalueindex
@@ -83,7 +88,10 @@ paths:
   underruns, dasio#120). FOH 1-3, mbc 1, dsg 0. Baseline entries are
   `nic_service = "rt640x64"` only: mbc's USB Realtek (`rtu56cx22x64`) has
   no RSS (`Get-NetAdapterRss` finds nothing), its receive DPCs are the
-  USB controller's. Not must-have; `apply` restarts the NIC. FOH's (0-3,
+  USB controller's. Not must-have. `apply` writes the values but never
+  restarts the NIC (it prints "takes effect after: a restart of the
+  Dante NIC"), and the check reads the registry, not the running driver:
+  a written NIC value reads fine before the restart. FOH's (0-3,
   base 0) and dsg's hand entries in their site profiles win until the
   rollout removes them; a site overrides all three or none (a lone base
   0 with the computed 3/3 reads 0-3 with 3 processors). The range holds
@@ -202,8 +210,9 @@ paths:
   `reserved CPUs` INFO line, then `engine pump lost` by `cause=`. A site
   profile with `dasio_cpus` needs dasio 0.1.114+.
 - **Must-have items** (`must = true`, dasio#128): the Dante NIC's timing
-  settings (Realtek PCIe) and `testsigning`. A missing one: the device does
-  not start / ends at the 10-min check (the SCM restarts it, the start
+  settings (Realtek PCIe), LSO off on every Dante NIC (an absent keyword
+  is fine, dasio#24) and `testsigning`. A wrong or missing one: the device
+  does not start / ends at the 10-min check (the SCM restarts it, the start
   names it again), `dasio pc-profile check|apply` exits 2 with a
   `MUST-HAVE` line, and `install.ps1` refuses before touching the instance.
   A site value for a must-have item stays must-have. A profile that does

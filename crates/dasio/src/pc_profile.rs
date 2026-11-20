@@ -324,6 +324,21 @@ pub trait Reader {
     fn processes(&self) -> Result<keep::Processes, String>;
 }
 
+/// A key on the Dante NIC's own registry keys (its class or device key).
+fn on_nic(key: &str) -> bool {
+    key.contains("{nic_class}") || key.contains("{nic_device}")
+}
+
+/// The profile names a Dante NIC with NIC-family entries and the PC reads
+/// no driver for it (a wrong GUID, a swapped NIC). One problem says so,
+/// and no entry on the NIC's keys is read or written one by one: Windows
+/// reads each as unreadable, a driver-free one (LSO) too (dasio#24).
+fn nic_missing(p: &Profile, r: &dyn Reader) -> bool {
+    p.nic_guid.is_some()
+        && r.nic_service().is_none()
+        && p.registry.iter().any(|e| e.nic_service.is_some())
+}
+
 /// Whether `e` applies on the PC `r` reads: an entry for one NIC driver
 /// family only where the Dante NIC runs that driver.
 fn applies(e: &RegEntry, r: &dyn Reader) -> bool {
@@ -629,21 +644,24 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
     let mut out = Vec::new();
     // NIC-family entries need the NIC: a profile naming one the PC does not
     // have (a wrong GUID, a swapped NIC) says so instead of skipping them.
+    let missing = nic_missing(p, r);
     if let Some(guid) = &p.nic_guid
-        && r.nic_service().is_none()
-        && p.registry.iter().any(|e| e.nic_service.is_some())
+        && missing
     {
         out.push(Problem {
             what: format!("the Dante NIC {guid}"),
             found: "not found (or its driver service unreadable)".into(),
             want: "the adapter with that NetCfgInstanceId".into(),
             why: "the baseline's NIC settings need it (dasio#128)".into(),
-            must: p.registry.iter().any(|e| e.must && e.nic_service.is_some()),
+            must: p
+                .registry
+                .iter()
+                .any(|e| e.must && (e.nic_service.is_some() || on_nic(&e.key))),
         });
     }
     for e in &p.registry {
         let Some(want) = want_reg(e) else { continue };
-        if !applies(e, r) {
+        if !applies(e, r) || (missing && on_nic(&e.key)) {
             continue;
         }
         let found = r.reg(&e.key, &e.name);
@@ -826,9 +844,10 @@ pub enum Action {
 /// unreadable value is planned too: the write says why it fails.
 pub fn plan(p: &Profile, r: &dyn Reader) -> Vec<Action> {
     let mut out = Vec::new();
+    let missing = nic_missing(p, r);
     for e in &p.registry {
         let Some(want) = want_reg(e) else { continue };
-        if !applies(e, r) || e.check_only {
+        if !applies(e, r) || e.check_only || (missing && on_nic(&e.key)) {
             continue;
         }
         let fine = match r.reg(&e.key, &e.name) {

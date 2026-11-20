@@ -19,12 +19,11 @@ pub const BASELINE: &str = include_str!("../../../../config/baseline-pc-profile.
 /// Without the site's `nic_guid`, the baseline's Dante NIC entries are
 /// left out (no NIC to read).
 pub fn merge(base: &Profile, site: &Profile) -> Profile {
-    let nic = |k: &str| k.contains("{nic_class}") || k.contains("{nic_device}");
     let mut out = site.clone();
     let mut registry: Vec<RegEntry> =
         base.registry
             .iter()
-            .filter(|b| site.nic_guid.is_some() || !nic(&b.key))
+            .filter(|b| site.nic_guid.is_some() || !on_nic(&b.key))
             .filter(|b| {
                 !site.registry.iter().any(|s| {
                     s.key.eq_ignore_ascii_case(&b.key) && s.name.eq_ignore_ascii_case(&b.name)

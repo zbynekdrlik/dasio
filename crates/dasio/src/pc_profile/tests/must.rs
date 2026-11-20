@@ -184,13 +184,15 @@ fn the_shipped_baseline_s_must_haves_are_the_nic_s_timing_and_test_signing() {
     }
     // Every must-have registry entry is on the Dante NIC's own keys: one
     // driver family's setting, or a standard NDIS keyword every NIC reads
-    // the same (LSO, dasio#24).
+    // the same (LSO, dasio#24) that a NIC without it may lack.
     assert!(
         b.registry
             .iter()
             .filter(|e| e.must)
-            .all(|e| e.key.contains("{nic_class}") || e.key.contains("{nic_device}"))
+            .all(|e| on_nic(&e.key) && (e.nic_service.is_some() || e.absent_ok))
     );
+    // A driver-free one accepts an absent keyword: one driver's keyword
+    // must-have on every NIC would stop the device on any other NIC.
     assert!(b.bcd.iter().any(|e| e.name == "testsigning" && e.must));
     assert!(
         !b.bcd
@@ -240,6 +242,41 @@ fn the_baseline_holds_lso_off_on_every_dante_nic() {
     let mut pcie = realtek();
     set(&mut pcie, "1");
     assert_eq!(texts(&check(&only, &pcie)).len(), 2);
+}
+
+/// A Dante NIC the PC does not have is ONE must-have problem: the entries
+/// on its keys are neither read one by one (Windows reads each as
+/// unreadable, the driver-free LSO entries too) nor written (dasio#24).
+#[test]
+fn a_missing_dante_nic_is_one_problem_with_driver_free_nic_entries() {
+    let mut nic = baseline().unwrap();
+    nic.registry.retain(|e| on_nic(&e.key));
+    assert!(
+        nic.registry
+            .iter()
+            .any(|e| e.nic_service.is_none() && e.must)
+    );
+    let only = Profile {
+        registry: nic.registry,
+        ..parse("name = \"pc\"\nnic_guid = \"{G}\"\n").unwrap()
+    };
+    let mut gone = Pc::default();
+    gone.unreadable.push("{nic_class}".into());
+    let found = check(&only, &gone);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].what.starts_with("the Dante NIC {G}") && found[0].must);
+    assert_eq!(plan(&only, &gone), Vec::new());
+    // With the NIC there, they are read and written again.
+    let mut usb = Pc {
+        nic_service: Some("rtu56cx22x64".into()),
+        ..Pc::default()
+    };
+    usb.reg.insert(
+        ("{nic_class}".into(), "*LsoV2IPv4".into()),
+        Value::String("1".into()),
+    );
+    assert_eq!(check(&only, &usb).len(), 1);
+    assert_eq!(plan(&only, &usb).len(), 1);
 }
 
 /// The service's loops (Windows glue, not compiled here) end the device on
