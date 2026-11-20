@@ -266,7 +266,8 @@ fn a_missing_dante_nic_is_one_problem_with_driver_free_nic_entries() {
     };
     let found = check(&only, &gone);
     assert_eq!(found.len(), 1, "{found:?}");
-    assert!(found[0].what.starts_with("the Dante NIC {G}") && found[0].must);
+    assert_eq!(found[0].what, "the Dante NIC {G}");
+    assert!(found[0].must);
     assert_eq!(plan(&only, &gone), Vec::new());
     // With the NIC there, they are read and written again.
     let mut usb = Pc {
@@ -337,6 +338,38 @@ fn a_missing_dante_nic_is_one_line_with_driver_free_site_copies_only() {
     let here = Pc::default();
     assert_eq!(texts(&check(&plain, &here)).len(), 1);
     assert!(texts(&check(&plain, &here))[0].starts_with("registry {nic_class}\\*EEE: absent"));
+}
+
+/// A Dante NIC found whose driver service is unreadable: the line names the
+/// driver-scoped entries it leaves unjudged, must-have only through a
+/// driver-scoped must-have, and a driver-free must-have on its keys is read
+/// and judged on its own line (FOH after its RSS rollout, dasio#24).
+#[test]
+fn a_found_nic_with_an_unknown_driver_is_must_have_only_through_its_driver_entries() {
+    let site = parse(
+        "name = \"foh\"\nnic_guid = \"{G}\"\n\
+         [[registry]]\nkey = '{nic_class}'\nname = \"*LsoV2IPv4\"\nstring = \"0\"\nmust = true\n\
+         [[registry]]\nkey = '{nic_class}'\nname = \"*RSS\"\nstring = \"1\"\nnic_service = \"rt640x64\"\n",
+    )
+    .unwrap();
+    let mut here = Pc::default();
+    here.reg.insert(
+        ("{nic_class}".into(), "*LsoV2IPv4".into()),
+        Value::String("0".into()),
+    );
+    let found = check(&site, &here);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].what, "the Dante NIC {G}");
+    assert!(!found[0].must, "{found:?}");
+    // A driver-scoped must-have it cannot judge makes it one.
+    let musts = parse(
+        "name = \"foh\"\nnic_guid = \"{G}\"\n\
+         [[registry]]\nkey = '{nic_class}'\nname = \"*RSS\"\nstring = \"1\"\nnic_service = \"rt640x64\"\nmust = true\n",
+    )
+    .unwrap();
+    let found = check(&musts, &here);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].must, "{found:?}");
 }
 
 /// The service's loops (Windows glue, not compiled here) end the device on

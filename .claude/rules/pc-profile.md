@@ -26,12 +26,14 @@ paths:
   driver's keyword must-have on every NIC would stop the device on any
   other NIC. A site copy of such an entry replaces the baseline's whole,
   `absent_ok` included: FOH's, dsg's and mbc's site LSO entries go at
-  each PC's next rollout. A Dante NIC whose class key is not found from
-  `nic_guid` is ONE line (must-have when a must-have entry sits on its
-  keys), and no entry on its keys is read or written, a driver-free one
-  included (FOH's site file overrides every NIC entry with a driver-free
-  copy); a NIC found but with an unreadable driver service is that line
-  too, and its keys are read as ever (`Reader::nic_found`).
+  each PC's next rollout. A Dante NIC whose keys (class key, device key)
+  are not found from `nic_guid` is ONE line (must-have when a must-have
+  entry sits on its keys), and no entry on its keys is read or written, a
+  driver-free one included (FOH's site file overrides every NIC entry
+  with a driver-free copy; `Reader::nic_found`). A NIC found with an
+  unreadable driver service gives that line only when driver-scoped
+  entries need the driver (must-have only through a driver-scoped
+  must-have); its keys are read as ever.
 - **Power-plan values go through powercfg** (dasio#128, mbc 16.11.2026):
   `apply` sets an `{active_scheme}\<subgroup>\<setting>` `ACSettingIndex`
   / `DCSettingIndex` DWORD with `powercfg /setacvalueindex|/setdcvalueindex

@@ -309,8 +309,9 @@ pub trait Reader {
     /// The Dante NIC's driver service (e.g. `rt640x64`); `None` when the
     /// NIC or its service was not found.
     fn nic_service(&self) -> Option<String>;
-    /// Whether the Dante NIC's class key was found from the profile's GUID.
-    /// Without it no entry on the NIC's keys can be read (dasio#24).
+    /// Whether the Dante NIC's keys (its class key, and its device key
+    /// through `DeviceInstanceID`) were found from the profile's GUID.
+    /// Without them no entry on the NIC's keys can be read (dasio#24).
     fn nic_found(&self) -> bool;
     /// What of `e`'s thing the PC has ([`absent`]): the exe's path, the
     /// service's name, each task the pattern matches by its full path;
@@ -332,10 +333,10 @@ fn on_nic(key: &str) -> bool {
     key.contains("{nic_class}") || key.contains("{nic_device}")
 }
 
-/// The profile names a Dante NIC whose entries cannot be judged: its class
-/// key was not found from the GUID (a wrong GUID, a swapped NIC) while
-/// entries sit on the NIC's keys, or its driver is unknown while
-/// NIC-family entries need it. One problem says so (dasio#128).
+/// The profile names a Dante NIC whose entries cannot be judged: its keys
+/// were not found from the GUID (e.g. a wrong GUID) while entries sit on
+/// them, or its driver is unknown while driver-scoped entries need it.
+/// One problem says so (dasio#128).
 fn nic_missing(p: &Profile, r: &dyn Reader) -> bool {
     p.nic_guid.is_some()
         && ((!r.nic_found()
@@ -345,9 +346,9 @@ fn nic_missing(p: &Profile, r: &dyn Reader) -> bool {
             || (r.nic_service().is_none() && p.registry.iter().any(|e| e.nic_service.is_some())))
 }
 
-/// An entry on the NIC's keys while the NIC's class key is not found: not
-/// read or written one by one (Windows reads each as unreadable), the
-/// missing-NIC problem stands for it, must-have included (dasio#24).
+/// An entry on the NIC's keys while those keys are not found: not read or
+/// written one by one (Windows reads each as unreadable), the missing-NIC
+/// problem stands for it, must-have included (dasio#24).
 fn nic_unread(e: &RegEntry, r: &dyn Reader) -> bool {
     on_nic(&e.key) && !r.nic_found()
 }
@@ -652,8 +653,12 @@ fn show(v: &Value) -> String {
 /// Every setting of `p` the PC does not have.
 pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
     let mut out = Vec::new();
-    // NIC-family entries need the NIC: a profile naming one the PC does not
-    // have (a wrong GUID, a swapped NIC) says so instead of skipping them.
+    // NIC entries need the NIC: a profile naming one the PC does not have
+    // (e.g. a wrong GUID) says so in one line. While its keys are not
+    // found, that line stands for every entry on them (`nic_unread`), so
+    // their must-have makes it one; while they are found, those entries
+    // are judged on their own lines and only the driver-scoped must-haves
+    // the unknown driver leaves unjudged make it one.
     if let Some(guid) = &p.nic_guid
         && nic_missing(p, r)
     {
@@ -665,7 +670,7 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
             must: p
                 .registry
                 .iter()
-                .any(|e| e.must && (e.nic_service.is_some() || on_nic(&e.key))),
+                .any(|e| e.must && (e.nic_service.is_some() || (on_nic(&e.key) && !r.nic_found()))),
         });
     }
     for e in &p.registry {

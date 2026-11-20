@@ -239,7 +239,7 @@ impl Reader for Pc {
     }
 
     fn nic_found(&self) -> bool {
-        self.nic_class.is_some()
+        self.nic_class.is_some() && self.nic_device.is_some()
     }
 
     fn nic_hardware_ids(&self) -> Vec<String> {
