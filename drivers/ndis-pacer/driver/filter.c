@@ -100,7 +100,8 @@ Return Value:
     DEBUGP(DL_TRACE, "===>DriverEntry...\n");
 
     // Deferred receive from the service's Parameters key (RxdEnable,
-    // RxdCpu), before any attach applies it.
+    // RxdCpu), before any attach applies it; media TX's TxMaxOut and
+    // kernel RX's RxRingEnable from the same key.
     rxdReadRegistry(RegistryPath);
 
     FilterDriverObject = DriverObject;
@@ -420,6 +421,8 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
         pFilter->RxdCpu = -1;
         pFilter->RxdRunning = FALSE;
         rxdApply(pFilter);
+        // Kernel RX: no ring yet.
+        rxRingFilterInit(pFilter);
         pFilter->State = FilterPaused;
 
         FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
@@ -497,6 +500,9 @@ N.B.: When the filter is in Pausing state, it can still process OID requests,
     // Deferred receive: what waits goes back to the miniport unindicated,
     // and a DPC that already runs finishes (KeFlushQueuedDpcs below).
     rxdDrop(pFilter);
+    // Kernel RX: every ring is detached (Pausing is set: none attaches
+    // again); dasio reopens after the restart.
+    rxRingDetachAll(pFilter);
 
     //
     // Do whatever work is required to bring the filter into the Paused state.
@@ -804,6 +810,8 @@ NOTE: Called at PASSIVE_LEVEL and the filter is in paused state
     {
         NdisMSleep(100);
     }
+    // Kernel RX: no ring stays attached (pause detached them already).
+    rxRingFilterTeardown(pFilter);
 
     // The timer goes first, at PASSIVE: deleting it waits for a running
     // callback, which is not allowed under a spin lock.
@@ -2123,6 +2131,14 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
 
         ASSERT(NumberOfNetBufferLists >= 1);
 
+        // dasio kernel RX: frames of dasio's flows into its rings first
+        // (rxring.c). Done when every NBL was stolen, or a chain that
+        // cannot pend went up there; otherwise the rest goes on as before.
+        if (rxRingReceive(pFilter, &NetBufferLists, &NumberOfNetBufferLists, PortNumber, ReceiveFlags))
+        {
+            break;
+        }
+
         //
         // If you would like to drop a received packet, then you must carefully
         // modify the NBL chain as follows:
@@ -2861,7 +2877,8 @@ ktxTimer(
     }
 }
 
-ULONG TxMaxOutSetting = 0;
+// Never 0 (every slot): until the Parameters are read, the measured bound.
+ULONG TxMaxOutSetting = PACER_TX_MAX_OUT_FALLBACK;
 
 // Media TX (dasio#1): the dasio service's own audio frames, copied into
 // free test stream slots and sent down in one chain. Their completions go
@@ -2908,7 +2925,7 @@ txSendAtDispatch(
         ULONG Slot;
         PUCHAR Frame;
         PNET_BUFFER_LIST Nbl;
-        if (Filter->KtxFreeCount == 0 || (TxMaxOutSetting != 0 && Filter->KtxOut >= TxMaxOutSetting))
+        if (Filter->KtxFreeCount == 0 || Filter->KtxOut >= TxMaxOutSetting)
         {
             break;
         }
@@ -3009,6 +3026,7 @@ ktxDone(
 
 ULONG RxdEnable = 0;
 LONG RxdCpuSetting = -1;
+ULONG ParamBadSetting = 0;
 
 // The settings onto one filter (outside its Lock: the DPC's target is set
 // with no lock held, before the flag that lets receives queue).
@@ -3147,20 +3165,57 @@ rxdDrop(
 }
 
 
-// RxdEnable and RxdCpu (REG_DWORD; RxdCpu 0xFFFFFFFF = -1) from
-// <service>\Parameters. Missing key or values: off, as before.
+// One value of <service>\Parameters, in a query of its own: a value of
+// another type (TYPECHECK: STATUS_OBJECT_TYPE_MISMATCH) fails only this
+// one, never the others (pacer_params_read, dasio#27). Logged when it is
+// there but cannot be read (a kernel debugger or DebugView shows it).
+static int
+paramRead(
+    _In_ void *Context,
+    _In_ enum pacer_param Which,
+    _Out_ ULONG *Value
+    )
+{
+    static const PCWSTR Names[PACER_PARAM_COUNT] = { L"RxdEnable", L"RxdCpu", L"TxMaxOut", L"RxRingEnable" };
+    RTL_QUERY_REGISTRY_TABLE Table[3];
+    ULONG Read = 0;
+    NTSTATUS Status;
+
+    *Value = 0;
+    RtlZeroMemory(Table, sizeof(Table));
+    Table[0].Flags = RTL_QUERY_REGISTRY_SUBKEY;
+    Table[0].Name = L"Parameters";
+    Table[1].Flags = RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK | RTL_QUERY_REGISTRY_REQUIRED;
+    Table[1].Name = (PWSTR)Names[Which];
+    Table[1].EntryContext = &Read;
+    Table[1].DefaultType = (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_NONE;
+    Status = RtlQueryRegistryValues(RTL_REGISTRY_ABSOLUTE, (PCWSTR)Context, Table, NULL, NULL);
+    if (NT_SUCCESS(Status))
+    {
+        *Value = Read;
+        return PACER_PARAM_READ;
+    }
+    // No Parameters key, or no such value: its default.
+    if (Status == STATUS_OBJECT_NAME_NOT_FOUND)
+    {
+        return PACER_PARAM_MISSING;
+    }
+    DbgPrintEx(DPFLTR_IHVNETWORK_ID, DPFLTR_ERROR_LEVEL,
+               "dasiopacer: Parameters\\%ws could not be read (0x%08X, not a REG_DWORD?): its default stays\n",
+               Names[Which], (ULONG)Status);
+    return PACER_PARAM_BAD;
+}
+
+// RxdEnable and RxdCpu (REG_DWORD; RxdCpu 0xFFFFFFFF = -1), TxMaxOut and
+// RxRingEnable from <service>\Parameters, each read on its own. Missing
+// key or values: rxd and the RX ring off, RxdCpu -1, TxMaxOut 200; an
+// unreadable or invalid value keeps only its own default and is logged.
 static VOID
 rxdReadRegistry(
     _In_ PUNICODE_STRING RegistryPath
     )
 {
-    RTL_QUERY_REGISTRY_TABLE Table[5];
-    ULONG Enable = 0;
-    ULONG MaxOut = 0;
-    ULONG DefaultMaxOut = 0;
-    ULONG Cpu = (ULONG)-1;
-    ULONG DefaultEnable = 0;
-    ULONG DefaultCpu = (ULONG)-1;
+    struct pacer_params Params;
     PWCHAR Path;
     USHORT Chars = RegistryPath->Length / sizeof(WCHAR);
 
@@ -3168,38 +3223,31 @@ rxdReadRegistry(
     Path = (PWCHAR)ExAllocatePool2(POOL_FLAG_PAGED, (Chars + 1) * sizeof(WCHAR), FILTER_ALLOC_TAG);
     if (Path == NULL)
     {
+        // Nothing read: every value keeps its default (TxMaxOut 200), and
+        // ParamBad stays 0, so say it here.
+        DbgPrintEx(DPFLTR_IHVNETWORK_ID, DPFLTR_ERROR_LEVEL,
+                   "dasiopacer: Parameters not read (no memory for the path): every value keeps its default\n");
         return;
     }
     RtlCopyMemory(Path, RegistryPath->Buffer, Chars * sizeof(WCHAR));
     Path[Chars] = L'\0';
 
-    RtlZeroMemory(Table, sizeof(Table));
-    Table[0].Flags = RTL_QUERY_REGISTRY_SUBKEY;
-    Table[0].Name = L"Parameters";
-    Table[1].Flags = RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK;
-    Table[1].Name = L"RxdEnable";
-    Table[1].EntryContext = &Enable;
-    Table[1].DefaultType = (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD;
-    Table[1].DefaultData = &DefaultEnable;
-    Table[1].DefaultLength = sizeof(ULONG);
-    Table[2].Flags = RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK;
-    Table[2].Name = L"RxdCpu";
-    Table[2].EntryContext = &Cpu;
-    Table[2].DefaultType = (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD;
-    Table[2].DefaultData = &DefaultCpu;
-    Table[2].DefaultLength = sizeof(ULONG);
-    // Media TX's bound on frames out (0: every slot), kept across reboots.
-    Table[3].Flags = RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK;
-    Table[3].Name = L"TxMaxOut";
-    Table[3].EntryContext = &MaxOut;
-    Table[3].DefaultType = (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD;
-    Table[3].DefaultData = &DefaultMaxOut;
-    Table[3].DefaultLength = sizeof(ULONG);
-    if (NT_SUCCESS(RtlQueryRegistryValues(RTL_REGISTRY_ABSOLUTE, Path, Table, NULL, NULL)))
+    pacer_params_read(paramRead, Path, KTX_SLOTS, &Params);
+    RxdEnable = Params.rxd_enable;
+    RxdCpuSetting = Params.rxd_cpu;
+    // Media TX's bound on frames out, kept across reboots: 1..KTX_SLOTS - 1,
+    // 200 when missing or invalid (never every slot).
+    TxMaxOutSetting = Params.tx_max_out;
+    // Kernel RX (rxring.c): off while 0 or missing (any other value is on).
+    RxRingEnable = Params.rx_ring_enable;
+    // What could not be read or was invalid, for rxd.ps1 status (ParamBad),
+    // and in the debug log (an unreadable type is also logged by paramRead).
+    ParamBadSetting = Params.bad;
+    if (Params.bad != 0)
     {
-        RxdEnable = Enable != 0;
-        RxdCpuSetting = (LONG)Cpu;
-        TxMaxOutSetting = MaxOut <= KTX_SLOTS ? MaxOut : 0;
+        DbgPrintEx(DPFLTR_IHVNETWORK_ID, DPFLTR_ERROR_LEVEL,
+                   "dasiopacer: Parameters ParamBad 0x%X (bit = enum pacer_param): those values keep their defaults; TxMaxOut %lu\n",
+                   Params.bad, (ULONG)Params.tx_max_out);
     }
     ExFreePoolWithTag(Path, FILTER_ALLOC_TAG);
 }

@@ -6,15 +6,16 @@
 # script checks it and changes nothing when it is off.
 #   -RxdCpu <n>: deferred receive on, its DPC on CPU n, kept across reboots
 #   (the service's Parameters: RxdEnable, RxdCpu); -RxdCpu -1 turns it off.
-#   -TxMaxOut <n>: media TX's bound on frames out at the miniport, kept
-#   across reboots (Parameters TxMaxOut; 0 = every slot). The default 200
-#   is the FOH PC's measured value (dasio#1): with every slot (4096) out,
-#   Realtek 10.79 failed frames with NDIS_STATUS_RESOURCES once ~448 were
-#   out; at 200 it failed none.
+#   -TxMaxOut <n>: media TX's bound on frames out at the miniport, 1..4095,
+#   kept across reboots (Parameters TxMaxOut; never every slot: the filter
+#   reads a missing, 0, 4096 or larger value as 200). The default 200 is the FOH
+#   PC's measured value (dasio#1): with every slot (4096) out, Realtek
+#   10.79 failed frames with NDIS_STATUS_RESOURCES once ~448 were out; at
+#   200 it failed none.
 param(
     [Parameter(Mandatory)][string]$Adapter,
     [ValidateRange(-2, 1023)][int]$RxdCpu = -2,
-    [ValidateRange(0, 4096)][int]$TxMaxOut = 200
+    [ValidateRange(1, 4095)][int]$TxMaxOut = 200
 )
 $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path

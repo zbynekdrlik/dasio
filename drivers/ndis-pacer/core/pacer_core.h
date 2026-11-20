@@ -214,4 +214,49 @@ uint32_t pacer_ktx_due(uint64_t start, uint64_t now, uint64_t interval_100ns, ui
  * than 4 or a header shorter than 20 bytes); `*at` then stays. */
 int pacer_tx_next(const uint8_t *buf, uint32_t len, uint32_t *at, uint32_t *frame_off, uint32_t *frame_len);
 
+/* The service's Parameters, read when the driver loads. Each value is
+ * read on its own (filter.c: one registry query per value), so a value
+ * that is there but unreadable (another type, e.g. a REG_SZ from `reg
+ * add` without /t) keeps only its own default, never the others' (TxMaxOut:
+ * 200, never unbounded)
+ * (dasio#27: one bad RxRingEnable in a shared query had turned rxd off
+ * and left media TX unbounded). */
+enum pacer_param {
+    PACER_PARAM_RXD_ENABLE = 0,
+    PACER_PARAM_RXD_CPU = 1,
+    PACER_PARAM_TX_MAX_OUT = 2,
+    PACER_PARAM_RX_RING_ENABLE = 3,
+    PACER_PARAM_COUNT = 4,
+};
+
+/* What a read gives: the value, nothing there (its default), or a value
+ * there that could not be read (its default, and its bit in `bad`). */
+#define PACER_PARAM_READ 1
+#define PACER_PARAM_MISSING 0
+#define PACER_PARAM_BAD (-1)
+
+struct pacer_params {
+    uint32_t rxd_enable;     /* 0 or 1, default 0 */
+    int32_t rxd_cpu;         /* default -1: the receiving CPU */
+    uint32_t tx_max_out;     /* 1..tx_slots - 1 when a valid value is read; otherwise min(200, tx_slots) */
+    uint32_t rx_ring_enable; /* 0 or 1, default 0 */
+    uint32_t bad;            /* bit (1 << enum pacer_param) per unreadable or invalid value */
+};
+
+/* The bound on media frames out unless TxMaxOut gives a valid one: the
+ * value install.ps1 writes (measured on FOH). Media TX is never unbounded:
+ * with every slot out Realtek 10.79 failed frames (NDIS_STATUS_RESOURCES
+ * once ~448 were out, dasio#1). Capped at `tx_slots`: only a ring of 200
+ * slots or fewer (never the driver's, KTX_SLOTS 4096) gets every slot. */
+#define PACER_TX_MAX_OUT_FALLBACK 200u
+
+/* Reads every parameter through `read` (one call per value; it returns
+ * one of PACER_PARAM_READ / _MISSING / _BAD and sets `*value` on READ).
+ * TxMaxOut 1..`tx_slots` - 1 is the bound; missing, unreadable, 0, or
+ * `tx_slots` (every slot) and above, it is PACER_TX_MAX_OUT_FALLBACK
+ * (capped at `tx_slots`, see above), and flagged in `bad` unless it was
+ * missing. */
+void pacer_params_read(int (*read)(void *ctx, enum pacer_param which, uint32_t *value), void *ctx,
+                       uint32_t tx_slots, struct pacer_params *out);
+
 #endif

@@ -120,9 +120,15 @@ FilterDispatch(
             break;
 
         case IRP_MJ_CLEANUP:
+            // The handle's last close (or its process's exit): its kernel
+            // RX ring, if it has one, is closed.
+            rxRingCleanup(IrpStack->FileObject);
             break;
 
         case IRP_MJ_CLOSE:
+            // The file object's last reference: a ring an RX_OPEN in flight
+            // attached after the cleanup (an overlapped handle) goes now.
+            rxRingCleanup(IrpStack->FileObject);
             break;
 
         default:
@@ -456,7 +462,10 @@ FilterDeviceIoControl(
         case IOCTL_DASIO_TX_SET:
             InputBuffer = (PUCHAR)Irp->AssociatedIrp.SystemBuffer;
             InputBufferLength = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
-            if (InputBufferLength < sizeof(ULONG) || *(PULONG)InputBuffer > KTX_SLOTS)
+            // 1..KTX_SLOTS - 1: 0 (once every slot) and KTX_SLOTS (every
+            // slot) are refused, media TX is never unbounded.
+            if (InputBufferLength < sizeof(ULONG) || *(PULONG)InputBuffer == 0 ||
+                *(PULONG)InputBuffer >= KTX_SLOTS)
             {
                 Status = STATUS_INVALID_PARAMETER;
                 break;
@@ -511,6 +520,7 @@ FilterDeviceIoControl(
                 Out->Queued = pFilter->RxdQueued;
                 Out->Dropped = pFilter->RxdDropped;
                 Out->Priority = pFilter->RxdPriority;
+                Out->ParamBad = ParamBadSetting;
                 FILTER_RELEASE_LOCK(&pFilter->Lock, bTrue);
                 InfoLength += (ULONG)sizeof(DASIO_RXD_STATUS);
             }
@@ -519,6 +529,23 @@ FilterDeviceIoControl(
             {
                 InfoLength = 0;
             }
+            break;
+
+        // Kernel RX (dasio#27, B23): rxring.c.
+        case IOCTL_DASIO_RX_OPEN:
+            Status = rxRingOpen(Irp, IrpSp, &InfoLength);
+            break;
+
+        case IOCTL_DASIO_RX_MATCH:
+            Status = rxRingMatch(Irp, IrpSp);
+            break;
+
+        case IOCTL_DASIO_RX_CLOSE:
+            Status = rxRingClose(IrpSp);
+            break;
+
+        case IOCTL_DASIO_RX_STATUS:
+            Status = rxRingStatus(Irp, IrpSp, &InfoLength);
             break;
 
         default:

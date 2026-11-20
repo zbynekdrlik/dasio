@@ -739,8 +739,117 @@ static void tx_next(void)
     CHECK(pacer_tx_next(buf, len, &at, &off, &n) == -1 && at == 62);
 }
 
+/* A fake registry: per value, what a read gives and the value. */
+struct fake_params {
+    int result[PACER_PARAM_COUNT];
+    uint32_t value[PACER_PARAM_COUNT];
+    int calls[PACER_PARAM_COUNT];
+};
+
+static int fake_read(void *ctx, enum pacer_param which, uint32_t *value)
+{
+    struct fake_params *f = ctx;
+    f->calls[which]++;
+    if (f->result[which] == PACER_PARAM_READ) {
+        *value = f->value[which];
+    }
+    return f->result[which];
+}
+
+static void params(void)
+{
+    struct fake_params f;
+    struct pacer_params p;
+    int i;
+
+    /* Nothing there: every default, nothing bad, each value read once;
+     * media TX bounded all the same. */
+    memset(&f, 0, sizeof f);
+    memset(&p, 0x5A, sizeof p);
+    pacer_params_read(fake_read, &f, 4096, &p);
+    CHECK(p.rxd_enable == 0 && p.rxd_cpu == -1 && p.tx_max_out == 200 && p.rx_ring_enable == 0 && p.bad == 0);
+    for (i = 0; i < PACER_PARAM_COUNT; i++) {
+        CHECK(f.calls[i] == 1);
+    }
+
+    /* Everything there. */
+    for (i = 0; i < PACER_PARAM_COUNT; i++) {
+        f.result[i] = PACER_PARAM_READ;
+    }
+    f.value[PACER_PARAM_RXD_ENABLE] = 7;
+    f.value[PACER_PARAM_RXD_CPU] = 3;
+    f.value[PACER_PARAM_TX_MAX_OUT] = 200;
+    f.value[PACER_PARAM_RX_RING_ENABLE] = 1;
+    pacer_params_read(fake_read, &f, 4096, &p);
+    CHECK(p.rxd_enable == 1 && p.rxd_cpu == 3 && p.tx_max_out == 200 && p.rx_ring_enable == 1 && p.bad == 0);
+
+    /* A REG_SZ RxRingEnable: only kernel RX stays off; rxd, its CPU and
+     * the TX bound are read as ever (dasio#27). */
+    f.result[PACER_PARAM_RX_RING_ENABLE] = PACER_PARAM_BAD;
+    pacer_params_read(fake_read, &f, 4096, &p);
+    CHECK(p.rxd_enable == 1 && p.rxd_cpu == 3 && p.tx_max_out == 200 && p.rx_ring_enable == 0);
+    CHECK(p.bad == 1u << PACER_PARAM_RX_RING_ENABLE);
+    /* Each bad value has its own bit and keeps its own default. */
+    f.result[PACER_PARAM_RX_RING_ENABLE] = PACER_PARAM_READ;
+    f.result[PACER_PARAM_RXD_ENABLE] = PACER_PARAM_BAD;
+    f.result[PACER_PARAM_TX_MAX_OUT] = PACER_PARAM_BAD;
+    pacer_params_read(fake_read, &f, 4096, &p);
+    CHECK(p.rxd_enable == 0 && p.rxd_cpu == 3 && p.rx_ring_enable == 1);
+    CHECK(p.bad == ((1u << PACER_PARAM_RXD_ENABLE) | (1u << PACER_PARAM_TX_MAX_OUT)));
+    /* An unreadable TxMaxOut is the measured bound, never every slot of
+     * the driver's 4096 (unbounded media TX); a ring of 200 slots or fewer
+     * caps it at its slots. */
+    CHECK(p.tx_max_out == PACER_TX_MAX_OUT_FALLBACK && PACER_TX_MAX_OUT_FALLBACK == 200u);
+    pacer_params_read(fake_read, &f, 150, &p);
+    CHECK(p.tx_max_out == 150);
+    pacer_params_read(fake_read, &f, 200, &p);
+    CHECK(p.tx_max_out == 200);
+    f.result[PACER_PARAM_RXD_ENABLE] = PACER_PARAM_READ;
+    f.result[PACER_PARAM_TX_MAX_OUT] = PACER_PARAM_READ;
+    f.result[PACER_PARAM_RXD_CPU] = PACER_PARAM_BAD;
+    pacer_params_read(fake_read, &f, 4096, &p);
+    CHECK(p.rxd_enable == 1 && p.rxd_cpu == -1 && p.tx_max_out == 200 && p.bad == 1u << PACER_PARAM_RXD_CPU);
+    f.result[PACER_PARAM_RXD_CPU] = PACER_PARAM_READ;
+
+    /* RxdCpu 0xFFFFFFFF is -1; TxMaxOut 1 and one below the slot count are
+     * kept; 0 (once "every slot"), the slot count itself (every slot) and
+     * above are the bound 200, flagged; a zero switch is off. */
+    f.value[PACER_PARAM_RXD_CPU] = 0xFFFFFFFFu;
+    f.value[PACER_PARAM_TX_MAX_OUT] = 4095;
+    f.value[PACER_PARAM_RXD_ENABLE] = 0;
+    f.value[PACER_PARAM_RX_RING_ENABLE] = 0;
+    pacer_params_read(fake_read, &f, 4096, &p);
+    CHECK(p.rxd_cpu == -1 && p.tx_max_out == 4095 && p.rxd_enable == 0 && p.rx_ring_enable == 0 && p.bad == 0);
+    f.value[PACER_PARAM_TX_MAX_OUT] = 4096;
+    pacer_params_read(fake_read, &f, 4096, &p);
+    CHECK(p.tx_max_out == 200 && p.bad == 1u << PACER_PARAM_TX_MAX_OUT);
+    f.value[PACER_PARAM_TX_MAX_OUT] = 1;
+    pacer_params_read(fake_read, &f, 4096, &p);
+    CHECK(p.tx_max_out == 1 && p.bad == 0);
+    f.value[PACER_PARAM_TX_MAX_OUT] = 4097;
+    pacer_params_read(fake_read, &f, 4096, &p);
+    CHECK(p.tx_max_out == 200 && p.bad == 1u << PACER_PARAM_TX_MAX_OUT);
+    f.value[PACER_PARAM_TX_MAX_OUT] = 0;
+    pacer_params_read(fake_read, &f, 4096, &p);
+    CHECK(p.tx_max_out == 200 && p.bad == 1u << PACER_PARAM_TX_MAX_OUT);
+    /* Missing: the bound, not flagged; fewer slots than 200: all of them. */
+    f.result[PACER_PARAM_TX_MAX_OUT] = PACER_PARAM_MISSING;
+    pacer_params_read(fake_read, &f, 4096, &p);
+    CHECK(p.tx_max_out == 200 && p.bad == 0);
+    pacer_params_read(fake_read, &f, 64, &p);
+    CHECK(p.tx_max_out == 64 && p.bad == 0);
+    f.result[PACER_PARAM_TX_MAX_OUT] = PACER_PARAM_READ;
+    /* A value missing among read ones: its default only. */
+    f.value[PACER_PARAM_TX_MAX_OUT] = 200;
+    f.result[PACER_PARAM_RXD_ENABLE] = PACER_PARAM_MISSING;
+    f.value[PACER_PARAM_RXD_ENABLE] = 1;
+    pacer_params_read(fake_read, &f, 4096, &p);
+    CHECK(p.rxd_enable == 0 && p.tx_max_out == 200 && p.bad == 0);
+}
+
 int main(void)
 {
+    params();
     classify();
     pacing();
     rates();

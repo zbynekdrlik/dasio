@@ -298,6 +298,8 @@ typedef struct _FILTER_REQUEST
 // Define the filter struct
 //
 #include "../core/pacer_core.h"
+// Kernel RX (dasio#27, B23): rings of received frames for dasio.
+#include "rxring.h"
 
 // Kernel test stream and media TX: frames that may be out at once and the
 // bytes of one slot. Media TX of two dasio devices on the FOH PC is about
@@ -457,6 +459,10 @@ typedef struct _MS_FILTER
     ULONG64                         RxdMaxBatch;
     ULONG64                         RxdDropped;
 
+    // dasio kernel RX (rxring.c): the rings attached to this adapter,
+    // under their own lock.
+    RX_FILTER_RINGS                 RxRing;
+
 }MS_FILTER, * PMS_FILTER;
 
 // A split parent: the NBL tcpip sent and its children's bookkeeping. Each
@@ -488,7 +494,8 @@ VOID ktxStop(_In_ PMS_FILTER Filter);
 // STATUS_INVALID_PARAMETER for a malformed input (nothing sent),
 // STATUS_DEVICE_NOT_READY when the filter has no slots or is not running.
 // The bound on media frames out at the miniport (IOCTL_DASIO_TX_SET; from
-// the service's Parameters TxMaxOut at load): 0 = every slot.
+// the service's Parameters TxMaxOut at load): 1..KTX_SLOTS - 1, never every
+// slot (missing or invalid: PACER_TX_MAX_OUT_FALLBACK, 200).
 extern ULONG TxMaxOutSetting;
 
 NTSTATUS txSendAtDispatch(_In_ PMS_FILTER Filter, _In_reads_bytes_(Length) const UCHAR *Input,
@@ -498,6 +505,10 @@ NTSTATUS txSendAtDispatch(_In_ PMS_FILTER Filter, _In_reads_bytes_(Length) const
 // each filter's Lock; the DPC's target CPU is set outside any lock.
 extern ULONG RxdEnable;
 extern LONG RxdCpuSetting;
+// The Parameters values that were there but unreadable or invalid at load (bit per
+// enum pacer_param: RxdEnable, RxdCpu, TxMaxOut, RxRingEnable), in
+// DASIO_RXD_STATUS.ParamBad.
+extern ULONG ParamBadSetting;
 VOID rxdApply(_In_ PMS_FILTER Filter);
 
 // Other traffic goes at this share of the link speed...

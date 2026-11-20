@@ -28,6 +28,9 @@
     <ClCompile Include="flt_dbg.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="rxring.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="precompsrc.c">
       <Filter>Source Files</Filter>
     </ClCompile>
