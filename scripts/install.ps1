@@ -50,8 +50,9 @@
 #   5 min): the [[process]] entries' affinity and priority, held by dasio
 #   (what Process Lasso did);
 # - copies dtray.exe and dtray-cli.exe (dstack's tray: every local dstack device, with dasio's
-#   line per instance) and starts it at the installing user's logon
-#   (`dtray-cli --autostart on`); removes the former dasio-tray; writes the
+#   line per instance) and starts it at the installing user's logon, and run
+#   as SYSTEM at every loaded user's (dtray-autostart.ps1, dasio#211); removes
+#   the former dasio-tray; writes the
 #   instance's expected-device file %ProgramData%\dstack\devices\<device>.device,
 # - makes the service "dasio-<n>" (LocalSystem, started at boot before any
 #   logon; the SCM restarts it after 2 s, 5 s, then 30 s, also after an error
@@ -636,9 +637,9 @@ foreach ($exe in "dtray.exe", "dtray-cli.exe") {
         Write-Output "installed $exe"
     }
 }
-# dtray itself starts at the next logon.
-& $dtrayCli --autostart on
-if ($LASTEXITCODE -ne 0) { throw "dtray-cli --autostart on failed ($LASTEXITCODE)" }
+# dtray itself starts at the next logon: of the installing user, and run as
+# SYSTEM (the PCs' scheduled-task deploy) of every loaded user (dasio#211).
+& (Join-Path $here "dtray-autostart.ps1") -On -Exe (Join-Path $bin "dtray.exe")
 # The former dasio-tray: dtray shows its lines now.
 $run = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
 if (Get-ItemProperty $run -Name "dasio-tray" -ErrorAction SilentlyContinue) { Remove-ItemProperty $run -Name "dasio-tray" }

@@ -187,6 +187,42 @@ if (-not (Test-Path $dtrayCli)) { throw "no dtray-cli installed" }
 $runKey = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
 if (-not (Get-ItemProperty $runKey -Name "dtray" -ErrorAction SilentlyContinue)) { throw "dtray does not start at logon" }
 if (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name "dasio-tray" -ErrorAction SilentlyContinue) { throw "the former dasio-tray still starts at logon" }
+# dasio#211: the PCs install from a SYSTEM scheduled task, where HKCU is
+# SYSTEM's own hive. The tray's autostart must reach the hive of the user who
+# logs on: run the bundle's dtray-autostart.ps1 as SYSTEM, as the PCs do, and
+# read the runner user's own Run value.
+$userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$userRun = "Registry::HKEY_USERS\$userSid\Software\Microsoft\Windows\CurrentVersion\Run"
+$autostart = Join-Path $Bundle "dtray-autostart.ps1"
+$asSystemDone = Join-Path $env:ProgramData "dasio\ci-autostart.done"
+$asSystemScript = Join-Path $env:ProgramData "dasio\ci-autostart.ps1"
+function Invoke-AutostartAsSystem([string]$Mode) {
+    Remove-Item $asSystemDone, "$asSystemDone.log" -ErrorAction SilentlyContinue
+    Set-Content $asSystemScript @"
+try { & '$autostart' -$Mode -Exe '$dtray' *> '$asSystemDone.log'; Set-Content '$asSystemDone' 'ok' }
+catch { Set-Content '$asSystemDone' ('failed: ' + `$_) }
+"@
+    $act = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$asSystemScript`""
+    Register-ScheduledTask -TaskName "dasio-ci-autostart" -Action $act -Trigger (New-ScheduledTaskTrigger -Once -At (Get-Date).AddDays(-1)) -User SYSTEM -RunLevel Highest -Force | Out-Null
+    Start-ScheduledTask -TaskName "dasio-ci-autostart"
+    Wait-Until { Test-Path $asSystemDone } 60 "dtray-autostart.ps1 -$Mode run as SYSTEM"
+    Unregister-ScheduledTask -TaskName "dasio-ci-autostart" -Confirm:$false
+    $result = (Get-Content $asSystemDone -Raw).Trim()
+    $log = if (Test-Path "$asSystemDone.log") { Get-Content "$asSystemDone.log" -Raw } else { "" }
+    if ($result -ne "ok") { throw "dtray-autostart.ps1 -$Mode as SYSTEM: $result`n$log" }
+    Write-Output "dtray-autostart.ps1 -$Mode as SYSTEM:`n$log"
+}
+Remove-ItemProperty $userRun -Name "dtray" -ErrorAction SilentlyContinue
+Invoke-AutostartAsSystem "On"
+$wantRun = '"' + $dtray + '"'
+$gotRun = (Get-ItemProperty $userRun -Name "dtray" -ErrorAction SilentlyContinue).dtray
+if ($gotRun -ne $wantRun) { throw "an install as SYSTEM left the user's dtray autostart at '$gotRun', not '$wantRun' (dasio#211)" }
+Invoke-AutostartAsSystem "Off"
+if (Get-ItemProperty $userRun -Name "dtray" -ErrorAction SilentlyContinue) { throw "an uninstall as SYSTEM left the user's dtray autostart (dasio#211)" }
+# Back as the install left it: the uninstall at the end of this test checks
+# that it goes.
+Invoke-AutostartAsSystem "On"
+Remove-Item $asSystemScript, $asSystemDone, "$asSystemDone.log" -ErrorAction SilentlyContinue
 $expected = Join-Path $env:ProgramData "dstack\devices\test-device.device"
 if (-not (Test-Path $expected)) { throw "no expected-device file $expected" }
 Wait-Until { (& $dtrayCli --print 2>$null | Out-String) -match "(no DAW|DAW attached) .+ @ \d+ kHz .+ in [\d.]+ / out [\d.]+ ms .+ late \d+/min" } 30 "dtray's dasio line for the instance"

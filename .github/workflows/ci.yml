@@ -252,7 +252,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force bundle | Out-Null
-          Copy-Item target/release/dasio.exe, target/release/dasio_driver.dll, scripts/install.ps1, scripts/uninstall.ps1 bundle/
+          Copy-Item target/release/dasio.exe, target/release/dasio_driver.dll, scripts/install.ps1, scripts/uninstall.ps1, scripts/dtray-autostart.ps1 bundle/
           # dtray (dstack's tray) from the dstack release the crates are pinned to.
           $tag = [regex]::Match((Get-Content crates/dasio/Cargo.toml -Raw), 'dstack = \{[^}]*tag = "(v[0-9.]+)"').Groups[1].Value
           if (-not $tag) { throw "no dstack tag in crates/dasio/Cargo.toml" }
