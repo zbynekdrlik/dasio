@@ -21,17 +21,23 @@ pub fn page_span(addr: usize, len: usize, page: usize) -> usize {
     (last - first + 1).saturating_mul(page)
 }
 
-/// The working set (minimum, maximum) for `locked` bytes in locked pages
-/// on top of the process's own `base` (its working set before any lock):
-/// both raised by the locked bytes and [`LOCK_MARGIN`], the maximum never
-/// below the minimum. Nothing locked: `base` as it is.
-pub fn working_set(base: (usize, usize), locked: usize) -> (usize, usize) {
+/// The working set (minimum, maximum) for `locked` bytes in locked pages.
+/// `base`: the process's own limits before its first lock; `now`: its
+/// working set in use and its peak, bytes. Both limits are raised by the
+/// locked bytes and [`LOCK_MARGIN`] on top of the larger of the limit and
+/// the use: the device process already holds tens of MB (dstack's buffers,
+/// Npcap, stacks) against Windows' default limits of about 1 MB, and a
+/// maximum below its use would trim its unlocked pages, faulting them back
+/// on the pump. The maximum is never below the minimum. Nothing locked:
+/// `base`'s minimum, the maximum still never below the use.
+pub fn working_set(base: (usize, usize), now: (usize, usize), locked: usize) -> (usize, usize) {
+    let used = now.0.max(now.1);
     if locked == 0 {
-        return base;
+        return (base.0, base.1.max(used));
     }
     let extra = locked.saturating_add(LOCK_MARGIN);
-    let min = base.0.saturating_add(extra);
-    (min, base.1.saturating_add(extra).max(min))
+    let min = base.0.max(used).saturating_add(extra);
+    (min, base.1.max(used).saturating_add(extra).max(min))
 }
 
 #[cfg(test)]
@@ -78,21 +84,66 @@ mod tests {
         );
     }
 
+    /// Windows' default limits.
+    const BASE: (usize, usize) = (200 << 10, 1380 << 10);
+
     #[test]
-    fn the_working_set_grows_by_the_locked_bytes_and_the_margin() {
-        let base = (200 << 10, 1380 << 10);
+    fn the_working_set_grows_by_the_locked_bytes_and_the_margin_over_its_use() {
         let locked = 528 << 10;
+        // In use 40 MB, peak 52 MB: the peak counts.
+        let now = (40 << 20, 52 << 20);
         assert_eq!(
-            working_set(base, locked),
-            (base.0 + locked + LOCK_MARGIN, base.1 + locked + LOCK_MARGIN)
+            working_set(BASE, now, locked),
+            (
+                (52 << 20) + locked + LOCK_MARGIN,
+                (52 << 20) + locked + LOCK_MARGIN
+            )
+        );
+        // In use above the peak read (two reads): the use counts.
+        assert_eq!(
+            working_set(BASE, (60 << 20, 52 << 20), locked).0,
+            (60 << 20) + locked + LOCK_MARGIN
         );
     }
 
     #[test]
-    fn nothing_locked_keeps_the_working_set() {
+    fn a_limit_above_the_use_is_the_one_raised() {
+        let locked = 528 << 10;
+        let base = (8 << 20, 64 << 20);
         assert_eq!(
-            working_set((200 << 10, 1380 << 10), 0),
-            (200 << 10, 1380 << 10)
+            working_set(base, (6 << 20, 7 << 20), locked),
+            (
+                (8 << 20) + locked + LOCK_MARGIN,
+                (64 << 20) + locked + LOCK_MARGIN
+            )
+        );
+        // Only the maximum above the use.
+        assert_eq!(
+            working_set(BASE, (6 << 20, 7 << 20), locked),
+            (
+                (7 << 20) + locked + LOCK_MARGIN,
+                (7 << 20) + locked + LOCK_MARGIN
+            )
+        );
+        assert_eq!(
+            working_set((100 << 10, 9 << 20), (6 << 20, 7 << 20), locked),
+            (
+                (7 << 20) + locked + LOCK_MARGIN,
+                (9 << 20) + locked + LOCK_MARGIN
+            )
+        );
+    }
+
+    #[test]
+    fn nothing_locked_keeps_the_minimum_and_never_lowers_the_maximum_below_the_use() {
+        assert_eq!(working_set(BASE, (100 << 10, 150 << 10), 0), BASE);
+        assert_eq!(
+            working_set(BASE, (30 << 20, 40 << 20), 0),
+            (BASE.0, 40 << 20)
+        );
+        assert_eq!(
+            working_set(BASE, (50 << 20, 40 << 20), 0),
+            (BASE.0, 50 << 20)
         );
     }
 
@@ -100,16 +151,19 @@ mod tests {
     fn the_maximum_is_never_below_the_minimum() {
         // A base whose maximum lies below its minimum (never from Windows,
         // but the call must not ask for it).
-        let (min, max) = working_set((3 << 20, 1 << 20), 4096);
+        let (min, max) = working_set((3 << 20, 1 << 20), (4096, 8192), 4096);
         assert_eq!(min, (3 << 20) + 4096 + LOCK_MARGIN);
         assert_eq!(max, min);
     }
 
     #[test]
     fn a_huge_request_saturates_instead_of_wrapping() {
-        assert_eq!(working_set((1, 2), usize::MAX), (usize::MAX, usize::MAX));
         assert_eq!(
-            working_set((usize::MAX - 1, usize::MAX), 4096),
+            working_set((1, 2), (3, 4), usize::MAX),
+            (usize::MAX, usize::MAX)
+        );
+        assert_eq!(
+            working_set((usize::MAX - 1, usize::MAX), (0, 0), 4096),
             (usize::MAX, usize::MAX)
         );
     }

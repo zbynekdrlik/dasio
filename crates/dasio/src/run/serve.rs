@@ -242,13 +242,20 @@ impl Base<'_> {
     }
 }
 
-/// Locks the section's pages in memory (dasio#28 E11): a page fault on
-/// them never stalls the pump, the bridge or the RX/TX threads. A failure
-/// is a WARN and the device serves as before, unlocked.
+/// Locks the section's pages in the device process's memory (dasio#28
+/// E11): the pump and the bridge never fault on the section and the
+/// directory. Only these views: dstack's buffers, the threads' stacks and
+/// the code stay pageable, and the DAW's own view can still be trimmed from
+/// the DAW's working set. The page faults before and after: the lock
+/// faults its own pages in (up to bytes / 4096); a jump well past that is
+/// the raise trimming other pages. A failure is a WARN and the device
+/// serves as before, unlocked.
 fn lock_in_memory(shared: &mut Shared) {
     match shared.lock() {
-        Ok(bytes) => info!(
-            bytes,
+        Ok(l) => info!(
+            bytes = l.bytes,
+            page_faults_before = l.page_faults_before,
+            page_faults_after = l.page_faults_after,
             session = shared.session(),
             "the shared memory is locked in memory, the working set raised for it"
         ),

@@ -272,21 +272,43 @@ fn working_set_now() -> (usize, usize) {
     (min, max)
 }
 
-// dasio#28 E11: the device locks its section in memory (after raising its
-// working set), so a page fault never stalls the pump or the bridge on it.
+/// The larger of the process's working set in use and its peak, bytes.
+/// Read before a lock, a lower bound of what its raise read (the peak only
+/// grows).
+fn memory_in_use() -> usize {
+    use windows_sys::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    let mut c = PROCESS_MEMORY_COUNTERS {
+        cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: the current process's pseudo handle; `c` holds `cb` bytes.
+    let ok = unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) };
+    assert_ne!(ok, 0, "{}", std::io::Error::last_os_error());
+    c.WorkingSetSize.max(c.PeakWorkingSetSize)
+}
+
+// dasio#28 E11: the device locks its section in its own memory (after
+// raising its working set), so the pump and the bridge never fault on it.
 // The driver's own view of the same section (the DAW's process) stays
-// unlocked: the check tells the two apart.
+// unlocked: the check tells the two apart. Instance 89: 99 must stay
+// absent (`another_rate_at_the_same_block_makes_a_fresh_section`).
 #[test]
 fn the_device_locks_its_section_in_memory_and_the_driver_s_view_stays_unlocked() {
     let shape = Shape::new(64, 64, 256).unwrap();
-    let mut device = Shared::create(99, shape, 96_000, (88, 40)).unwrap();
-    let bytes = device.lock().unwrap();
+    let mut device = Shared::create(89, shape, 96_000, (88, 40)).unwrap();
+    let used = memory_in_use();
+    let lock = device.lock().unwrap();
+    let bytes = lock.bytes;
     // The section (on a 64 KiB boundary) in whole pages and the directory's
     // one page.
     assert_eq!(bytes, shape.size().next_multiple_of(PAGE) + PAGE);
+    assert!(lock.page_faults_after >= lock.page_faults_before);
     assert_eq!(
         device.lock().unwrap(),
-        bytes,
+        lock,
         "a locked section locks no more"
     );
     let at = device.header() as *const _ as usize;
@@ -304,8 +326,15 @@ fn the_device_locks_its_section_in_memory_and_the_driver_s_view_stays_unlocked()
         "working set minimum {min} below the locked {bytes} and the margin"
     );
     assert!(max >= min, "working set {min}..{max}");
+    // Never a maximum below what the process uses (it would trim its
+    // unlocked pages): the test process holds far more than Windows'
+    // default maximum of about 1.4 MB.
+    assert!(
+        max >= used + bytes + shm::LOCK_MARGIN,
+        "working set maximum {max} below the use {used} + the locked {bytes} and the margin"
+    );
 
-    let driver = Shared::open(99).unwrap();
+    let driver = Shared::open(89).unwrap();
     let h = driver.header();
     // Touched, so its first page is in this process's working set.
     assert_eq!(h.magic.load(Ordering::Acquire), MAGIC);
@@ -320,11 +349,11 @@ fn the_device_locks_its_section_in_memory_and_the_driver_s_view_stays_unlocked()
 fn a_re_served_section_locks_too_and_stays_locked_after_the_old_one_ends() {
     let first_shape = Shape::new(4, 4, 256).unwrap();
     let mut first = Shared::create(90, first_shape, 96_000, (88, 40)).unwrap();
-    let first_bytes = first.lock().unwrap();
+    let first_bytes = first.lock().unwrap().bytes;
     let next_shape = Shape::app(4, 4, 128).unwrap();
     let mut next = Shared::create(90, next_shape, 48_000, (40, 60)).unwrap();
     assert_ne!(next.session(), first.session(), "a new section");
-    let next_bytes = next.lock().unwrap();
+    let next_bytes = next.lock().unwrap().bytes;
     assert_eq!(next_bytes, next_shape.size().next_multiple_of(PAGE) + PAGE);
     let (min, _) = working_set_now();
     assert!(
