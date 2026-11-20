@@ -63,11 +63,13 @@ paths:
   handle attached after the cleanup.
 - An older filter answers codes 23-26 with success and no output (device.c's
   default case): a reader checks the output's size.
-- Verify on dsg first, copy mode: Delivered = the flow's packets, Full 0,
-  the ring's times against dstack's arrivals, and the longest DPC of
-  `dasiopacer.sys` with a ring open (the RX ring lock is held while a whole
-  indication is parsed); then steal. FOH only with someone on site (a
-  filter reinstall rebinds the NIC).
+- Verify on mbc first (the trial PC; dsg is PP's production bridge since
+  18.11, no trials there), copy mode: Delivered = the flow's packets,
+  Full 0, the ring's times against dstack's arrivals, and the longest DPC
+  of `dasiopacer.sys` with a ring open (the RX ring lock is held while a
+  whole indication is parsed); then steal. A filter reinstall rebinds the
+  NIC, and mbc's only NIC carries the remote path: a dead-man script at a
+  fixed time, or someone at mbc. FOH only with someone on site.
 - `pacer-driver` needs `pacer-core`: an MSVC warning in a host test skips
   the driver build (C4310: a cast that truncates a constant, PR #216).
 
