@@ -10,7 +10,8 @@
  *
  * - pacer_rx_parse answers 0 or 1 and reads only its first `avail`
  *   bytes; a packet it reads has its UDP header and payload inside the
- *   frame; the driver's 128-byte header read gives the same answer as the
+ *   frame, and its flags say what the bytes say (a tag with a VLAN ID,
+ *   the Ethernet group bit); the driver's 128-byte header read gives the same answer as the
  *   whole frame, and a shorter readable prefix gives 0 or that answer;
  * - pacer_rx_match matches an entry naming the packet's own destination
  *   and nothing on another port; pacer_rx_match_valid refuses more than
@@ -79,7 +80,7 @@ static int same(const struct pacer_rx_packet *a, const struct pacer_rx_packet *b
 {
     return memcmp(a->src_ip, b->src_ip, 4) == 0 && memcmp(a->dst_ip, b->dst_ip, 4) == 0 &&
            a->src_port == b->src_port && a->dst_port == b->dst_port && a->payload_off == b->payload_off &&
-           a->payload_len == b->payload_len;
+           a->payload_len == b->payload_len && a->flags == b->flags;
 }
 
 /* Returns the parse result on the whole input, `*p` its packet. */
@@ -98,6 +99,20 @@ static int parse(const uint8_t *data, size_t size, struct pacer_rx_packet *p)
         require(p->payload_off >= 14u + 20u + 8u && p->payload_off <= 14u + 8u + 60u + 8u);
         require(p->payload_len <= len - p->payload_off);
         require(be16(data + udp) == p->src_port && be16(data + udp + 2) == p->dst_port);
+        /* The flags from the bytes: up to 2 tags before IPv4, a tag with
+         * VLAN ID bits is tagged; the group bit of the first byte. */
+        {
+            uint32_t want = (data[0] & 1u) ? PACER_RX_PKT_ETH_GROUP : 0u;
+            uint32_t at = 12;
+            int t;
+            for (t = 0; t < 2 && (be16(data + at) == 0x8100u || be16(data + at) == 0x88A8u); t++) {
+                if ((be16(data + at + 2) & 0x0FFFu) != 0) {
+                    want |= PACER_RX_PKT_TAGGED;
+                }
+                at += 4;
+            }
+            require(p->flags == want);
+        }
         require((uint32_t)be16(data + udp + 4) == p->payload_len + 8u);
     }
 
@@ -283,6 +298,7 @@ static void deliver(const uint8_t *data, size_t size, const struct pacer_rx_pack
     int tagged;
     int bad_csum;
     int wanted = 0;
+    int may_steal;
     int expect;
     int res;
 
@@ -294,6 +310,7 @@ static void deliver(const uint8_t *data, size_t size, const struct pacer_rx_pack
     q = *pkt;
     q.flags = data[20] & (PACER_RX_PKT_TAGGED | PACER_RX_PKT_BAD_CSUM | PACER_RX_PKT_ETH_GROUP);
     tagged = (q.flags & PACER_RX_PKT_TAGGED) != 0;
+    may_steal = (data[21] & 1u) == 0;
     bad_csum = !tagged && (q.flags & PACER_RX_PKT_BAD_CSUM) != 0;
     count = 1u + data[7] % 4u;
     len = ((uint32_t)data[8] << 4 | data[9]) % (uint32_t)sizeof frame;
@@ -341,8 +358,9 @@ static void deliver(const uint8_t *data, size_t size, const struct pacer_rx_pack
         }
     }
     require(pacer_rx_wanted(list, count, p) == wanted);
-    res = pacer_rx_deliver(list, count, p, (data[19] & 1u) ? NULL : frame, len, 7);
-    expect = any && all_steal && !too_big;
+    /* may_steal 0 (copy mode, the chain goes up whole): never kept. */
+    res = pacer_rx_deliver(list, count, p, (data[19] & 1u) ? NULL : frame, len, 7, may_steal);
+    expect = may_steal && any && all_steal && !too_big;
     require(res == expect);
     for (k = 0; k < count; k++) {
         uint8_t bits = data[10 + k];
@@ -542,6 +560,15 @@ static void chains(const uint8_t *data, size_t size)
         }
     }
     require(c.ups == kept_expect);
+
+    /* Copy mode: every node offered once, in order, no link changed. */
+    memset(&c, 0, sizeof c);
+    c.take = take;
+    c.n = n;
+    require(pacer_rx_offer_all(n ? &v[0] : NULL, &node_ops, &c) == n && c.offers == n && c.ups == 0);
+    for (i = 0; i < n; i++) {
+        require(v[i].next == (i + 1 < n ? &v[i + 1] : NULL));
+    }
 
     /* May pend: kept and taken, each in order and NULL-terminated. */
     memset(&c, 0, sizeof c);

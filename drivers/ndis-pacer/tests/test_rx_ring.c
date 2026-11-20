@@ -625,6 +625,7 @@ static void sinks(void)
     struct pacer_rx_match_entry t[17];
     uint8_t *ba = new_ring(SLOTS);
     uint8_t *bc = new_ring(SLOTS);
+    uint64_t d0;
     uint32_t n;
     uint32_t ip;
     uint32_t i;
@@ -659,26 +660,26 @@ static void sinks(void)
     CHECK(pacer_rx_wanted(list, 1, &p) == 1);
     CHECK(pacer_rx_wanted(list, 1, &other) == 0);
     CHECK(pacer_rx_wanted(list, 0, &p) == 0);
-    CHECK(pacer_rx_deliver(list, 1, &p, f, n, 5) == 0);
+    CHECK(pacer_rx_deliver(list, 1, &p, f, n, 5, 1) == 0);
     CHECK(a.matched == 1 && a.delivered == 1 && a.stolen == 0 && a.full == 0 && a.too_big == 0);
     CHECK(get64le(ba + PACER_RX_OFF_HEAD) == 1);
     /* Not its flow: nothing counted, it goes up. */
-    CHECK(pacer_rx_deliver(list, 1, &other, f, n, 5) == 0);
+    CHECK(pacer_rx_deliver(list, 1, &other, f, n, 5, 1) == 0);
     CHECK(a.matched == 1 && a.delivered == 1);
 
     /* Steal mode: into the ring, not up. */
     a.steal = 1;
-    CHECK(pacer_rx_deliver(list, 1, &p, f, n, 6) == 1);
+    CHECK(pacer_rx_deliver(list, 1, &p, f, n, 6, 1) == 1);
     CHECK(a.matched == 2 && a.delivered == 2 && a.stolen == 1);
-    CHECK(pacer_rx_deliver(list, 1, &other, f, n, 6) == 0);
+    CHECK(pacer_rx_deliver(list, 1, &other, f, n, 6, 1) == 0);
     CHECK(a.stolen == 1);
     /* Too big for a slot: up, even in steal mode. */
-    CHECK(pacer_rx_deliver(list, 1, &p, NULL, n, 7) == 0);
-    CHECK(pacer_rx_deliver(list, 1, &p, f, PACER_RX_MAX_FRAME + 1, 7) == 0);
+    CHECK(pacer_rx_deliver(list, 1, &p, NULL, n, 7, 1) == 0);
+    CHECK(pacer_rx_deliver(list, 1, &p, f, PACER_RX_MAX_FRAME + 1, 7, 1) == 0);
     CHECK(a.matched == 4 && a.too_big == 2 && a.stolen == 1);
     /* The reader asked for a wake. */
     ba[PACER_RX_OFF_WAKE] = 1;
-    CHECK(pacer_rx_deliver(list, 1, &p, f, n, 8) == 1);
+    CHECK(pacer_rx_deliver(list, 1, &p, f, n, 8, 1) == 1);
     CHECK(a.wake == 1);
     a.wake = 0;
 
@@ -687,10 +688,10 @@ static void sinks(void)
     sink_init(&c, bc, 1);
     CHECK(pacer_rx_set_match(&c, t, 1) == 1);
     list[1] = &c;
-    CHECK(pacer_rx_deliver(list, 2, &p, f, n, 9) == 1);
+    CHECK(pacer_rx_deliver(list, 2, &p, f, n, 9, 1) == 1);
     CHECK(a.delivered == 4 && c.delivered == 1 && a.stolen == 3 && c.stolen == 1);
     c.steal = 0;
-    CHECK(pacer_rx_deliver(list, 2, &p, f, n, 10) == 0);
+    CHECK(pacer_rx_deliver(list, 2, &p, f, n, 10, 1) == 0);
     CHECK(a.delivered == 5 && c.delivered == 2 && a.stolen == 3 && c.stolen == 1);
     c.steal = 1;
     /* A stealing ring that does not match leaves the decision to the
@@ -699,26 +700,34 @@ static void sinks(void)
     CHECK(pacer_rx_set_match(&c, t, 1) == 1);
     a.steal = 0;
     CHECK(pacer_rx_wanted(list, 2, &p) == 1);
-    CHECK(pacer_rx_deliver(list, 2, &p, f, n, 11) == 0);
+    CHECK(pacer_rx_deliver(list, 2, &p, f, n, 11, 1) == 0);
     CHECK(c.matched == 2 && c.stolen == 1);
     a.steal = 1;
-    CHECK(pacer_rx_deliver(list, 2, &p, f, n, 12) == 1);
+    CHECK(pacer_rx_deliver(list, 2, &p, f, n, 12, 1) == 1);
     CHECK(a.stolen == 4 && c.stolen == 1 && c.matched == 2);
     /* The second ring alone matches the other packet. */
     other = p;
     other.dst_ip[3] = 9;
     CHECK(pacer_rx_wanted(list, 2, &other) == 1);
-    CHECK(pacer_rx_deliver(list, 2, &other, f, n, 13) == 1);
+    CHECK(pacer_rx_deliver(list, 2, &other, f, n, 13, 1) == 1);
     CHECK(c.matched == 3 && c.stolen == 2 && a.stolen == 4);
 
     /* A full stealing ring drops the frame and counts it. */
     a.ring.head = a.ring.tail_seen + SLOTS;
     set64le(ba + PACER_RX_OFF_TAIL, a.ring.tail_seen);
-    CHECK(pacer_rx_deliver(list, 1, &p, f, n, 14) == 1);
+    CHECK(pacer_rx_deliver(list, 1, &p, f, n, 14, 1) == 1);
     CHECK(a.full == 1 && a.stolen == 5);
+    /* Copy only (may_steal 0, a chain that goes up whole): put into the
+     * stealing ring as ever, but never kept from tcpip nor counted stolen. */
+    set64le(ba + PACER_RX_OFF_TAIL, a.ring.head);
+    d0 = a.delivered;
+    CHECK(a.steal == 1 && pacer_rx_deliver(list, 1, &p, f, n, 14, 0) == 0);
+    CHECK(a.full == 1 && a.stolen == 5 && a.delivered == d0 + 1);
     /* A full copying ring: counted, and up. */
+    a.ring.head = a.ring.tail_seen + SLOTS;
+    set64le(ba + PACER_RX_OFF_TAIL, a.ring.tail_seen);
     a.steal = 0;
-    CHECK(pacer_rx_deliver(list, 1, &p, f, n, 15) == 0);
+    CHECK(pacer_rx_deliver(list, 1, &p, f, n, 15, 1) == 0);
     CHECK(a.full == 2 && a.stolen == 5);
 
     /* Tagged or a bad checksum: counted where the table names it, never
@@ -731,24 +740,24 @@ static void sinks(void)
     list[1] = &c;
     other = p;
     other.flags = PACER_RX_PKT_TAGGED;
-    CHECK(pacer_rx_deliver(list, 2, &other, f, n, 16) == 0);
+    CHECK(pacer_rx_deliver(list, 2, &other, f, n, 16, 1) == 0);
     CHECK(a.tagged == 1 && c.tagged == 1 && a.matched == 0 && a.delivered == 0 && a.stolen == 0);
     CHECK(get64le(ba + PACER_RX_OFF_HEAD) == 0);
     other.flags = PACER_RX_PKT_BAD_CSUM;
-    CHECK(pacer_rx_deliver(list, 2, &other, f, n, 17) == 0);
+    CHECK(pacer_rx_deliver(list, 2, &other, f, n, 17, 1) == 0);
     CHECK(a.bad_csum == 1 && c.bad_csum == 1 && a.tagged == 1 && a.matched == 0 && c.stolen == 0);
     /* Both: tagged wins. */
     other.flags = PACER_RX_PKT_TAGGED | PACER_RX_PKT_BAD_CSUM;
-    CHECK(pacer_rx_deliver(list, 2, &other, f, n, 18) == 0);
+    CHECK(pacer_rx_deliver(list, 2, &other, f, n, 18, 1) == 0);
     CHECK(a.tagged == 2 && a.bad_csum == 1);
     /* Not its flow: nothing counted. */
     other.dst_port = 9;
-    CHECK(pacer_rx_deliver(list, 2, &other, f, n, 19) == 0);
+    CHECK(pacer_rx_deliver(list, 2, &other, f, n, 19, 1) == 0);
     CHECK(a.tagged == 2 && a.bad_csum == 1);
     /* The group bit alone changes nothing for a group entry. */
     other = p;
     other.flags = PACER_RX_PKT_ETH_GROUP;
-    CHECK(pacer_rx_deliver(list, 2, &other, f, n, 20) == 1);
+    CHECK(pacer_rx_deliver(list, 2, &other, f, n, 20, 1) == 1);
     CHECK(a.delivered == 1 && c.delivered == 1 && a.stolen == 1 && c.stolen == 1);
 
     free(ba);
@@ -1026,6 +1035,17 @@ static void chains(void)
     for (k = 0; k < 149; k++) {
         CHECK(t.up[k] == (k < 70 ? k : k + 1));
     }
+    /* Copy mode, longer than a segment: every node offered once, in
+     * order, no link changed (the caller sends the chain up whole). */
+    memset(&t, 0, sizeof t);
+    t.take = take; /* one taken: offer_all does not act on it */
+    nodes(v, 150);
+    CHECK(pacer_rx_offer_all(&v[0], &node_ops, &t) == 150);
+    CHECK(t.offers == 150 && t.calls == 0 && linked_as_made(v, 150));
+    for (k = 0; k < 150; k++) {
+        CHECK(t.offered[k] == k);
+    }
+    CHECK(pacer_rx_offer_all(NULL, &node_ops, &t) == 0 && t.offers == 150);
     /* Exactly one segment, nothing taken: one call, links as they were. */
     memset(&t, 0, sizeof t);
     t.take = take;
