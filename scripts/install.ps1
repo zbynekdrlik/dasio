@@ -621,7 +621,7 @@ if (-not (Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue)) {
 # dtray, dstack's tray for every local dstack device (dasio's line per
 # instance comes from its device's status). A running one holds its binary,
 # which Windows lets move but not overwrite; moved-aside copies go once
-# nothing runs them. It starts at the installing user's logon.
+# nothing runs them. It starts at every user's logon (below).
 $dtrayCli = Join-Path $bin "dtray-cli.exe"
 Get-ChildItem $bin -Filter "*.exe.old-*" -ErrorAction SilentlyContinue | ForEach-Object {
     Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
@@ -651,9 +651,12 @@ Get-ChildItem Registry::HKEY_USERS | Where-Object { $_.PSChildName -match '^S-1-
     $sid = $_.PSChildName
     $userRun = "Registry::HKEY_USERS\$sid\Software\Microsoft\Windows\CurrentVersion\Run"
     try {
-        if ((Get-ItemProperty $userRun -Name "dtray" -ErrorAction SilentlyContinue).dtray -eq $trayRun) {
+        $own = (Get-ItemProperty $userRun -Name "dtray" -ErrorAction SilentlyContinue).dtray
+        if ($own -eq $trayRun) {
             Remove-ItemProperty -Path $userRun -Name "dtray"
             Write-Output "dtray's per-user Run value of $sid removed (the machine-wide one covers it)"
+        } elseif ($own) {
+            Write-Output "dtray's per-user Run value of $sid kept: $own is another dtray, which races ours for the session's tray"
         }
     } catch {
         Write-Warning "dtray's per-user Run value of $sid not removed: $_"

@@ -157,8 +157,14 @@ cmd /c exit 7
 $runKey = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
 $runAll = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
 $wantRun = '"' + (Join-Path $env:ProgramFiles "dasio\dtray.exe") + '"'
-if (-not (Test-Path $runKey)) { New-Item -Path $runKey | Out-Null }
-Set-ItemProperty -Path $runKey -Name "dtray" -Value $wantRun
+# Ours in SYSTEM's hive (what a SYSTEM install left on mbc and dsg): another
+# hive than the installer's, so an install that cleared only its own HKCU
+# fails here. Another dtray's value in the installer's own hive: kept.
+$runSystem = "Registry::HKEY_USERS\S-1-5-18\Software\Microsoft\Windows\CurrentVersion\Run"
+$otherRun = '"C:\dasio-ci-other\dtray.exe"'
+foreach ($k in $runKey, $runSystem) { if (-not (Test-Path $k)) { New-Item -Path $k | Out-Null } }
+Set-ItemProperty -Path $runSystem -Name "dtray" -Value $wantRun
+Set-ItemProperty -Path $runKey -Name "dtray" -Value $otherRun
 & (Join-Path $Bundle "install.ps1") -Instance $instance -Iface $iface -Config $cfg -Name "ci-asio-dante" -TestClock
 # dasio's data folder: protected from what ProgramData passes down (users
 # may add files and folders there); users read it and change nothing in it.
@@ -197,7 +203,9 @@ if (-not (Test-Path $dtrayCli)) { throw "no dtray-cli installed" }
 # (dtray's per-session mutex), and the install removed the per-user duplicate.
 $gotRun = (Get-ItemProperty $runAll -Name "dtray" -ErrorAction SilentlyContinue).dtray
 if ($gotRun -ne $wantRun) { throw "dtray does not start at every user's logon: HKLM Run dtray is '$gotRun', not '$wantRun' (dasio#211)" }
-if (Get-ItemProperty $runKey -Name "dtray" -ErrorAction SilentlyContinue) { throw "the install left the user's own dtray Run value next to the machine-wide one (dasio#211)" }
+if (Get-ItemProperty $runSystem -Name "dtray" -ErrorAction SilentlyContinue) { throw "the install left SYSTEM's per-user dtray Run value next to the machine-wide one (dasio#211)" }
+if ((Get-ItemProperty $runKey -Name "dtray" -ErrorAction SilentlyContinue).dtray -ne $otherRun) { throw "the install removed another dtray's per-user Run value (dasio#211)" }
+Remove-ItemProperty -Path $runKey -Name "dtray"
 if (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name "dasio-tray" -ErrorAction SilentlyContinue) { throw "the former dasio-tray still starts at logon" }
 $expected = Join-Path $env:ProgramData "dstack\devices\test-device.device"
 if (-not (Test-Path $expected)) { throw "no expected-device file $expected" }
@@ -436,7 +444,12 @@ if (Test-Path $own2) { throw "uninstall left the second instance's binary" }
 if (-not (Get-Process -Name "dasio-keep" -ErrorAction SilentlyContinue)) { throw "the process keeper stopped with an instance still installed" }
 
 cmd /c exit 7
+# Per-user values an earlier install left, in the uninstaller's own hive
+# and in SYSTEM's: the last uninstall removes both (dasio#211).
+Set-ItemProperty -Path $runKey -Name "dtray" -Value $wantRun
+Set-ItemProperty -Path $runSystem -Name "dtray" -Value $wantRun
 & (Join-Path $Bundle "uninstall.ps1") -Instance $instance -Ip $ip -Name "ci-asio-dante"
+if (Get-ItemProperty $runSystem -Name "dtray" -ErrorAction SilentlyContinue) { throw "the last uninstall left SYSTEM's per-user dtray Run value (dasio#211)" }
 Wait-Until { -not (Get-Service -Name $service -ErrorAction SilentlyContinue) } 15 "the service's removal"
 if (-not (Get-NetIPAddress -IPAddress $ip -ErrorAction SilentlyContinue)) { throw "uninstall removed the runner's own address" }
 if (Test-Path "HKLM:\SOFTWARE\ASIO\ci-asio-dante") { throw "the driver's ASIO entry is still there" }

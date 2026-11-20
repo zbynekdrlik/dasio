@@ -69,13 +69,31 @@ if (Test-Path $named) {
     if ($dev -and (Test-Path $file)) { Remove-Item $file }
     Remove-Item $named
 }
-# The last instance gone: dtray no longer starts at logon.
+# The last instance gone: dtray no longer starts at logon (dasio#211): the
+# machine-wide Run value; a per-user one with the same text in every loaded
+# hive (an earlier install's, written per user; a failure there only warns);
+# the current user's own through dtray-cli.
 $dtrayCli = Join-Path $env:ProgramFiles "dasio\dtray-cli.exe"
-if (-not (Get-Service -Name "dasio-*" -ErrorAction SilentlyContinue) -and (Test-Path $dtrayCli)) {
-    # The machine-wide Run value (dasio#211) and the current user's own.
-    Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name "dtray" -ErrorAction SilentlyContinue
-    & $dtrayCli --autostart off
-    if ($LASTEXITCODE -ne 0) { throw "dtray-cli --autostart off failed ($LASTEXITCODE)" }
+if (-not (Get-Service -Name "dasio-*" -ErrorAction SilentlyContinue)) {
+    $trayRun = '"' + (Join-Path $env:ProgramFiles "dasio\dtray.exe") + '"'
+    $runAll = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+    if (Get-ItemProperty $runAll -Name "dtray" -ErrorAction SilentlyContinue) { Remove-ItemProperty -Path $runAll -Name "dtray" }
+    Get-ChildItem Registry::HKEY_USERS | Where-Object { $_.PSChildName -match '^S-1-(5-18|5-21-[0-9-]+|12-1-[0-9-]+)$' } | ForEach-Object {
+        $sid = $_.PSChildName
+        $userRun = "Registry::HKEY_USERS\$sid\Software\Microsoft\Windows\CurrentVersion\Run"
+        try {
+            if ((Get-ItemProperty $userRun -Name "dtray" -ErrorAction SilentlyContinue).dtray -eq $trayRun) {
+                Remove-ItemProperty -Path $userRun -Name "dtray"
+                Write-Output "dtray's per-user Run value of $sid removed"
+            }
+        } catch {
+            Write-Warning "dtray's per-user Run value of $sid not removed: $_"
+        }
+    }
+    if (Test-Path $dtrayCli) {
+        & $dtrayCli --autostart off
+        if ($LASTEXITCODE -ne 0) { throw "dtray-cli --autostart off failed ($LASTEXITCODE)" }
+    }
 }
 # The last instance gone: no process keeper either (dasio#185): off (its
 # 5-min trigger must not start it again), stopped, any keeper left ended,
