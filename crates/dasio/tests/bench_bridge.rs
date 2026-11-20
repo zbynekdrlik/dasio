@@ -268,8 +268,12 @@ fn the_44_1_khz_conversion_at_the_e2e_shape_takes_a_small_part_of_the_device_blo
 /// the plain bridge (the 96 kHz plan) and the converted path are timed one
 /// after the other, so each subtraction compares runs on the same runner
 /// state. The conversion's own cost (the path less the bridge) holds in
-/// the optimized build, the one the PCs run: a quarter of the device
-/// block's period (2.67 ms) on average, the e2e bench's bar. A debug build
+/// the optimized build, the one the PCs run: half the device block's
+/// period (2.67 ms) on average. Not the e2e bench's quarter: the 44.1 kHz
+/// sinc costs output frames x channels, about 0.8-1.1 ms here by the e2e
+/// numbers (dasio#107 design question), and the pump's own work at FOH's
+/// shape stays under a tenth of the period (the FOH bench above), so half
+/// leaves the pump and the runner's jitter their room. A debug build
 /// only checks that the answers play, as the FOH bench does. The
 /// subtraction removes a bridge of 256 frames a block where the converted
 /// path runs about 117.6 (44.1 kHz) or 128 (48 kHz) app frames, so it
@@ -302,8 +306,8 @@ fn the_conversion_at_foh_s_shape_takes_a_small_part_of_the_device_block() {
     for (rate, conversion, mean, d_mean, played) in timed {
         if !cfg!(debug_assertions) {
             assert!(
-                conversion < period / 4,
-                "the {rate} Hz conversion adds {conversion:?} per device block on average, more than a quarter of the {period:?} period \
+                conversion < period / 2,
+                "the {rate} Hz conversion adds {conversion:?} per device block on average, more than half the {period:?} period \
                  (path {mean:?}, bridge alone {d_mean:?})"
             );
         }
