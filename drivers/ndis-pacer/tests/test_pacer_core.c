@@ -810,15 +810,18 @@ static void params(void)
     CHECK(p.rxd_enable == 1 && p.rxd_cpu == -1 && p.tx_max_out == 200 && p.bad == 1u << PACER_PARAM_RXD_CPU);
     f.result[PACER_PARAM_RXD_CPU] = PACER_PARAM_READ;
 
-    /* RxdCpu 0xFFFFFFFF is -1; TxMaxOut 1 and the slot count are kept;
-     * 0 (once "every slot") and above the slot count are the bound 200,
-     * flagged; a zero switch is off. */
+    /* RxdCpu 0xFFFFFFFF is -1; TxMaxOut 1 and one below the slot count are
+     * kept; 0 (once "every slot"), the slot count itself (every slot) and
+     * above are the bound 200, flagged; a zero switch is off. */
     f.value[PACER_PARAM_RXD_CPU] = 0xFFFFFFFFu;
-    f.value[PACER_PARAM_TX_MAX_OUT] = 4096;
+    f.value[PACER_PARAM_TX_MAX_OUT] = 4095;
     f.value[PACER_PARAM_RXD_ENABLE] = 0;
     f.value[PACER_PARAM_RX_RING_ENABLE] = 0;
     pacer_params_read(fake_read, &f, 4096, &p);
-    CHECK(p.rxd_cpu == -1 && p.tx_max_out == 4096 && p.rxd_enable == 0 && p.rx_ring_enable == 0 && p.bad == 0);
+    CHECK(p.rxd_cpu == -1 && p.tx_max_out == 4095 && p.rxd_enable == 0 && p.rx_ring_enable == 0 && p.bad == 0);
+    f.value[PACER_PARAM_TX_MAX_OUT] = 4096;
+    pacer_params_read(fake_read, &f, 4096, &p);
+    CHECK(p.tx_max_out == 200 && p.bad == 1u << PACER_PARAM_TX_MAX_OUT);
     f.value[PACER_PARAM_TX_MAX_OUT] = 1;
     pacer_params_read(fake_read, &f, 4096, &p);
     CHECK(p.tx_max_out == 1 && p.bad == 0);
