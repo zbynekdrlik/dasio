@@ -17,7 +17,11 @@
  *   16 entries or a port 0;
  * - pacer_rx_put, whatever the reader wrote as tail and wherever head
  *   stands, writes only inside the ring, publishes exactly the frames it
- *   reports delivered and never touches the header's fixed fields.
+ *   reports delivered and never touches the header's fixed fields;
+ * - pacer_rx_deliver, over 1 to 4 sinks (copy or steal, matching or not,
+ *   full or not), counts the frame once in each matching sink and keeps
+ *   it from tcpip exactly when every matching sink steals and none
+ *   counted it too big.
  *
  * Built with clang -fsanitize=fuzzer,address,undefined (CI, Linux). */
 #include <stdint.h>
@@ -150,6 +154,20 @@ static void match(const uint8_t *data, size_t size, const struct pacer_rx_packet
     require(pacer_rx_match(t, i + 1u, p) == 1);
 }
 
+/* One ring buffer of exactly its size per slot count, made once: a fresh
+ * half-megabyte block per input (ASan's quarantine) cost most of the run
+ * time. pacer_rx_ring_init zeroes it for each input anyway. */
+static uint8_t *ring_buffer(uint32_t slots)
+{
+    static uint8_t *made[3];
+    uint32_t i = slots == PACER_RX_MIN_SLOTS ? 0u : slots == 2u * PACER_RX_MIN_SLOTS ? 1u : 2u;
+    if (made[i] == NULL) {
+        made[i] = malloc(pacer_rx_ring_bytes(slots));
+        require(made[i] != NULL);
+    }
+    return made[i];
+}
+
 static void ring(const uint8_t *data, size_t size, const struct pacer_rx_packet *p)
 {
     struct pacer_rx_ring r;
@@ -168,8 +186,7 @@ static void ring(const uint8_t *data, size_t size, const struct pacer_rx_packet 
     slots = PACER_RX_MIN_SLOTS << (data[2] % 3u);
     bytes = pacer_rx_ring_bytes(slots);
     require(bytes == PACER_RX_HEADER_BYTES + slots * PACER_RX_SLOT_BYTES);
-    b = malloc(bytes);
-    require(b != NULL);
+    b = ring_buffer(slots);
     require(pacer_rx_ring_init(&r, b, slots) == 1);
     memcpy(fixed, b, sizeof fixed);
 
@@ -207,7 +224,87 @@ static void ring(const uint8_t *data, size_t size, const struct pacer_rx_packet 
         require(r.head - r.tail_seen <= slots);
     }
     require(memcmp(fixed, b, sizeof fixed) == 0);
-    free(b);
+}
+
+static uint8_t *sink_buffer(uint32_t k)
+{
+    static uint8_t *made[4];
+    if (made[k] == NULL) {
+        made[k] = malloc(pacer_rx_ring_bytes(PACER_RX_MIN_SLOTS));
+        require(made[k] != NULL);
+    }
+    return made[k];
+}
+
+static void deliver(const uint8_t *data, size_t size, const struct pacer_rx_packet *p)
+{
+    struct pacer_rx_sink s[4];
+    struct pacer_rx_sink *list[4];
+    struct pacer_rx_match_entry e;
+    uint8_t frame[PACER_RX_MAX_FRAME + 64];
+    int matches[4];
+    uint32_t count;
+    uint32_t len;
+    uint32_t k;
+    int any = 0;
+    int all_steal = 1;
+    int too_big;
+    int expect;
+    int res;
+
+    if (size < 24) {
+        return;
+    }
+    count = 1u + data[7] % 4u;
+    len = ((uint32_t)data[8] << 4 | data[9]) % (uint32_t)sizeof frame;
+    for (k = 0; k < sizeof frame; k++) {
+        frame[k] = data[(k + 3) % size];
+    }
+    too_big = (data[19] & 1u) != 0 || len > PACER_RX_MAX_FRAME;
+    for (k = 0; k < count; k++) {
+        uint8_t bits = data[10 + k];
+        memset(&s[k], 0, sizeof s[k]);
+        require(pacer_rx_ring_init(&s[k].ring, sink_buffer(k), PACER_RX_MIN_SLOTS) == 1);
+        s[k].steal = bits & 1u;
+        /* Bit 1: the table names the packet's own destination; else an
+         * address and port from the input. Bit 2: the ring is full. */
+        if (bits & 2u) {
+            memcpy(e.addr, p->dst_ip, 4);
+            e.port = p->dst_port;
+        } else {
+            memcpy(e.addr, data + 14, 4);
+            e.port = (uint16_t)((data[18] << 8) | data[15 + k]);
+        }
+        (void)pacer_rx_set_match(&s[k], &e, 1);
+        if (bits & 4u) {
+            s[k].ring.head = PACER_RX_MIN_SLOTS;
+        }
+        list[k] = &s[k];
+        matches[k] = pacer_rx_match(s[k].match, s[k].matches, p);
+        if (matches[k]) {
+            any = 1;
+            if (!s[k].steal) {
+                all_steal = 0;
+            }
+        }
+    }
+    require(pacer_rx_wanted(list, count, p) == any);
+    res = pacer_rx_deliver(list, count, p, (data[19] & 1u) ? NULL : frame, len, 7);
+    expect = any && all_steal && !too_big;
+    require(res == expect);
+    for (k = 0; k < count; k++) {
+        uint8_t bits = data[10 + k];
+        if (!matches[k]) {
+            require(s[k].matched == 0 && s[k].delivered == 0 && s[k].full == 0 && s[k].too_big == 0 &&
+                    s[k].stolen == 0);
+            continue;
+        }
+        require(s[k].matched == 1);
+        require(s[k].too_big == (uint64_t)too_big);
+        require(s[k].full == (uint64_t)(!too_big && (bits & 4u) != 0));
+        require(s[k].delivered == (uint64_t)(!too_big && (bits & 4u) == 0));
+        require(s[k].stolen == (uint64_t)expect);
+    }
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
@@ -222,5 +319,6 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     }
     match(data, size, &p);
     ring(data, size, &p);
+    deliver(data, size, &p);
     return 0;
 }

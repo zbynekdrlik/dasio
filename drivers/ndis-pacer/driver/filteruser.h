@@ -275,8 +275,10 @@ typedef struct _DASIO_RXD_STATUS
 
 // dasio: kernel RX. A ring of SlotCount slots (a power of 2, 64..4096) on
 // the adapter with the given IfIndex, mapped into the calling process.
-// Event: a handle of an event of the caller's (EVENT_MODIFY_STATE) the
-// filter sets when the ring's wake word is non-zero after a frame, or 0.
+// Event: a handle of an auto-reset event of the caller's
+// (EVENT_MODIFY_STATE) the filter sets when the ring's wake word is
+// non-zero after a frame, and when it detaches the ring (the header's
+// detached word is then 1: close and open again), or 0. Reserved: 0.
 // Errors: STATUS_NOT_SUPPORTED (RxRingEnable 0), STATUS_NOT_FOUND (no
 // adapter with that IfIndex), STATUS_DEVICE_NOT_READY (the filter is not
 // running), STATUS_INVALID_DEVICE_STATE (this handle has a ring),
@@ -305,9 +307,10 @@ typedef struct _DASIO_RX_OPENED
 
 // The ring's whole match table, replaced at once: Count entries (0..16)
 // of a destination IPv4 address (as on the wire, a.b.c.d) and UDP port
-// (a number, not 0). Address 0.0.0.0: any unicast address on that port; a
-// multicast group matches only itself. Only the first Count entries need
-// to be in the input.
+// (a number, not 0). Address 0.0.0.0: any unicast address on that port
+// (another host's flooded unicast too: name this PC's own address to
+// exclude it); a multicast group matches only itself. Only the first
+// Count entries need to be in the input; every Reserved field 0.
 #define DASIO_RX_MAX_MATCHES                16
 typedef struct _DASIO_RX_MATCH_ENTRY
 {

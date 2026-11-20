@@ -43,6 +43,34 @@ paths:
   on dsg with rxd on: MaxBatch, DpcRuns rising, the longest DPC of
   `dasiopacer.sys` (xperf/WPR), and dcontroller late 0 at its receivers.
 
+## Kernel RX rings (dasio#27 B23)
+
+- Off unless the service's `Parameters\RxRingEnable` is 1 (REG_DWORD, read
+  with RxdEnable when the driver loads: a reinstall or reboot applies it, a
+  NIC pause does not). Off: `IOCTL_DASIO_RX_OPEN` answers
+  STATUS_NOT_SUPPORTED and the receive path reads one count.
+- The decisions (parse, match, the ring's producer, steal or not) are
+  `core/rx_ring.c`, host-tested and fuzzed in `pacer-core` (100 % of its
+  lines); the NDIS/IOCTL glue is `driver/rxring.c`. filter.c and device.c
+  get only hook calls. Ring layout: `core/rx_ring.h`.
+- A ring belongs to its handle and its process: mapped in RX_OPEN's
+  context, unmapped in RX_CLOSE (owner only) or IRP_MJ_CLEANUP. A last
+  close from another process leaves the memory allocated and mapped (a
+  leak, never a free under a live mapping).
+- A pause or detach of the filter detaches every ring (`rxring.ps1 status`
+  Attached 0, the ring's detached word 1, its event set): the reader closes
+  and opens again. IRP_MJ_CLOSE frees a ring an RX_OPEN on an overlapped
+  handle attached after the cleanup.
+- An older filter answers codes 23-26 with success and no output (device.c's
+  default case): a reader checks the output's size.
+- Verify on dsg first, copy mode: Delivered = the flow's packets, Full 0,
+  the ring's times against dstack's arrivals, and the longest DPC of
+  `dasiopacer.sys` with a ring open (the RX ring lock is held while a whole
+  indication is parsed); then steal. FOH only with someone on site (a
+  filter reinstall rebinds the NIC).
+- `pacer-driver` needs `pacer-core`: an MSVC warning in a host test skips
+  the driver build (C4310: a cast that truncates a constant, PR #216).
+
 ## Changing a status struct
 
 - `ktx.ps1 status` splits the reply into records of a fixed field count.

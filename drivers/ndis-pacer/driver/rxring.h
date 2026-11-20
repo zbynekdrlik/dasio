@@ -33,13 +33,11 @@ typedef struct _RX_FILTER_RINGS
 
 struct _MS_FILTER;
 
-// <service>\Parameters\RxRingEnable (REG_DWORD, missing = 0), read at
-// load. 0: IOCTL_DASIO_RX_OPEN fails with STATUS_NOT_SUPPORTED, so no ring
-// ever exists and the receive path reads one count.
+// <service>\Parameters\RxRingEnable (REG_DWORD, missing = 0), read by
+// filter.c with the service's other Parameters when the driver loads. 0:
+// IOCTL_DASIO_RX_OPEN fails with STATUS_NOT_SUPPORTED, so no ring ever
+// exists and the receive path reads one count.
 extern ULONG RxRingEnable;
-
-_IRQL_requires_(PASSIVE_LEVEL)
-VOID rxRingReadRegistry(_In_ PUNICODE_STRING RegistryPath);
 
 // Attach: the filter's rings, none yet. Detach: none may be left
 // (rxRingDetachAll first), the lock is freed.
@@ -72,7 +70,8 @@ _IRQL_requires_(PASSIVE_LEVEL)
 NTSTATUS rxRingStatus(_In_ PIRP Irp, _In_ PIO_STACK_LOCATION IrpSp, _Out_ PULONG Info);
 
 // IRP_MJ_CLEANUP: the handle's last close (or its process's exit) closes
-// its ring.
+// its ring. IRP_MJ_CLOSE calls it again, for a ring an RX_OPEN still in
+// flight (an overlapped handle) attached after the cleanup.
 _IRQL_requires_(PASSIVE_LEVEL)
 VOID rxRingCleanup(_In_ PFILE_OBJECT FileObject);
 

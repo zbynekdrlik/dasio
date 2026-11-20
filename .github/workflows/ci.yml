@@ -121,7 +121,7 @@ jobs:
           awk -v l="${line%\%}" 'BEGIN { exit !(l >= 100) }'
           gcc -std=c99 --coverage -O0 -o test-rx-cov core/rx_ring.c tests/test_rx_ring.c
           ./test-rx-cov
-          # Measured 100 % of lines (163).
+          # Measured 100 % of lines (169).
           line=$(gcov -n test-rx-cov-rx_ring.gcda | grep -A1 "core/rx_ring.c'" | grep -o '[0-9.]*%' | head -1)
           echo "rx_ring.c lines: $line"
           awk -v l="${line%\%}" 'BEGIN { exit !(l >= 100) }'

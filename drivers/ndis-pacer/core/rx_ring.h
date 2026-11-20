@@ -21,6 +21,9 @@
  *     64  head, 8 bytes: frames published; written only by the filter
  *     128 tail, 8 bytes: frames consumed; written only by the reader
  *     192 wake, 4 bytes: set non-zero by the reader before it waits
+ *     256 detached, 4 bytes: 1 once the filter detached the ring (a pause
+ *         or detach of the filter, or its close): no frame comes any more,
+ *         the reader closes it and opens a new one
  *   then the slots; frame number n is in slot n & (slot count - 1):
  *     0   receive time, 8 bytes, 100 ns interrupt time
  *     8   source IPv4, 4 bytes as on the wire (a.b.c.d)
@@ -38,7 +41,8 @@
  * Before it waits it stores wake = 1 and reads head again (both
  * sequentially consistent); the filter publishes head (a full barrier),
  * then reads wake, clears it and sets the reader's event: one event per
- * sleep, never a lost one. The filter keeps its own head and masks every
+ * sleep, never a lost one; the event is set when the ring is detached
+ * too. The filter keeps its own head and masks every
  * slot index, so no value the reader writes (tail, or anything else in
  * the header) makes it write outside the ring; a tail it cannot believe
  * (ahead of head, or more than a ring behind) reads as a full ring. */
@@ -64,6 +68,7 @@
 #define PACER_RX_OFF_HEAD 64u
 #define PACER_RX_OFF_TAIL 128u
 #define PACER_RX_OFF_WAKE 192u
+#define PACER_RX_OFF_DETACHED 256u
 
 /* Entries of one ring's match table at most. */
 #define PACER_RX_MAX_MATCHES 16u
@@ -89,10 +94,11 @@ struct pacer_rx_packet {
 int pacer_rx_parse(const uint8_t *hdr, uint32_t avail, uint32_t frame_len, struct pacer_rx_packet *p);
 
 /* One match entry: a destination IPv4 address (as on the wire) and UDP
- * port. Address 0.0.0.0 matches any unicast destination on that port (the
- * flows sent to this PC's own address); a multicast group (224.0.0.0/4)
- * or the broadcast address 255.255.255.255 matches only an entry naming
- * it. */
+ * port. Address 0.0.0.0 matches any unicast destination on that port: the
+ * flows sent to this PC's address, but also another host's unicast that a
+ * switch floods to this NIC (read the slot's destination, or name the
+ * PC's own address instead). A multicast group (224.0.0.0/4) or the
+ * broadcast address 255.255.255.255 matches only an entry naming it. */
 struct pacer_rx_match_entry {
     uint8_t addr[4];
     uint16_t port;
@@ -126,6 +132,10 @@ uint32_t pacer_rx_ring_bytes(uint32_t slots);
  * contents reaches the reader), writes its header and sets up `r`.
  * Returns 1, or 0 when `slots` is not valid (nothing written). */
 int pacer_rx_ring_init(struct pacer_rx_ring *r, uint8_t *base, uint32_t slots);
+
+/* Tells the reader the ring is detached: the header's detached word
+ * becomes 1 (the caller then sets the reader's event). */
+void pacer_rx_ring_detach(struct pacer_rx_ring *r);
 
 enum pacer_rx_put_result {
     PACER_RX_DELIVERED = 0,

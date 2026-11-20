@@ -126,7 +126,7 @@ static void parse(void)
     CHECK(memcmp(p.src_ip, s.src, 4) == 0 && memcmp(p.dst_ip, s.dst, 4) == 0);
     CHECK(p.src_port == 4321 && p.dst_port == 4321);
     CHECK(p.payload_off == 42 && p.payload_len == 100);
-    CHECK(f[p.payload_off] == 1 && f[p.payload_off + 99] == (uint8_t)(99 * 7 + 1));
+    CHECK(f[p.payload_off] == 1 && f[p.payload_off + 99] == (99 * 7 + 1) % 256);
 
     /* Distinct ports land in their own fields. */
     s.sport = 1234;
@@ -528,6 +528,13 @@ static void ring(void)
     r.tail_seen = 0;
     CHECK(pacer_rx_put(&r, f, n, &p, 108, &wake) == PACER_RX_FULL);
     CHECK(wake == 0 && get32le(b + PACER_RX_OFF_WAKE) == 0x01000000u);
+
+    /* Detached: the reader sees the word, nothing else moves. */
+    CHECK(get32le(b + PACER_RX_OFF_DETACHED) == 0);
+    pacer_rx_ring_detach(&r);
+    CHECK(get32le(b + PACER_RX_OFF_DETACHED) == 1);
+    CHECK(get64le(b + PACER_RX_OFF_HEAD) == SLOTS + 6 && r.head == SLOTS + 6);
+    CHECK(get32le(b + PACER_RX_OFF_DETACHED + 4) == 0 && get32le(b + PACER_RX_OFF_DETACHED - 4) == 0);
     free(b);
 
     /* The largest ring: the last slot's last byte is its memory's last. */

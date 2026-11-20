@@ -5,9 +5,10 @@
  * One ring per open handle of \\.\dasiopacer, on one adapter. Its memory is
  * non-paged, mapped into the opening process in the IOCTL's own context and
  * unmapped there again (RX_CLOSE, or IRP_MJ_CLEANUP when the handle's last
- * close or the process's exit comes). A pause or detach of the filter
- * detaches its rings; the handle keeps its ring until closed (status
- * Attached 0: dasio reopens). The decisions and the producer are
+ * close or the process's exit comes; IRP_MJ_CLOSE catches a ring an
+ * RX_OPEN on an overlapped handle attached after that cleanup). A pause or
+ * detach of the filter detaches its rings; the handle keeps its ring until
+ * closed (status Attached 0, the ring's detached word 1: dasio reopens). The decisions and the producer are
  * ../core/rx_ring.c; this file is NDIS and IOCTL glue only.
  *
  * Locks: FilterListLock guards RxRingList (every open ring), each ring's
@@ -49,41 +50,19 @@ ULONG RxRingEnable = 0;
 static LIST_ENTRY RxRingList = { &RxRingList, &RxRingList };
 
 
-_Use_decl_annotations_
-VOID
-rxRingReadRegistry(
-    PUNICODE_STRING RegistryPath
+// Under the filter's RX ring lock, as the ring leaves it: its header's
+// detached word and its reader's event tell the reader no frame comes any
+// more (it closes and opens a new ring).
+static VOID
+rxSignalDetachedLocked(
+    _In_ PRX_RING Ring
     )
 {
-    RTL_QUERY_REGISTRY_TABLE Table[3];
-    ULONG Enable = 0;
-    ULONG DefaultEnable = 0;
-    PWCHAR Path;
-    USHORT Chars = RegistryPath->Length / sizeof(WCHAR);
-
-    // The path NUL-terminated (a UNICODE_STRING need not be).
-    Path = (PWCHAR)ExAllocatePool2(POOL_FLAG_PAGED, (Chars + 1) * sizeof(WCHAR), FILTER_ALLOC_TAG);
-    if (Path == NULL)
+    pacer_rx_ring_detach(&Ring->Sink.ring);
+    if (Ring->Event != NULL)
     {
-        return;
+        KeSetEvent(Ring->Event, IO_NO_INCREMENT, FALSE);
     }
-    RtlCopyMemory(Path, RegistryPath->Buffer, Chars * sizeof(WCHAR));
-    Path[Chars] = L'\0';
-
-    RtlZeroMemory(Table, sizeof(Table));
-    Table[0].Flags = RTL_QUERY_REGISTRY_SUBKEY;
-    Table[0].Name = L"Parameters";
-    Table[1].Flags = RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK;
-    Table[1].Name = L"RxRingEnable";
-    Table[1].EntryContext = &Enable;
-    Table[1].DefaultType = (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD;
-    Table[1].DefaultData = &DefaultEnable;
-    Table[1].DefaultLength = sizeof(ULONG);
-    if (NT_SUCCESS(RtlQueryRegistryValues(RTL_REGISTRY_ABSOLUTE, Path, Table, NULL, NULL)))
-    {
-        RxRingEnable = Enable != 0;
-    }
-    ExFreePoolWithTag(Path, FILTER_ALLOC_TAG);
 }
 
 _Use_decl_annotations_
@@ -117,6 +96,7 @@ rxRingDetachAll(
     {
         if (Filter->RxRing.Rings[i] != NULL)
         {
+            rxSignalDetachedLocked(Filter->RxRing.Rings[i]);
             Filter->RxRing.Rings[i]->Filter = NULL;
             Filter->RxRing.Rings[i] = NULL;
         }
@@ -229,7 +209,7 @@ rxOfferLocked(
         // NULL (unreadable) is counted with the too big ones and goes up.
         Frame = (PUCHAR)NdisGetDataBuffer(Nb, Length, Filter->RxRing.Scratch, 1, 0);
     }
-    return pacer_rx_deliver(Sinks, Count, &Packet, Frame, Length, Now) != 0;
+    return pacer_rx_deliver(Sinks, Count, &Packet, Frame, Length, Now) != 0 ? TRUE : FALSE;
 }
 
 _Use_decl_annotations_
@@ -308,7 +288,7 @@ rxRingReceive(
         }
         *NetBufferLists = Keep;
         *NumberOfNetBufferLists = KeepCount;
-        return Keep == NULL;
+        return Keep == NULL ? TRUE : FALSE;
     }
     FILTER_RELEASE_LOCK(&Rings->Lock, DispatchLevel);
 
@@ -405,6 +385,7 @@ rxDetachLocked(
             Filter->RxRing.Count--;
         }
     }
+    rxSignalDetachedLocked(Ring);
     Ring->Filter = NULL;
     FILTER_RELEASE_LOCK(&Filter->RxRing.Lock, bTrue);
 }
@@ -532,7 +513,7 @@ rxRingOpen(
     }
     RtlCopyMemory(&Open, Buffer, sizeof(Open));
     Bytes = pacer_rx_ring_bytes(Open.SlotCount);
-    if (Bytes == 0 || (Open.Flags & ~DASIO_RX_FLAGS) != 0)
+    if (Bytes == 0 || (Open.Flags & ~DASIO_RX_FLAGS) != 0 || Open.Reserved != 0)
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -644,13 +625,17 @@ rxRingMatch(
         return STATUS_INVALID_PARAMETER;
     }
     Count = Input->Count;
-    if (Count > DASIO_RX_MAX_MATCHES ||
+    if (Count > DASIO_RX_MAX_MATCHES || Input->Reserved != 0 ||
         InLength < (ULONG)FIELD_OFFSET(DASIO_RX_MATCH, Entries) + Count * (ULONG)sizeof(DASIO_RX_MATCH_ENTRY))
     {
         return STATUS_INVALID_PARAMETER;
     }
     for (i = 0; i < Count; i++)
     {
+        if (Input->Entries[i].Reserved != 0)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
         RtlCopyMemory(Table[i].addr, Input->Entries[i].Address, 4);
         Table[i].port = Input->Entries[i].Port;
     }

@@ -126,6 +126,9 @@ FilterDispatch(
             break;
 
         case IRP_MJ_CLOSE:
+            // The file object's last reference: a ring an RX_OPEN in flight
+            // attached after the cleanup (an overlapped handle) goes now.
+            rxRingCleanup(IrpStack->FileObject);
             break;
 
         default:

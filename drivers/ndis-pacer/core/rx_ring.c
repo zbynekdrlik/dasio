@@ -19,7 +19,7 @@
 /* The shared words of the ring's header. The head store is a full
  * barrier (it orders the slot's bytes before it, and the read of wake
  * after it: no lost wake); the tail load orders the slot writes after
- * it. */
+ * it and never writes the reader's word. */
 #if defined(_KERNEL_MODE)
 static void store_head(uint8_t *base, uint64_t v)
 {
@@ -27,7 +27,7 @@ static void store_head(uint8_t *base, uint64_t v)
 }
 static uint64_t load_tail(uint8_t *base)
 {
-    return (uint64_t)InterlockedCompareExchange64((volatile LONG64 *)(base + PACER_RX_OFF_TAIL), 0, 0);
+    return (uint64_t)ReadAcquire64((volatile LONG64 *)(base + PACER_RX_OFF_TAIL));
 }
 static uint32_t load_wake(uint8_t *base)
 {
@@ -37,6 +37,10 @@ static uint32_t take_wake(uint8_t *base)
 {
     return (uint32_t)InterlockedExchange((volatile LONG *)(base + PACER_RX_OFF_WAKE), 0);
 }
+static void store_detached(uint8_t *base)
+{
+    (void)InterlockedExchange((volatile LONG *)(base + PACER_RX_OFF_DETACHED), 1);
+}
 #elif defined(_MSC_VER)
 static void store_head(uint8_t *base, uint64_t v)
 {
@@ -44,7 +48,9 @@ static void store_head(uint8_t *base, uint64_t v)
 }
 static uint64_t load_tail(uint8_t *base)
 {
-    return (uint64_t)_InterlockedCompareExchange64((volatile __int64 *)(base + PACER_RX_OFF_TAIL), 0, 0);
+    /* MSVC's volatile read has acquire semantics on x64 (/volatile:ms,
+     * its default there; the tests' compiler). */
+    return *(volatile uint64_t *)(base + PACER_RX_OFF_TAIL);
 }
 static uint32_t load_wake(uint8_t *base)
 {
@@ -53,6 +59,10 @@ static uint32_t load_wake(uint8_t *base)
 static uint32_t take_wake(uint8_t *base)
 {
     return (uint32_t)_InterlockedExchange((volatile long *)(base + PACER_RX_OFF_WAKE), 0);
+}
+static void store_detached(uint8_t *base)
+{
+    (void)_InterlockedExchange((volatile long *)(base + PACER_RX_OFF_DETACHED), 1);
 }
 #else
 static void store_head(uint8_t *base, uint64_t v)
@@ -70,6 +80,10 @@ static uint32_t load_wake(uint8_t *base)
 static uint32_t take_wake(uint8_t *base)
 {
     return __atomic_exchange_n((uint32_t *)(void *)(base + PACER_RX_OFF_WAKE), 0u, __ATOMIC_SEQ_CST);
+}
+static void store_detached(uint8_t *base)
+{
+    __atomic_store_n((uint32_t *)(void *)(base + PACER_RX_OFF_DETACHED), 1u, __ATOMIC_SEQ_CST);
 }
 #endif
 
@@ -220,6 +234,11 @@ int pacer_rx_ring_init(struct pacer_rx_ring *r, uint8_t *base, uint32_t slots)
     r->head = 0;
     r->tail_seen = 0;
     return 1;
+}
+
+void pacer_rx_ring_detach(struct pacer_rx_ring *r)
+{
+    store_detached(r->base);
 }
 
 enum pacer_rx_put_result pacer_rx_put(struct pacer_rx_ring *r, const uint8_t *frame, uint32_t len,
