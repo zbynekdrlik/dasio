@@ -270,7 +270,7 @@ name = "*EEE"
 string = "0"
 must = true
 absent_ok = true
-why = "EEE off on every Dante NIC, whatever its driver (owner 20.11.2026: EEE on any rig device is a serious fail; mbc's USB Realtek ran it on while this entry was scoped to rt640x64, dasio#24; FOH's tuning, dasio#1); a NIC without the keyword is fine"
+why = "EEE off on every Dante NIC that has this keyword (owner 20.11.2026: EEE on any rig device is a serious fail; mbc's USB Realtek, rtu56cx22x64, ran it on while this entry was scoped to rt640x64, dasio#24; FOH's tuning, dasio#1). *EEE is the NDIS standard keyword; AdvancedEEE and EnableGreenEthernet exist on Realtek drivers only, where 0 is off. A NIC without the keyword is fine; a driver naming EEE otherwise is not covered"
 
 [[registry]]
 key = '{nic_class}'
@@ -392,7 +392,7 @@ name = "AdvancedEEE"
 string = "0"
 must = true
 absent_ok = true
-why = "EEE off on every Dante NIC, whatever its driver (owner 20.11.2026: EEE on any rig device is a serious fail; mbc's USB Realtek ran it on while this entry was scoped to rt640x64, dasio#24; FOH's tuning, dasio#1); a NIC without the keyword is fine"
+why = "EEE off on every Dante NIC that has this keyword (owner 20.11.2026: EEE on any rig device is a serious fail; mbc's USB Realtek, rtu56cx22x64, ran it on while this entry was scoped to rt640x64, dasio#24; FOH's tuning, dasio#1). *EEE is the NDIS standard keyword; AdvancedEEE and EnableGreenEthernet exist on Realtek drivers only, where 0 is off. A NIC without the keyword is fine; a driver naming EEE otherwise is not covered"
 
 [[registry]]
 key = '{nic_class}'
@@ -400,7 +400,7 @@ name = "EnableGreenEthernet"
 string = "0"
 must = true
 absent_ok = true
-why = "EEE off on every Dante NIC, whatever its driver (owner 20.11.2026: EEE on any rig device is a serious fail; mbc's USB Realtek ran it on while this entry was scoped to rt640x64, dasio#24; FOH's tuning, dasio#1); a NIC without the keyword is fine"
+why = "EEE off on every Dante NIC that has this keyword (owner 20.11.2026: EEE on any rig device is a serious fail; mbc's USB Realtek, rtu56cx22x64, ran it on while this entry was scoped to rt640x64, dasio#24; FOH's tuning, dasio#1). *EEE is the NDIS standard keyword; AdvancedEEE and EnableGreenEthernet exist on Realtek drivers only, where 0 is off. A NIC without the keyword is fine; a driver naming EEE otherwise is not covered"
 
 [[registry]]
 key = '{nic_class}'

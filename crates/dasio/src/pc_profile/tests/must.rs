@@ -183,8 +183,9 @@ fn the_shipped_baseline_s_must_haves_are_the_nic_s_timing_and_test_signing() {
         }
     }
     // Every must-have registry entry is on the Dante NIC's own keys: one
-    // driver family's setting, or a standard NDIS keyword every NIC reads
-    // the same (LSO, dasio#24). A driver-free one accepts an absent
+    // driver family's setting, or a keyword held on every NIC that has it
+    // (the NDIS-standard LSO and *EEE, and Realtek's own AdvancedEEE and
+    // EnableGreenEthernet, dasio#24). A driver-free one accepts an absent
     // keyword: one driver's keyword must-have on every NIC would stop the
     // device on any other NIC.
     assert!(
@@ -276,6 +277,18 @@ fn the_baseline_holds_eee_off_on_every_dante_nic() {
         "{on:?}"
     );
     assert_eq!(plan(&only, &usb).len(), 3);
+    for n in names {
+        usb.reg
+            .insert(("{nic_class}".into(), n.into()), Value::String("0".into()));
+    }
+    assert_eq!(texts(&check(&only, &usb)), Vec::<String>::new());
+    // FOH's and dsg's PCIe Realtek too.
+    let mut pcie = realtek();
+    for n in names {
+        pcie.reg
+            .insert(("{nic_class}".into(), n.into()), Value::String("1".into()));
+    }
+    assert_eq!(texts(&check(&only, &pcie)).len(), 3);
 }
 
 /// A Dante NIC the PC does not have is ONE must-have problem: the entries
