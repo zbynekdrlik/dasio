@@ -285,7 +285,8 @@ typedef struct _DASIO_RXD_STATUS
     // not be read when the driver loaded (another type than REG_DWORD), or
     // were invalid (TxMaxOut 0, or 4096 and above): bit 0 RxdEnable, 1 RxdCpu,
     // 2 TxMaxOut, 3 RxRingEnable. Each kept its default (TxMaxOut: 200);
-    // 0 = all read or missing.
+    // 0 = all read or missing (or, once, nothing read for lack of memory:
+    // the debug log says so).
     ULONG64         ParamBad;
 } DASIO_RXD_STATUS, *PDASIO_RXD_STATUS;
 // Version 2: 11 fields, version 3: 12 (rxd.ps1 reads both).

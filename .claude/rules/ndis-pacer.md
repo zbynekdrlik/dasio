@@ -51,8 +51,8 @@ paths:
   STATUS_NOT_SUPPORTED and the receive path reads one count.
 - Every Parameters value (RxdEnable, RxdCpu, TxMaxOut, RxRingEnable) is
   read in a query of its own (`pacer_params_read`): a value of another
-  type (`reg add` without `/t` makes a REG_SZ) turns off only its own
-  feature, shows in `rxd.ps1 status` ParamBad (bit 0 RxdEnable, 1 RxdCpu,
+  type (`reg add` without `/t` makes a REG_SZ) keeps only its own default
+  (TxMaxOut 200, never unbounded; RxdCpu -1; the switches off), shows in `rxd.ps1 status` ParamBad (bit 0 RxdEnable, 1 RxdCpu,
   2 TxMaxOut, 3 RxRingEnable; status v3) and is logged with DbgPrintEx. In one shared
   query it had turned rxd off and left media TX unbounded. Prove it on
   mbc at the next filter install: a REG_SZ RxRingEnable, then ParamBad 8,

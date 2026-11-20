@@ -217,7 +217,8 @@ int pacer_tx_next(const uint8_t *buf, uint32_t len, uint32_t *at, uint32_t *fram
 /* The service's Parameters, read when the driver loads. Each value is
  * read on its own (filter.c: one registry query per value), so a value
  * that is there but unreadable (another type, e.g. a REG_SZ from `reg
- * add` without /t) turns off only its own feature, never the others
+ * add` without /t) keeps only its own default, never the others' (TxMaxOut:
+ * 200, never unbounded)
  * (dasio#27: one bad RxRingEnable in a shared query had turned rxd off
  * and left media TX unbounded). */
 enum pacer_param {
@@ -237,7 +238,7 @@ enum pacer_param {
 struct pacer_params {
     uint32_t rxd_enable;     /* 0 or 1, default 0 */
     int32_t rxd_cpu;         /* default -1: the receiving CPU */
-    uint32_t tx_max_out;     /* 1..tx_slots - 1 when read; otherwise min(200, tx_slots) */
+    uint32_t tx_max_out;     /* 1..tx_slots - 1 when a valid value is read; otherwise min(200, tx_slots) */
     uint32_t rx_ring_enable; /* 0 or 1, default 0 */
     uint32_t bad;            /* bit (1 << enum pacer_param) per unreadable or invalid value */
 };

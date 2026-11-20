@@ -3223,6 +3223,10 @@ rxdReadRegistry(
     Path = (PWCHAR)ExAllocatePool2(POOL_FLAG_PAGED, (Chars + 1) * sizeof(WCHAR), FILTER_ALLOC_TAG);
     if (Path == NULL)
     {
+        // Nothing read: every value keeps its default (TxMaxOut 200), and
+        // ParamBad stays 0, so say it here.
+        DbgPrintEx(DPFLTR_IHVNETWORK_ID, DPFLTR_ERROR_LEVEL,
+                   "dasiopacer: Parameters not read (no memory for the path): every value keeps its default\n");
         return;
     }
     RtlCopyMemory(Path, RegistryPath->Buffer, Chars * sizeof(WCHAR));
