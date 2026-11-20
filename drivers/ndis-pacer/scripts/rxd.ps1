@@ -52,8 +52,11 @@ switch ($Action) {
     }
     "status" {
         # The fields of DASIO_RXD_STATUS (filteruser.h), in order.
-        $names = "Version", "IfIndex", "Enabled", "Cpu", "Deferred", "Inline", "DpcRuns", "MaxBatch", "Queued", "Dropped", "Priority"
-        $raw = [DasioRxd]::Call([DasioRxd]::STATUS, $null, 8 * 11 * 16)
+        # Version 3 adds ParamBad: the Parameters values that were there
+        # but unreadable at load (bit 0 RxdEnable, 1 RxdCpu, 2 TxMaxOut,
+        # 3 RxRingEnable).
+        $names = "Version", "IfIndex", "Enabled", "Cpu", "Deferred", "Inline", "DpcRuns", "MaxBatch", "Queued", "Dropped", "Priority", "ParamBad"
+        $raw = [DasioRxd]::Call([DasioRxd]::STATUS, $null, 8 * $names.Count * 16)
         $v = New-Object Int64[] ($raw.Length / 8)
         [Buffer]::BlockCopy($raw, 0, $v, 0, $raw.Length)
         if ($v.Length % $names.Count -ne 0) { throw "status of $($raw.Length) bytes is not a whole number of records" }

@@ -242,9 +242,15 @@ struct pacer_params {
     uint32_t bad;            /* bit (1 << enum pacer_param) per unreadable value */
 };
 
+/* The bound on media frames out when TxMaxOut is there but unreadable:
+ * the value install.ps1 writes (measured on FOH), never "every slot"
+ * (unbounded media TX failed frames with Realtek 10.79, dasio#1). */
+#define PACER_TX_MAX_OUT_FALLBACK 200u
+
 /* Reads every parameter through `read` (one call per value; it returns
  * one of PACER_PARAM_READ / _MISSING / _BAD and sets `*value` on READ).
- * A TxMaxOut above `tx_slots` counts as 0 (every slot), as before. */
+ * A TxMaxOut above `tx_slots` counts as 0 (every slot), as before; an
+ * unreadable one as PACER_TX_MAX_OUT_FALLBACK (at most `tx_slots`). */
 void pacer_params_read(int (*read)(void *ctx, enum pacer_param which, uint32_t *value), void *ctx,
                        uint32_t tx_slots, struct pacer_params *out);
 

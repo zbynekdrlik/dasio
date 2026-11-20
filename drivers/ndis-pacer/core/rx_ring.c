@@ -37,15 +37,17 @@ static void store_head(uint8_t *base, uint64_t v)
 {
     (void)_InterlockedExchange64((volatile __int64 *)(base + PACER_RX_OFF_HEAD), (__int64)v);
 }
+#if !defined(_M_X64) && !defined(_M_AMD64)
+/* CI builds and tests x64 only: on ARM64 the volatile read below has no
+ * acquire semantics (/volatile:iso), and nothing here was ever built for
+ * it. Add an ARM64 pacer-driver build with an acquire load first. */
+#error "kernel RX (rx_ring.c) is built and tested for x64 only"
+#endif
 static uint64_t load_tail(uint8_t *base)
 {
-#if defined(_M_ARM64)
-    return (uint64_t)__ldar64((volatile unsigned __int64 *)(base + PACER_RX_OFF_TAIL));
-#else
-    /* x86/x64: a volatile read has acquire semantics (/volatile:ms, the
+    /* x64: a volatile read has acquire semantics (/volatile:ms, the
      * compiler's default there, in the driver build too). */
     return *(volatile uint64_t *)(base + PACER_RX_OFF_TAIL);
-#endif
 }
 static uint32_t load_wake(uint8_t *base)
 {
@@ -112,6 +114,7 @@ int pacer_rx_parse(const uint8_t *hdr, uint32_t avail, uint32_t frame_len, struc
     uint32_t total;
     uint32_t udp;
     uint32_t udp_len;
+    int vlan = 0;
 
     if (hdr == NULL || avail > frame_len || avail < ETH_HEADER) {
         return 0;
@@ -121,6 +124,10 @@ int pacer_rx_parse(const uint8_t *hdr, uint32_t avail, uint32_t frame_len, struc
         at += 4;
         if (avail < at + 2) {
             return 0;
+        }
+        /* The tag's VLAN ID: the low 12 bits of its TCI. */
+        if ((be16(hdr + at - 2) & 0x0FFFu) != 0) {
+            vlan = 1;
         }
         type = be16(hdr + at);
     }
@@ -149,7 +156,7 @@ int pacer_rx_parse(const uint8_t *hdr, uint32_t avail, uint32_t frame_len, struc
     p->payload_off = udp + UDP_HEADER;
     p->payload_len = udp_len - UDP_HEADER;
     p->flags = 0;
-    if (tags != 0) {
+    if (vlan) {
         p->flags |= PACER_RX_PKT_TAGGED;
     }
     if ((hdr[0] & 1u) != 0) {
@@ -349,48 +356,81 @@ int pacer_rx_deliver(struct pacer_rx_sink *const *sinks, uint32_t count, const s
     return 1;
 }
 
-void pacer_rx_ports_build(struct pacer_rx_sink *const *sinks, uint32_t count, struct pacer_rx_ports *out)
+void pacer_rx_ports_init(struct pacer_rx_ports *ports)
+{
+    rx_zero(ports, sizeof *ports);
+}
+
+/* 1 when a sink's table names `port`. */
+static int named(struct pacer_rx_sink *const *sinks, uint32_t count, uint16_t port)
 {
     uint32_t i;
     uint32_t e;
-    uint32_t n = 0;
+    for (i = 0; i < count; i++) {
+        for (e = 0; e < sinks[i]->matches && e < PACER_RX_MAX_MATCHES; e++) {
+            if (sinks[i]->match[e].port == port) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
 
-    out->any = 0;
+/* The bit of `port`, set or cleared alone: its byte is written whole, its
+ * other bits as they were (a racing reader sees them unchanged). */
+static void port_bit(struct pacer_rx_ports *ports, uint16_t port, int on)
+{
+    volatile uint8_t *b = &ports->bits[port >> 3];
+    uint8_t m = (uint8_t)(1u << (port & 7u));
+    *b = (uint8_t)(on ? (*b | m) : (*b & (uint8_t)~m));
+}
+
+void pacer_rx_ports_build(struct pacer_rx_sink *const *sinks, uint32_t count, struct pacer_rx_ports *ports)
+{
+    uint16_t recorded[PACER_RX_MAX_PORTS];
+    uint32_t n = 0;
+    uint32_t distinct = 0;
+    uint32_t i;
+    uint32_t e;
+    uint32_t k;
+
+    /* Every named port's bit first, so none is ever clear while named. */
     for (i = 0; i < count; i++) {
         for (e = 0; e < sinks[i]->matches && e < PACER_RX_MAX_MATCHES; e++) {
             uint16_t port = sinks[i]->match[e].port;
-            uint32_t k;
             int seen = 0;
             for (k = 0; k < n; k++) {
-                if (out->port[k] == port) {
+                if (recorded[k] == port) {
                     seen = 1;
                 }
             }
             if (seen) {
                 continue;
             }
-            if (n == PACER_RX_MAX_PORTS) {
-                out->any = 1;
-                continue;
+            port_bit(ports, port, 1);
+            distinct++;
+            if (n < PACER_RX_MAX_PORTS) {
+                recorded[n++] = port;
             }
-            out->port[n++] = port;
         }
     }
-    out->count = n;
+    /* Then the recorded ports no table names any more. */
+    for (k = 0; k < ports->recorded_count && k < PACER_RX_MAX_PORTS; k++) {
+        if (!named(sinks, count, ports->recorded[k])) {
+            port_bit(ports, ports->recorded[k], 0);
+        }
+    }
+    for (k = 0; k < n; k++) {
+        ports->recorded[k] = recorded[k];
+    }
+    ports->recorded_count = n;
+    *(volatile uint32_t *)&ports->count = distinct;
 }
 
 int pacer_rx_ports_has(const struct pacer_rx_ports *ports, uint16_t port)
 {
-    uint32_t k;
-    if (ports->any) {
-        return 1;
-    }
-    for (k = 0; k < ports->count && k < PACER_RX_MAX_PORTS; k++) {
-        if (ports->port[k] == port) {
-            return 1;
-        }
-    }
-    return 0;
+    const volatile uint8_t *b = &ports->bits[port >> 3];
+    return (int)((*b >> (port & 7u)) & 1u);
 }
 
 void *pacer_rx_split(void *chain, const struct pacer_rx_chain_ops *ops, void *ctx, void **taken,

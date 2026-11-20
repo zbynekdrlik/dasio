@@ -22,7 +22,13 @@ typedef struct _RX_RING RX_RING, *PRX_RING;
 // this Lock.
 typedef struct _RX_FILTER_RINGS
 {
+    // The lock alone on its cache lines, whatever the block's alignment: a
+    // line's worth of bytes on each side, so the per-frame lock writes do
+    // not bounce what every RSS CPU reads with no lock (Count, Rings, the
+    // port bits), nor the filter's fields before it.
+    UCHAR                           LockLineBefore[64];
     FILTER_LOCK                     Lock;
+    UCHAR                           LockLineAfter[64];
     // Rings attached. The receive path reads it once without the lock: 0
     // (the switch off, or no ring open) means nothing more is done.
     volatile LONG                   Count;

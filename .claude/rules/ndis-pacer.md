@@ -52,23 +52,32 @@ paths:
 - Every Parameters value (RxdEnable, RxdCpu, TxMaxOut, RxRingEnable) is
   read in a query of its own (`pacer_params_read`): a value of another
   type (`reg add` without `/t` makes a REG_SZ) turns off only its own
-  feature, logged with DbgPrintEx (DebugView with kernel capture). In one
-  shared query it had turned rxd off and left media TX unbounded.
+  feature (an unreadable TxMaxOut is 200, never every slot), shows in
+  `rxd.ps1 status` ParamBad (bit 0 RxdEnable, 1 RxdCpu, 2 TxMaxOut, 3
+  RxRingEnable; status v3) and is logged with DbgPrintEx. In one shared
+  query it had turned rxd off and left media TX unbounded. Prove it on
+  mbc at the next filter install: a REG_SZ RxRingEnable, then ParamBad 8,
+  rxd on, `ktx.ps1 status` TxMaxOut 200; then the REG_DWORD back.
 - The decisions (parse, match, the ring's producer, steal or not, the port
   set, the NBL chain work through a next-linked node) are
   `core/rx_ring.c`, host-tested and fuzzed in `pacer-core` (100 % of its
   lines); the NDIS/IOCTL glue is `driver/rxring.c`. filter.c and device.c
   get only hook calls. Ring layout: `core/rx_ring.h`. The MSVC host test
   compiles the same interlocked branch the x64 driver runs (one `_MSC_VER`
-  branch for both); ARM64's `__ldar64` load has no CI build.
+  branch for both). x64 only: rx_ring.c stops an ARM64 build with
+  `#error` (no CI build, no acquire load there) until one is added.
 - The receive path parses each frame on the stack with no lock; it takes
   the RX ring lock only for a frame on a port some ring's table names
-  (`pacer_rx_ports`, rebuilt under the lock), and does nothing while no
-  ring names a port. Each frame gets its own receive time. Readers' events
-  are set after the lock, through a reference of their own.
+  (`pacer_rx_ports`: one bit per port, rebuilt under the lock by setting
+  the new bits before clearing the dropped ones, so a racing reader never
+  loses a still-named port), and does nothing while no ring names a port.
+  The lock sits alone on its cache lines. Each frame gets its own receive
+  time. Readers' events are set after the lock, through a reference of
+  their own.
 - Dante legs are untagged on every PC (owner, 18.11.2026): a frame with a
-  VLAN tag in it, or a non-zero VLAN ID the NIC took off, never goes into
-  a ring (status Tagged); nor does one whose IP or UDP checksum the NIC
+  VLAN ID (a tag in the frame, or one the NIC took off; a priority tag,
+  VLAN ID 0, counts as untagged both ways) never goes into a ring (status
+  Tagged); nor does one whose IP or UDP checksum the NIC
   found bad (BadChecksum). Both go up as ever. A 0.0.0.0 entry matches
   only a frame to a unicast MAC (never a subnet broadcast).
 - Steal mode: NBLs that may pend are split (stolen ones returned to the

@@ -458,6 +458,9 @@ void pacer_params_read(int (*read)(void *ctx, enum pacer_param which, uint32_t *
         int r = read(ctx, (enum pacer_param)which, &v);
         if (r == PACER_PARAM_BAD) {
             out->bad |= 1u << which;
+            if (which == PACER_PARAM_TX_MAX_OUT) {
+                out->tx_max_out = PACER_TX_MAX_OUT_FALLBACK <= tx_slots ? PACER_TX_MAX_OUT_FALLBACK : tx_slots;
+            }
         }
         if (r != PACER_PARAM_READ) {
             continue;

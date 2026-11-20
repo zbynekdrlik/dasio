@@ -106,10 +106,11 @@ struct pacer_rx_packet {
  * not a fragment (MF clear, offset 0), UDP, with the IP total length
  * inside the frame and the UDP length (at least 8) inside the IP
  * payload; the payload is the UDP length's. Up to 2 VLAN tags (0x8100 /
- * 0x88A8) are read past so a tagged frame of a flow can be counted, and
- * set PACER_RX_PKT_TAGGED; the Ethernet group bit sets
- * PACER_RX_PKT_ETH_GROUP. 0 for anything else, or when a header lies
- * past `avail`. */
+ * 0x88A8) are read past so a tagged frame of a flow can be counted: a tag
+ * with a VLAN ID sets PACER_RX_PKT_TAGGED, a priority tag (VLAN ID 0)
+ * does not (as the NIC's own 802.1Q info, where VLAN ID 0 is untagged).
+ * The Ethernet group bit sets PACER_RX_PKT_ETH_GROUP. 0 for anything
+ * else, or when a header lies past `avail`. */
 int pacer_rx_parse(const uint8_t *hdr, uint32_t avail, uint32_t frame_len, struct pacer_rx_packet *p);
 
 /* One match entry: a destination IPv4 address (as on the wire) and UDP
@@ -218,19 +219,29 @@ int pacer_rx_deliver(struct pacer_rx_sink *const *sinks, uint32_t count, const s
                      const uint8_t *frame, uint32_t len, uint64_t time_100ns);
 
 /* The ports of every sink's table, for a look with no lock: a frame on
- * another port is never offered (the lock is not taken for it). Rebuilt
- * under the lock whenever a ring or a table changes; a reader racing a
- * rebuild may miss a frame or take the lock for nothing, never more.
- * count 0: no ring names any port (the receive path does nothing). */
+ * another port is never offered (the lock is not taken for it). One bit
+ * per port. A rebuild (under the lock, whenever a ring or a table
+ * changes) first sets the bit of every port a table names, then clears
+ * the bits of the ports it recorded that no table names any more, each
+ * byte written whole with only its own bits changed: a reader racing it
+ * never misses a port a table named before and after, and at worst takes
+ * the lock for a port just dropped. Ports past PACER_RX_MAX_PORTS distinct
+ * ones are not recorded: their bits stay set (the lock taken for nothing,
+ * never a missed frame). count, written once at the end of a rebuild: 0
+ * when no table names any port (the receive path does nothing), else the
+ * ports named (past PACER_RX_MAX_PORTS distinct ones a repeat may count
+ * again). Starts all zero (pacer_rx_ports_init). */
 #define PACER_RX_MAX_PORTS 64u
 struct pacer_rx_ports {
-    uint16_t port[PACER_RX_MAX_PORTS];
+    uint8_t bits[65536u / 8u];
+    uint16_t recorded[PACER_RX_MAX_PORTS];
+    uint32_t recorded_count;
     uint32_t count;
-    /* More distinct ports than fit: every port is looked up. */
-    uint32_t any;
 };
 
-void pacer_rx_ports_build(struct pacer_rx_sink *const *sinks, uint32_t count, struct pacer_rx_ports *out);
+void pacer_rx_ports_init(struct pacer_rx_ports *ports);
+
+void pacer_rx_ports_build(struct pacer_rx_sink *const *sinks, uint32_t count, struct pacer_rx_ports *ports);
 
 /* 1 when a sink's table may name `port`. */
 int pacer_rx_ports_has(const struct pacer_rx_ports *ports, uint16_t port);

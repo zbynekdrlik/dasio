@@ -504,6 +504,10 @@ NTSTATUS txSendAtDispatch(_In_ PMS_FILTER Filter, _In_reads_bytes_(Length) const
 // each filter's Lock; the DPC's target CPU is set outside any lock.
 extern ULONG RxdEnable;
 extern LONG RxdCpuSetting;
+// The Parameters values that were there but unreadable at load (bit per
+// enum pacer_param: RxdEnable, RxdCpu, TxMaxOut, RxRingEnable), in
+// DASIO_RXD_STATUS.ParamBad.
+extern ULONG ParamBadSetting;
 VOID rxdApply(_In_ PMS_FILTER Filter);
 
 // Other traffic goes at this share of the link speed...

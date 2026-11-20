@@ -266,7 +266,7 @@ typedef struct _DASIO_RXD_SET
     LONG            Cpu;
 } DASIO_RXD_SET, *PDASIO_RXD_SET;
 
-#define DASIO_RXD_STATUS_VERSION            2
+#define DASIO_RXD_STATUS_VERSION            3
 typedef struct _DASIO_RXD_STATUS
 {
     ULONG64         Version;
@@ -280,6 +280,11 @@ typedef struct _DASIO_RXD_STATUS
     ULONG64         Queued;           // waiting now
     ULONG64         Dropped;          // returned unindicated (pause)
     ULONG64         Priority;         // NBLs indicated at once while rxd is on (not deferred)
+    // Version 3: the service's Parameters values that were there but could
+    // not be read when the driver loaded (another type than REG_DWORD): bit
+    // 0 RxdEnable, 1 RxdCpu, 2 TxMaxOut, 3 RxRingEnable. Each kept its
+    // default (TxMaxOut: 200); 0 = all read or missing.
+    ULONG64         ParamBad;
 } DASIO_RXD_STATUS, *PDASIO_RXD_STATUS;
 
 // dasio: kernel RX. A ring of SlotCount slots (a power of 2, 64..4096) on
@@ -296,9 +301,10 @@ typedef struct _DASIO_RXD_STATUS
 // Copy mode (default): a matched frame goes into the ring and up to tcpip
 // as before. DASIO_RX_STEAL: a frame every matching ring steals does not
 // go up (a full ring drops it: Full); one longer than a slot always goes up.
-// A tagged frame (a VLAN tag in it, or a non-zero VLAN ID the NIC took off)
-// or one whose IP or UDP checksum the NIC found bad never goes into a
-// ring and always goes up (Tagged, BadChecksum).
+// A tagged frame (a VLAN ID in a tag in it, or a non-zero VLAN ID the NIC
+// took off; a priority tag, VLAN ID 0, is untagged) or one whose IP or UDP
+// checksum the NIC found bad never goes into a ring and always goes up
+// (Tagged, BadChecksum).
 #define DASIO_RX_STEAL                      0x00000001u
 #define DASIO_RX_FLAGS                      DASIO_RX_STEAL
 typedef struct _DASIO_RX_OPEN

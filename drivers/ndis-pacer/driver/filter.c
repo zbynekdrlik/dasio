@@ -3025,6 +3025,7 @@ ktxDone(
 
 ULONG RxdEnable = 0;
 LONG RxdCpuSetting = -1;
+ULONG ParamBadSetting = 0;
 
 // The settings onto one filter (outside its Lock: the DPC's target is set
 // with no lock held, before the flag that lets receives queue).
@@ -3233,5 +3234,7 @@ rxdReadRegistry(
     TxMaxOutSetting = Params.tx_max_out;
     // Kernel RX (rxring.c): off unless 1.
     RxRingEnable = Params.rx_ring_enable;
+    // What could not be read, for rxd.ps1 status (ParamBad).
+    ParamBadSetting = Params.bad;
     ExFreePoolWithTag(Path, FILTER_ALLOC_TAG);
 }

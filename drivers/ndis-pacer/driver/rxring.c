@@ -153,8 +153,7 @@ rxRingFilterInit(
     {
         Filter->RxRing.Rings[i] = NULL;
     }
-    Filter->RxRing.Ports.count = 0;
-    Filter->RxRing.Ports.any = 0;
+    pacer_rx_ports_init(&Filter->RxRing.Ports);
 }
 
 _Use_decl_annotations_
@@ -384,9 +383,10 @@ rxRingReceive(
     }
 
     // They cannot pend (the miniport needs its chain back as it was when
-    // this returns): every NBL is decided first, then the kept ones go up
-    // in runs (the whole chain when none was taken), each run's last link
-    // restored right after its indication.
+    // this returns): PACER_RX_SEGMENT (64) NBLs at a time, each segment's
+    // NBLs are decided first, then its kept ones go up in runs (the whole
+    // chain when it is one segment and none was taken), each run's last
+    // link restored right after its indication.
     {
         ULONG Indicated = pacer_rx_up_in_runs(*NetBufferLists, &RxNblOps, &Receive);
         // rxd's count of NBLs that went up at once.
