@@ -199,6 +199,49 @@ fn the_shipped_baseline_s_must_haves_are_the_nic_s_timing_and_test_signing() {
     );
 }
 
+/// LSO is a standard NDIS keyword: the baseline holds it off on the Dante
+/// NIC whatever its driver (mbc's USB Realtek ran it on while the check
+/// read fine, 19.11.2026, dasio#24), as a must-have, and a NIC without LSO
+/// (no keyword) is fine.
+#[test]
+fn the_baseline_holds_lso_off_on_every_dante_nic() {
+    let mut lso = baseline().unwrap();
+    lso.registry.retain(|e| e.name.starts_with("*LsoV2IPv"));
+    let only = Profile {
+        registry: lso.registry,
+        ..parse("name = \"pc\"\nnic_guid = \"{G}\"\n").unwrap()
+    };
+    assert_eq!(only.registry.len(), 2, "{:?}", only.registry);
+    let mut usb = Pc {
+        nic_service: Some("rtu56cx22x64".into()),
+        ..Pc::default()
+    };
+    let set = |pc: &mut Pc, v: &str| {
+        for name in ["*LsoV2IPv4", "*LsoV2IPv6"] {
+            pc.reg
+                .insert(("{nic_class}".into(), name.into()), Value::String(v.into()));
+        }
+    };
+    // A NIC without LSO has no keyword.
+    assert_eq!(texts(&check(&only, &usb)), Vec::<String>::new());
+    set(&mut usb, "1");
+    let on = texts(&check(&only, &usb));
+    assert_eq!(on.len(), 2, "{on:?}");
+    for (t, name) in on.iter().zip(["*LsoV2IPv4", "*LsoV2IPv6"]) {
+        assert!(
+            t.starts_with(&format!("must-have: registry {{nic_class}}\\{name}: \"1\"")),
+            "{t}"
+        );
+    }
+    assert!(must_have_failure(&on).is_some());
+    set(&mut usb, "0");
+    assert_eq!(texts(&check(&only, &usb)), Vec::<String>::new());
+    // FOH's and dsg's PCIe Realtek too.
+    let mut pcie = realtek();
+    set(&mut pcie, "1");
+    assert_eq!(texts(&check(&only, &pcie)).len(), 2);
+}
+
 /// The service's loops (Windows glue, not compiled here) end the device on
 /// a must-have problem, and the start checks before the device starts.
 #[test]
