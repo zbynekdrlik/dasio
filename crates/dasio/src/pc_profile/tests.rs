@@ -1012,6 +1012,35 @@ fn changes_name_what_appeared_and_what_was_fixed() {
     assert!(appeared.is_empty() && fixed.is_empty());
 }
 
+/// Defender's `DisableAntiSpyware`: a Group Policy refresh (at boot,
+/// install.ps1's gpupdate) removes it, and current Defender ignores it
+/// (real-time protection stays off through `DisableRealtimeMonitoring`), so
+/// an absent value is no drift after a reboot; 0 still is (dasio#120).
+#[test]
+fn the_baseline_accepts_an_absent_disable_anti_spyware_but_not_zero() {
+    let mut b = baseline().unwrap();
+    b.registry.retain(|e| e.name == "DisableAntiSpyware");
+    assert_eq!(b.registry.len(), 1, "{:?}", b.registry);
+    let only = Profile {
+        registry: b.registry,
+        ..parse("name = \"pc\"\n").unwrap()
+    };
+    let absent = Pc::default();
+    assert_eq!(check(&only, &absent), Vec::new());
+    assert_eq!(plan(&only, &absent), Vec::new());
+    let mut zero = Pc::default();
+    zero.reg.insert(
+        (
+            r"HKLM\SOFTWARE\Policies\Microsoft\Windows Defender".into(),
+            "DisableAntiSpyware".into(),
+        ),
+        Value::Dword(0),
+    );
+    let found = check(&only, &zero);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].found, "0 (0x0)");
+}
+
 #[test]
 fn the_shipped_baseline_parses_and_holds_the_must_haves() {
     // dasio#128: a broken baseline fails here, not on a PC.
