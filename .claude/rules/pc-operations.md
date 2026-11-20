@@ -144,6 +144,12 @@ Owner rules from dasio#1. They hold for every change on a PC running dasio.
   offers only the physical NIC): a PC whose Dante is DVS needs Dante
   untagged on the physical NIC, or no DVS (resolume-pp 18.11.2026: DVS
   stopped after a move to its Dante70 VLAN adapter; owner: no DVS at PP).
+- **An install run as SYSTEM writes SYSTEM's own HKCU** (`HKU\S-1-5-18`,
+  which no one logs on with). Anything per-user it sets (dtray's Run value)
+  must also go into the loaded user hives (`HKEY_USERS\S-1-5-21-…`); see
+  `scripts/dtray-autostart.ps1` (dsg never started dtray at logon until
+  0.1.148, dasio#211). Never `New-Item -Force` an existing registry key: it
+  drops the key's other values.
 - **A long remote job** (an installer, dante-leg.ps1, a network change)
   runs as a SYSTEM scheduled task, or with an MCP Shell `timeout` large
   enough (the fleet Shell takes any timeout; a 120 s value cut dsg's
