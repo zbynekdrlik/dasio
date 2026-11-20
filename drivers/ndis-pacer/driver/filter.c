@@ -102,6 +102,8 @@ Return Value:
     // Deferred receive from the service's Parameters key (RxdEnable,
     // RxdCpu), before any attach applies it.
     rxdReadRegistry(RegistryPath);
+    // Kernel RX's switch (RxRingEnable, default off), from the same key.
+    rxRingReadRegistry(RegistryPath);
 
     FilterDriverObject = DriverObject;
 
@@ -420,6 +422,8 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
         pFilter->RxdCpu = -1;
         pFilter->RxdRunning = FALSE;
         rxdApply(pFilter);
+        // Kernel RX: no ring yet.
+        rxRingFilterInit(pFilter);
         pFilter->State = FilterPaused;
 
         FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
@@ -497,6 +501,9 @@ N.B.: When the filter is in Pausing state, it can still process OID requests,
     // Deferred receive: what waits goes back to the miniport unindicated,
     // and a DPC that already runs finishes (KeFlushQueuedDpcs below).
     rxdDrop(pFilter);
+    // Kernel RX: every ring is detached (Pausing is set: none attaches
+    // again); dasio reopens after the restart.
+    rxRingDetachAll(pFilter);
 
     //
     // Do whatever work is required to bring the filter into the Paused state.
@@ -804,6 +811,8 @@ NOTE: Called at PASSIVE_LEVEL and the filter is in paused state
     {
         NdisMSleep(100);
     }
+    // Kernel RX: no ring stays attached (pause detached them already).
+    rxRingFilterTeardown(pFilter);
 
     // The timer goes first, at PASSIVE: deleting it waits for a running
     // callback, which is not allowed under a spin lock.
@@ -2122,6 +2131,14 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
 #endif
 
         ASSERT(NumberOfNetBufferLists >= 1);
+
+        // dasio kernel RX: frames of dasio's flows into its rings first
+        // (rxring.c). Done when every NBL was stolen, or a chain that
+        // cannot pend went up there; otherwise the rest goes on as before.
+        if (rxRingReceive(pFilter, &NetBufferLists, &NumberOfNetBufferLists, PortNumber, ReceiveFlags))
+        {
+            break;
+        }
 
         //
         // If you would like to drop a received packet, then you must carefully

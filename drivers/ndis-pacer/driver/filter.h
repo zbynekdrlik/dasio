@@ -298,6 +298,8 @@ typedef struct _FILTER_REQUEST
 // Define the filter struct
 //
 #include "../core/pacer_core.h"
+// Kernel RX (dasio#27, B23): rings of received frames for dasio.
+#include "rxring.h"
 
 // Kernel test stream and media TX: frames that may be out at once and the
 // bytes of one slot. Media TX of two dasio devices on the FOH PC is about
@@ -456,6 +458,10 @@ typedef struct _MS_FILTER
     ULONG64                         RxdDpcRuns;
     ULONG64                         RxdMaxBatch;
     ULONG64                         RxdDropped;
+
+    // dasio kernel RX (rxring.c): the rings attached to this adapter,
+    // under their own lock.
+    RX_FILTER_RINGS                 RxRing;
 
 }MS_FILTER, * PMS_FILTER;
 
