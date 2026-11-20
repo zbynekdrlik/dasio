@@ -10,6 +10,7 @@
 use std::io;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 use windows_sys::Win32::Foundation::{
     CloseHandle, HANDLE, INVALID_HANDLE_VALUE, LocalFree, WAIT_OBJECT_0,
@@ -19,14 +20,17 @@ use windows_sys::Win32::Security::Authorization::{
 };
 use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 use windows_sys::Win32::System::Memory::{
-    CreateFileMappingW, FILE_MAP_ALL_ACCESS, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile,
-    OpenFileMappingW, PAGE_READWRITE, UnmapViewOfFile,
+    CreateFileMappingW, FILE_MAP_ALL_ACCESS, GetProcessWorkingSetSizeEx,
+    MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, OpenFileMappingW, PAGE_READWRITE,
+    QUOTA_LIMITS_HARDWS_MAX_DISABLE, QUOTA_LIMITS_HARDWS_MIN_DISABLE, SetProcessWorkingSetSizeEx,
+    UnmapViewOfFile, VirtualLock, VirtualUnlock,
 };
+use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
 use windows_sys::Win32::System::Threading::{
-    CreateEventW, EVENT_ALL_ACCESS, OpenEventW, SetEvent, WaitForSingleObject,
+    CreateEventW, EVENT_ALL_ACCESS, GetCurrentProcess, OpenEventW, SetEvent, WaitForSingleObject,
 };
 
-use crate::{Header, MAGIC, Shape, VERSION, ticks_to_ns};
+use crate::{Header, MAGIC, Shape, VERSION, page_span, ticks_to_ns, working_set};
 
 /// Now on the system-wide performance counter, ns: the one clock the
 /// driver (in the DAW's process) and the device share, so a time one of
@@ -284,6 +288,48 @@ pub fn request_rate(instance: u32, rate: u32) -> io::Result<()> {
     Ok(())
 }
 
+/// The device's locked views, all sections together (dasio#28 E11): a
+/// re-serve locks its new section while the old one still lives.
+struct Locks {
+    /// The process's working set (minimum, maximum) before its first lock.
+    base: Option<(usize, usize)>,
+    /// The bytes locked now.
+    bytes: usize,
+}
+
+static LOCKS: Mutex<Locks> = Mutex::new(Locks {
+    base: None,
+    bytes: 0,
+});
+
+fn page_size() -> usize {
+    let mut info = SYSTEM_INFO::default();
+    // SAFETY: a valid out pointer; never fails.
+    unsafe { GetSystemInfo(&mut info) };
+    info.dwPageSize as usize
+}
+
+/// The process's working set for `locked` bytes on top of `base`, as soft
+/// limits: the system may still grow the process past the maximum or trim
+/// it below the minimum under memory pressure; only the minimum's quota
+/// for locked pages matters here.
+fn set_working_set(base: (usize, usize), locked: usize) -> io::Result<()> {
+    let (min, max) = working_set(base, locked);
+    // SAFETY: the current process's pseudo handle; plain values.
+    let ok = unsafe {
+        SetProcessWorkingSetSizeEx(
+            GetCurrentProcess(),
+            min,
+            max,
+            QUOTA_LIMITS_HARDWS_MIN_DISABLE | QUOTA_LIMITS_HARDWS_MAX_DISABLE,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// Sessions this process made (a test makes several devices in one process).
 static SESSIONS: AtomicU32 = AtomicU32::new(0);
 
@@ -305,6 +351,8 @@ pub struct Shared {
     _mapping: Handle,
     block: Handle,
     ready: Handle,
+    /// The bytes [`Shared::lock`] locked (0: none), given back at drop.
+    locked: usize,
 }
 
 // SAFETY: the view is shared memory accessed through atomics (the header)
@@ -509,7 +557,70 @@ impl Shared {
             _mapping: mapping,
             block,
             ready,
+            locked: 0,
         })
+    }
+
+    /// The views this side keeps: the section and the directory (address,
+    /// bytes).
+    fn views(&self) -> [(usize, usize); 2] {
+        [
+            (self.view.as_ptr() as usize, self.shape.size()),
+            (self.dir.view.as_ptr() as usize, std::mem::size_of::<Dir>()),
+        ]
+    }
+
+    /// The device side (dasio#28 E11): locks this section's and the
+    /// directory's views in memory, so a page fault never stalls the pump or
+    /// the bridge on them. Raises the process's working set first (by the
+    /// locked bytes and [`crate::LOCK_MARGIN`] over what it had before its
+    /// first lock), then `VirtualLock`s each view. The bytes locked (whole
+    /// pages); again on a locked section, the same bytes. An error leaves
+    /// nothing of this section locked and the working set at what the other
+    /// locked sections need: the device runs on as without a lock. The
+    /// locks end with the views (unmapping unlocks).
+    pub fn lock(&mut self) -> io::Result<usize> {
+        if self.locked != 0 {
+            return Ok(self.locked);
+        }
+        let page = page_size();
+        let views = self.views();
+        let bytes: usize = views.iter().map(|&(a, l)| page_span(a, l, page)).sum();
+        let mut locks = LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+        let base = match locks.base {
+            Some(b) => b,
+            None => {
+                let (mut min, mut max, mut flags) = (0usize, 0usize, 0u32);
+                // SAFETY: the current process's pseudo handle; valid out
+                // pointers.
+                let ok = unsafe {
+                    GetProcessWorkingSetSizeEx(GetCurrentProcess(), &mut min, &mut max, &mut flags)
+                };
+                if ok == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                locks.base = Some((min, max));
+                (min, max)
+            }
+        };
+        set_working_set(base, locks.bytes + bytes)?;
+        for (i, &(addr, len)) in views.iter().enumerate() {
+            // SAFETY: a range inside a view this struct mapped.
+            if unsafe { VirtualLock(addr as *const _, len) } == 0 {
+                let e = io::Error::last_os_error();
+                for &(addr, len) in &views[..i] {
+                    // SAFETY: a range locked just above.
+                    unsafe { VirtualUnlock(addr as *const _, len) };
+                }
+                // Back to what the other locked sections need; the lock's
+                // own error is the one to report.
+                let _ = set_working_set(base, locks.bytes);
+                return Err(e);
+            }
+        }
+        locks.bytes += bytes;
+        self.locked = bytes;
+        Ok(bytes)
     }
 
     pub fn shape(&self) -> Shape {
@@ -557,11 +668,18 @@ impl Shared {
 
 impl Drop for Shared {
     fn drop(&mut self) {
-        // SAFETY: the view this struct mapped, unmapped once.
+        // SAFETY: the view this struct mapped, unmapped once (which ends
+        // its lock; the directory's ends when `dir` drops next).
         unsafe {
             UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS {
                 Value: self.view.as_ptr().cast(),
             })
         };
+        if self.locked != 0 {
+            // The working set stays raised until the next lock sets it
+            // for what is locked then.
+            let mut locks = LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+            locks.bytes = locks.bytes.saturating_sub(self.locked);
+        }
     }
 }

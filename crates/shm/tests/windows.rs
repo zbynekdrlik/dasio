@@ -225,3 +225,118 @@ fn another_rate_at_the_same_block_makes_a_fresh_section() {
         std::io::ErrorKind::NotFound
     );
 }
+
+/// The page size of x64 and arm64 Windows.
+const PAGE: usize = 4096;
+
+/// Per page of `len` bytes from `addr` in this process: whether it is in
+/// memory (QueryWorkingSetEx's Valid bit) and locked (its Locked bit, 22).
+fn page_states(addr: usize, len: usize) -> Vec<(bool, bool)> {
+    use windows_sys::Win32::System::ProcessStatus::{
+        PSAPI_WORKING_SET_EX_INFORMATION, QueryWorkingSetEx,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    let mut pages: Vec<PSAPI_WORKING_SET_EX_INFORMATION> = (0..len.div_ceil(PAGE))
+        .map(|i| PSAPI_WORKING_SET_EX_INFORMATION {
+            VirtualAddress: (addr + i * PAGE) as *mut _,
+            ..Default::default()
+        })
+        .collect();
+    let cb = std::mem::size_of_val(pages.as_slice()) as u32;
+    // SAFETY: the current process's pseudo handle; `pages` holds `cb` bytes.
+    let ok = unsafe { QueryWorkingSetEx(GetCurrentProcess(), pages.as_mut_ptr().cast(), cb) };
+    assert_ne!(
+        ok,
+        0,
+        "QueryWorkingSetEx: {}",
+        std::io::Error::last_os_error()
+    );
+    pages
+        .iter()
+        .map(|p| {
+            // SAFETY: the union's plain flags word.
+            let f = unsafe { p.VirtualAttributes.Flags };
+            (f & 1 == 1, (f >> 22) & 1 == 1)
+        })
+        .collect()
+}
+
+fn working_set_now() -> (usize, usize) {
+    use windows_sys::Win32::System::Memory::GetProcessWorkingSetSizeEx;
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    let (mut min, mut max, mut flags) = (0usize, 0usize, 0u32);
+    // SAFETY: the current process's pseudo handle; valid out pointers.
+    let ok =
+        unsafe { GetProcessWorkingSetSizeEx(GetCurrentProcess(), &mut min, &mut max, &mut flags) };
+    assert_ne!(ok, 0, "{}", std::io::Error::last_os_error());
+    (min, max)
+}
+
+// dasio#28 E11: the device locks its section in memory (after raising its
+// working set), so a page fault never stalls the pump or the bridge on it.
+// The driver's own view of the same section (the DAW's process) stays
+// unlocked: the check tells the two apart.
+#[test]
+fn the_device_locks_its_section_in_memory_and_the_driver_s_view_stays_unlocked() {
+    let shape = Shape::new(64, 64, 256).unwrap();
+    let mut device = Shared::create(99, shape, 96_000, (88, 40)).unwrap();
+    let bytes = device.lock().unwrap();
+    // The section (on a 64 KiB boundary) in whole pages and the directory's
+    // one page.
+    assert_eq!(bytes, shape.size().next_multiple_of(PAGE) + PAGE);
+    assert_eq!(
+        device.lock().unwrap(),
+        bytes,
+        "a locked section locks no more"
+    );
+    let at = device.header() as *const _ as usize;
+    let states = page_states(at, shape.size());
+    assert_eq!(states.len(), shape.size().div_ceil(PAGE));
+    for (i, &(valid, locked)) in states.iter().enumerate() {
+        assert!(
+            valid && locked,
+            "page {i} of the device's view: {valid} {locked}"
+        );
+    }
+    let (min, max) = working_set_now();
+    assert!(
+        min >= bytes + shm::LOCK_MARGIN,
+        "working set minimum {min} below the locked {bytes} and the margin"
+    );
+    assert!(max >= min, "working set {min}..{max}");
+
+    let driver = Shared::open(99).unwrap();
+    let h = driver.header();
+    // Touched, so its first page is in this process's working set.
+    assert_eq!(h.magic.load(Ordering::Acquire), MAGIC);
+    let first = page_states(h as *const _ as usize, 1);
+    assert_eq!(first, vec![(true, false)], "the driver side never locks");
+}
+
+// A re-serve at another app rate (dasio#107) makes a new section while the
+// old one still lives: the new one locks too, and stays locked once the old
+// one ends.
+#[test]
+fn a_re_served_section_locks_too_and_stays_locked_after_the_old_one_ends() {
+    let first_shape = Shape::new(4, 4, 256).unwrap();
+    let mut first = Shared::create(90, first_shape, 96_000, (88, 40)).unwrap();
+    let first_bytes = first.lock().unwrap();
+    let next_shape = Shape::app(4, 4, 128).unwrap();
+    let mut next = Shared::create(90, next_shape, 48_000, (40, 60)).unwrap();
+    assert_ne!(next.session(), first.session(), "a new section");
+    let next_bytes = next.lock().unwrap();
+    assert_eq!(next_bytes, next_shape.size().next_multiple_of(PAGE) + PAGE);
+    let (min, _) = working_set_now();
+    assert!(
+        min >= first_bytes + next_bytes + shm::LOCK_MARGIN,
+        "working set minimum {min} below both sections' {first_bytes} + {next_bytes} and the margin"
+    );
+    drop(first);
+    let at = next.header() as *const _ as usize;
+    for (i, &(valid, locked)) in page_states(at, next_shape.size()).iter().enumerate() {
+        assert!(
+            valid && locked,
+            "page {i} of the new section: {valid} {locked}"
+        );
+    }
+}
