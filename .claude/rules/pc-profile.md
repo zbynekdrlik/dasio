@@ -28,7 +28,9 @@ paths:
   `absent_ok` included: FOH's, dsg's and mbc's site LSO entries go at
   each PC's next rollout. A Dante NIC whose keys (class key, device key)
   are not found from `nic_guid` is ONE line (must-have when a must-have
-  entry sits on its keys), and no entry on its keys is read or written, a
+  entry sits on its keys or needs its driver), and no entry on its keys
+  is read or written (a class key found without `DeviceInstanceID` counts
+  as not found: fails closed, never seen on a PC), a
   driver-free one included (FOH's site file overrides every NIC entry
   with a driver-free copy; `Reader::nic_found`). A NIC found with an
   unreadable driver service gives that line only when driver-scoped

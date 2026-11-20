@@ -670,7 +670,7 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
             must: p
                 .registry
                 .iter()
-                .any(|e| e.must && (e.nic_service.is_some() || (on_nic(&e.key) && !r.nic_found()))),
+                .any(|e| e.must && (e.nic_service.is_some() || nic_unread(e, r))),
         });
     }
     for e in &p.registry {

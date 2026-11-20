@@ -349,19 +349,30 @@ fn a_found_nic_with_an_unknown_driver_is_must_have_only_through_its_driver_entri
     let site = parse(
         "name = \"foh\"\nnic_guid = \"{G}\"\n\
          [[registry]]\nkey = '{nic_class}'\nname = \"*LsoV2IPv4\"\nstring = \"0\"\nmust = true\n\
-         [[registry]]\nkey = '{nic_class}'\nname = \"*RSS\"\nstring = \"1\"\nnic_service = \"rt640x64\"\n",
+         [[registry]]\nkey = '{nic_class}'\nname = \"*RssBaseProcNumber\"\nstring = \"1\"\nnic_service = \"rt640x64\"\n",
     )
     .unwrap();
     let mut here = Pc::default();
     here.reg.insert(
         ("{nic_class}".into(), "*LsoV2IPv4".into()),
-        Value::String("0".into()),
+        Value::String("1".into()),
     );
     let found = check(&site, &here);
-    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found.len(), 2, "{found:?}");
     assert_eq!(found[0].what, "the Dante NIC {G}");
     assert!(!found[0].must, "{found:?}");
-    // A driver-scoped must-have it cannot judge makes it one.
+    // The driver-free must-have is read and judged on its own line.
+    assert_eq!(found[1].what, "registry {nic_class}\\*LsoV2IPv4");
+    assert!(found[1].must, "{found:?}");
+    assert_eq!(
+        plan(&site, &here),
+        vec![Action::Reg {
+            key: "{nic_class}".into(),
+            name: "*LsoV2IPv4".into(),
+            value: Value::String("0".into()),
+        }]
+    );
+    // A driver-scoped must-have it cannot judge makes the line one.
     let musts = parse(
         "name = \"foh\"\nnic_guid = \"{G}\"\n\
          [[registry]]\nkey = '{nic_class}'\nname = \"*RSS\"\nstring = \"1\"\nnic_service = \"rt640x64\"\nmust = true\n",
