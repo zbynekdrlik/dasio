@@ -182,11 +182,14 @@ fn the_shipped_baseline_s_must_haves_are_the_nic_s_timing_and_test_signing() {
             assert!(!e.must, "{n}");
         }
     }
+    // Every must-have registry entry is on the Dante NIC's own keys: one
+    // driver family's setting, or a standard NDIS keyword every NIC reads
+    // the same (LSO, dasio#24).
     assert!(
         b.registry
             .iter()
             .filter(|e| e.must)
-            .all(|e| e.nic_service.is_some())
+            .all(|e| e.key.contains("{nic_class}") || e.key.contains("{nic_device}"))
     );
     assert!(b.bcd.iter().any(|e| e.name == "testsigning" && e.must));
     assert!(
