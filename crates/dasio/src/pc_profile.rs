@@ -335,8 +335,8 @@ fn on_nic(key: &str) -> bool {
 
 /// The profile names a Dante NIC whose entries cannot be judged: its keys
 /// were not found from the GUID (e.g. a wrong GUID) while entries sit on
-/// them, or its driver is unknown while driver-scoped entries need it.
-/// One problem says so (dasio#128).
+/// them or need its driver, or its driver is unknown while driver-scoped
+/// entries need it. One problem says so (dasio#128).
 fn nic_missing(p: &Profile, r: &dyn Reader) -> bool {
     p.nic_guid.is_some()
         && ((!r.nic_found()
@@ -654,11 +654,11 @@ fn show(v: &Value) -> String {
 pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
     let mut out = Vec::new();
     // NIC entries need the NIC: a profile naming one the PC does not have
-    // (e.g. a wrong GUID) says so in one line. While its keys are not
-    // found, that line stands for every entry on them (`nic_unread`), so
-    // their must-have makes it one; while they are found, those entries
-    // are judged on their own lines and only the driver-scoped must-haves
-    // the unknown driver leaves unjudged make it one.
+    // (e.g. a wrong GUID) says so in one line. A driver-scoped must-have
+    // makes it one either way (the unknown driver leaves it unjudged).
+    // While the NIC's keys are not found, the line also stands for every
+    // entry on them (`nic_unread`), so their must-have makes it one too;
+    // while they are found, those entries are judged on their own lines.
     if let Some(guid) = &p.nic_guid
         && nic_missing(p, r)
     {
