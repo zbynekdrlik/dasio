@@ -244,6 +244,40 @@ fn the_baseline_holds_lso_off_on_every_dante_nic() {
     assert_eq!(texts(&check(&only, &pcie)).len(), 2);
 }
 
+/// EEE off on every Dante NIC, whatever its driver (owner 20.11.2026: EEE
+/// on any rig device is a serious fail; mbc's USB Realtek had it on while
+/// the baseline's entries were scoped to rt640x64, dasio#24): `*EEE`,
+/// Realtek's `AdvancedEEE` and `EnableGreenEthernet`, must-have, a NIC
+/// without the keyword fine.
+#[test]
+fn the_baseline_holds_eee_off_on_every_dante_nic() {
+    let names = ["*EEE", "AdvancedEEE", "EnableGreenEthernet"];
+    let mut b = baseline().unwrap();
+    b.registry.retain(|e| names.contains(&e.name.as_str()));
+    let only = Profile {
+        registry: b.registry,
+        ..parse("name = \"pc\"\nnic_guid = \"{G}\"\n").unwrap()
+    };
+    assert_eq!(only.registry.len(), 3, "{:?}", only.registry);
+    let mut usb = Pc {
+        nic_service: Some("rtu56cx22x64".into()),
+        ..Pc::default()
+    };
+    assert_eq!(texts(&check(&only, &usb)), Vec::<String>::new());
+    for n in names {
+        usb.reg
+            .insert(("{nic_class}".into(), n.into()), Value::String("1".into()));
+    }
+    let on = texts(&check(&only, &usb));
+    assert_eq!(on.len(), 3, "{on:?}");
+    assert!(
+        on.iter()
+            .all(|t| t.starts_with("must-have: registry {nic_class}\\")),
+        "{on:?}"
+    );
+    assert_eq!(plan(&only, &usb).len(), 3);
+}
+
 /// A Dante NIC the PC does not have is ONE must-have problem: the entries
 /// on its keys are neither read one by one (Windows reads each as
 /// unreadable, the driver-free LSO entries too) nor written (dasio#24).
