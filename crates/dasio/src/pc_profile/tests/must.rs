@@ -183,8 +183,9 @@ fn the_shipped_baseline_s_must_haves_are_the_nic_s_timing_and_test_signing() {
         }
     }
     // Every must-have registry entry is on the Dante NIC's own keys: one
-    // driver family's setting, or a standard NDIS keyword every NIC reads
-    // the same (LSO, dasio#24). A driver-free one accepts an absent
+    // driver family's setting, or a keyword held on every NIC that has it
+    // (the NDIS-standard LSO and *EEE, and Realtek's own AdvancedEEE and
+    // EnableGreenEthernet, dasio#24). A driver-free one accepts an absent
     // keyword: one driver's keyword must-have on every NIC would stop the
     // device on any other NIC.
     assert!(
@@ -242,6 +243,52 @@ fn the_baseline_holds_lso_off_on_every_dante_nic() {
     let mut pcie = realtek();
     set(&mut pcie, "1");
     assert_eq!(texts(&check(&only, &pcie)).len(), 2);
+}
+
+/// EEE off on every Dante NIC that has the keyword (owner 20.11.2026: EEE
+/// on any rig device is a serious fail; mbc's USB Realtek had it on while
+/// the baseline's entries were scoped to rt640x64, dasio#24): `*EEE`,
+/// Realtek's `AdvancedEEE` and `EnableGreenEthernet`, must-have, a NIC
+/// without the keyword fine.
+#[test]
+fn the_baseline_holds_eee_off_on_every_dante_nic() {
+    let names = ["*EEE", "AdvancedEEE", "EnableGreenEthernet"];
+    let mut b = baseline().unwrap();
+    b.registry.retain(|e| names.contains(&e.name.as_str()));
+    let only = Profile {
+        registry: b.registry,
+        ..parse("name = \"pc\"\nnic_guid = \"{G}\"\n").unwrap()
+    };
+    assert_eq!(only.registry.len(), 3, "{:?}", only.registry);
+    let mut usb = Pc {
+        nic_service: Some("rtu56cx22x64".into()),
+        ..Pc::default()
+    };
+    assert_eq!(texts(&check(&only, &usb)), Vec::<String>::new());
+    for n in names {
+        usb.reg
+            .insert(("{nic_class}".into(), n.into()), Value::String("1".into()));
+    }
+    let on = texts(&check(&only, &usb));
+    assert_eq!(on.len(), 3, "{on:?}");
+    assert!(
+        on.iter()
+            .all(|t| t.starts_with("must-have: registry {nic_class}\\")),
+        "{on:?}"
+    );
+    assert_eq!(plan(&only, &usb).len(), 3);
+    for n in names {
+        usb.reg
+            .insert(("{nic_class}".into(), n.into()), Value::String("0".into()));
+    }
+    assert_eq!(texts(&check(&only, &usb)), Vec::<String>::new());
+    // FOH's and dsg's PCIe Realtek too.
+    let mut pcie = realtek();
+    for n in names {
+        pcie.reg
+            .insert(("{nic_class}".into(), n.into()), Value::String("1".into()));
+    }
+    assert_eq!(texts(&check(&only, &pcie)).len(), 3);
 }
 
 /// A Dante NIC the PC does not have is ONE must-have problem: the entries

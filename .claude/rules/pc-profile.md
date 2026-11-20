@@ -22,7 +22,14 @@ paths:
   `absent_ok` for a NIC without LSO), since mbc's USB Realtek
   (`rtu56cx22x64`) ran LSO on unseen (19.11.2026, dasio#24). Values that
   differ by driver (`*SpeedDuplex`, `*ReceiveBuffers`, ...) keep the
-  scope. A driver-free must-have needs `absent_ok` (a test holds it): one
+  scope. EEE is the exception by owner rule (20.11.2026: EEE on any rig
+  device is a serious fail, 0.1.154): `*EEE` (NDIS standard) and Realtek's
+  own `AdvancedEEE` and `EnableGreenEthernet` = "0" hold every Dante NIC
+  that has them, `must` + `absent_ok`; those two names exist on Realtek
+  drivers only (rt640x64 from FOH's tuning, dasio#1; mbc's rtu56cx22x64
+  read 20.11), where 0
+  is off. A driver that names EEE otherwise is not covered: read a new
+  NIC's `Get-NetAdapterAdvancedProperty -AllProperties` first. A driver-free must-have needs `absent_ok` (a test holds it): one
   driver's keyword must-have on every NIC would stop the device on any
   other NIC. A site copy of such an entry replaces the baseline's whole,
   `absent_ok` included: FOH's, dsg's and mbc's site LSO entries go at
@@ -218,8 +225,8 @@ paths:
   `reserved CPUs` INFO line, then `engine pump lost` by `cause=`. A site
   profile with `dasio_cpus` needs dasio 0.1.114+.
 - **Must-have items** (`must = true`, dasio#128): the Dante NIC's timing
-  settings (Realtek PCIe), LSO off on every Dante NIC (an absent keyword
-  is fine, dasio#24) and `testsigning`. A wrong or missing one: the device
+  settings (Realtek PCIe), LSO and EEE off on every Dante NIC that has the
+  keyword (an absent keyword is fine, dasio#24) and `testsigning`. A wrong or missing one: the device
   does not start / ends at the 10-min check (the SCM restarts it, the start
   names it again), `dasio pc-profile check|apply` exits 2 with a
   `MUST-HAVE` line, and `install.ps1` refuses before touching the instance.
