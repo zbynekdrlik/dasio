@@ -24,4 +24,5 @@ Design: `docs/design/2026-10-29-dante-asio-design.md`; MVP plan: `docs/plans/202
 - the bridge instance kind (`[bridge]`, a local ASIO driver) → `.claude/rules/bridge-kind.md` (auto-loads on its `paths:`)
 - an ASIO app at its own sample rate (conversion, re-serve, latencies) → `.claude/rules/app-rate.md` (auto-loads on its `paths:`)
 - the measured RX arrival (information only, never a latency proposal) → `.claude/rules/rx-arrival.md` (auto-loads on its `paths:`)
+- the shared memory, its locked views → `.claude/rules/shm.md` (auto-loads on its `paths:`)
 - the CI mutation gate (Windows glue, bounded loops, equivalent mutants) → `.claude/rules/mutation-gate.md` (auto-loads on its `paths:`)
