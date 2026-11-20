@@ -48,8 +48,8 @@
 // Administrators only).
 #define IOCTL_DASIO_TX_SEND                 CTL_CODE(FILE_DEVICE_PHYSICAL_NETCARD, 21, METHOD_BUFFERED, FILE_WRITE_ACCESS)
 // dasio: media TX's bound on frames out at the miniport, for all bound
-// adapters, live (input: one ULONG, 1..4096; 0, once every slot, is
-// refused: media TX is never unbounded). Write access only.
+// adapters, live (input: one ULONG, 1..4095; 0, once every slot, and 4096,
+// every slot, are refused: media TX is never unbounded). Write access only.
 #define IOCTL_DASIO_TX_SET                  CTL_CODE(FILE_DEVICE_PHYSICAL_NETCARD, 22, METHOD_BUFFERED, FILE_WRITE_ACCESS)
 // dasio: kernel RX (dasio#27, B23): received frames of the caller's own
 // flows copied into a ring mapped into its process, before tcpip. One ring

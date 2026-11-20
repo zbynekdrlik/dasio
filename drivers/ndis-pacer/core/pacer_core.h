@@ -237,7 +237,7 @@ enum pacer_param {
 struct pacer_params {
     uint32_t rxd_enable;     /* 0 or 1, default 0 */
     int32_t rxd_cpu;         /* default -1: the receiving CPU */
-    uint32_t tx_max_out;     /* 1..tx_slots, never every slot */
+    uint32_t tx_max_out;     /* 1..tx_slots - 1, never every slot */
     uint32_t rx_ring_enable; /* 0 or 1, default 0 */
     uint32_t bad;            /* bit (1 << enum pacer_param) per unreadable or invalid value */
 };
@@ -250,9 +250,9 @@ struct pacer_params {
 
 /* Reads every parameter through `read` (one call per value; it returns
  * one of PACER_PARAM_READ / _MISSING / _BAD and sets `*value` on READ).
- * TxMaxOut 1..`tx_slots` is the bound; missing, unreadable, 0 or above
- * `tx_slots` it is PACER_TX_MAX_OUT_FALLBACK (at most `tx_slots`), and
- * flagged in `bad` unless it was missing. */
+ * TxMaxOut 1..`tx_slots` - 1 is the bound; missing, unreadable, 0, or
+ * `tx_slots` (every slot) and above, it is PACER_TX_MAX_OUT_FALLBACK (at
+ * most `tx_slots` - 1), and flagged in `bad` unless it was missing. */
 void pacer_params_read(int (*read)(void *ctx, enum pacer_param which, uint32_t *value), void *ctx,
                        uint32_t tx_slots, struct pacer_params *out);
 

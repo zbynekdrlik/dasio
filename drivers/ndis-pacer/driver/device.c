@@ -462,10 +462,10 @@ FilterDeviceIoControl(
         case IOCTL_DASIO_TX_SET:
             InputBuffer = (PUCHAR)Irp->AssociatedIrp.SystemBuffer;
             InputBufferLength = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
-            // 1..KTX_SLOTS: 0 (once every slot) is refused, media TX is
-            // never unbounded.
+            // 1..KTX_SLOTS - 1: 0 (once every slot) and KTX_SLOTS (every
+            // slot) are refused, media TX is never unbounded.
             if (InputBufferLength < sizeof(ULONG) || *(PULONG)InputBuffer == 0 ||
-                *(PULONG)InputBuffer > KTX_SLOTS)
+                *(PULONG)InputBuffer >= KTX_SLOTS)
             {
                 Status = STATUS_INVALID_PARAMETER;
                 break;

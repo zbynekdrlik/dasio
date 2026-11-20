@@ -3208,8 +3208,8 @@ paramRead(
 
 // RxdEnable and RxdCpu (REG_DWORD; RxdCpu 0xFFFFFFFF = -1), TxMaxOut and
 // RxRingEnable from <service>\Parameters, each read on its own. Missing
-// key or values: off, as before; an unreadable value turns off only its
-// own feature.
+// key or values: rxd and the RX ring off, RxdCpu -1, TxMaxOut 200; an
+// unreadable or invalid value keeps only its own default and is logged.
 static VOID
 rxdReadRegistry(
     _In_ PUNICODE_STRING RegistryPath
@@ -3231,12 +3231,19 @@ rxdReadRegistry(
     pacer_params_read(paramRead, Path, KTX_SLOTS, &Params);
     RxdEnable = Params.rxd_enable;
     RxdCpuSetting = Params.rxd_cpu;
-    // Media TX's bound on frames out, kept across reboots: 1..KTX_SLOTS,
+    // Media TX's bound on frames out, kept across reboots: 1..KTX_SLOTS - 1,
     // 200 when missing or invalid (never every slot).
     TxMaxOutSetting = Params.tx_max_out;
     // Kernel RX (rxring.c): off unless 1.
     RxRingEnable = Params.rx_ring_enable;
-    // What could not be read, for rxd.ps1 status (ParamBad).
+    // What could not be read or was invalid, for rxd.ps1 status (ParamBad),
+    // and in the debug log (an unreadable type is also logged by paramRead).
     ParamBadSetting = Params.bad;
+    if (Params.bad != 0)
+    {
+        DbgPrintEx(DPFLTR_IHVNETWORK_ID, DPFLTR_ERROR_LEVEL,
+                   "dasiopacer: Parameters ParamBad 0x%X (bit = enum pacer_param): those values keep their defaults; TxMaxOut %lu\n",
+                   Params.bad, (ULONG)Params.tx_max_out);
+    }
     ExFreePoolWithTag(Path, FILTER_ALLOC_TAG);
 }

@@ -6,10 +6,10 @@
 #   .\ktx.ps1 start -Adapter Ethernet -DstMac 00-11-22-33-44-55 -DstIp 10.0.0.2 -DstPort 47000
 #   .\ktx.ps1 status
 #   .\ktx.ps1 stop
-#   .\ktx.ps1 txset -MaxOut 512    (media TX's bound on frames out, 1..4096; never every slot)
+#   .\ktx.ps1 txset -MaxOut 512    (media TX's bound on frames out, 1..4095; never every slot, 4096)
 param(
     [Parameter(Mandatory, Position = 0)][ValidateSet("start", "stop", "status", "txset")][string]$Action,
-    [ValidateRange(1, 4096)][int]$MaxOut = 200,
+    [ValidateRange(1, 4095)][int]$MaxOut = 200,
     [string]$Adapter = "Ethernet",
     [string]$DstMac,
     [string]$DstIp,

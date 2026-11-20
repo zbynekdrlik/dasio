@@ -142,11 +142,18 @@ paths:
 - Do not let media TX use every slot. With up to ~448 frames out, Realtek
   10.79 failed frames with NDIS_STATUS_RESOURCES (0xC000009A), and each
   failure was a hole at the receivers. `TxMaxOut` (Parameters, or `ktx.ps1
-  txset`) bounds the frames out, 1..4096; `install.ps1` writes 200, the
+  txset`) bounds the frames out, 1..4095 (4096 is every slot);
+  `install.ps1` writes 200, the
   value measured on FOH (0 failures, 0 holes overnight). Media TX is never
-  unbounded since 0.1.152: a missing, unreadable, 0 or larger Parameters
-  value is 200 (all but missing flagged in ParamBad), and `txset` refuses
-  0. Frames over the bound go to the socket and count in `TxNoSlot`.
+  unbounded since 0.1.152: a missing, unreadable, 0, 4096 or larger
+  Parameters value is 200 (all but missing flagged in ParamBad and logged
+  to the debug log), and `txset` refuses 0 and 4096. Frames over the bound
+  go to the socket and count in `TxNoSlot`.
+- Copy the WHOLE `drivers/ndis-pacer/scripts` folder to a PC, never single
+  scripts: `rxd.ps1` and `rxring.ps1` load `records.ps1` beside them since
+  0.1.152, and without it every action of theirs fails (`install.ps1
+  -RxdCpu`, `health.ps1`'s pacer status). The `pacer-package` artifact
+  carries no scripts.
 
 ## Test PCs and NIC drivers
 

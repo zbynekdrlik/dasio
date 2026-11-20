@@ -472,7 +472,7 @@ void pacer_params_read(int (*read)(void *ctx, enum pacer_param which, uint32_t *
             break;
         case PACER_PARAM_TX_MAX_OUT:
             /* 0 once meant every slot: never again. */
-            if (v == 0 || v > tx_slots) {
+            if (v == 0 || v >= tx_slots) {
                 out->bad |= 1u << which;
             } else {
                 out->tx_max_out = v;

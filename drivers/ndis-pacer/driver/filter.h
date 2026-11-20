@@ -494,7 +494,7 @@ VOID ktxStop(_In_ PMS_FILTER Filter);
 // STATUS_INVALID_PARAMETER for a malformed input (nothing sent),
 // STATUS_DEVICE_NOT_READY when the filter has no slots or is not running.
 // The bound on media frames out at the miniport (IOCTL_DASIO_TX_SET; from
-// the service's Parameters TxMaxOut at load): 1..KTX_SLOTS, never every
+// the service's Parameters TxMaxOut at load): 1..KTX_SLOTS - 1, never every
 // slot (missing or invalid: PACER_TX_MAX_OUT_FALLBACK, 200).
 extern ULONG TxMaxOutSetting;
 
