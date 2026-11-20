@@ -72,7 +72,10 @@ if (Test-Path $named) {
 # The last instance gone: dtray no longer starts at logon.
 $dtrayCli = Join-Path $env:ProgramFiles "dasio\dtray-cli.exe"
 if (-not (Get-Service -Name "dasio-*" -ErrorAction SilentlyContinue) -and (Test-Path $dtrayCli)) {
-    & (Join-Path $PSScriptRoot "dtray-autostart.ps1") -Off -Exe (Join-Path $env:ProgramFiles "dasio\dtray.exe")
+    # The machine-wide Run value (dasio#211) and the current user's own.
+    Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name "dtray" -ErrorAction SilentlyContinue
+    & $dtrayCli --autostart off
+    if ($LASTEXITCODE -ne 0) { throw "dtray-cli --autostart off failed ($LASTEXITCODE)" }
 }
 # The last instance gone: no process keeper either (dasio#185): off (its
 # 5-min trigger must not start it again), stopped, any keeper left ended,
