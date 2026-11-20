@@ -537,7 +537,8 @@ why = "HVCI (memory integrity) off with VBS: it checks every kernel page a drive
 key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender'
 name = "DisableAntiSpyware"
 dword = 1
-why = "owner 16.11.2026: Defender held off on every dasio PC by policy (Windows will not uninstall it); its scan of every process start made dsg's pump wake late (FOH's live policy, dasio#120, dasio#128)"
+absent_ok = true
+why = "owner 16.11.2026: Defender held off on every dasio PC by policy (Windows will not uninstall it); its scan of every process start made dsg's pump wake late (FOH's live policy, dasio#120, dasio#128). Absent is fine: a Group Policy refresh (at boot, install.ps1's gpupdate) removes it, and current Defender ignores it: real-time protection stays off through Real-Time Protection\\DisableRealtimeMonitoring (dsg 19.11: absent 13:46-16:41Z, no Defender state event, dasio#120)"
 
 [[registry]]
 key = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender'

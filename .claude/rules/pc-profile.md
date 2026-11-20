@@ -441,7 +441,11 @@ paths:
   mbc (24H2, a Local GPO Registry.pol with QoS entries): the install applies
   the profile again after it (0.1.132, dasio#24) and refuses on exit 2;
   a drift seen only in the service's first check after an install points
-  at that refresh. Windows Update still
+  at that refresh. Since 0.1.152 the baseline's `DisableAntiSpyware`
+  accepts an absent value (`absent_ok`): a Group Policy refresh at boot
+  removes it too, and current Defender ignores it (real-time protection
+  stays off through `Real-Time Protection\DisableRealtimeMonitoring`; dsg
+  19.11, no Defender state event while it was absent, dasio#120). Windows Update still
   works: dasio's update runs (`wu.ps1`, dasio#109) use the Windows Update
   Agent API through `wuauserv` (manual start), not UsoSvc (mbc 13.11: 5
   updates installed with UsoSvc disabled and stopped). Never hold
