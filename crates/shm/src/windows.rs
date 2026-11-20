@@ -10,6 +10,7 @@
 use std::io;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 use windows_sys::Win32::Foundation::{
     CloseHandle, HANDLE, INVALID_HANDLE_VALUE, LocalFree, WAIT_OBJECT_0,
@@ -19,14 +20,18 @@ use windows_sys::Win32::Security::Authorization::{
 };
 use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 use windows_sys::Win32::System::Memory::{
-    CreateFileMappingW, FILE_MAP_ALL_ACCESS, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile,
-    OpenFileMappingW, PAGE_READWRITE, UnmapViewOfFile,
+    CreateFileMappingW, FILE_MAP_ALL_ACCESS, GetProcessWorkingSetSizeEx,
+    MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, OpenFileMappingW, PAGE_READWRITE,
+    QUOTA_LIMITS_HARDWS_MAX_DISABLE, QUOTA_LIMITS_HARDWS_MIN_DISABLE, SetProcessWorkingSetSizeEx,
+    UnmapViewOfFile, VirtualLock, VirtualUnlock,
 };
+use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
 use windows_sys::Win32::System::Threading::{
-    CreateEventW, EVENT_ALL_ACCESS, OpenEventW, SetEvent, WaitForSingleObject,
+    CreateEventW, EVENT_ALL_ACCESS, GetCurrentProcess, OpenEventW, SetEvent, WaitForSingleObject,
 };
 
-use crate::{Header, MAGIC, Shape, VERSION, ticks_to_ns};
+use crate::{Header, MAGIC, Shape, VERSION, page_span, ticks_to_ns, working_set};
 
 /// Now on the system-wide performance counter, ns: the one clock the
 /// driver (in the DAW's process) and the device share, so a time one of
@@ -284,6 +289,108 @@ pub fn request_rate(instance: u32, rate: u32) -> io::Result<()> {
     Ok(())
 }
 
+/// The device's locked views, all sections together (dasio#28 E11): a
+/// re-serve locks its new section while the old one still lives.
+struct Locks {
+    /// The process's working set (minimum, maximum) before its first lock.
+    base: Option<(usize, usize)>,
+    /// The bytes locked now.
+    bytes: usize,
+}
+
+static LOCKS: Mutex<Locks> = Mutex::new(Locks {
+    base: None,
+    bytes: 0,
+});
+
+fn page_size() -> usize {
+    let mut info = SYSTEM_INFO::default();
+    // SAFETY: a valid out pointer; never fails.
+    unsafe { GetSystemInfo(&mut info) };
+    info.dwPageSize as usize
+}
+
+/// The bytes the device's views hold locked now, all sections together
+/// (process-wide; a test reads it to see a dropped section give its bytes
+/// back).
+pub fn locked_bytes() -> usize {
+    LOCKS.lock().unwrap_or_else(PoisonError::into_inner).bytes
+}
+
+/// The process's memory counters now: (working set in use, its peak,
+/// bytes), and its page faults so far.
+fn memory_now() -> io::Result<((usize, usize), u32)> {
+    let mut c = PROCESS_MEMORY_COUNTERS {
+        cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: the current process's pseudo handle; `c` holds `cb` bytes.
+    let ok = unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(((c.WorkingSetSize, c.PeakWorkingSetSize), c.PageFaultCount))
+}
+
+/// The process's working set for `locked` bytes on top of `base` and its
+/// use `now` ([`crate::working_set`]: never a maximum below the use), as
+/// soft limits: the system may still grow the process past the maximum or
+/// trim it below the minimum under memory pressure; only the minimum's
+/// quota for locked pages matters here. A hard limit someone else set on
+/// the process (none of dasio's tools sets one) becomes soft too.
+fn set_working_set(base: (usize, usize), now: (usize, usize), locked: usize) -> io::Result<()> {
+    let (min, max) = working_set(base, now, locked);
+    // SAFETY: the current process's pseudo handle; plain values.
+    let ok = unsafe {
+        SetProcessWorkingSetSizeEx(
+            GetCurrentProcess(),
+            min,
+            max,
+            QUOTA_LIMITS_HARDWS_MIN_DISABLE | QUOTA_LIMITS_HARDWS_MAX_DISABLE,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// What [`Shared::lock`] did: the bytes locked (whole pages) and the
+/// process's page faults before the working set was raised and after the
+/// lock. The lock faults its own pages in (up to `bytes` / page size);
+/// a jump well past that is the raise trimming the process's other pages,
+/// which a maximum below the use would do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Locked {
+    pub bytes: usize,
+    pub page_faults_before: u32,
+    pub page_faults_after: u32,
+}
+
+/// Why [`Shared::lock`] locked nothing: the step and the OS error.
+#[derive(Debug)]
+pub struct LockFailed {
+    /// "reading the working set", "reading the memory counters", "raising
+    /// the working set" or "locking a view".
+    pub step: &'static str,
+    pub err: io::Error,
+}
+
+impl LockFailed {
+    fn at(step: &'static str) -> LockFailed {
+        LockFailed {
+            step,
+            err: io::Error::last_os_error(),
+        }
+    }
+}
+
+impl std::fmt::Display for LockFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.step, self.err)
+    }
+}
+
 /// Sessions this process made (a test makes several devices in one process).
 static SESSIONS: AtomicU32 = AtomicU32::new(0);
 
@@ -305,6 +412,9 @@ pub struct Shared {
     _mapping: Handle,
     block: Handle,
     ready: Handle,
+    /// What [`Shared::lock`] locked (`None`: nothing); its bytes are given
+    /// back at drop.
+    locked: Option<Locked>,
 }
 
 // SAFETY: the view is shared memory accessed through atomics (the header)
@@ -509,7 +619,92 @@ impl Shared {
             _mapping: mapping,
             block,
             ready,
+            locked: None,
         })
+    }
+
+    /// The views this side keeps: the section and the directory (address,
+    /// bytes).
+    fn views(&self) -> [(usize, usize); 2] {
+        [
+            (self.view.as_ptr() as usize, self.shape.size()),
+            (self.dir.view.as_ptr() as usize, std::mem::size_of::<Dir>()),
+        ]
+    }
+
+    /// The device side (dasio#28 E11): locks this section's and the
+    /// directory's views in this process's memory, so the pump and the
+    /// bridge never fault on these pages. Only these views: dstack's
+    /// buffers, the threads' stacks and the code stay pageable, and the
+    /// DAW's own view of the section (the driver's process) can still be
+    /// trimmed from the DAW's working set. Raises the process's working set
+    /// first (by the locked bytes and [`crate::LOCK_MARGIN`] over the larger
+    /// of its limits before its first lock and its use now,
+    /// [`crate::working_set`]), then `VirtualLock`s each view. Again on a
+    /// locked section: the first lock's result. An error leaves nothing of
+    /// this section locked and the working set at what the other locked
+    /// sections need: the device runs on as without a lock. The locks end
+    /// with the views (unmapping unlocks).
+    pub fn lock(&mut self) -> Result<Locked, LockFailed> {
+        if let Some(l) = self.locked {
+            return Ok(l);
+        }
+        let page = page_size();
+        let views = self.views();
+        let bytes: usize = views.iter().map(|&(a, l)| page_span(a, l, page)).sum();
+        let mut locks = LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+        let base = match locks.base {
+            Some(b) => b,
+            None => {
+                let (mut min, mut max, mut flags) = (0usize, 0usize, 0u32);
+                // SAFETY: the current process's pseudo handle; valid out
+                // pointers.
+                let ok = unsafe {
+                    GetProcessWorkingSetSizeEx(GetCurrentProcess(), &mut min, &mut max, &mut flags)
+                };
+                if ok == 0 {
+                    return Err(LockFailed::at("reading the working set"));
+                }
+                locks.base = Some((min, max));
+                (min, max)
+            }
+        };
+        let (now, page_faults_before) = memory_now().map_err(|err| LockFailed {
+            step: "reading the memory counters",
+            err,
+        })?;
+        set_working_set(base, now, locks.bytes + bytes).map_err(|err| LockFailed {
+            step: "raising the working set",
+            err,
+        })?;
+        for (i, &(addr, len)) in views.iter().enumerate() {
+            // SAFETY: a range inside a view this struct mapped.
+            if unsafe { VirtualLock(addr as *const _, len) } == 0 {
+                let e = io::Error::last_os_error();
+                for &(addr, len) in &views[..i] {
+                    // SAFETY: a range locked just above.
+                    unsafe { VirtualUnlock(addr as *const _, len) };
+                }
+                // Back to what the other locked sections need; the lock's
+                // own error is the one to report.
+                let _ = set_working_set(base, now, locks.bytes);
+                return Err(LockFailed {
+                    step: "locking a view",
+                    err: e,
+                });
+            }
+        }
+        locks.bytes += bytes;
+        // The counters after the lock; unreadable now (they read a moment
+        // ago), the count before stands for both.
+        let page_faults_after = memory_now().map_or(page_faults_before, |(_, f)| f);
+        let l = Locked {
+            bytes,
+            page_faults_before,
+            page_faults_after,
+        };
+        self.locked = Some(l);
+        Ok(l)
     }
 
     pub fn shape(&self) -> Shape {
@@ -557,11 +752,20 @@ impl Shared {
 
 impl Drop for Shared {
     fn drop(&mut self) {
-        // SAFETY: the view this struct mapped, unmapped once.
+        // SAFETY: the view this struct mapped, unmapped once (which ends
+        // its lock; the directory's ends when `dir` drops next).
         unsafe {
             UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS {
                 Value: self.view.as_ptr().cast(),
             })
         };
+        if let Some(l) = self.locked {
+            // Teardown only, on whichever thread drops the last handle: the
+            // mutex waits at most for another section's lock. The working
+            // set stays raised until the next lock sets it
+            // for what is locked then.
+            let mut locks = LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+            locks.bytes = locks.bytes.saturating_sub(l.bytes);
+        }
     }
 }
