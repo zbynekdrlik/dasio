@@ -3238,7 +3238,7 @@ rxdReadRegistry(
     // Media TX's bound on frames out, kept across reboots: 1..KTX_SLOTS - 1,
     // 200 when missing or invalid (never every slot).
     TxMaxOutSetting = Params.tx_max_out;
-    // Kernel RX (rxring.c): off unless 1.
+    // Kernel RX (rxring.c): off while 0 or missing (any other value is on).
     RxRingEnable = Params.rx_ring_enable;
     // What could not be read or was invalid, for rxd.ps1 status (ParamBad),
     // and in the debug log (an unreadable type is also logged by paramRead).

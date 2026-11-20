@@ -45,9 +45,9 @@ paths:
 
 ## Kernel RX rings (dasio#27 B23)
 
-- Off unless the service's `Parameters\RxRingEnable` is 1 (REG_DWORD, read
-  with RxdEnable when the driver loads: a reinstall or reboot applies it, a
-  NIC pause does not). Off: `IOCTL_DASIO_RX_OPEN` answers
+- Off while the service's `Parameters\RxRingEnable` is 0 or missing; any
+  other REG_DWORD turns it on (write 1). It is read with RxdEnable when the
+  driver loads: a reinstall or reboot applies it, a NIC pause does not. Off: `IOCTL_DASIO_RX_OPEN` answers
   STATUS_NOT_SUPPORTED and the receive path reads one count.
 - Every Parameters value (RxdEnable, RxdCpu, TxMaxOut, RxRingEnable) is
   read in a query of its own (`pacer_params_read`): a value of another
