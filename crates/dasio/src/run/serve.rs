@@ -137,10 +137,10 @@ impl Base<'_> {
         let latency = plan.latencies(device_latency, conversion);
         let shape = Shape::app(self.shape.rx, self.shape.tx, plan.app_block)
             .ok_or("the app's block does not fit the shared memory")?;
-        let shared = Arc::new(
-            Shared::create(self.instance, shape, plan.app_rate, latency)
-                .map_err(|e| format!("the shared memory: {e}"))?,
-        );
+        let mut shared = Shared::create(self.instance, shape, plan.app_rate, latency)
+            .map_err(|e| format!("the shared memory: {e}"))?;
+        lock_in_memory(&mut shared);
+        let shared = Arc::new(shared);
         let stamps = Arc::new(Stamps::default());
         let device_offset = crate::wait_offset(&self.timing, cfg.sample_rate);
         let offset = plan.wait_offset(device_offset);
@@ -239,6 +239,26 @@ impl Base<'_> {
             pump: Some(pump),
             watcher: Some(watcher),
         })
+    }
+}
+
+/// Locks the section's pages in memory (dasio#28 E11): a page fault on
+/// them never stalls the pump, the bridge or the RX/TX threads. A failure
+/// is a WARN and the device serves as before, unlocked.
+fn lock_in_memory(shared: &mut Shared) {
+    match shared.lock() {
+        Ok(bytes) => info!(
+            bytes,
+            session = shared.session(),
+            "the shared memory is locked in memory, the working set raised for it"
+        ),
+        Err(e) => warn!(
+            step = e.step,
+            err = %e.err,
+            os_error = e.err.raw_os_error().unwrap_or(0),
+            session = shared.session(),
+            "the shared memory could not be locked in memory: it serves unlocked"
+        ),
     }
 }
 
