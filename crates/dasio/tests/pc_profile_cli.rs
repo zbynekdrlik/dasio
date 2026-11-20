@@ -646,10 +646,18 @@ fn check_refuses_a_network_adapter_and_a_device_the_dante_nic_hangs_on() {
     }
 }
 
+/// The two keeper tests that start a `ping` each run one at a time: a
+/// keeper pass sets EVERY ping.exe on the runner, so in parallel one test's
+/// second pass found the other test's ping still unset (main run
+/// 44639422054, coverage on windows-2025: "kept ping.exe (pid 1896):
+/// affinity 0xF -> 0x1" where none was expected).
+static PING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn the_keeper_gives_a_running_process_its_entry_s_priority_and_affinity() {
     // dasio#185: one pass of `dasio pc-profile keep` over a real process
     // of the runner (a waiting ping, started here), read back.
+    let _one_ping = PING.lock().unwrap_or_else(|e| e.into_inner());
     use dasio::pc_profile::{Reader, keep::Fights, parse, windows::Pc, windows::keep::pass};
     let mut child = Command::new("ping")
         .args(["-n", "60", "127.0.0.1"])
@@ -760,6 +768,7 @@ fn the_keeper_gives_a_running_process_its_io_memory_and_gpu_priority_and_boost()
     // dasio#185: what Process Lasso set on FOH beyond affinity and priority
     // class, set by one keeper pass on a real process of the runner (a
     // waiting ping, started here) and read back through the check's reader.
+    let _one_ping = PING.lock().unwrap_or_else(|e| e.into_inner());
     use dasio::pc_profile::{
         Extras, GPU_PRIORITIES, Reader, check, keep::Fights, parse, windows::Pc,
         windows::keep::pass,
