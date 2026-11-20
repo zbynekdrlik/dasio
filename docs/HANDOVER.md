@@ -11,7 +11,7 @@ The Dante code is the `dstack` and `dstack-audio-io` crates from dstack, pinned 
 ## Machines
 
 - FOH PC: MCP `win-ableton-foh`, the target of all of this.
-- SNV Resolume PC with DVS: MCP `win-resolume-snv`, used for Dante receive checks.
+- SNV Resolume PC: MCP `win-resolume-snv`; SongPlayer is its own dstack device on the Dante70 NIC (no DVS anywhere since 31.10.2026).
 - dev1: this account. No local cargo: GitHub CI builds and tests.
 - Addresses: `~/.config/dasio/SITE.md`.
 
@@ -21,7 +21,6 @@ The Dante code is the `dstack` and `dstack-audio-io` crates from dstack, pinned 
 - Ableton master and band, VB-Matrix and the console's Yamaha card carry production audio on the FOH PC. fohmixer runs on the same PC.
 - CPUs 14-15 are dedicated to this work by owner decision (issue #1); Process Lasso, MMCSS and pinning findings are there.
 - Master runs as another Windows user, non-elevated; the device runs elevated, so shared objects need the explicit DACL.
-- Windows updates or a replugged USB NIC can leave DVS stamping 61 ms late while PTP looks locked: restart `dvs.manager`, check latency after every DVS start.
 
 ## How to run a test
 

@@ -14,7 +14,7 @@ This project was started from an iemmixer session. Work continues here, in this 
 2. **mbc's DVS is refused** (0x0100 refused, its subscriptions status 21). The refusal reason logs at debug only: suspected fpp above `tx_fpp_max = 8`. Log refusals at info.
 3. **RX**: Hand 1, 2, 4 and Hand 1 sync do not connect on master-asio-dante. Hand 2: the stage rack answers 0x0311. Hand 1/4 and sync: cause unknown.
 4. **Non-Dante links** master has through VB-Matrix (issue #1, 22:45 finding): meeting and strih over VBAN, Chrome, band Ableton feeds, Solo to the card. Owner chose to bridge them so a switch loses nothing.
-5. Red Sync in Dante Controller for our devices (we follow dantesync, no PTP of our own): find out what makes it green.
+5. ~~Red Sync in Dante Controller for our devices~~: gone (20.11.2026: our devices read synchronized, disciplined to the AIC128-D, dasio#34).
 6. Rest of the MVP plan: tray, band-asio-dante, 1 h clean run, latency against VB-Matrix.
 
 ## Gotchas learned the hard way
@@ -25,7 +25,6 @@ This project was started from an iemmixer session. Work continues here, in this 
 - Master runs as another Windows user, non-elevated; the device elevated. Shared objects need the explicit DACL. Live's prefs for master are under that user's profile.
 - Check Repro L/R against Repro 0db with VB-Matrix's XML before any switch: a swap plays the speakers at full level.
 - Check the receiver's Latency tab, not only routing status. Green routing said nothing about the stalls. Owner cares about how packets flow.
-- Windows updates or a replugged USB NIC can leave DVS stamping 61 ms late while PTP looks locked. Restart `dvs.manager`; check latency after every DVS start.
 
 ## Rules
 
