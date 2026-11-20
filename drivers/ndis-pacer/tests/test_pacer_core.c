@@ -793,8 +793,15 @@ static void params(void)
     f.result[PACER_PARAM_RXD_ENABLE] = PACER_PARAM_BAD;
     f.result[PACER_PARAM_TX_MAX_OUT] = PACER_PARAM_BAD;
     pacer_params_read(fake_read, &f, 4096, &p);
-    CHECK(p.rxd_enable == 0 && p.rxd_cpu == 3 && p.tx_max_out == 0 && p.rx_ring_enable == 1);
+    CHECK(p.rxd_enable == 0 && p.rxd_cpu == 3 && p.rx_ring_enable == 1);
     CHECK(p.bad == ((1u << PACER_PARAM_RXD_ENABLE) | (1u << PACER_PARAM_TX_MAX_OUT)));
+    /* An unreadable TxMaxOut is the measured bound, never every slot
+     * (unbounded media TX); at most the slots there are. */
+    CHECK(p.tx_max_out == PACER_TX_MAX_OUT_FALLBACK && PACER_TX_MAX_OUT_FALLBACK == 200u);
+    pacer_params_read(fake_read, &f, 150, &p);
+    CHECK(p.tx_max_out == 150);
+    pacer_params_read(fake_read, &f, 200, &p);
+    CHECK(p.tx_max_out == 200);
     f.result[PACER_PARAM_RXD_ENABLE] = PACER_PARAM_READ;
     f.result[PACER_PARAM_TX_MAX_OUT] = PACER_PARAM_READ;
     f.result[PACER_PARAM_RXD_CPU] = PACER_PARAM_BAD;

@@ -149,6 +149,27 @@ static void parse(void)
     s.tags = 2;
     n = frame(f, &s, &ip);
     CHECK(pacer_rx_parse(f, n, n, &p) == 1 && p.payload_off == 50 && p.flags == PACER_RX_PKT_TAGGED);
+    /* A priority tag (VLAN ID 0) is untagged traffic, as the NIC's own
+     * 802.1Q info has it; any VLAN ID bit counts, the priority bits not. */
+    s.tags = 1;
+    n = frame(f, &s, &ip);
+    f[14] = 0xE0; /* priority 7, VLAN ID 0 */
+    f[15] = 0x00;
+    CHECK(pacer_rx_parse(f, n, n, &p) == 1 && p.payload_off == 46 && p.flags == 0);
+    f[14] = 0x08; /* VLAN ID 0x800 */
+    CHECK(pacer_rx_parse(f, n, n, &p) == 1 && p.flags == PACER_RX_PKT_TAGGED);
+    f[14] = 0xE0;
+    f[15] = 0x01; /* VLAN ID 1 */
+    CHECK(pacer_rx_parse(f, n, n, &p) == 1 && p.flags == PACER_RX_PKT_TAGGED);
+    /* Two tags: the inner one's VLAN ID counts too. */
+    s.tags = 2;
+    n = frame(f, &s, &ip);
+    f[14] = 0;
+    f[15] = 0;
+    CHECK(pacer_rx_parse(f, n, n, &p) == 1 && p.flags == PACER_RX_PKT_TAGGED);
+    f[18] = 0;
+    f[19] = 0;
+    CHECK(pacer_rx_parse(f, n, n, &p) == 1 && p.flags == 0);
     s.tags = 3;
     n = frame(f, &s, &ip);
     CHECK(pacer_rx_parse(f, n, n, &p) == 0);
@@ -347,6 +368,13 @@ static void match(void)
     CHECK(pacer_rx_match(t, 1, &p) == 1);
     p.flags = PACER_RX_PKT_ETH_GROUP;
     CHECK(pacer_rx_match(t, 1, &p) == 0);
+    /* Destination 0.0.0.0 itself: an "any" entry names it only in a frame
+     * to a unicast MAC, as any other unicast address. */
+    p = to(0, 0, 0, 0, 14336);
+    CHECK(pacer_rx_match(t, 1, &p) == 1);
+    p.flags = PACER_RX_PKT_ETH_GROUP;
+    CHECK(pacer_rx_match(t, 1, &p) == 0);
+    p = to(10, 77, 7, 255, 14336);
     /* Other flags do not change the match (deliver judges them). */
     p.flags = PACER_RX_PKT_TAGGED | PACER_RX_PKT_BAD_CSUM;
     CHECK(pacer_rx_match(t, 1, &p) == 1);
@@ -727,24 +755,37 @@ static void sinks(void)
     free(bc);
 }
 
+/* Writes into `t` 16 entries on ports first..first+15. */
+static void sixteen(struct pacer_rx_match_entry *t, uint32_t first)
+{
+    uint32_t i;
+    for (i = 0; i < 16; i++) {
+        t[i] = entry(239, 1, 1, 1, (uint16_t)(first + i));
+    }
+}
+
 static void ports(void)
 {
+    static struct pacer_rx_ports pt;
     struct pacer_rx_sink a;
     struct pacer_rx_sink c;
     struct pacer_rx_sink many[5];
     struct pacer_rx_sink *list[5];
     struct pacer_rx_match_entry t[16];
-    struct pacer_rx_ports pt;
-    uint32_t i;
     uint32_t k;
+    uint32_t port;
+    int all;
 
     memset(&a, 0, sizeof a);
     memset(&c, 0, sizeof c);
     list[0] = &a;
     list[1] = &c;
-    /* No ring, or no entries: no port. */
+    /* Empty, then no ring, or no entries: no port. */
+    memset(&pt, 0xFF, sizeof pt);
+    pacer_rx_ports_init(&pt);
+    CHECK(pt.count == 0 && pt.recorded_count == 0 && pacer_rx_ports_has(&pt, 4321) == 0);
     pacer_rx_ports_build(list, 0, &pt);
-    CHECK(pt.count == 0 && pt.any == 0 && pacer_rx_ports_has(&pt, 4321) == 0);
+    CHECK(pt.count == 0 && pacer_rx_ports_has(&pt, 4321) == 0);
     pacer_rx_ports_build(list, 2, &pt);
     CHECK(pt.count == 0 && pacer_rx_ports_has(&pt, 4321) == 0);
     /* Every table's ports, each once. */
@@ -756,35 +797,63 @@ static void ports(void)
     t[1] = entry(239, 69, 1, 2, 14336);
     CHECK(pacer_rx_set_match(&c, t, 2) == 1);
     pacer_rx_ports_build(list, 2, &pt);
-    CHECK(pt.count == 3 && pt.any == 0);
+    CHECK(pt.count == 3 && pt.recorded_count == 3);
     CHECK(pacer_rx_ports_has(&pt, 4321) && pacer_rx_ports_has(&pt, 14336) && pacer_rx_ports_has(&pt, 5004));
-    CHECK(pacer_rx_ports_has(&pt, 4322) == 0 && pacer_rx_ports_has(&pt, 0) == 0);
-    /* Only the sinks named count. */
+    CHECK(pacer_rx_ports_has(&pt, 4322) == 0 && pacer_rx_ports_has(&pt, 4320) == 0);
+    CHECK(pacer_rx_ports_has(&pt, 0) == 0 && pacer_rx_ports_has(&pt, 65535) == 0);
+    /* A ring gone: its own ports go, a port another ring names stays. */
     pacer_rx_ports_build(list, 1, &pt);
     CHECK(pt.count == 2 && pacer_rx_ports_has(&pt, 5004) == 0);
+    CHECK(pacer_rx_ports_has(&pt, 4321) && pacer_rx_ports_has(&pt, 14336));
+    /* A table changed in place ([4321, 14336] to [7, 4321, 14336]): the
+     * ports both name keep their bits, the new one is added. */
+    t[0] = entry(239, 69, 1, 7, 7);
+    t[1] = entry(239, 69, 1, 2, 4321);
+    t[2] = entry(0, 0, 0, 0, 14336);
+    CHECK(pacer_rx_set_match(&a, t, 3) == 1);
+    pacer_rx_ports_build(list, 1, &pt);
+    CHECK(pt.count == 3 && pacer_rx_ports_has(&pt, 7) && pacer_rx_ports_has(&pt, 4321) &&
+          pacer_rx_ports_has(&pt, 14336));
+    /* The extremes of the port range. */
+    t[0] = entry(239, 69, 1, 7, 1);
+    t[1] = entry(239, 69, 1, 7, 65535);
+    CHECK(pacer_rx_set_match(&a, t, 2) == 1);
+    pacer_rx_ports_build(list, 1, &pt);
+    CHECK(pt.count == 2 && pacer_rx_ports_has(&pt, 1) && pacer_rx_ports_has(&pt, 65535));
+    CHECK(pacer_rx_ports_has(&pt, 7) == 0 && pacer_rx_ports_has(&pt, 4321) == 0 && pacer_rx_ports_has(&pt, 0) == 0);
+    /* The other ring back: its ports again. Then every table empty:
+     * nothing. */
+    pacer_rx_ports_build(list, 2, &pt);
+    CHECK(pt.count == 4 && pacer_rx_ports_has(&pt, 5004) && pacer_rx_ports_has(&pt, 14336));
+    CHECK(pacer_rx_set_match(&a, t, 0) == 1 && pacer_rx_set_match(&c, t, 0) == 1);
+    pacer_rx_ports_build(list, 2, &pt);
+    CHECK(pt.count == 0 && pacer_rx_ports_has(&pt, 1) == 0 && pacer_rx_ports_has(&pt, 65535) == 0);
+    CHECK(pacer_rx_ports_has(&pt, 5004) == 0 && pacer_rx_ports_has(&pt, 14336) == 0);
 
-    /* 4 rings of 16 distinct ports fill it exactly; a fifth ring's new
-     * port makes every port a candidate (never a missed flow). */
+    /* 4 rings of 16 distinct ports are all recorded and all go again. */
     for (k = 0; k < 5; k++) {
         memset(&many[k], 0, sizeof many[k]);
-        for (i = 0; i < 16; i++) {
-            t[i] = entry(239, 1, 1, 1, (uint16_t)(1000 + k * 16 + i));
-        }
+        sixteen(t, 1000 + k * 16);
         CHECK(pacer_rx_set_match(&many[k], t, 16) == 1);
         list[k] = &many[k];
     }
+    pacer_rx_ports_init(&pt);
     pacer_rx_ports_build(list, 4, &pt);
-    CHECK(pt.count == 64 && pt.any == 0);
+    CHECK(pt.count == 64 && pt.recorded_count == 64);
     CHECK(pacer_rx_ports_has(&pt, 1000) && pacer_rx_ports_has(&pt, 1063) && !pacer_rx_ports_has(&pt, 1064));
-    pacer_rx_ports_build(list, 5, &pt);
-    CHECK(pt.count == 64 && pt.any == 1 && pacer_rx_ports_has(&pt, 1079) && pacer_rx_ports_has(&pt, 7));
-    /* A port already there does not overflow it. */
-    for (i = 0; i < 16; i++) {
-        t[i] = entry(239, 1, 1, 2, (uint16_t)(1000 + i));
+    pacer_rx_ports_build(list, 0, &pt);
+    all = 0;
+    for (port = 1000; port < 1064; port++) {
+        all += pacer_rx_ports_has(&pt, (uint16_t)port);
     }
-    CHECK(pacer_rx_set_match(&many[4], t, 16) == 1);
+    CHECK(pt.count == 0 && all == 0);
+    /* A fifth ring's ports past the 64 recorded: set (never missed), and
+     * kept set when dropped (the lock taken for nothing, never a miss). */
     pacer_rx_ports_build(list, 5, &pt);
-    CHECK(pt.count == 64 && pt.any == 0);
+    CHECK(pt.count == 80 && pt.recorded_count == 64);
+    CHECK(pacer_rx_ports_has(&pt, 1064) && pacer_rx_ports_has(&pt, 1079));
+    pacer_rx_ports_build(list, 0, &pt);
+    CHECK(pt.count == 0 && pacer_rx_ports_has(&pt, 1063) == 0 && pacer_rx_ports_has(&pt, 1079) == 1);
 }
 
 /* A test node for the chain work: its index and a next link. */

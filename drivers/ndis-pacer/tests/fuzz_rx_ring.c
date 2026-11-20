@@ -154,11 +154,17 @@ static void match(const uint8_t *data, size_t size, const struct pacer_rx_packet
         t[i].port = (uint16_t)(p->dst_port + 1u + (i % 3u));
     }
     require(pacer_rx_match(t, count, p) == 0);
-    /* An entry naming the packet's own destination matches. */
+    /* An entry naming the packet's own destination matches, but for
+     * destination 0.0.0.0 in a frame to a group MAC: that entry is "any
+     * unicast", which needs a unicast MAC. */
     i = count < PACER_RX_MAX_MATCHES ? count : PACER_RX_MAX_MATCHES - 1u;
     memcpy(t[i].addr, p->dst_ip, 4);
     t[i].port = p->dst_port;
-    require(pacer_rx_match(t, i + 1u, p) == 1);
+    {
+        int zero = p->dst_ip[0] == 0 && p->dst_ip[1] == 0 && p->dst_ip[2] == 0 && p->dst_ip[3] == 0;
+        int group = (p->flags & PACER_RX_PKT_ETH_GROUP) != 0;
+        require(pacer_rx_match(t, i + 1u, p) == !(zero && group));
+    }
 }
 
 /* One ring buffer of exactly its size per slot count, made once: a fresh
@@ -262,7 +268,7 @@ static void deliver(const uint8_t *data, size_t size, const struct pacer_rx_pack
 {
     struct pacer_rx_packet q;
     const struct pacer_rx_packet *p = &q;
-    struct pacer_rx_ports ports;
+    static struct pacer_rx_ports ports;
     struct pacer_rx_sink s[4];
     struct pacer_rx_sink *list[4];
     struct pacer_rx_match_entry e;
@@ -324,6 +330,7 @@ static void deliver(const uint8_t *data, size_t size, const struct pacer_rx_pack
         }
     }
     /* The lock-free port look never hides a sink's port. */
+    pacer_rx_ports_init(&ports);
     pacer_rx_ports_build(list, count, &ports);
     for (k = 0; k < count; k++) {
         if (s[k].matches) {
@@ -358,47 +365,89 @@ static void deliver(const uint8_t *data, size_t size, const struct pacer_rx_pack
     }
 }
 
-/* Up to 5 sinks of up to 16 entries from the input: every named port is
- * found; another port only while the set overflowed (any). */
-static void ports(const uint8_t *data, size_t size)
+/* Up to 5 sinks of up to 16 entries from the input, `at` onwards, ports
+ * from a small range so tables repeat each other. Returns the sinks. */
+static uint32_t tables(const uint8_t *data, size_t size, size_t at, uint8_t pick, struct pacer_rx_sink *s,
+                       struct pacer_rx_sink **list)
 {
-    struct pacer_rx_sink s[5];
-    struct pacer_rx_sink *list[5] = {NULL, NULL, NULL, NULL, NULL};
-    struct pacer_rx_ports pt;
-    uint32_t count;
+    uint32_t count = pick % 6u;
     uint32_t k;
     uint32_t e;
-    size_t at = 4;
-    uint16_t probe;
-    int named = 0;
-
-    if (size < 8) {
-        return;
-    }
-    count = data[3] % 6u;
-    probe = (uint16_t)((data[1] << 8) | data[2]);
     for (k = 0; k < count; k++) {
         memset(&s[k], 0, sizeof s[k]);
         s[k].matches = at < size ? data[at] % 17u : 0;
         at++;
         for (e = 0; e < s[k].matches; e++) {
-            /* Ports from a small range, so tables repeat each other. */
             s[k].match[e].port = (uint16_t)(1u + (at < size ? data[at] : e) % 90u);
             at++;
-            if (s[k].match[e].port == probe) {
-                named = 1;
-            }
         }
         list[k] = &s[k];
     }
-    pacer_rx_ports_build(list, count, &pt);
-    require(pt.count <= PACER_RX_MAX_PORTS);
+    return count;
+}
+
+static int names(struct pacer_rx_sink *const *list, uint32_t count, uint16_t port)
+{
+    uint32_t k;
+    uint32_t e;
     for (k = 0; k < count; k++) {
-        for (e = 0; e < s[k].matches; e++) {
-            require(pacer_rx_ports_has(&pt, s[k].match[e].port) == 1);
+        for (e = 0; e < list[k]->matches; e++) {
+            if (list[k]->match[e].port == port) {
+                return 1;
+            }
         }
     }
-    require(pacer_rx_ports_has(&pt, probe) == (named || pt.any));
+    return 0;
+}
+
+/* Every named port is found; after a second build, every port named then
+ * is found, and a port only the first tables named is gone (unless the
+ * first build had more distinct ports than it records). */
+static void ports(const uint8_t *data, size_t size)
+{
+    static struct pacer_rx_ports pt;
+    struct pacer_rx_sink s1[5];
+    struct pacer_rx_sink s2[5];
+    struct pacer_rx_sink *l1[5] = {NULL, NULL, NULL, NULL, NULL};
+    struct pacer_rx_sink *l2[5] = {NULL, NULL, NULL, NULL, NULL};
+    uint32_t c1;
+    uint32_t c2;
+    uint32_t port;
+    uint32_t recorded_all;
+
+    if (size < 8) {
+        return;
+    }
+    c1 = tables(data, size, 4, data[3], s1, l1);
+    c2 = tables(data, size, size / 2, data[2], s2, l2);
+    pacer_rx_ports_init(&pt);
+    pacer_rx_ports_build(l1, c1, &pt);
+    for (port = 0; port <= 91u; port++) {
+        require(pacer_rx_ports_has(&pt, (uint16_t)port) == names(l1, c1, (uint16_t)port));
+    }
+    {
+        int any = 0;
+        uint32_t k;
+        for (k = 0; k < c1; k++) {
+            if (l1[k]->matches != 0) {
+                any = 1;
+            }
+        }
+        require((pt.count == 0) == !any);
+    }
+    /* Up to 64 distinct ports, every one is recorded (count exact). */
+    recorded_all = pt.count <= PACER_RX_MAX_PORTS;
+    pacer_rx_ports_build(l2, c2, &pt);
+    for (port = 0; port <= 91u; port++) {
+        int now = names(l2, c2, (uint16_t)port);
+        int has = pacer_rx_ports_has(&pt, (uint16_t)port);
+        if (now) {
+            require(has == 1);
+        } else if (recorded_all || !names(l1, c1, (uint16_t)port)) {
+            require(has == 0);
+        }
+    }
+    require((pt.count == 0) == (pt.recorded_count == 0));
 }
 
 /* The chain work over fake nodes. */
