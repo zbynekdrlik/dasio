@@ -16,6 +16,13 @@ paths:
   its own services, overrides). NIC-family settings carry `nic_service`
   (the Dante NIC's driver service, e.g. `rt640x64`); power-plan values use
   `{active_scheme}`. Never set up a new PC by redoing findings one by one.
+  A standard NDIS keyword that means the same on every miniport gets NO
+  `nic_service`, else a NIC of another driver skips it while the check
+  reads fine: `*LsoV2IPv4/6 = "0"` hold every Dante NIC (`must`, with
+  `absent_ok` for a NIC without LSO), since mbc's USB Realtek
+  (`rtu56cx22x64`) ran LSO on unseen (19.11.2026, dasio#24). Values that
+  differ by driver (`*SpeedDuplex`, `*ReceiveBuffers`, ...) keep the
+  scope.
 - **Power-plan values go through powercfg** (dasio#128, mbc 16.11.2026):
   `apply` sets an `{active_scheme}\<subgroup>\<setting>` `ACSettingIndex`
   / `DCSettingIndex` DWORD with `powercfg /setacvalueindex|/setdcvalueindex
