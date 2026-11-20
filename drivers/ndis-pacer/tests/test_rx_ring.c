@@ -127,6 +127,12 @@ static void parse(void)
     CHECK(p.src_port == 4321 && p.dst_port == 4321);
     CHECK(p.payload_off == 42 && p.payload_len == 100);
     CHECK(f[p.payload_off] == 1 && f[p.payload_off + 99] == (99 * 7 + 1) % 256);
+    CHECK(p.flags == 0);
+    /* The Ethernet group bit (a multicast or broadcast MAC). */
+    f[0] = 0x01;
+    CHECK(pacer_rx_parse(f, n, n, &p) == 1 && p.flags == PACER_RX_PKT_ETH_GROUP);
+    f[0] = 0xFE;
+    CHECK(pacer_rx_parse(f, n, n, &p) == 1 && p.flags == 0);
 
     /* Distinct ports land in their own fields. */
     s.sport = 1234;
@@ -139,9 +145,10 @@ static void parse(void)
     s.tags = 1;
     n = frame(f, &s, &ip);
     CHECK(pacer_rx_parse(f, n, n, &p) == 1 && p.payload_off == 46 && p.payload_len == 100);
+    CHECK(p.flags == PACER_RX_PKT_TAGGED);
     s.tags = 2;
     n = frame(f, &s, &ip);
-    CHECK(pacer_rx_parse(f, n, n, &p) == 1 && p.payload_off == 50);
+    CHECK(pacer_rx_parse(f, n, n, &p) == 1 && p.payload_off == 50 && p.flags == PACER_RX_PKT_TAGGED);
     s.tags = 3;
     n = frame(f, &s, &ip);
     CHECK(pacer_rx_parse(f, n, n, &p) == 0);
@@ -287,9 +294,12 @@ static void match(void)
     struct pacer_rx_packet p;
     int i;
 
-    /* A multicast group matches itself only, on its port. */
+    /* A multicast group matches itself only, on its port (its frames go
+     * to a group MAC). */
     t[0] = entry(239, 69, 1, 2, 4321);
     p = to(239, 69, 1, 2, 4321);
+    CHECK(pacer_rx_match(t, 1, &p) == 1);
+    p.flags = PACER_RX_PKT_ETH_GROUP;
     CHECK(pacer_rx_match(t, 1, &p) == 1);
     p = to(239, 69, 1, 3, 4321);
     CHECK(pacer_rx_match(t, 1, &p) == 0);
@@ -330,6 +340,15 @@ static void match(void)
     p = to(255, 255, 0, 255, 14336);
     CHECK(pacer_rx_match(t, 1, &p) == 1);
     p = to(255, 255, 255, 0, 14336);
+    CHECK(pacer_rx_match(t, 1, &p) == 1);
+    /* A unicast address in a frame to a group MAC (a subnet broadcast:
+     * 10.77.7.255 to ff:ff:ff:ff:ff:ff) is not "any". */
+    p = to(10, 77, 7, 255, 14336);
+    CHECK(pacer_rx_match(t, 1, &p) == 1);
+    p.flags = PACER_RX_PKT_ETH_GROUP;
+    CHECK(pacer_rx_match(t, 1, &p) == 0);
+    /* Other flags do not change the match (deliver judges them). */
+    p.flags = PACER_RX_PKT_TAGGED | PACER_RX_PKT_BAD_CSUM;
     CHECK(pacer_rx_match(t, 1, &p) == 1);
     /* An address with any non-zero byte is not "any". */
     p = to(10, 77, 7, 30, 14336);
@@ -414,14 +433,22 @@ static void ring(void)
 
     /* An invalid size writes nothing. */
     memset(untouched, 0x55, sizeof untouched);
-    CHECK(pacer_rx_ring_init(&r, untouched, 100) == 0);
+    CHECK(pacer_rx_ring_init(&r, untouched, 100, 0) == 0);
+    CHECK(pacer_rx_ring_init(&r, untouched, 100, 1) == 0);
     for (i = 0; i < sizeof untouched; i++) {
         CHECK(untouched[i] == 0x55);
     }
 
     /* A new ring: header, everything else zero. */
     b = new_ring(SLOTS);
-    CHECK(pacer_rx_ring_init(&r, b, SLOTS) == 1);
+    /* Memory the caller's allocator zeroed: only the header is written
+     * (the driver's 8 MB are not zeroed twice). */
+    CHECK(pacer_rx_ring_init(&r, b, SLOTS, 1) == 1);
+    CHECK(memcmp(b, "DRXR", 4) == 0 && get32le(b + PACER_RX_OFF_DATA) == 4096);
+    CHECK(b[20] == 0xAA && b[PACER_RX_OFF_HEAD] == 0xAA && b[4096] == 0xAA);
+    CHECK(b[pacer_rx_ring_bytes(SLOTS) - 1] == 0xAA);
+    /* Memory nobody zeroed: everything but the header is zeroed here. */
+    CHECK(pacer_rx_ring_init(&r, b, SLOTS, 0) == 1);
     CHECK(memcmp(b, "DRXR", 4) == 0);
     CHECK(get32le(b + PACER_RX_OFF_VERSION) == 1);
     CHECK(get32le(b + PACER_RX_OFF_SLOTS) == SLOTS);
@@ -539,7 +566,7 @@ static void ring(void)
 
     /* The largest ring: the last slot's last byte is its memory's last. */
     b = new_ring(PACER_RX_MAX_SLOTS);
-    CHECK(pacer_rx_ring_init(&r, b, PACER_RX_MAX_SLOTS) == 1);
+    CHECK(pacer_rx_ring_init(&r, b, PACER_RX_MAX_SLOTS, 0) == 1);
     s = plain();
     s.payload = PACER_RX_MAX_FRAME - 42;
     n = frame(f, &s, &ip);
@@ -554,7 +581,7 @@ static void ring(void)
 static void sink_init(struct pacer_rx_sink *s, uint8_t *b, uint32_t steal)
 {
     memset(s, 0, sizeof *s);
-    CHECK(pacer_rx_ring_init(&s->ring, b, SLOTS) == 1);
+    CHECK(pacer_rx_ring_init(&s->ring, b, SLOTS, 0) == 1);
     s->steal = steal;
 }
 
@@ -666,8 +693,276 @@ static void sinks(void)
     CHECK(pacer_rx_deliver(list, 1, &p, f, n, 15) == 0);
     CHECK(a.full == 2 && a.stolen == 5);
 
+    /* Tagged or a bad checksum: counted where the table names it, never
+     * put, never kept from tcpip, not in matched. */
+    sink_init(&a, ba, 1);
+    sink_init(&c, bc, 1);
+    t[0] = entry(239, 69, 1, 2, 4321);
+    CHECK(pacer_rx_set_match(&a, t, 1) == 1 && pacer_rx_set_match(&c, t, 1) == 1);
+    list[0] = &a;
+    list[1] = &c;
+    other = p;
+    other.flags = PACER_RX_PKT_TAGGED;
+    CHECK(pacer_rx_deliver(list, 2, &other, f, n, 16) == 0);
+    CHECK(a.tagged == 1 && c.tagged == 1 && a.matched == 0 && a.delivered == 0 && a.stolen == 0);
+    CHECK(get64le(ba + PACER_RX_OFF_HEAD) == 0);
+    other.flags = PACER_RX_PKT_BAD_CSUM;
+    CHECK(pacer_rx_deliver(list, 2, &other, f, n, 17) == 0);
+    CHECK(a.bad_csum == 1 && c.bad_csum == 1 && a.tagged == 1 && a.matched == 0 && c.stolen == 0);
+    /* Both: tagged wins. */
+    other.flags = PACER_RX_PKT_TAGGED | PACER_RX_PKT_BAD_CSUM;
+    CHECK(pacer_rx_deliver(list, 2, &other, f, n, 18) == 0);
+    CHECK(a.tagged == 2 && a.bad_csum == 1);
+    /* Not its flow: nothing counted. */
+    other.dst_port = 9;
+    CHECK(pacer_rx_deliver(list, 2, &other, f, n, 19) == 0);
+    CHECK(a.tagged == 2 && a.bad_csum == 1);
+    /* The group bit alone changes nothing for a group entry. */
+    other = p;
+    other.flags = PACER_RX_PKT_ETH_GROUP;
+    CHECK(pacer_rx_deliver(list, 2, &other, f, n, 20) == 1);
+    CHECK(a.delivered == 1 && c.delivered == 1 && a.stolen == 1 && c.stolen == 1);
+
     free(ba);
     free(bc);
+}
+
+static void ports(void)
+{
+    struct pacer_rx_sink a;
+    struct pacer_rx_sink c;
+    struct pacer_rx_sink many[5];
+    struct pacer_rx_sink *list[5];
+    struct pacer_rx_match_entry t[16];
+    struct pacer_rx_ports pt;
+    uint32_t i;
+    uint32_t k;
+
+    memset(&a, 0, sizeof a);
+    memset(&c, 0, sizeof c);
+    list[0] = &a;
+    list[1] = &c;
+    /* No ring, or no entries: no port. */
+    pacer_rx_ports_build(list, 0, &pt);
+    CHECK(pt.count == 0 && pt.any == 0 && pacer_rx_ports_has(&pt, 4321) == 0);
+    pacer_rx_ports_build(list, 2, &pt);
+    CHECK(pt.count == 0 && pacer_rx_ports_has(&pt, 4321) == 0);
+    /* Every table's ports, each once. */
+    t[0] = entry(239, 69, 1, 2, 4321);
+    t[1] = entry(0, 0, 0, 0, 14336);
+    t[2] = entry(239, 69, 1, 3, 4321);
+    CHECK(pacer_rx_set_match(&a, t, 3) == 1);
+    t[0] = entry(239, 69, 1, 9, 5004);
+    t[1] = entry(239, 69, 1, 2, 14336);
+    CHECK(pacer_rx_set_match(&c, t, 2) == 1);
+    pacer_rx_ports_build(list, 2, &pt);
+    CHECK(pt.count == 3 && pt.any == 0);
+    CHECK(pacer_rx_ports_has(&pt, 4321) && pacer_rx_ports_has(&pt, 14336) && pacer_rx_ports_has(&pt, 5004));
+    CHECK(pacer_rx_ports_has(&pt, 4322) == 0 && pacer_rx_ports_has(&pt, 0) == 0);
+    /* Only the sinks named count. */
+    pacer_rx_ports_build(list, 1, &pt);
+    CHECK(pt.count == 2 && pacer_rx_ports_has(&pt, 5004) == 0);
+
+    /* 4 rings of 16 distinct ports fill it exactly; a fifth ring's new
+     * port makes every port a candidate (never a missed flow). */
+    for (k = 0; k < 5; k++) {
+        memset(&many[k], 0, sizeof many[k]);
+        for (i = 0; i < 16; i++) {
+            t[i] = entry(239, 1, 1, 1, (uint16_t)(1000 + k * 16 + i));
+        }
+        CHECK(pacer_rx_set_match(&many[k], t, 16) == 1);
+        list[k] = &many[k];
+    }
+    pacer_rx_ports_build(list, 4, &pt);
+    CHECK(pt.count == 64 && pt.any == 0);
+    CHECK(pacer_rx_ports_has(&pt, 1000) && pacer_rx_ports_has(&pt, 1063) && !pacer_rx_ports_has(&pt, 1064));
+    pacer_rx_ports_build(list, 5, &pt);
+    CHECK(pt.count == 64 && pt.any == 1 && pacer_rx_ports_has(&pt, 1079) && pacer_rx_ports_has(&pt, 7));
+    /* A port already there does not overflow it. */
+    for (i = 0; i < 16; i++) {
+        t[i] = entry(239, 1, 1, 2, (uint16_t)(1000 + i));
+    }
+    CHECK(pacer_rx_set_match(&many[4], t, 16) == 1);
+    pacer_rx_ports_build(list, 5, &pt);
+    CHECK(pt.count == 64 && pt.any == 0);
+}
+
+/* A test node for the chain work: its index and a next link. */
+struct node {
+    struct node *next;
+    int index;
+};
+
+struct chain_test {
+    const char *take; /* '1' at an index: offered and taken */
+    int offered[200];
+    int offers;
+    /* What indicate saw: each call's first index and count, and every
+     * index in order. */
+    int call_first[200];
+    uint32_t call_count[200];
+    int calls;
+    int up[200];
+    int ups;
+    int bad_run;
+};
+
+static void *node_next(void *n) { return ((struct node *)n)->next; }
+
+static void node_set_next(void *n, void *next) { ((struct node *)n)->next = next; }
+
+static int node_offer(void *ctx, void *n)
+{
+    struct chain_test *t = ctx;
+    int i = ((struct node *)n)->index;
+    t->offered[t->offers++] = i;
+    return t->take[i] == '1';
+}
+
+static void node_indicate(void *ctx, void *head, uint32_t count)
+{
+    struct chain_test *t = ctx;
+    struct node *n = head;
+    uint32_t k = 0;
+    t->call_first[t->calls] = n->index;
+    t->call_count[t->calls] = count;
+    t->calls++;
+    /* The run is exactly `count` linked nodes, then NULL. */
+    for (; n != NULL; n = n->next) {
+        t->up[t->ups++] = n->index;
+        k++;
+    }
+    if (k != count) {
+        t->bad_run = 1;
+    }
+}
+
+static const struct pacer_rx_chain_ops node_ops = {node_next, node_set_next, node_offer, node_indicate};
+
+/* `n` linked nodes 0..n-1. */
+static void nodes(struct node *v, int n)
+{
+    int i;
+    for (i = 0; i < n; i++) {
+        v[i].index = i;
+        v[i].next = i + 1 < n ? &v[i + 1] : NULL;
+    }
+}
+
+/* 1 when v[0..n-1] is linked 0, 1, ..., n-1, NULL. */
+static int linked_as_made(const struct node *v, int n)
+{
+    int i;
+    for (i = 0; i < n; i++) {
+        if (v[i].next != (i + 1 < n ? &v[i + 1] : NULL)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void chains(void)
+{
+    struct node v[200];
+    struct chain_test t;
+    void *taken;
+    void *kept;
+    uint32_t count;
+    struct node *n;
+    int k;
+    char take[201];
+
+    /* Split, nothing taken: the chain as it was. */
+    memset(&t, 0, sizeof t);
+    t.take = "00000";
+    nodes(v, 5);
+    kept = pacer_rx_split(&v[0], &node_ops, &t, &taken, &count);
+    CHECK(kept == &v[0] && taken == NULL && count == 5 && t.offers == 5 && linked_as_made(v, 5));
+    for (k = 0; k < 5; k++) {
+        CHECK(t.offered[k] == k);
+    }
+    /* Split, some taken: both in order, each NULL-terminated. */
+    memset(&t, 0, sizeof t);
+    t.take = "0110100";
+    nodes(v, 7);
+    kept = pacer_rx_split(&v[0], &node_ops, &t, &taken, &count);
+    CHECK(count == 4 && t.offers == 7);
+    n = kept;
+    CHECK(n == &v[0] && n->next == &v[3] && v[3].next == &v[5] && v[5].next == &v[6] && v[6].next == NULL);
+    CHECK(taken == &v[1] && v[1].next == &v[2] && v[2].next == &v[4] && v[4].next == NULL);
+    /* Everything taken: nothing kept. */
+    memset(&t, 0, sizeof t);
+    t.take = "111";
+    nodes(v, 3);
+    kept = pacer_rx_split(&v[0], &node_ops, &t, &taken, &count);
+    CHECK(kept == NULL && count == 0 && taken == &v[0] && v[0].next == &v[1] && v[2].next == NULL);
+    /* The first taken, the last kept; the last taken, the rest kept. */
+    memset(&t, 0, sizeof t);
+    t.take = "10";
+    nodes(v, 2);
+    kept = pacer_rx_split(&v[0], &node_ops, &t, &taken, &count);
+    CHECK(kept == &v[1] && count == 1 && taken == &v[0] && v[0].next == NULL && v[1].next == NULL);
+    memset(&t, 0, sizeof t);
+    t.take = "001";
+    nodes(v, 3);
+    kept = pacer_rx_split(&v[0], &node_ops, &t, &taken, &count);
+    CHECK(kept == &v[0] && count == 2 && v[1].next == NULL && taken == &v[2] && v[2].next == NULL);
+    /* An empty chain. */
+    memset(&t, 0, sizeof t);
+    t.take = "";
+    kept = pacer_rx_split(NULL, &node_ops, &t, &taken, &count);
+    CHECK(kept == NULL && taken == NULL && count == 0 && t.offers == 0);
+
+    /* Cannot pend, nothing taken: one call with the whole chain. */
+    memset(&t, 0, sizeof t);
+    t.take = "00000";
+    nodes(v, 5);
+    CHECK(pacer_rx_up_in_runs(&v[0], &node_ops, &t) == 5);
+    CHECK(t.calls == 1 && t.call_first[0] == 0 && t.call_count[0] == 5 && !t.bad_run && t.offers == 5);
+    CHECK(linked_as_made(v, 5));
+    /* Runs between taken nodes, each alone; the chain restored. */
+    memset(&t, 0, sizeof t);
+    t.take = "0110100";
+    nodes(v, 7);
+    CHECK(pacer_rx_up_in_runs(&v[0], &node_ops, &t) == 4);
+    CHECK(t.calls == 3 && !t.bad_run);
+    CHECK(t.call_first[0] == 0 && t.call_count[0] == 1);
+    CHECK(t.call_first[1] == 3 && t.call_count[1] == 1);
+    CHECK(t.call_first[2] == 5 && t.call_count[2] == 2);
+    CHECK(t.ups == 4 && t.up[0] == 0 && t.up[1] == 3 && t.up[2] == 5 && t.up[3] == 6);
+    CHECK(linked_as_made(v, 7));
+    /* All taken: nothing up, the chain as it was. */
+    memset(&t, 0, sizeof t);
+    t.take = "111";
+    nodes(v, 3);
+    CHECK(pacer_rx_up_in_runs(&v[0], &node_ops, &t) == 0);
+    CHECK(t.calls == 0 && linked_as_made(v, 3));
+    CHECK(pacer_rx_up_in_runs(NULL, &node_ops, &t) == 0 && t.offers == 3);
+
+    /* Longer than a segment: every node offered before its segment goes
+     * up; a run is cut at the segment's end; links restored. */
+    memset(take, '0', sizeof take - 1);
+    take[sizeof take - 1] = '\0';
+    take[70] = '1';
+    memset(&t, 0, sizeof t);
+    t.take = take;
+    nodes(v, 150);
+    CHECK(pacer_rx_up_in_runs(&v[0], &node_ops, &t) == 149);
+    CHECK(t.offers == 150 && !t.bad_run && linked_as_made(v, 150));
+    CHECK(t.calls == 4);
+    CHECK(t.call_first[0] == 0 && t.call_count[0] == 64);
+    CHECK(t.call_first[1] == 64 && t.call_count[1] == 6);
+    CHECK(t.call_first[2] == 71 && t.call_count[2] == 57);
+    CHECK(t.call_first[3] == 128 && t.call_count[3] == 22);
+    for (k = 0; k < 149; k++) {
+        CHECK(t.up[k] == (k < 70 ? k : k + 1));
+    }
+    /* Exactly one segment, nothing taken: one call, links as they were. */
+    memset(&t, 0, sizeof t);
+    t.take = take;
+    nodes(v, 64);
+    CHECK(pacer_rx_up_in_runs(&v[0], &node_ops, &t) == 64);
+    CHECK(t.calls == 1 && t.call_count[0] == 64 && linked_as_made(v, 64));
 }
 
 int main(void)
@@ -676,6 +971,8 @@ int main(void)
     match();
     ring();
     sinks();
+    ports();
+    chains();
     printf("%d checks, %d failed\n", checks, failed);
     return failed == 0 ? 0 : 1;
 }

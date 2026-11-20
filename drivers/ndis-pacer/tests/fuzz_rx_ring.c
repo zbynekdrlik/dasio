@@ -19,9 +19,16 @@
  *   stands, writes only inside the ring, publishes exactly the frames it
  *   reports delivered and never touches the header's fixed fields;
  * - pacer_rx_deliver, over 1 to 4 sinks (copy or steal, matching or not,
- *   full or not), counts the frame once in each matching sink and keeps
- *   it from tcpip exactly when every matching sink steals and none
- *   counted it too big.
+ *   full or not, the packet tagged or with a bad checksum or not), counts
+ *   the frame once in each matching sink and keeps it from tcpip exactly
+ *   when every matching sink steals and none counted it too big; a tagged
+ *   or bad-checksum packet is only counted;
+ * - pacer_rx_ports_has answers 1 for every port a table names;
+ * - pacer_rx_split and pacer_rx_up_in_runs, over up to 159 nodes with
+ *   any taken set: every node offered once, in order; the kept and taken
+ *   nodes in order; each indicated run is consecutive kept nodes, NULL-
+ *   terminated, indicated only after its whole segment was offered; the
+ *   chain linked as it was when up_in_runs returns.
  *
  * Built with clang -fsanitize=fuzzer,address,undefined (CI, Linux). */
 #include <stdint.h>
@@ -156,7 +163,7 @@ static void match(const uint8_t *data, size_t size, const struct pacer_rx_packet
 
 /* One ring buffer of exactly its size per slot count, made once: a fresh
  * half-megabyte block per input (ASan's quarantine) cost most of the run
- * time. pacer_rx_ring_init zeroes it for each input anyway. */
+ * time. */
 static uint8_t *ring_buffer(uint32_t slots)
 {
     static uint8_t *made[3];
@@ -187,7 +194,15 @@ static void ring(const uint8_t *data, size_t size, const struct pacer_rx_packet 
     bytes = pacer_rx_ring_bytes(slots);
     require(bytes == PACER_RX_HEADER_BYTES + slots * PACER_RX_SLOT_BYTES);
     b = ring_buffer(slots);
-    require(pacer_rx_ring_init(&r, b, slots) == 1);
+    /* Zeroed here, or "zeroed by the allocator" (then only the words the
+     * checks read are cleared: the slots' old bytes do not matter). */
+    if (data[2] & 8u) {
+        set64le(b + PACER_RX_OFF_HEAD, 0);
+        memset(b + PACER_RX_OFF_WAKE, 0, 4);
+        require(pacer_rx_ring_init(&r, b, slots, 1) == 1);
+    } else {
+        require(pacer_rx_ring_init(&r, b, slots, 0) == 1);
+    }
     memcpy(fixed, b, sizeof fixed);
 
     /* Head anywhere (wrapping included), the cached tail within a ring of
@@ -226,18 +241,28 @@ static void ring(const uint8_t *data, size_t size, const struct pacer_rx_packet 
     require(memcmp(fixed, b, sizeof fixed) == 0);
 }
 
-static uint8_t *sink_buffer(uint32_t k)
+/* Sink k's ring, made and zeroed once (four fresh rings per input cost
+ * most of the run time), then emptied for each input: head 0, the
+ * reader's tail and wake 0. The slots' old bytes do not matter here. */
+static void sink_ring(uint32_t k, struct pacer_rx_ring *r)
 {
     static uint8_t *made[4];
+    static struct pacer_rx_ring rings[4];
     if (made[k] == NULL) {
         made[k] = malloc(pacer_rx_ring_bytes(PACER_RX_MIN_SLOTS));
         require(made[k] != NULL);
+        require(pacer_rx_ring_init(&rings[k], made[k], PACER_RX_MIN_SLOTS, 0) == 1);
     }
-    return made[k];
+    *r = rings[k];
+    set64le(made[k] + PACER_RX_OFF_TAIL, 0);
+    memset(made[k] + PACER_RX_OFF_WAKE, 0, 4);
 }
 
-static void deliver(const uint8_t *data, size_t size, const struct pacer_rx_packet *p)
+static void deliver(const uint8_t *data, size_t size, const struct pacer_rx_packet *pkt)
 {
+    struct pacer_rx_packet q;
+    const struct pacer_rx_packet *p = &q;
+    struct pacer_rx_ports ports;
     struct pacer_rx_sink s[4];
     struct pacer_rx_sink *list[4];
     struct pacer_rx_match_entry e;
@@ -249,12 +274,21 @@ static void deliver(const uint8_t *data, size_t size, const struct pacer_rx_pack
     int any = 0;
     int all_steal = 1;
     int too_big;
+    int tagged;
+    int bad_csum;
+    int wanted = 0;
     int expect;
     int res;
 
     if (size < 24) {
         return;
     }
+    /* The packet's flags from the input: tagged, a bad checksum, a group
+     * MAC (the caller's and the parser's flags). */
+    q = *pkt;
+    q.flags = data[20] & (PACER_RX_PKT_TAGGED | PACER_RX_PKT_BAD_CSUM | PACER_RX_PKT_ETH_GROUP);
+    tagged = (q.flags & PACER_RX_PKT_TAGGED) != 0;
+    bad_csum = !tagged && (q.flags & PACER_RX_PKT_BAD_CSUM) != 0;
     count = 1u + data[7] % 4u;
     len = ((uint32_t)data[8] << 4 | data[9]) % (uint32_t)sizeof frame;
     for (k = 0; k < sizeof frame; k++) {
@@ -264,7 +298,7 @@ static void deliver(const uint8_t *data, size_t size, const struct pacer_rx_pack
     for (k = 0; k < count; k++) {
         uint8_t bits = data[10 + k];
         memset(&s[k], 0, sizeof s[k]);
-        require(pacer_rx_ring_init(&s[k].ring, sink_buffer(k), PACER_RX_MIN_SLOTS) == 1);
+        sink_ring(k, &s[k].ring);
         s[k].steal = bits & 1u;
         /* Bit 1: the table names the packet's own destination; else an
          * address and port from the input. Bit 2: the ring is full. */
@@ -281,20 +315,37 @@ static void deliver(const uint8_t *data, size_t size, const struct pacer_rx_pack
         }
         list[k] = &s[k];
         matches[k] = pacer_rx_match(s[k].match, s[k].matches, p);
-        if (matches[k]) {
+        wanted |= matches[k];
+        if (matches[k] && !tagged && !bad_csum) {
             any = 1;
             if (!s[k].steal) {
                 all_steal = 0;
             }
         }
     }
-    require(pacer_rx_wanted(list, count, p) == any);
+    /* The lock-free port look never hides a sink's port. */
+    pacer_rx_ports_build(list, count, &ports);
+    for (k = 0; k < count; k++) {
+        if (s[k].matches) {
+            require(pacer_rx_ports_has(&ports, s[k].match[0].port) == 1);
+        }
+        if (matches[k]) {
+            require(pacer_rx_ports_has(&ports, p->dst_port) == 1);
+        }
+    }
+    require(pacer_rx_wanted(list, count, p) == wanted);
     res = pacer_rx_deliver(list, count, p, (data[19] & 1u) ? NULL : frame, len, 7);
     expect = any && all_steal && !too_big;
     require(res == expect);
     for (k = 0; k < count; k++) {
         uint8_t bits = data[10 + k];
         if (!matches[k]) {
+            require(s[k].matched == 0 && s[k].delivered == 0 && s[k].full == 0 && s[k].too_big == 0 &&
+                    s[k].stolen == 0 && s[k].tagged == 0 && s[k].bad_csum == 0);
+            continue;
+        }
+        require(s[k].tagged == (uint64_t)tagged && s[k].bad_csum == (uint64_t)bad_csum);
+        if (tagged || bad_csum) {
             require(s[k].matched == 0 && s[k].delivered == 0 && s[k].full == 0 && s[k].too_big == 0 &&
                     s[k].stolen == 0);
             continue;
@@ -304,6 +355,173 @@ static void deliver(const uint8_t *data, size_t size, const struct pacer_rx_pack
         require(s[k].full == (uint64_t)(!too_big && (bits & 4u) != 0));
         require(s[k].delivered == (uint64_t)(!too_big && (bits & 4u) == 0));
         require(s[k].stolen == (uint64_t)expect);
+    }
+}
+
+/* Up to 5 sinks of up to 16 entries from the input: every named port is
+ * found; another port only while the set overflowed (any). */
+static void ports(const uint8_t *data, size_t size)
+{
+    struct pacer_rx_sink s[5];
+    struct pacer_rx_sink *list[5] = {NULL, NULL, NULL, NULL, NULL};
+    struct pacer_rx_ports pt;
+    uint32_t count;
+    uint32_t k;
+    uint32_t e;
+    size_t at = 4;
+    uint16_t probe;
+    int named = 0;
+
+    if (size < 8) {
+        return;
+    }
+    count = data[3] % 6u;
+    probe = (uint16_t)((data[1] << 8) | data[2]);
+    for (k = 0; k < count; k++) {
+        memset(&s[k], 0, sizeof s[k]);
+        s[k].matches = at < size ? data[at] % 17u : 0;
+        at++;
+        for (e = 0; e < s[k].matches; e++) {
+            /* Ports from a small range, so tables repeat each other. */
+            s[k].match[e].port = (uint16_t)(1u + (at < size ? data[at] : e) % 90u);
+            at++;
+            if (s[k].match[e].port == probe) {
+                named = 1;
+            }
+        }
+        list[k] = &s[k];
+    }
+    pacer_rx_ports_build(list, count, &pt);
+    require(pt.count <= PACER_RX_MAX_PORTS);
+    for (k = 0; k < count; k++) {
+        for (e = 0; e < s[k].matches; e++) {
+            require(pacer_rx_ports_has(&pt, s[k].match[e].port) == 1);
+        }
+    }
+    require(pacer_rx_ports_has(&pt, probe) == (named || pt.any));
+}
+
+/* The chain work over fake nodes. */
+struct node {
+    struct node *next;
+    uint32_t index;
+};
+
+struct chain_fuzz {
+    const uint8_t *take; /* bit i: node i is taken */
+    uint32_t n;
+    uint32_t offers;
+    uint32_t offered_next; /* the index the next offer must be */
+    uint32_t up_next;      /* the index the next indicated node must be at least */
+    uint32_t ups;
+};
+
+static int taken_bit(const struct chain_fuzz *c, uint32_t i) { return (c->take[i / 8] >> (i % 8)) & 1; }
+
+static void *node_next(void *n) { return ((struct node *)n)->next; }
+
+static void node_set_next(void *n, void *next) { ((struct node *)n)->next = next; }
+
+static int node_offer(void *ctx, void *v)
+{
+    struct chain_fuzz *c = ctx;
+    struct node *n = v;
+    require(n->index == c->offered_next);
+    c->offered_next++;
+    c->offers++;
+    return taken_bit(c, n->index);
+}
+
+static void node_indicate(void *ctx, void *head, uint32_t count)
+{
+    struct chain_fuzz *c = ctx;
+    struct node *n = head;
+    uint32_t segment_end = (n->index / PACER_RX_SEGMENT + 1u) * PACER_RX_SEGMENT;
+    uint32_t k = 0;
+    uint32_t first = n->index;
+    /* Its whole segment was offered first. */
+    require(c->offers >= (segment_end < c->n ? segment_end : c->n));
+    require(first >= c->up_next);
+    for (; n != NULL; n = n->next) {
+        /* Consecutive kept nodes, within one segment. */
+        require(n->index == first + k && !taken_bit(c, n->index));
+        require(n->index < segment_end);
+        k++;
+        require(k <= count);
+    }
+    require(k == count && count > 0);
+    c->up_next = first + count;
+    c->ups += count;
+}
+
+static const struct pacer_rx_chain_ops node_ops = {node_next, node_set_next, node_offer, node_indicate};
+
+static void chains(const uint8_t *data, size_t size)
+{
+    static struct node v[160];
+    uint8_t take[20];
+    struct chain_fuzz c;
+    uint32_t n;
+    uint32_t i;
+    uint32_t kept_expect = 0;
+    uint32_t kept_count;
+    void *taken;
+    void *kept;
+    struct node *x;
+
+    if (size < 2) {
+        return;
+    }
+    n = data[0] % 160u;
+    memset(take, 0, sizeof take);
+    memcpy(take, data + 1, size - 1 < sizeof take ? size - 1 : sizeof take);
+    for (i = 0; i < n; i++) {
+        v[i].index = i;
+        v[i].next = i + 1 < n ? &v[i + 1] : NULL;
+    }
+    memset(&c, 0, sizeof c);
+    c.take = take;
+    c.n = n;
+
+    /* Cannot pend: every kept node up once, in order; links as made. */
+    require(pacer_rx_up_in_runs(n ? &v[0] : NULL, &node_ops, &c) == c.ups);
+    require(c.offers == n);
+    for (i = 0; i < n; i++) {
+        require(v[i].next == (i + 1 < n ? &v[i + 1] : NULL));
+        if (!taken_bit(&c, i)) {
+            kept_expect++;
+        }
+    }
+    require(c.ups == kept_expect);
+
+    /* May pend: kept and taken, each in order and NULL-terminated. */
+    memset(&c, 0, sizeof c);
+    c.take = take;
+    c.n = n;
+    kept = pacer_rx_split(n ? &v[0] : NULL, &node_ops, &c, &taken, &kept_count);
+    require(c.offers == n && kept_count == kept_expect);
+    {
+        uint32_t last = 0;
+        uint32_t seen = 0;
+        for (x = kept; x != NULL; x = x->next) {
+            require(!taken_bit(&c, x->index) && (seen == 0 || x->index > last));
+            last = x->index;
+            seen++;
+        }
+        require(seen == kept_expect);
+        seen = 0;
+        for (x = taken; x != NULL; x = x->next) {
+            require(taken_bit(&c, x->index) && (seen == 0 || x->index > last));
+            last = x->index;
+            seen++;
+        }
+        require(seen == n - kept_expect);
+    }
+    /* Nothing taken: no link changed. */
+    if (kept_expect == n) {
+        for (i = 0; i < n; i++) {
+            require(v[i].next == (i + 1 < n ? &v[i + 1] : NULL));
+        }
     }
 }
 
@@ -320,5 +538,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     match(data, size, &p);
     ring(data, size, &p);
     deliver(data, size, &p);
+    ports(data, size);
+    chains(data, size);
     return 0;
 }
