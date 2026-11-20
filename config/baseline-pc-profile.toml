@@ -268,9 +268,9 @@ why = "Windows keeps every thread off dasio's CPUs unless its process asks for t
 key = '{nic_class}'
 name = "*EEE"
 string = "0"
-nic_service = "rt640x64"
 must = true
-why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+absent_ok = true
+why = "EEE off on every Dante NIC, whatever its driver (owner 20.11.2026: EEE on any rig device is a serious fail; mbc's USB Realtek ran it on while this entry was scoped to rt640x64, dasio#24; FOH's tuning, dasio#1); a NIC without the keyword is fine"
 
 [[registry]]
 key = '{nic_class}'
@@ -390,17 +390,17 @@ why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
 key = '{nic_class}'
 name = "AdvancedEEE"
 string = "0"
-nic_service = "rt640x64"
 must = true
-why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+absent_ok = true
+why = "EEE off on every Dante NIC, whatever its driver (owner 20.11.2026: EEE on any rig device is a serious fail; mbc's USB Realtek ran it on while this entry was scoped to rt640x64, dasio#24; FOH's tuning, dasio#1); a NIC without the keyword is fine"
 
 [[registry]]
 key = '{nic_class}'
 name = "EnableGreenEthernet"
 string = "0"
-nic_service = "rt640x64"
 must = true
-why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+absent_ok = true
+why = "EEE off on every Dante NIC, whatever its driver (owner 20.11.2026: EEE on any rig device is a serious fail; mbc's USB Realtek ran it on while this entry was scoped to rt640x64, dasio#24; FOH's tuning, dasio#1); a NIC without the keyword is fine"
 
 [[registry]]
 key = '{nic_class}'

@@ -18,7 +18,9 @@ paths:
   `{active_scheme}`. Never set up a new PC by redoing findings one by one.
   A standard NDIS keyword that means the same on every miniport gets NO
   `nic_service`, else a NIC of another driver skips it while the check
-  reads fine: `*LsoV2IPv4/6 = "0"` hold every Dante NIC (`must`, with
+  reads fine: `*LsoV2IPv4/6 = "0"` and EEE (`*EEE`, `AdvancedEEE`,
+  `EnableGreenEthernet`, 0.1.154, owner 20.11: EEE on any rig device is a
+  serious fail) hold every Dante NIC (`must`, with
   `absent_ok` for a NIC without LSO), since mbc's USB Realtek
   (`rtu56cx22x64`) ran LSO on unseen (19.11.2026, dasio#24). Values that
   differ by driver (`*SpeedDuplex`, `*ReceiveBuffers`, ...) keep the
