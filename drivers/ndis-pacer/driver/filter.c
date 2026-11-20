@@ -3163,23 +3163,57 @@ rxdDrop(
 }
 
 
+// One value of <service>\Parameters, in a query of its own: a value of
+// another type (TYPECHECK: STATUS_OBJECT_TYPE_MISMATCH) fails only this
+// one, never the others (pacer_params_read, dasio#27). Logged when it is
+// there but cannot be read (a kernel debugger or DebugView shows it).
+static int
+paramRead(
+    _In_ void *Context,
+    _In_ enum pacer_param Which,
+    _Out_ ULONG *Value
+    )
+{
+    static const PCWSTR Names[PACER_PARAM_COUNT] = { L"RxdEnable", L"RxdCpu", L"TxMaxOut", L"RxRingEnable" };
+    RTL_QUERY_REGISTRY_TABLE Table[3];
+    ULONG Read = 0;
+    NTSTATUS Status;
+
+    *Value = 0;
+    RtlZeroMemory(Table, sizeof(Table));
+    Table[0].Flags = RTL_QUERY_REGISTRY_SUBKEY;
+    Table[0].Name = L"Parameters";
+    Table[1].Flags = RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK | RTL_QUERY_REGISTRY_REQUIRED;
+    Table[1].Name = (PWSTR)Names[Which];
+    Table[1].EntryContext = &Read;
+    Table[1].DefaultType = (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_NONE;
+    Status = RtlQueryRegistryValues(RTL_REGISTRY_ABSOLUTE, (PCWSTR)Context, Table, NULL, NULL);
+    if (NT_SUCCESS(Status))
+    {
+        *Value = Read;
+        return PACER_PARAM_READ;
+    }
+    // No Parameters key, or no such value: its default.
+    if (Status == STATUS_OBJECT_NAME_NOT_FOUND)
+    {
+        return PACER_PARAM_MISSING;
+    }
+    DbgPrintEx(DPFLTR_IHVNETWORK_ID, DPFLTR_ERROR_LEVEL,
+               "dasiopacer: Parameters\\%ws could not be read (0x%08X, not a REG_DWORD?): its default stays\n",
+               Names[Which], (ULONG)Status);
+    return PACER_PARAM_BAD;
+}
+
 // RxdEnable and RxdCpu (REG_DWORD; RxdCpu 0xFFFFFFFF = -1), TxMaxOut and
-// RxRingEnable from <service>\Parameters. Missing key or values: off, as
-// before.
+// RxRingEnable from <service>\Parameters, each read on its own. Missing
+// key or values: off, as before; an unreadable value turns off only its
+// own feature.
 static VOID
 rxdReadRegistry(
     _In_ PUNICODE_STRING RegistryPath
     )
 {
-    RTL_QUERY_REGISTRY_TABLE Table[6];
-    ULONG Enable = 0;
-    ULONG RingEnable = 0;
-    ULONG DefaultRingEnable = 0;
-    ULONG MaxOut = 0;
-    ULONG DefaultMaxOut = 0;
-    ULONG Cpu = (ULONG)-1;
-    ULONG DefaultEnable = 0;
-    ULONG DefaultCpu = (ULONG)-1;
+    struct pacer_params Params;
     PWCHAR Path;
     USHORT Chars = RegistryPath->Length / sizeof(WCHAR);
 
@@ -3192,41 +3226,12 @@ rxdReadRegistry(
     RtlCopyMemory(Path, RegistryPath->Buffer, Chars * sizeof(WCHAR));
     Path[Chars] = L'\0';
 
-    RtlZeroMemory(Table, sizeof(Table));
-    Table[0].Flags = RTL_QUERY_REGISTRY_SUBKEY;
-    Table[0].Name = L"Parameters";
-    Table[1].Flags = RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK;
-    Table[1].Name = L"RxdEnable";
-    Table[1].EntryContext = &Enable;
-    Table[1].DefaultType = (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD;
-    Table[1].DefaultData = &DefaultEnable;
-    Table[1].DefaultLength = sizeof(ULONG);
-    Table[2].Flags = RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK;
-    Table[2].Name = L"RxdCpu";
-    Table[2].EntryContext = &Cpu;
-    Table[2].DefaultType = (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD;
-    Table[2].DefaultData = &DefaultCpu;
-    Table[2].DefaultLength = sizeof(ULONG);
+    pacer_params_read(paramRead, Path, KTX_SLOTS, &Params);
+    RxdEnable = Params.rxd_enable;
+    RxdCpuSetting = Params.rxd_cpu;
     // Media TX's bound on frames out (0: every slot), kept across reboots.
-    Table[3].Flags = RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK;
-    Table[3].Name = L"TxMaxOut";
-    Table[3].EntryContext = &MaxOut;
-    Table[3].DefaultType = (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD;
-    Table[3].DefaultData = &DefaultMaxOut;
-    Table[3].DefaultLength = sizeof(ULONG);
+    TxMaxOutSetting = Params.tx_max_out;
     // Kernel RX (rxring.c): off unless 1.
-    Table[4].Flags = RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK;
-    Table[4].Name = L"RxRingEnable";
-    Table[4].EntryContext = &RingEnable;
-    Table[4].DefaultType = (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD;
-    Table[4].DefaultData = &DefaultRingEnable;
-    Table[4].DefaultLength = sizeof(ULONG);
-    if (NT_SUCCESS(RtlQueryRegistryValues(RTL_REGISTRY_ABSOLUTE, Path, Table, NULL, NULL)))
-    {
-        RxdEnable = Enable != 0;
-        RxdCpuSetting = (LONG)Cpu;
-        TxMaxOutSetting = MaxOut <= KTX_SLOTS ? MaxOut : 0;
-        RxRingEnable = RingEnable != 0;
-    }
+    RxRingEnable = Params.rx_ring_enable;
     ExFreePoolWithTag(Path, FILTER_ALLOC_TAG);
 }

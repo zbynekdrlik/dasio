@@ -8,13 +8,17 @@
  * close or the process's exit comes; IRP_MJ_CLOSE catches a ring an
  * RX_OPEN on an overlapped handle attached after that cleanup). A pause or
  * detach of the filter detaches its rings; the handle keeps its ring until
- * closed (status Attached 0, the ring's detached word 1: dasio reopens). The decisions and the producer are
- * ../core/rx_ring.c; this file is NDIS and IOCTL glue only.
+ * closed (status Attached 0, the ring's detached word 1: dasio reopens).
+ * The decisions, the producer and the chain work are ../core/rx_ring.c;
+ * this file is NDIS and IOCTL glue only.
  *
  * Locks: FilterListLock guards RxRingList (every open ring), each ring's
  * Filter and the filter list; a filter's RxRing.Lock guards its attached
- * rings, their sinks and its Scratch. Order: FilterListLock, then the RX
- * ring lock. The receive path takes only the RX ring lock.
+ * rings, their sinks, its Ports and its Scratch. Order: FilterListLock,
+ * then the RX ring lock. The receive path parses with no lock and takes
+ * only the RX ring lock, only for a frame on a port a ring names. A
+ * reader's event is set after the locks are released, through a reference
+ * of its own.
  */
 
 #include "precomp.h"
@@ -24,7 +28,7 @@
 #define RX_RING_TAG     'gRxD'
 
 C_ASSERT(DASIO_RX_MAX_MATCHES == PACER_RX_MAX_MATCHES);
-C_ASSERT(sizeof(DASIO_RX_STATUS) == 11 * sizeof(ULONG64));
+C_ASSERT(sizeof(DASIO_RX_STATUS) == 13 * sizeof(ULONG64));
 
 struct _RX_RING
 {
@@ -50,19 +54,90 @@ ULONG RxRingEnable = 0;
 static LIST_ENTRY RxRingList = { &RxRingList, &RxRingList };
 
 
+// ---- readers' events -------------------------------------------------------
+
+// Events to set once the locks are released. Each holds a reference of its
+// own, so a ring closed meanwhile cannot free one under KeSetEvent.
+typedef struct _RX_WAKES
+{
+    PKEVENT                         Event[RX_RINGS_PER_FILTER];
+    ULONG                           Count;
+} RX_WAKES, *PRX_WAKES;
+
+// Under a lock: the ring's reader gets its event after the lock.
+static VOID
+rxWakeLater(
+    _In_ PRX_RING Ring,
+    _Inout_ PRX_WAKES Wakes
+    )
+{
+    if (Ring->Event != NULL && Wakes->Count < RX_RINGS_PER_FILTER)
+    {
+        ObReferenceObject(Ring->Event);
+        Wakes->Event[Wakes->Count++] = Ring->Event;
+    }
+}
+
+// No lock held: the events, set and released.
+static VOID
+rxWake(
+    _Inout_ PRX_WAKES Wakes
+    )
+{
+    ULONG i;
+    for (i = 0; i < Wakes->Count; i++)
+    {
+        KeSetEvent(Wakes->Event[i], IO_NO_INCREMENT, FALSE);
+        ObDereferenceObject(Wakes->Event[i]);
+    }
+    Wakes->Count = 0;
+}
+
+
+// ---- a filter's rings --------------------------------------------------
+
+// Under the RX ring lock: the attached rings' sinks.
+static ULONG
+rxSinksLocked(
+    _In_ PRX_FILTER_RINGS Rings,
+    _Out_writes_(RX_RINGS_PER_FILTER) struct pacer_rx_sink **Sinks
+    )
+{
+    ULONG Count = 0;
+    ULONG i;
+    for (i = 0; i < RX_RINGS_PER_FILTER; i++)
+    {
+        if (Rings->Rings[i] != NULL)
+        {
+            Sinks[Count++] = &Rings->Rings[i]->Sink;
+        }
+    }
+    return Count;
+}
+
+// Under the RX ring lock, after a ring or a table changed: the ports the
+// receive path looks at with no lock.
+static VOID
+rxPortsLocked(
+    _Inout_ PRX_FILTER_RINGS Rings
+    )
+{
+    struct pacer_rx_sink *Sinks[RX_RINGS_PER_FILTER];
+    ULONG Count = rxSinksLocked(Rings, Sinks);
+    pacer_rx_ports_build(Sinks, Count, &Rings->Ports);
+}
+
 // Under the filter's RX ring lock, as the ring leaves it: its header's
-// detached word and its reader's event tell the reader no frame comes any
-// more (it closes and opens a new ring).
+// detached word, and (after the lock) its reader's event, tell the reader
+// no frame comes any more (it closes and opens a new ring).
 static VOID
 rxSignalDetachedLocked(
-    _In_ PRX_RING Ring
+    _In_ PRX_RING Ring,
+    _Inout_ PRX_WAKES Wakes
     )
 {
     pacer_rx_ring_detach(&Ring->Sink.ring);
-    if (Ring->Event != NULL)
-    {
-        KeSetEvent(Ring->Event, IO_NO_INCREMENT, FALSE);
-    }
+    rxWakeLater(Ring, Wakes);
 }
 
 _Use_decl_annotations_
@@ -78,6 +153,8 @@ rxRingFilterInit(
     {
         Filter->RxRing.Rings[i] = NULL;
     }
+    Filter->RxRing.Ports.count = 0;
+    Filter->RxRing.Ports.any = 0;
 }
 
 _Use_decl_annotations_
@@ -86,24 +163,28 @@ rxRingDetachAll(
     struct _MS_FILTER *Filter
     )
 {
+    RX_WAKES Wakes;
     BOOLEAN bFalse = FALSE;
     BOOLEAN bTrue = TRUE;
     ULONG i;
 
+    Wakes.Count = 0;
     FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
     FILTER_ACQUIRE_LOCK(&Filter->RxRing.Lock, bTrue);
     for (i = 0; i < RX_RINGS_PER_FILTER; i++)
     {
         if (Filter->RxRing.Rings[i] != NULL)
         {
-            rxSignalDetachedLocked(Filter->RxRing.Rings[i]);
+            rxSignalDetachedLocked(Filter->RxRing.Rings[i], &Wakes);
             Filter->RxRing.Rings[i]->Filter = NULL;
             Filter->RxRing.Rings[i] = NULL;
         }
     }
     Filter->RxRing.Count = 0;
+    rxPortsLocked(&Filter->RxRing);
     FILTER_RELEASE_LOCK(&Filter->RxRing.Lock, bTrue);
     FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
+    rxWake(&Wakes);
 }
 
 _Use_decl_annotations_
@@ -119,98 +200,146 @@ rxRingFilterTeardown(
 
 // ---- the receive path ------------------------------------------------
 
-// Under the RX ring lock: the attached rings' sinks, and whether any steals.
-static ULONG
-rxSinksLocked(
-    _In_ PRX_FILTER_RINGS Rings,
-    _Out_writes_(RX_RINGS_PER_FILTER) struct pacer_rx_sink **Sinks,
-    _Out_ PBOOLEAN Steal
+// One receive indication's context for the chain work (core/rx_ring.c).
+typedef struct _RX_RECEIVE
+{
+    PMS_FILTER                      Filter;
+    ULONG                           ReceiveFlags;
+    BOOLEAN                         DispatchLevel;
+} RX_RECEIVE, *PRX_RECEIVE;
+
+static void *
+rxNblNext(
+    _In_ void *Node
     )
 {
-    ULONG Count = 0;
-    ULONG i;
-    *Steal = FALSE;
-    for (i = 0; i < RX_RINGS_PER_FILTER; i++)
-    {
-        if (Rings->Rings[i] != NULL)
-        {
-            Sinks[Count++] = &Rings->Rings[i]->Sink;
-            if (Rings->Rings[i]->Sink.steal)
-            {
-                *Steal = TRUE;
-            }
-        }
-    }
-    return Count;
+    return NET_BUFFER_LIST_NEXT_NBL((PNET_BUFFER_LIST)Node);
 }
 
-// Under the RX ring lock: the readers that asked for a wake get their event,
-// once per sleep (the ring's wake word, cleared by the producer).
+static void
+rxNblSetNext(
+    _In_ void *Node,
+    _In_opt_ void *Next
+    )
+{
+    NET_BUFFER_LIST_NEXT_NBL((PNET_BUFFER_LIST)Node) = (PNET_BUFFER_LIST)Next;
+}
+
+// What the NIC said about a received NBL: a VLAN tag it took off (Dante
+// legs are untagged on every PC: owner, 18.11.2026), a bad IP or UDP
+// checksum.
 static VOID
-rxWakeLocked(
-    _In_ PRX_FILTER_RINGS Rings
+rxNblFlags(
+    _In_ PNET_BUFFER_LIST Nbl,
+    _Inout_ struct pacer_rx_packet *Packet
     )
 {
-    ULONG i;
-    for (i = 0; i < RX_RINGS_PER_FILTER; i++)
+    NDIS_NET_BUFFER_LIST_8021Q_INFO Vlan;
+    NDIS_TCP_IP_CHECKSUM_NET_BUFFER_LIST_INFO Checksum;
+
+    Vlan.Value = NET_BUFFER_LIST_INFO(Nbl, Ieee8021QNetBufferListInfo);
+    if (Vlan.TagHeader.VlanId != 0)
     {
-        PRX_RING Ring = Rings->Rings[i];
-        if (Ring != NULL && Ring->Sink.wake)
-        {
-            Ring->Sink.wake = 0;
-            if (Ring->Event != NULL)
-            {
-                KeSetEvent(Ring->Event, IO_NO_INCREMENT, FALSE);
-            }
-        }
+        Packet->flags |= PACER_RX_PKT_TAGGED;
+    }
+    Checksum.Value = NET_BUFFER_LIST_INFO(Nbl, TcpIpChecksumNetBufferListInfo);
+    if (Checksum.Receive.IpChecksumFailed || Checksum.Receive.UdpChecksumFailed)
+    {
+        Packet->flags |= PACER_RX_PKT_BAD_CSUM;
     }
 }
 
-// Under the RX ring lock: one received NBL (one Ethernet frame) offered to
-// the sinks. Its headers decide (pacer_rx_parse, then the match tables);
-// only a frame some ring wants is read whole. Returns TRUE when it must not
-// go up (stolen).
-static BOOLEAN
-rxOfferLocked(
-    _In_ PMS_FILTER Filter,
-    _In_reads_(Count) struct pacer_rx_sink **Sinks,
-    _In_ ULONG Count,
-    _In_ PNET_BUFFER_LIST Nbl,
-    _In_ ULONG64 Now
+// One received NBL (one Ethernet frame) offered to the rings. Its headers
+// are read into this stack and parsed with no lock; the RX ring lock is
+// taken only for a frame on a port some table names, the whole frame read
+// only for one a table matches. Returns 1 when it must not go up (stolen).
+static int
+rxNblOffer(
+    _In_ void *Context,
+    _In_ void *Node
     )
 {
+    PRX_RECEIVE Receive = (PRX_RECEIVE)Context;
+    PRX_FILTER_RINGS Rings = &Receive->Filter->RxRing;
+    PNET_BUFFER_LIST Nbl = (PNET_BUFFER_LIST)Node;
+    PNET_BUFFER Nb = NET_BUFFER_LIST_FIRST_NB(Nbl);
     UCHAR Storage[PACER_HEADER_BYTES];
     struct pacer_rx_packet Packet;
-    PNET_BUFFER Nb = NET_BUFFER_LIST_FIRST_NB(Nbl);
+    struct pacer_rx_sink *Sinks[RX_RINGS_PER_FILTER];
+    RX_WAKES Wakes;
     PUCHAR Header;
     PUCHAR Frame = NULL;
     ULONG Length;
     ULONG Avail;
+    ULONG Count;
+    ULONG64 Qpc;
+    ULONG64 Now;
+    ULONG i;
+    int Take = 0;
 
     // A received Ethernet frame is one NET_BUFFER; anything else goes up.
     if (Nb == NULL || NET_BUFFER_NEXT_NB(Nb) != NULL)
     {
-        return FALSE;
+        return 0;
     }
     Length = NET_BUFFER_DATA_LENGTH(Nb);
     Avail = Length < PACER_HEADER_BYTES ? Length : PACER_HEADER_BYTES;
     if (Avail == 0)
     {
-        return FALSE;
+        return 0;
     }
     Header = (PUCHAR)NdisGetDataBuffer(Nb, Avail, Storage, 1, 0);
     if (Header == NULL || !pacer_rx_parse(Header, Avail, Length, &Packet) ||
-        !pacer_rx_wanted(Sinks, Count, &Packet))
+        !pacer_rx_ports_has(&Rings->Ports, Packet.dst_port))
     {
-        return FALSE;
+        return 0;
     }
-    if (Length <= PACER_RX_MAX_FRAME)
+    rxNblFlags(Nbl, &Packet);
+    // This frame's own receive time.
+    Now = KeQueryInterruptTimePrecise(&Qpc);
+    Wakes.Count = 0;
+
+    FILTER_ACQUIRE_LOCK(&Rings->Lock, Receive->DispatchLevel);
+    Count = rxSinksLocked(Rings, Sinks);
+    if (Count != 0 && pacer_rx_wanted(Sinks, Count, &Packet))
     {
-        // NULL (unreadable) is counted with the too big ones and goes up.
-        Frame = (PUCHAR)NdisGetDataBuffer(Nb, Length, Filter->RxRing.Scratch, 1, 0);
+        if (Length <= PACER_RX_MAX_FRAME &&
+            (Packet.flags & (PACER_RX_PKT_TAGGED | PACER_RX_PKT_BAD_CSUM)) == 0)
+        {
+            // NULL (unreadable) is counted with the too big ones and goes up.
+            Frame = (PUCHAR)NdisGetDataBuffer(Nb, Length, Rings->Scratch, 1, 0);
+        }
+        Take = pacer_rx_deliver(Sinks, Count, &Packet, Frame, Length, Now);
+        for (i = 0; i < RX_RINGS_PER_FILTER; i++)
+        {
+            PRX_RING Ring = Rings->Rings[i];
+            if (Ring != NULL && Ring->Sink.wake)
+            {
+                Ring->Sink.wake = 0;
+                rxWakeLater(Ring, &Wakes);
+            }
+        }
     }
-    return pacer_rx_deliver(Sinks, Count, &Packet, Frame, Length, Now) != 0 ? TRUE : FALSE;
+    FILTER_RELEASE_LOCK(&Rings->Lock, Receive->DispatchLevel);
+    rxWake(&Wakes);
+    return Take;
 }
+
+// Up to tcpip: `Count` NBLs from `Head` (a run of kept ones, or the whole
+// chain), with the indication's own flags.
+static void
+rxNblIndicate(
+    _In_ void *Context,
+    _In_ void *Head,
+    _In_ ULONG Count
+    )
+{
+    PRX_RECEIVE Receive = (PRX_RECEIVE)Context;
+    NdisFIndicateReceiveNetBufferLists(Receive->Filter->FilterHandle, (PNET_BUFFER_LIST)Head,
+                                       NDIS_DEFAULT_PORT_NUMBER, Count, Receive->ReceiveFlags);
+}
+
+static const struct pacer_rx_chain_ops RxNblOps = { rxNblNext, rxNblSetNext, rxNblOffer, rxNblIndicate };
 
 _Use_decl_annotations_
 BOOLEAN
@@ -223,102 +352,47 @@ rxRingReceive(
     )
 {
     PRX_FILTER_RINGS Rings = &Filter->RxRing;
-    struct pacer_rx_sink *Sinks[RX_RINGS_PER_FILTER];
-    BOOLEAN DispatchLevel;
-    BOOLEAN Steal = FALSE;
-    ULONG Count;
-    ULONG64 Qpc;
-    ULONG64 Now;
-    PNET_BUFFER_LIST Nbl;
-    PNET_BUFFER_LIST Next;
+    RX_RECEIVE Receive;
 
-    // No ring (the switch off, or none open): this read and nothing else.
-    if (Rings->Count == 0 || PortNumber != NDIS_DEFAULT_PORT_NUMBER)
+    // No ring (the switch off, or none open), or no ring naming a port:
+    // these reads and nothing else, no lock.
+    if (Rings->Count == 0 || *(volatile ULONG *)&Rings->Ports.count == 0 ||
+        PortNumber != NDIS_DEFAULT_PORT_NUMBER)
     {
         return FALSE;
     }
-    DispatchLevel = NDIS_TEST_RECEIVE_AT_DISPATCH_LEVEL(ReceiveFlags);
-    Now = KeQueryInterruptTimePrecise(&Qpc);
+    Receive.Filter = Filter;
+    Receive.ReceiveFlags = ReceiveFlags;
+    Receive.DispatchLevel = NDIS_TEST_RECEIVE_AT_DISPATCH_LEVEL(ReceiveFlags);
 
-    FILTER_ACQUIRE_LOCK(&Rings->Lock, DispatchLevel);
-    Count = rxSinksLocked(Rings, Sinks, &Steal);
-    if (!Steal || NDIS_TEST_RECEIVE_CAN_PEND(ReceiveFlags))
+    if (NDIS_TEST_RECEIVE_CAN_PEND(ReceiveFlags))
     {
-        // One pass under the lock. Copy mode only: the chain goes on
-        // untouched. Stealing and the NBLs may pend: the stolen ones are
-        // taken out (order kept) and go back to the miniport now.
-        PNET_BUFFER_LIST Keep = NULL;
-        PNET_BUFFER_LIST *KeepTail = &Keep;
-        PNET_BUFFER_LIST Stolen = NULL;
-        PNET_BUFFER_LIST *StolenTail = &Stolen;
-        ULONG KeepCount = 0;
-
-        for (Nbl = *NetBufferLists; Nbl != NULL; Nbl = Next)
+        // The stolen NBLs are taken out (the chain untouched when none is)
+        // and go back to the miniport now; the rest goes on.
+        void *Taken;
+        ULONG Kept;
+        PNET_BUFFER_LIST Keep = (PNET_BUFFER_LIST)pacer_rx_split(*NetBufferLists, &RxNblOps, &Receive,
+                                                                 &Taken, &Kept);
+        if (Taken != NULL)
         {
-            BOOLEAN Take;
-            Next = NET_BUFFER_LIST_NEXT_NBL(Nbl);
-            Take = (Count != 0 && rxOfferLocked(Filter, Sinks, Count, Nbl, Now)) ? TRUE : FALSE;
-            if (!Steal)
-            {
-                continue;
-            }
-            NET_BUFFER_LIST_NEXT_NBL(Nbl) = NULL;
-            if (Take)
-            {
-                *StolenTail = Nbl;
-                StolenTail = &NET_BUFFER_LIST_NEXT_NBL(Nbl);
-            }
-            else
-            {
-                *KeepTail = Nbl;
-                KeepTail = &NET_BUFFER_LIST_NEXT_NBL(Nbl);
-                KeepCount++;
-            }
-        }
-        rxWakeLocked(Rings);
-        FILTER_RELEASE_LOCK(&Rings->Lock, DispatchLevel);
-        if (!Steal)
-        {
-            return FALSE;
-        }
-        if (Stolen != NULL)
-        {
-            NdisFReturnNetBufferLists(Filter->FilterHandle, Stolen,
-                                      DispatchLevel ? NDIS_RETURN_FLAGS_DISPATCH_LEVEL : 0);
+            NdisFReturnNetBufferLists(Filter->FilterHandle, (PNET_BUFFER_LIST)Taken,
+                                      Receive.DispatchLevel ? NDIS_RETURN_FLAGS_DISPATCH_LEVEL : 0);
         }
         *NetBufferLists = Keep;
-        *NumberOfNetBufferLists = KeepCount;
+        *NumberOfNetBufferLists = Kept;
         return Keep == NULL ? TRUE : FALSE;
     }
-    FILTER_RELEASE_LOCK(&Rings->Lock, DispatchLevel);
 
-    // Stealing, and the NBLs cannot pend (the miniport needs them back when
-    // this returns): NBL by NBL, each one that stays goes up alone, its own
-    // link cut for the call and restored right after, so the miniport gets
-    // its chain back as it was; a stolen one simply is not indicated.
+    // They cannot pend (the miniport needs its chain back as it was when
+    // this returns): every NBL is decided first, then the kept ones go up
+    // in runs (the whole chain when none was taken), each run's last link
+    // restored right after its indication.
     {
-        ULONG Indicated = 0;
-        for (Nbl = *NetBufferLists; Nbl != NULL; Nbl = Next)
-        {
-            BOOLEAN Take;
-            Next = NET_BUFFER_LIST_NEXT_NBL(Nbl);
-            FILTER_ACQUIRE_LOCK(&Rings->Lock, DispatchLevel);
-            Count = rxSinksLocked(Rings, Sinks, &Steal);
-            Take = (Count != 0 && rxOfferLocked(Filter, Sinks, Count, Nbl, Now)) ? TRUE : FALSE;
-            rxWakeLocked(Rings);
-            FILTER_RELEASE_LOCK(&Rings->Lock, DispatchLevel);
-            if (!Take)
-            {
-                NET_BUFFER_LIST_NEXT_NBL(Nbl) = NULL;
-                NdisFIndicateReceiveNetBufferLists(Filter->FilterHandle, Nbl, PortNumber, 1, ReceiveFlags);
-                NET_BUFFER_LIST_NEXT_NBL(Nbl) = Next;
-                Indicated++;
-            }
-        }
+        ULONG Indicated = pacer_rx_up_in_runs(*NetBufferLists, &RxNblOps, &Receive);
         // rxd's count of NBLs that went up at once.
-        FILTER_ACQUIRE_LOCK(&Filter->Lock, DispatchLevel);
+        FILTER_ACQUIRE_LOCK(&Filter->Lock, Receive.DispatchLevel);
         Filter->RxdInline += Indicated;
-        FILTER_RELEASE_LOCK(&Filter->Lock, DispatchLevel);
+        FILTER_RELEASE_LOCK(&Filter->Lock, Receive.DispatchLevel);
     }
     return TRUE;
 }
@@ -363,10 +437,12 @@ rxFilterLocked(
 }
 
 // Under FilterListLock: the ring off its filter (under the filter's RX ring
-// lock): no receive reaches it after this.
+// lock): no receive reaches it after this. Its reader's event goes into
+// Wakes, for the caller to set once it holds no lock.
 static VOID
 rxDetachLocked(
-    _In_ PRX_RING Ring
+    _In_ PRX_RING Ring,
+    _Inout_ PRX_WAKES Wakes
     )
 {
     PMS_FILTER Filter = Ring->Filter;
@@ -385,8 +461,9 @@ rxDetachLocked(
             Filter->RxRing.Count--;
         }
     }
-    rxSignalDetachedLocked(Ring);
+    rxSignalDetachedLocked(Ring, Wakes);
     Ring->Filter = NULL;
+    rxPortsLocked(&Filter->RxRing);
     FILTER_RELEASE_LOCK(&Filter->RxRing.Lock, bTrue);
 }
 
@@ -468,6 +545,7 @@ rxAttachLocked(
             Filter->RxRing.Rings[i] = Ring;
             Filter->RxRing.Count++;
             Ring->Filter = Filter;
+            rxPortsLocked(&Filter->RxRing);
             Status = STATUS_SUCCESS;
             break;
         }
@@ -546,13 +624,15 @@ rxRingOpen(
     {
         // Whole pages (a large pool block is page aligned, and the size is
         // a multiple of a page): the mapping shows the caller nothing else.
+        // ExAllocatePool2 zeroes them (no POOL_FLAG_UNINITIALIZED), so the
+        // ring's init writes only its header.
         Ring->Memory = ExAllocatePool2(POOL_FLAG_NON_PAGED, Bytes, RX_RING_TAG);
         if (Ring->Memory == NULL || ((ULONG_PTR)Ring->Memory & (PAGE_SIZE - 1)) != 0 ||
             (Bytes & (PAGE_SIZE - 1)) != 0)
         {
             break;
         }
-        (void)pacer_rx_ring_init(&Ring->Sink.ring, (PUCHAR)Ring->Memory, Open.SlotCount);
+        (void)pacer_rx_ring_init(&Ring->Sink.ring, (PUCHAR)Ring->Memory, Open.SlotCount, 1);
         Ring->Mdl = IoAllocateMdl(Ring->Memory, Bytes, FALSE, FALSE, NULL);
         if (Ring->Mdl == NULL)
         {
@@ -648,7 +728,8 @@ rxRingMatch(
     Ring = rxFindLocked(IrpSp->FileObject);
     if (Ring != NULL)
     {
-        // The whole table at once, under the RX ring lock while attached.
+        // The whole table at once, under the RX ring lock while attached,
+        // and the ports the receive path looks at with it.
         PMS_FILTER Filter = Ring->Filter;
         if (Filter != NULL)
         {
@@ -657,6 +738,7 @@ rxRingMatch(
         (void)pacer_rx_set_match(&Ring->Sink, Table, Count);
         if (Filter != NULL)
         {
+            rxPortsLocked(&Filter->RxRing);
             FILTER_RELEASE_LOCK(&Filter->RxRing.Lock, bTrue);
         }
     }
@@ -671,9 +753,11 @@ rxRingClose(
     )
 {
     PRX_RING Ring;
+    RX_WAKES Wakes;
     BOOLEAN bFalse = FALSE;
     NTSTATUS Status = STATUS_SUCCESS;
 
+    Wakes.Count = 0;
     FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
     Ring = rxFindLocked(IrpSp->FileObject);
     if (Ring == NULL)
@@ -687,10 +771,11 @@ rxRingClose(
     }
     else
     {
-        rxDetachLocked(Ring);
+        rxDetachLocked(Ring, &Wakes);
         RemoveEntryList(&Ring->Link);
     }
     FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
+    rxWake(&Wakes);
     if (NT_SUCCESS(Status))
     {
         rxRingFree(Ring, TRUE);
@@ -705,16 +790,19 @@ rxRingCleanup(
     )
 {
     PRX_RING Ring;
+    RX_WAKES Wakes;
     BOOLEAN bFalse = FALSE;
 
+    Wakes.Count = 0;
     FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
     Ring = rxFindLocked(FileObject);
     if (Ring != NULL)
     {
-        rxDetachLocked(Ring);
+        rxDetachLocked(Ring, &Wakes);
         RemoveEntryList(&Ring->Link);
     }
     FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
+    rxWake(&Wakes);
     if (Ring != NULL)
     {
         rxRingFree(Ring, Ring->Process == IoGetCurrentProcess());
@@ -764,6 +852,8 @@ rxRingStatus(
         Out->Full = Ring->Sink.full;
         Out->Stolen = Ring->Sink.stolen;
         Out->TooBig = Ring->Sink.too_big;
+        Out->Tagged = Ring->Sink.tagged;
+        Out->BadChecksum = Ring->Sink.bad_csum;
         if (Filter != NULL)
         {
             FILTER_RELEASE_LOCK(&Filter->RxRing.Lock, bTrue);

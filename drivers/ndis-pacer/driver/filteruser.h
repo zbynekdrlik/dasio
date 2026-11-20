@@ -60,6 +60,15 @@
 // while the service's Parameters\RxRingEnable is 0 (the default), and an
 // older filter answers these codes with success and no output: check the
 // output's size.
+// The reader's contract:
+// - open the device handle non-inheritable (no child process may hold a
+//   duplicate of it);
+// - stop reading before RX_CLOSE or closing the handle: the mapping goes
+//   away at once;
+// - a second RX_OPEN on the same handle needs RX_CLOSE first;
+// - a ring whose owner process is gone while a duplicated handle lives on
+//   (an orphan) stays attached, and in steal mode keeps its flows from
+//   tcpip, until that handle closes.
 #define IOCTL_DASIO_RX_OPEN                 CTL_CODE(FILE_DEVICE_PHYSICAL_NETCARD, 23, METHOD_BUFFERED, FILE_WRITE_ACCESS)
 #define IOCTL_DASIO_RX_MATCH                CTL_CODE(FILE_DEVICE_PHYSICAL_NETCARD, 24, METHOD_BUFFERED, FILE_WRITE_ACCESS)
 #define IOCTL_DASIO_RX_CLOSE                CTL_CODE(FILE_DEVICE_PHYSICAL_NETCARD, 25, METHOD_BUFFERED, FILE_WRITE_ACCESS)
@@ -287,6 +296,9 @@ typedef struct _DASIO_RXD_STATUS
 // Copy mode (default): a matched frame goes into the ring and up to tcpip
 // as before. DASIO_RX_STEAL: a frame every matching ring steals does not
 // go up (a full ring drops it: Full); one longer than a slot always goes up.
+// A tagged frame (a VLAN tag in it, or a non-zero VLAN ID the NIC took off)
+// or one whose IP or UDP checksum the NIC found bad never goes into a
+// ring and always goes up (Tagged, BadChecksum).
 #define DASIO_RX_STEAL                      0x00000001u
 #define DASIO_RX_FLAGS                      DASIO_RX_STEAL
 typedef struct _DASIO_RX_OPEN
@@ -307,9 +319,10 @@ typedef struct _DASIO_RX_OPENED
 
 // The ring's whole match table, replaced at once: Count entries (0..16)
 // of a destination IPv4 address (as on the wire, a.b.c.d) and UDP port
-// (a number, not 0). Address 0.0.0.0: any unicast address on that port
-// (another host's flooded unicast too: name this PC's own address to
-// exclude it); a multicast group matches only itself. Only the first
+// (a number, not 0). Address 0.0.0.0: any unicast address on that port in
+// a frame to a unicast MAC (never a subnet broadcast; another host's
+// flooded unicast too: name this PC's own address to exclude it); a
+// multicast group matches only itself. Only the first
 // Count entries need to be in the input; every Reserved field 0.
 #define DASIO_RX_MAX_MATCHES                16
 typedef struct _DASIO_RX_MATCH_ENTRY
@@ -327,8 +340,9 @@ typedef struct _DASIO_RX_MATCH
 } DASIO_RX_MATCH, *PDASIO_RX_MATCH;
 
 // One open ring, read under its adapter's RX ring lock. All fields 64
-// bit, read in this order.
-#define DASIO_RX_STATUS_VERSION             1
+// bit, read in this order. Version 2: Tagged and BadChecksum (version 1,
+// without them, never left dev).
+#define DASIO_RX_STATUS_VERSION             2
 typedef struct _DASIO_RX_STATUS
 {
     ULONG64         Version;
@@ -337,11 +351,13 @@ typedef struct _DASIO_RX_STATUS
     ULONG64         Flags;
     ULONG64         SlotCount;
     ULONG64         Matches;          // entries in its match table
-    ULONG64         Matched;          // frames its table matched
+    ULONG64         Matched;          // frames its table matched: Delivered + Full + TooBig
     ULONG64         Delivered;        // put into the ring
     ULONG64         Full;             // not put: every slot unread
     ULONG64         Stolen;           // kept from tcpip (steal mode)
     ULONG64         TooBig;           // not put: longer than a slot, or unreadable
+    ULONG64         Tagged;           // its table named it, but it was VLAN-tagged: up, not put
+    ULONG64         BadChecksum;      // its table named it, but its checksum was bad: up, not put
 } DASIO_RX_STATUS, *PDASIO_RX_STATUS;
 
 #endif //__FILTERUSER_H__

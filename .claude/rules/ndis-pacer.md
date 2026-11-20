@@ -49,10 +49,38 @@ paths:
   with RxdEnable when the driver loads: a reinstall or reboot applies it, a
   NIC pause does not). Off: `IOCTL_DASIO_RX_OPEN` answers
   STATUS_NOT_SUPPORTED and the receive path reads one count.
-- The decisions (parse, match, the ring's producer, steal or not) are
+- Every Parameters value (RxdEnable, RxdCpu, TxMaxOut, RxRingEnable) is
+  read in a query of its own (`pacer_params_read`): a value of another
+  type (`reg add` without `/t` makes a REG_SZ) turns off only its own
+  feature, logged with DbgPrintEx (DebugView with kernel capture). In one
+  shared query it had turned rxd off and left media TX unbounded.
+- The decisions (parse, match, the ring's producer, steal or not, the port
+  set, the NBL chain work through a next-linked node) are
   `core/rx_ring.c`, host-tested and fuzzed in `pacer-core` (100 % of its
   lines); the NDIS/IOCTL glue is `driver/rxring.c`. filter.c and device.c
-  get only hook calls. Ring layout: `core/rx_ring.h`.
+  get only hook calls. Ring layout: `core/rx_ring.h`. The MSVC host test
+  compiles the same interlocked branch the x64 driver runs (one `_MSC_VER`
+  branch for both); ARM64's `__ldar64` load has no CI build.
+- The receive path parses each frame on the stack with no lock; it takes
+  the RX ring lock only for a frame on a port some ring's table names
+  (`pacer_rx_ports`, rebuilt under the lock), and does nothing while no
+  ring names a port. Each frame gets its own receive time. Readers' events
+  are set after the lock, through a reference of their own.
+- Dante legs are untagged on every PC (owner, 18.11.2026): a frame with a
+  VLAN tag in it, or a non-zero VLAN ID the NIC took off, never goes into
+  a ring (status Tagged); nor does one whose IP or UDP checksum the NIC
+  found bad (BadChecksum). Both go up as ever. A 0.0.0.0 entry matches
+  only a frame to a unicast MAC (never a subnet broadcast).
+- Steal mode: NBLs that may pend are split (stolen ones returned to the
+  miniport, the chain untouched when none is); a chain that cannot pend is
+  decided whole, then the kept NBLs go up in runs of consecutive ones
+  (the whole chain when none was taken), each run's last link restored
+  right after, 64 NBLs a segment.
+- The reader's contract (filteruser.h): a non-inheritable handle; stop
+  reading before RX_CLOSE or the handle's close (the mapping goes at
+  once); RX_CLOSE before a second RX_OPEN on one handle; an orphan (owner
+  gone, a duplicated handle alive) stays attached until that handle
+  closes.
 - A ring belongs to its handle and its process: mapped in RX_OPEN's
   context, unmapped in RX_CLOSE (owner only) or IRP_MJ_CLEANUP. A last
   close from another process leaves the memory allocated and mapped (a
@@ -66,8 +94,7 @@ paths:
 - Verify on mbc first (the trial PC; dsg is PP's production bridge since
   18.11, no trials there), copy mode: Delivered = the flow's packets,
   Full 0, the ring's times against dstack's arrivals, and the longest DPC
-  of `dasiopacer.sys` with a ring open (the RX ring lock is held while a
-  whole indication is parsed); then steal. A filter reinstall rebinds the
+  of `dasiopacer.sys` with a ring open; then steal. A filter reinstall rebinds the
   NIC, and mbc's only NIC carries the remote path: a dead-man script at a
   fixed time, or someone at mbc. FOH only with someone on site.
 - `pacer-driver` needs `pacer-core`: an MSVC warning in a host test skips

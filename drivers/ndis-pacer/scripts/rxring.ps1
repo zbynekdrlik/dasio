@@ -1,8 +1,9 @@
 # dasio NDIS filter: kernel RX rings (dasio#27, B23). Each open ring: the
 # adapter, whether it is attached (0 after a pause or detach of the filter:
 # the reader reopens), its mode (Flags 1 = steal), slots, match entries and
-# what it counted. Nothing when no ring is open (RxRingEnable 0, the
-# default, or no reader), or on an older filter. Run as administrator.
+# what it counted (status version 2: Tagged and BadChecksum last). Nothing
+# when no ring is open (RxRingEnable 0, the default, or no reader), or on an
+# older filter. Run as administrator.
 #   .\rxring.ps1 status
 param(
     [Parameter(Mandatory, Position = 0)][ValidateSet("status")][string]$Action
@@ -38,7 +39,7 @@ public static class DasioRxRing {
 switch ($Action) {
     "status" {
         # The fields of DASIO_RX_STATUS (filteruser.h), in order.
-        $names = "Version", "IfIndex", "Attached", "Flags", "SlotCount", "Matches", "Matched", "Delivered", "Full", "Stolen", "TooBig"
+        $names = "Version", "IfIndex", "Attached", "Flags", "SlotCount", "Matches", "Matched", "Delivered", "Full", "Stolen", "TooBig", "Tagged", "BadChecksum"
         $raw = [DasioRxRing]::Call([DasioRxRing]::STATUS, 8 * $names.Count * 64)
         $v = New-Object Int64[] ($raw.Length / 8)
         [Buffer]::BlockCopy($raw, 0, $v, 0, $raw.Length)

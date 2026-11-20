@@ -1,8 +1,8 @@
 /*
  * dasio kernel RX (dasio#27, B23): the NDIS glue of the RX rings
- * (rxring.c). The decisions and the ring's producer are portable C in
- * ../core/rx_ring.c; this side owns the memory, the mapping into the dasio
- * process, the IOCTLs and the hook in the receive path.
+ * (rxring.c). The decisions, the ring's producer and the chain work are
+ * portable C in ../core/rx_ring.c; this side owns the memory, the mapping
+ * into the dasio process, the IOCTLs and the hook in the receive path.
  */
 #ifndef RXRING_DRIVER_H
 #define RXRING_DRIVER_H
@@ -15,10 +15,11 @@
 
 typedef struct _RX_RING RX_RING, *PRX_RING;
 
-// One filter's rings (MS_FILTER.RxRing). Rings, Count and every attached
-// ring's sink (table, counters, producer) are under Lock, the RX ring lock;
-// the receive path takes it, never the filter's Lock. Lock order:
-// FilterListLock, then this Lock.
+// One filter's rings (MS_FILTER.RxRing). Rings, Count, Ports and every
+// attached ring's sink (table, counters, producer) are written under Lock,
+// the RX ring lock; the receive path takes it only for a frame on a port a
+// ring names, never the filter's Lock. Lock order: FilterListLock, then
+// this Lock.
 typedef struct _RX_FILTER_RINGS
 {
     FILTER_LOCK                     Lock;
@@ -26,6 +27,10 @@ typedef struct _RX_FILTER_RINGS
     // (the switch off, or no ring open) means nothing more is done.
     volatile LONG                   Count;
     PRX_RING                        Rings[RX_RINGS_PER_FILTER];
+    // Every attached ring's table ports, read without the lock: a frame on
+    // another port is never offered, and with none (count 0, every table
+    // empty) the receive path does nothing.
+    struct pacer_rx_ports           Ports;
     // A whole received frame, when its NET_BUFFER is not contiguous
     // (under Lock).
     UCHAR                           Scratch[PACER_RX_MAX_FRAME];
@@ -53,8 +58,9 @@ VOID rxRingDetachAll(_Inout_ struct _MS_FILTER *Filter);
 // FilterReceiveNetBufferLists, before anything else: a frame of our flows
 // goes into each matching ring. Returns TRUE when the call is done with
 // the chain (every NBL was stolen and returned, or a chain that cannot
-// pend went up from here); FALSE: *NetBufferLists (*Count of them, the
-// stolen ones taken out) go on as before.
+// pend went up from here, in runs); FALSE: *NetBufferLists (*Count of
+// them, the stolen ones taken out, the chain untouched when none was) go
+// on as before.
 BOOLEAN rxRingReceive(_In_ struct _MS_FILTER *Filter, _Inout_ PNET_BUFFER_LIST *NetBufferLists,
                       _Inout_ PULONG Count, _In_ NDIS_PORT_NUMBER PortNumber, _In_ ULONG ReceiveFlags);
 

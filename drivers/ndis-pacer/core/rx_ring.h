@@ -7,8 +7,10 @@
  * a frame whose (destination IPv4, destination UDP port) is in a ring's
  * match table is copied into that ring, a block of memory shared with
  * the dasio process, with its receive time. The NDIS glue
- * (driver/rxring.c) calls these functions under the filter's RX ring
- * lock.
+ * (driver/rxring.c) parses each frame outside any lock and takes the
+ * filter's RX ring lock only for a frame whose port a ring names; the
+ * chain work (which NBLs go up, in what pieces) is here too, on any
+ * next-linked node.
  *
  * The ring (little endian), as the reader in user mode sees it:
  *
@@ -73,7 +75,20 @@
 /* Entries of one ring's match table at most. */
 #define PACER_RX_MAX_MATCHES 16u
 
-/* One received UDP packet's addresses and where its payload is. */
+/* What a packet's flags say. */
+/* A VLAN tag: in the frame (pacer_rx_parse) or taken off by the NIC (the
+ * caller, from the NBL's 802.1Q info). Dante legs are untagged on every
+ * PC (owner, 18.11.2026): a tagged frame never goes into a ring. */
+#define PACER_RX_PKT_TAGGED 1u
+/* The Ethernet destination is a group address (I/G bit): multicast or
+ * broadcast. */
+#define PACER_RX_PKT_ETH_GROUP 2u
+/* The NIC found a bad IP or UDP checksum (the caller, from the NBL's
+ * checksum info): never put into a ring, never kept from tcpip. */
+#define PACER_RX_PKT_BAD_CSUM 4u
+
+/* One received UDP packet's addresses, where its payload is, and its
+ * flags. */
 struct pacer_rx_packet {
     uint8_t src_ip[4];
     uint8_t dst_ip[4];
@@ -82,20 +97,25 @@ struct pacer_rx_packet {
     /* From the frame's first byte. */
     uint32_t payload_off;
     uint32_t payload_len;
+    uint32_t flags;
 };
 
 /* Reads the headers of a frame of `frame_len` bytes from its first
  * `avail` bytes (`avail` <= `frame_len`; only those are read). Returns 1
- * and fills `p` for Ethernet II, 0 to 2 VLAN tags (0x8100 / 0x88A8),
- * IPv4 (version 4, header 20..60 bytes), not a fragment (MF clear,
- * offset 0), UDP, with the IP total length inside the frame and the UDP
- * length (at least 8) inside the IP payload; the payload is the UDP
- * length's. 0 for anything else, or when a header lies past `avail`. */
+ * and fills `p` for Ethernet II, IPv4 (version 4, header 20..60 bytes),
+ * not a fragment (MF clear, offset 0), UDP, with the IP total length
+ * inside the frame and the UDP length (at least 8) inside the IP
+ * payload; the payload is the UDP length's. Up to 2 VLAN tags (0x8100 /
+ * 0x88A8) are read past so a tagged frame of a flow can be counted, and
+ * set PACER_RX_PKT_TAGGED; the Ethernet group bit sets
+ * PACER_RX_PKT_ETH_GROUP. 0 for anything else, or when a header lies
+ * past `avail`. */
 int pacer_rx_parse(const uint8_t *hdr, uint32_t avail, uint32_t frame_len, struct pacer_rx_packet *p);
 
 /* One match entry: a destination IPv4 address (as on the wire) and UDP
- * port. Address 0.0.0.0 matches any unicast destination on that port: the
- * flows sent to this PC's address, but also another host's unicast that a
+ * port. Address 0.0.0.0 matches any unicast destination on that port
+ * (Ethernet unicast too, so a subnet broadcast never matches): the flows
+ * sent to this PC's address, but also another host's unicast that a
  * switch floods to this NIC (read the slot's destination, or name the
  * PC's own address instead). A multicast group (224.0.0.0/4) or the
  * broadcast address 255.255.255.255 matches only an entry naming it. */
@@ -128,10 +148,12 @@ struct pacer_rx_ring {
  * PACER_RX_MAX_SLOTS. */
 uint32_t pacer_rx_ring_bytes(uint32_t slots);
 
-/* Zeroes the whole ring at `base` (nothing of the memory's earlier
- * contents reaches the reader), writes its header and sets up `r`.
- * Returns 1, or 0 when `slots` is not valid (nothing written). */
-int pacer_rx_ring_init(struct pacer_rx_ring *r, uint8_t *base, uint32_t slots);
+/* Writes the header of a ring at `base` and sets up `r`. Nothing of the
+ * memory's earlier contents may reach the reader: `zeroed` 1 says the
+ * caller's allocator zeroed it (the driver's ExAllocatePool2), else the
+ * whole ring is zeroed here first. Returns 1, or 0 when `slots` is not
+ * valid (nothing written). */
+int pacer_rx_ring_init(struct pacer_rx_ring *r, uint8_t *base, uint32_t slots, int zeroed);
 
 /* Tells the reader the ring is detached: the header's detached word
  * becomes 1 (the caller then sets the reader's event). */
@@ -163,11 +185,16 @@ struct pacer_rx_sink {
     /* Set to 1 by pacer_rx_deliver when the reader asked for a wake; the
      * caller sets the reader's event and clears it. */
     int wake;
+    /* matched = delivered + full + too_big. */
     uint64_t matched;
     uint64_t delivered;
     uint64_t full;
     uint64_t stolen;
     uint64_t too_big;
+    /* Its table named the packet, but it was tagged or its checksum bad:
+     * not put, not kept from tcpip, not in matched. */
+    uint64_t tagged;
+    uint64_t bad_csum;
 };
 
 /* Replaces `s`'s match table with `count` entries of `table`. Returns 1,
@@ -180,13 +207,61 @@ int pacer_rx_wanted(struct pacer_rx_sink *const *sinks, uint32_t count, const st
 
 /* One received frame for `count` sinks: put into every sink whose table
  * matches (each counts it in matched, then in delivered, full or
- * too_big). `frame` holds the whole frame of `len` bytes, or is NULL when
- * the caller could not read it (counted as too big). Returns 1 when the
- * frame must not go up to tcpip: at least one sink matched, every
- * matching sink steals, and none counted it too big (each matching sink
- * then counts it in stolen; a full stealing ring drops it). 0: it goes
- * up as before. */
+ * too_big). A tagged packet or one with a bad checksum is only counted
+ * (tagged, bad_csum) in each sink whose table names it. `frame` holds the
+ * whole frame of `len` bytes, or is NULL when the caller could not read
+ * it (counted as too big). Returns 1 when the frame must not go up to
+ * tcpip: at least one sink matched, every matching sink steals, and none
+ * counted it too big (each matching sink then counts it in stolen; a full
+ * stealing ring drops it). 0: it goes up as before. */
 int pacer_rx_deliver(struct pacer_rx_sink *const *sinks, uint32_t count, const struct pacer_rx_packet *p,
                      const uint8_t *frame, uint32_t len, uint64_t time_100ns);
+
+/* The ports of every sink's table, for a look with no lock: a frame on
+ * another port is never offered (the lock is not taken for it). Rebuilt
+ * under the lock whenever a ring or a table changes; a reader racing a
+ * rebuild may miss a frame or take the lock for nothing, never more.
+ * count 0: no ring names any port (the receive path does nothing). */
+#define PACER_RX_MAX_PORTS 64u
+struct pacer_rx_ports {
+    uint16_t port[PACER_RX_MAX_PORTS];
+    uint32_t count;
+    /* More distinct ports than fit: every port is looked up. */
+    uint32_t any;
+};
+
+void pacer_rx_ports_build(struct pacer_rx_sink *const *sinks, uint32_t count, struct pacer_rx_ports *out);
+
+/* 1 when a sink's table may name `port`. */
+int pacer_rx_ports_has(const struct pacer_rx_ports *ports, uint16_t port);
+
+/* The chain work of the receive path, on any next-linked node (an NBL in
+ * the driver, a test's node on the host). */
+struct pacer_rx_chain_ops {
+    void *(*next)(void *node);
+    void (*set_next)(void *node, void *next);
+    /* Offers one node to the rings; 1 when it is kept from tcpip. */
+    int (*offer)(void *ctx, void *node);
+    /* Sends `count` linked nodes from `head` up (the last one's next is
+     * NULL during the call). */
+    void (*indicate)(void *ctx, void *head, uint32_t count);
+};
+
+/* Nodes that may pend: offers each node of `chain` once, in order, and
+ * splits it into the kept nodes (returned, `*kept_count` of them) and the
+ * taken ones (`*taken`, for the caller to give back), each in its
+ * original order and NULL-terminated. Links are written only from the
+ * first taken node on: with none taken the chain is untouched. */
+void *pacer_rx_split(void *chain, const struct pacer_rx_chain_ops *ops, void *ctx, void **taken,
+                     uint32_t *kept_count);
+
+/* Nodes that cannot pend (the miniport needs its chain back as it was):
+ * offers the nodes PACER_RX_SEGMENT at a time, then indicates the
+ * segment's runs of consecutive kept nodes, each as a chain of its own
+ * (its last link cut for the call and restored right after); taken nodes
+ * are not indicated. A chain of at most PACER_RX_SEGMENT nodes with none
+ * taken goes up whole and untouched. Returns the nodes indicated. */
+#define PACER_RX_SEGMENT 64u
+uint32_t pacer_rx_up_in_runs(void *chain, const struct pacer_rx_chain_ops *ops, void *ctx);
 
 #endif

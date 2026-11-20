@@ -214,4 +214,38 @@ uint32_t pacer_ktx_due(uint64_t start, uint64_t now, uint64_t interval_100ns, ui
  * than 4 or a header shorter than 20 bytes); `*at` then stays. */
 int pacer_tx_next(const uint8_t *buf, uint32_t len, uint32_t *at, uint32_t *frame_off, uint32_t *frame_len);
 
+/* The service's Parameters, read when the driver loads. Each value is
+ * read on its own (filter.c: one registry query per value), so a value
+ * that is there but unreadable (another type, e.g. a REG_SZ from `reg
+ * add` without /t) turns off only its own feature, never the others
+ * (dasio#27: one bad RxRingEnable in a shared query had turned rxd off
+ * and left media TX unbounded). */
+enum pacer_param {
+    PACER_PARAM_RXD_ENABLE = 0,
+    PACER_PARAM_RXD_CPU = 1,
+    PACER_PARAM_TX_MAX_OUT = 2,
+    PACER_PARAM_RX_RING_ENABLE = 3,
+    PACER_PARAM_COUNT = 4,
+};
+
+/* What a read gives: the value, nothing there (its default), or a value
+ * there that could not be read (its default, and its bit in `bad`). */
+#define PACER_PARAM_READ 1
+#define PACER_PARAM_MISSING 0
+#define PACER_PARAM_BAD (-1)
+
+struct pacer_params {
+    uint32_t rxd_enable;     /* 0 or 1, default 0 */
+    int32_t rxd_cpu;         /* default -1: the receiving CPU */
+    uint32_t tx_max_out;     /* 0..tx_slots, default 0: every slot */
+    uint32_t rx_ring_enable; /* 0 or 1, default 0 */
+    uint32_t bad;            /* bit (1 << enum pacer_param) per unreadable value */
+};
+
+/* Reads every parameter through `read` (one call per value; it returns
+ * one of PACER_PARAM_READ / _MISSING / _BAD and sets `*value` on READ).
+ * A TxMaxOut above `tx_slots` counts as 0 (every slot), as before. */
+void pacer_params_read(int (*read)(void *ctx, enum pacer_param which, uint32_t *value), void *ctx,
+                       uint32_t tx_slots, struct pacer_params *out);
+
 #endif

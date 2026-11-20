@@ -1,10 +1,19 @@
-/* dasio kernel RX: the decisions and the ring's producer (see rx_ring.h). */
+/* dasio kernel RX: the decisions, the ring's producer and the chain work
+ * (see rx_ring.h). */
 #if defined(_KERNEL_MODE)
-/* The interlocked operations, included as the driver's own files do
- * (ntddk.h brings wdm.h before pacer_core.h's types). */
+/* RtlCopyMemory / RtlZeroMemory, and the MSVC intrinsics below (wdm.h
+ * declares them; ntddk.h brings it before pacer_core.h's types in the
+ * driver's own files). */
 #include <wdm.h>
-#elif defined(_MSC_VER)
+#define rx_copy(to, from, n) RtlCopyMemory((to), (from), (n))
+#define rx_zero(to, n) RtlZeroMemory((to), (n))
+#else
+#include <string.h>
+#if defined(_MSC_VER)
 #include <intrin.h>
+#endif
+#define rx_copy(to, from, n) memcpy((to), (from), (n))
+#define rx_zero(to, n) memset((to), 0, (n))
 #endif
 
 #include "rx_ring.h"
@@ -19,41 +28,28 @@
 /* The shared words of the ring's header. The head store is a full
  * barrier (it orders the slot's bytes before it, and the read of wake
  * after it: no lost wake); the tail load orders the slot writes after
- * it and never writes the reader's word. */
-#if defined(_KERNEL_MODE)
-static void store_head(uint8_t *base, uint64_t v)
-{
-    (void)InterlockedExchange64((volatile LONG64 *)(base + PACER_RX_OFF_HEAD), (LONG64)v);
-}
-static uint64_t load_tail(uint8_t *base)
-{
-    return (uint64_t)ReadAcquire64((volatile LONG64 *)(base + PACER_RX_OFF_TAIL));
-}
-static uint32_t load_wake(uint8_t *base)
-{
-    return (uint32_t)(*(volatile LONG *)(base + PACER_RX_OFF_WAKE));
-}
-static uint32_t take_wake(uint8_t *base)
-{
-    return (uint32_t)InterlockedExchange((volatile LONG *)(base + PACER_RX_OFF_WAKE), 0);
-}
-static void store_detached(uint8_t *base)
-{
-    (void)InterlockedExchange((volatile LONG *)(base + PACER_RX_OFF_DETACHED), 1);
-}
-#elif defined(_MSC_VER)
+ * it and never writes the reader's word.
+ *
+ * MSVC: one branch for the driver and the host test, so the MSVC test
+ * job compiles and runs the very operations the x64 driver uses. */
+#if defined(_MSC_VER)
 static void store_head(uint8_t *base, uint64_t v)
 {
     (void)_InterlockedExchange64((volatile __int64 *)(base + PACER_RX_OFF_HEAD), (__int64)v);
 }
 static uint64_t load_tail(uint8_t *base)
 {
-    /* MSVC's volatile read has acquire semantics on x64 (/volatile:ms,
-     * its default there; the tests' compiler). */
+#if defined(_M_ARM64)
+    return (uint64_t)__ldar64((volatile unsigned __int64 *)(base + PACER_RX_OFF_TAIL));
+#else
+    /* x86/x64: a volatile read has acquire semantics (/volatile:ms, the
+     * compiler's default there, in the driver build too). */
     return *(volatile uint64_t *)(base + PACER_RX_OFF_TAIL);
+#endif
 }
 static uint32_t load_wake(uint8_t *base)
 {
+    /* After store_head's full barrier. */
     return (uint32_t)(*(volatile long *)(base + PACER_RX_OFF_WAKE));
 }
 static uint32_t take_wake(uint8_t *base)
@@ -107,14 +103,6 @@ static void le64(uint8_t *p, uint64_t v)
     le32(p + 4, (uint32_t)(v >> 32));
 }
 
-static void copy_bytes(uint8_t *to, const uint8_t *from, uint32_t n)
-{
-    uint32_t i;
-    for (i = 0; i < n; i++) {
-        to[i] = from[i];
-    }
-}
-
 int pacer_rx_parse(const uint8_t *hdr, uint32_t avail, uint32_t frame_len, struct pacer_rx_packet *p)
 {
     uint32_t at = 12;
@@ -154,12 +142,19 @@ int pacer_rx_parse(const uint8_t *hdr, uint32_t avail, uint32_t frame_len, struc
     if (total < ihl + UDP_HEADER || total > frame_len - at || udp_len < UDP_HEADER || udp_len > total - ihl) {
         return 0;
     }
-    copy_bytes(p->src_ip, hdr + at + 12, 4);
-    copy_bytes(p->dst_ip, hdr + at + 16, 4);
+    rx_copy(p->src_ip, hdr + at + 12, 4);
+    rx_copy(p->dst_ip, hdr + at + 16, 4);
     p->src_port = be16(hdr + udp);
     p->dst_port = be16(hdr + udp + 2);
     p->payload_off = udp + UDP_HEADER;
     p->payload_len = udp_len - UDP_HEADER;
+    p->flags = 0;
+    if (tags != 0) {
+        p->flags |= PACER_RX_PKT_TAGGED;
+    }
+    if ((hdr[0] & 1u) != 0) {
+        p->flags |= PACER_RX_PKT_ETH_GROUP;
+    }
     return 1;
 }
 
@@ -175,7 +170,7 @@ static int entry_matches(const struct pacer_rx_match_entry *e, const struct pace
         return 0;
     }
     if (any) {
-        return !is_multicast_or_broadcast(p->dst_ip);
+        return (p->flags & PACER_RX_PKT_ETH_GROUP) == 0 && !is_multicast_or_broadcast(p->dst_ip);
     }
     return e->addr[0] == p->dst_ip[0] && e->addr[1] == p->dst_ip[1] && e->addr[2] == p->dst_ip[2] &&
            e->addr[3] == p->dst_ip[3];
@@ -214,15 +209,14 @@ uint32_t pacer_rx_ring_bytes(uint32_t slots)
     return PACER_RX_HEADER_BYTES + slots * PACER_RX_SLOT_BYTES;
 }
 
-int pacer_rx_ring_init(struct pacer_rx_ring *r, uint8_t *base, uint32_t slots)
+int pacer_rx_ring_init(struct pacer_rx_ring *r, uint8_t *base, uint32_t slots, int zeroed)
 {
     uint32_t bytes = pacer_rx_ring_bytes(slots);
-    uint32_t i;
     if (bytes == 0) {
         return 0;
     }
-    for (i = 0; i < bytes; i++) {
-        base[i] = 0;
+    if (!zeroed) {
+        rx_zero(base, bytes);
     }
     le32(base + PACER_RX_OFF_MAGIC, PACER_RX_MAGIC);
     le32(base + PACER_RX_OFF_VERSION, PACER_RX_VERSION);
@@ -261,8 +255,8 @@ enum pacer_rx_put_result pacer_rx_put(struct pacer_rx_ring *r, const uint8_t *fr
     }
     slot = r->base + PACER_RX_HEADER_BYTES + (uint32_t)(r->head & (r->slots - 1u)) * PACER_RX_SLOT_BYTES;
     le64(slot, time_100ns);
-    copy_bytes(slot + 8, p->src_ip, 4);
-    copy_bytes(slot + 12, p->dst_ip, 4);
+    rx_copy(slot + 8, p->src_ip, 4);
+    rx_copy(slot + 12, p->dst_ip, 4);
     le16(slot + 16, p->src_port);
     le16(slot + 18, p->dst_port);
     le16(slot + 20, p->payload_off);
@@ -270,7 +264,7 @@ enum pacer_rx_put_result pacer_rx_put(struct pacer_rx_ring *r, const uint8_t *fr
     le16(slot + 24, len);
     le16(slot + 26, 0);
     le32(slot + 28, (uint32_t)r->head);
-    copy_bytes(slot + PACER_RX_META_BYTES, frame, len);
+    rx_copy(slot + PACER_RX_META_BYTES, frame, len);
     r->head++;
     store_head(r->base, r->head);
     if (load_wake(r->base) != 0 && take_wake(r->base) != 0) {
@@ -315,6 +309,16 @@ int pacer_rx_deliver(struct pacer_rx_sink *const *sinks, uint32_t count, const s
         if (!pacer_rx_match(s->match, s->matches, p)) {
             continue;
         }
+        /* Not a frame of the flow as it is meant to arrive: counted, and up
+         * to tcpip as ever (it drops a bad checksum itself). */
+        if ((p->flags & PACER_RX_PKT_TAGGED) != 0) {
+            s->tagged++;
+            continue;
+        }
+        if ((p->flags & PACER_RX_PKT_BAD_CSUM) != 0) {
+            s->bad_csum++;
+            continue;
+        }
         matched = 1;
         s->matched++;
         switch (pacer_rx_put(&s->ring, frame, len, p, time_100ns, &s->wake)) {
@@ -343,4 +347,142 @@ int pacer_rx_deliver(struct pacer_rx_sink *const *sinks, uint32_t count, const s
         }
     }
     return 1;
+}
+
+void pacer_rx_ports_build(struct pacer_rx_sink *const *sinks, uint32_t count, struct pacer_rx_ports *out)
+{
+    uint32_t i;
+    uint32_t e;
+    uint32_t n = 0;
+
+    out->any = 0;
+    for (i = 0; i < count; i++) {
+        for (e = 0; e < sinks[i]->matches && e < PACER_RX_MAX_MATCHES; e++) {
+            uint16_t port = sinks[i]->match[e].port;
+            uint32_t k;
+            int seen = 0;
+            for (k = 0; k < n; k++) {
+                if (out->port[k] == port) {
+                    seen = 1;
+                }
+            }
+            if (seen) {
+                continue;
+            }
+            if (n == PACER_RX_MAX_PORTS) {
+                out->any = 1;
+                continue;
+            }
+            out->port[n++] = port;
+        }
+    }
+    out->count = n;
+}
+
+int pacer_rx_ports_has(const struct pacer_rx_ports *ports, uint16_t port)
+{
+    uint32_t k;
+    if (ports->any) {
+        return 1;
+    }
+    for (k = 0; k < ports->count && k < PACER_RX_MAX_PORTS; k++) {
+        if (ports->port[k] == port) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void *pacer_rx_split(void *chain, const struct pacer_rx_chain_ops *ops, void *ctx, void **taken,
+                     uint32_t *kept_count)
+{
+    void *kept = NULL;
+    void *last_kept = NULL;
+    void *last_taken = NULL;
+    void *node = chain;
+    uint32_t count = 0;
+    int relinked = 0;
+
+    *taken = NULL;
+    while (node != NULL) {
+        void *next = ops->next(node);
+        if (ops->offer(ctx, node)) {
+            if (last_taken == NULL) {
+                *taken = node;
+            } else {
+                ops->set_next(last_taken, node);
+            }
+            last_taken = node;
+            relinked = 1;
+        } else {
+            if (last_kept == NULL) {
+                kept = node;
+            } else if (relinked) {
+                ops->set_next(last_kept, node);
+            }
+            last_kept = node;
+            count++;
+        }
+        node = next;
+    }
+    if (relinked) {
+        ops->set_next(last_taken, NULL);
+        if (last_kept != NULL) {
+            ops->set_next(last_kept, NULL);
+        }
+    }
+    *kept_count = count;
+    return kept;
+}
+
+uint32_t pacer_rx_up_in_runs(void *chain, const struct pacer_rx_chain_ops *ops, void *ctx)
+{
+    uint32_t up = 0;
+    void *segment = chain;
+
+    while (segment != NULL) {
+        uint8_t taken[PACER_RX_SEGMENT];
+        uint32_t n = 0;
+        uint32_t i = 0;
+        void *node = segment;
+        void *after;
+
+        for (; node != NULL && n < PACER_RX_SEGMENT; n++) {
+            taken[n] = (uint8_t)(ops->offer(ctx, node) != 0);
+            node = ops->next(node);
+        }
+        after = node;
+        node = segment;
+        while (i < n) {
+            void *head;
+            void *last;
+            uint32_t run = 0;
+            if (taken[i]) {
+                node = ops->next(node);
+                i++;
+                continue;
+            }
+            head = node;
+            last = node;
+            while (i < n && !taken[i]) {
+                last = node;
+                node = ops->next(node);
+                i++;
+                run++;
+            }
+            /* `node` is the run's original successor: a taken node or the
+             * next segment's first (cut for the call, then restored), or
+             * NULL (the chain's end: nothing to cut). */
+            if (node != NULL) {
+                ops->set_next(last, NULL);
+            }
+            ops->indicate(ctx, head, run);
+            if (node != NULL) {
+                ops->set_next(last, node);
+            }
+            up += run;
+        }
+        segment = after;
+    }
+    return up;
 }
