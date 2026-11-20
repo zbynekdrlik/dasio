@@ -100,7 +100,8 @@ Return Value:
     DEBUGP(DL_TRACE, "===>DriverEntry...\n");
 
     // Deferred receive from the service's Parameters key (RxdEnable,
-    // RxdCpu), before any attach applies it.
+    // RxdCpu), before any attach applies it; media TX's TxMaxOut and
+    // kernel RX's RxRingEnable from the same key.
     rxdReadRegistry(RegistryPath);
 
     FilterDriverObject = DriverObject;
@@ -420,6 +421,8 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
         pFilter->RxdCpu = -1;
         pFilter->RxdRunning = FALSE;
         rxdApply(pFilter);
+        // Kernel RX: no ring yet.
+        rxRingFilterInit(pFilter);
         pFilter->State = FilterPaused;
 
         FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
@@ -497,6 +500,9 @@ N.B.: When the filter is in Pausing state, it can still process OID requests,
     // Deferred receive: what waits goes back to the miniport unindicated,
     // and a DPC that already runs finishes (KeFlushQueuedDpcs below).
     rxdDrop(pFilter);
+    // Kernel RX: every ring is detached (Pausing is set: none attaches
+    // again); dasio reopens after the restart.
+    rxRingDetachAll(pFilter);
 
     //
     // Do whatever work is required to bring the filter into the Paused state.
@@ -804,6 +810,8 @@ NOTE: Called at PASSIVE_LEVEL and the filter is in paused state
     {
         NdisMSleep(100);
     }
+    // Kernel RX: no ring stays attached (pause detached them already).
+    rxRingFilterTeardown(pFilter);
 
     // The timer goes first, at PASSIVE: deleting it waits for a running
     // callback, which is not allowed under a spin lock.
@@ -2123,6 +2131,14 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
 
         ASSERT(NumberOfNetBufferLists >= 1);
 
+        // dasio kernel RX: frames of dasio's flows into its rings first
+        // (rxring.c). Done when every NBL was stolen, or a chain that
+        // cannot pend went up there; otherwise the rest goes on as before.
+        if (rxRingReceive(pFilter, &NetBufferLists, &NumberOfNetBufferLists, PortNumber, ReceiveFlags))
+        {
+            break;
+        }
+
         //
         // If you would like to drop a received packet, then you must carefully
         // modify the NBL chain as follows:
@@ -3147,15 +3163,18 @@ rxdDrop(
 }
 
 
-// RxdEnable and RxdCpu (REG_DWORD; RxdCpu 0xFFFFFFFF = -1) from
-// <service>\Parameters. Missing key or values: off, as before.
+// RxdEnable and RxdCpu (REG_DWORD; RxdCpu 0xFFFFFFFF = -1), TxMaxOut and
+// RxRingEnable from <service>\Parameters. Missing key or values: off, as
+// before.
 static VOID
 rxdReadRegistry(
     _In_ PUNICODE_STRING RegistryPath
     )
 {
-    RTL_QUERY_REGISTRY_TABLE Table[5];
+    RTL_QUERY_REGISTRY_TABLE Table[6];
     ULONG Enable = 0;
+    ULONG RingEnable = 0;
+    ULONG DefaultRingEnable = 0;
     ULONG MaxOut = 0;
     ULONG DefaultMaxOut = 0;
     ULONG Cpu = (ULONG)-1;
@@ -3195,11 +3214,19 @@ rxdReadRegistry(
     Table[3].DefaultType = (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD;
     Table[3].DefaultData = &DefaultMaxOut;
     Table[3].DefaultLength = sizeof(ULONG);
+    // Kernel RX (rxring.c): off unless 1.
+    Table[4].Flags = RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK;
+    Table[4].Name = L"RxRingEnable";
+    Table[4].EntryContext = &RingEnable;
+    Table[4].DefaultType = (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD;
+    Table[4].DefaultData = &DefaultRingEnable;
+    Table[4].DefaultLength = sizeof(ULONG);
     if (NT_SUCCESS(RtlQueryRegistryValues(RTL_REGISTRY_ABSOLUTE, Path, Table, NULL, NULL)))
     {
         RxdEnable = Enable != 0;
         RxdCpuSetting = (LONG)Cpu;
         TxMaxOutSetting = MaxOut <= KTX_SLOTS ? MaxOut : 0;
+        RxRingEnable = RingEnable != 0;
     }
     ExFreePoolWithTag(Path, FILTER_ALLOC_TAG);
 }

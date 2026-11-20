@@ -19,11 +19,22 @@ in the filter, in order, for the timer or a send completion. (A cap on bytes
 "in flight" does not work: the Realtek miniport completes a whole burst
 before it is on the wire; measured on iem-snv, dasio#1.)
 
+**Kernel RX (dasio#27, off by default).** A dasio process can open a ring
+(`IOCTL_DASIO_RX_OPEN`) on one adapter and name its flows (destination IPv4
+and UDP port, `IOCTL_DASIO_RX_MATCH`): each received frame of those flows
+is copied, with its receive time, into memory mapped into that process,
+before tcpip. Copy mode keeps the socket path as it was; steal mode keeps
+the frame from tcpip. The service's `Parameters\RxRingEnable` (REG_DWORD)
+turns it on; `scripts/rxring.ps1 status` shows each open ring. The ring's
+layout is in `core/rx_ring.h`.
+
 **Layout.**
-- `core/` the decisions (classifier, budget queue), plain C with no kernel
-  types; `tests/` their unit tests (CI: gcc with sanitizers and a coverage
-  floor on Linux, MSVC on Windows).
-- `driver/` the NDIS glue, from Microsoft's NDIS LWF sample.
+- `core/` the decisions (classifier, budget queue, kernel RX's parser,
+  match and ring producer), plain C with no kernel types; `tests/` their
+  unit tests and fuzz targets (CI: gcc with sanitizers and a coverage
+  floor on Linux, libFuzzer, MSVC on Windows).
+- `driver/` the NDIS glue, from Microsoft's NDIS LWF sample (`rxring.c`:
+  kernel RX's rings and IOCTLs).
 
 **License.** This directory is a separate program from the rest of dasio:
 it derives from Microsoft's Windows-driver-samples

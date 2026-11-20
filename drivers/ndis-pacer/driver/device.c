@@ -120,9 +120,15 @@ FilterDispatch(
             break;
 
         case IRP_MJ_CLEANUP:
+            // The handle's last close (or its process's exit): its kernel
+            // RX ring, if it has one, is closed.
+            rxRingCleanup(IrpStack->FileObject);
             break;
 
         case IRP_MJ_CLOSE:
+            // The file object's last reference: a ring an RX_OPEN in flight
+            // attached after the cleanup (an overlapped handle) goes now.
+            rxRingCleanup(IrpStack->FileObject);
             break;
 
         default:
@@ -519,6 +525,23 @@ FilterDeviceIoControl(
             {
                 InfoLength = 0;
             }
+            break;
+
+        // Kernel RX (dasio#27, B23): rxring.c.
+        case IOCTL_DASIO_RX_OPEN:
+            Status = rxRingOpen(Irp, IrpSp, &InfoLength);
+            break;
+
+        case IOCTL_DASIO_RX_MATCH:
+            Status = rxRingMatch(Irp, IrpSp);
+            break;
+
+        case IOCTL_DASIO_RX_CLOSE:
+            Status = rxRingClose(IrpSp);
+            break;
+
+        case IOCTL_DASIO_RX_STATUS:
+            Status = rxRingStatus(Irp, IrpSp, &InfoLength);
             break;
 
         default:

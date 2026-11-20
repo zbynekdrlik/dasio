@@ -50,6 +50,20 @@
 // dasio: media TX's bound on frames out at the miniport, for all bound
 // adapters, live (input: one ULONG; 0 = every slot). Write access only.
 #define IOCTL_DASIO_TX_SET                  CTL_CODE(FILE_DEVICE_PHYSICAL_NETCARD, 22, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+// dasio: kernel RX (dasio#27, B23): received frames of the caller's own
+// flows copied into a ring mapped into its process, before tcpip. One ring
+// per open handle, on one adapter: RX_OPEN makes it (input DASIO_RX_OPEN,
+// output DASIO_RX_OPENED), RX_MATCH replaces its match table (input
+// DASIO_RX_MATCH), RX_CLOSE closes it (closing the handle does too); write
+// access only. RX_STATUS: one DASIO_RX_STATUS per open ring. The ring's
+// layout is in ../core/rx_ring.h. RX_OPEN answers STATUS_NOT_SUPPORTED
+// while the service's Parameters\RxRingEnable is 0 (the default), and an
+// older filter answers these codes with success and no output: check the
+// output's size.
+#define IOCTL_DASIO_RX_OPEN                 CTL_CODE(FILE_DEVICE_PHYSICAL_NETCARD, 23, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+#define IOCTL_DASIO_RX_MATCH                CTL_CODE(FILE_DEVICE_PHYSICAL_NETCARD, 24, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+#define IOCTL_DASIO_RX_CLOSE                CTL_CODE(FILE_DEVICE_PHYSICAL_NETCARD, 25, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+#define IOCTL_DASIO_RX_STATUS               _NDIS_CONTROL_CODE(26, METHOD_BUFFERED)
 
 
 #define MAX_FILTER_INSTANCE_NAME_LENGTH     256
@@ -258,6 +272,77 @@ typedef struct _DASIO_RXD_STATUS
     ULONG64         Dropped;          // returned unindicated (pause)
     ULONG64         Priority;         // NBLs indicated at once while rxd is on (not deferred)
 } DASIO_RXD_STATUS, *PDASIO_RXD_STATUS;
+
+// dasio: kernel RX. A ring of SlotCount slots (a power of 2, 64..4096) on
+// the adapter with the given IfIndex, mapped into the calling process.
+// Event: a handle of an auto-reset event of the caller's
+// (EVENT_MODIFY_STATE) the filter sets when the ring's wake word is
+// non-zero after a frame, and when it detaches the ring (the header's
+// detached word is then 1: close and open again), or 0. Reserved: 0.
+// Errors: STATUS_NOT_SUPPORTED (RxRingEnable 0), STATUS_NOT_FOUND (no
+// adapter with that IfIndex), STATUS_DEVICE_NOT_READY (the filter is not
+// running), STATUS_INVALID_DEVICE_STATE (this handle has a ring),
+// STATUS_INSUFFICIENT_RESOURCES (memory, or RX_RINGS_PER_FILTER rings on
+// that adapter already), STATUS_INVALID_PARAMETER.
+// Copy mode (default): a matched frame goes into the ring and up to tcpip
+// as before. DASIO_RX_STEAL: a frame every matching ring steals does not
+// go up (a full ring drops it: Full); one longer than a slot always goes up.
+#define DASIO_RX_STEAL                      0x00000001u
+#define DASIO_RX_FLAGS                      DASIO_RX_STEAL
+typedef struct _DASIO_RX_OPEN
+{
+    ULONG           IfIndex;
+    ULONG           SlotCount;
+    ULONG           Flags;
+    ULONG           Reserved;
+    ULONG64         Event;            // HANDLE, 0 = none
+} DASIO_RX_OPEN, *PDASIO_RX_OPEN;
+
+// Where the ring is in the caller's process, and its bytes.
+typedef struct _DASIO_RX_OPENED
+{
+    ULONG64         Address;
+    ULONG64         Bytes;
+} DASIO_RX_OPENED, *PDASIO_RX_OPENED;
+
+// The ring's whole match table, replaced at once: Count entries (0..16)
+// of a destination IPv4 address (as on the wire, a.b.c.d) and UDP port
+// (a number, not 0). Address 0.0.0.0: any unicast address on that port
+// (another host's flooded unicast too: name this PC's own address to
+// exclude it); a multicast group matches only itself. Only the first
+// Count entries need to be in the input; every Reserved field 0.
+#define DASIO_RX_MAX_MATCHES                16
+typedef struct _DASIO_RX_MATCH_ENTRY
+{
+    UCHAR           Address[4];
+    USHORT          Port;
+    USHORT          Reserved;
+} DASIO_RX_MATCH_ENTRY, *PDASIO_RX_MATCH_ENTRY;
+
+typedef struct _DASIO_RX_MATCH
+{
+    ULONG           Count;
+    ULONG           Reserved;
+    DASIO_RX_MATCH_ENTRY Entries[DASIO_RX_MAX_MATCHES];
+} DASIO_RX_MATCH, *PDASIO_RX_MATCH;
+
+// One open ring, read under its adapter's RX ring lock. All fields 64
+// bit, read in this order.
+#define DASIO_RX_STATUS_VERSION             1
+typedef struct _DASIO_RX_STATUS
+{
+    ULONG64         Version;
+    ULONG64         IfIndex;
+    ULONG64         Attached;         // 0 after a pause or detach of the filter: reopen
+    ULONG64         Flags;
+    ULONG64         SlotCount;
+    ULONG64         Matches;          // entries in its match table
+    ULONG64         Matched;          // frames its table matched
+    ULONG64         Delivered;        // put into the ring
+    ULONG64         Full;             // not put: every slot unread
+    ULONG64         Stolen;           // kept from tcpip (steal mode)
+    ULONG64         TooBig;           // not put: longer than a slot, or unreadable
+} DASIO_RX_STATUS, *PDASIO_RX_STATUS;
 
 #endif //__FILTERUSER_H__
 
