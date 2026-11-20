@@ -7,6 +7,7 @@ Design: `docs/design/2026-10-29-dante-asio-design.md`; MVP plan: `docs/plans/202
 
 - Branches: `dev` and `main` only; PRs dev → main; merge commits.
 - No local cargo: GitHub CI (`ubuntu-latest`, `windows-latest`) builds and tests.
+- CI runs only on pushes to main/dev and PRs into them. A worker branch gets its CI by being merged into dev, never through a draft PR into dev: that PR's version check fails at dev's own version and stays on the head SHA as a red check, leaving the dev→main PR UNSTABLE (PR #217).
 - Version: `[workspace.package].version`; dev > main on PRs (`scripts/check_version.py`). Cargo.lock holds it three times (asio-driver, dasio, shm): bump all three, or CI's `cargo deny --locked` fails.
 - No site data in the repo: addresses, real device and channel names live only in the PC's config.
 - Dante: never change another device's subscriptions; tests subscribe our own device to itself.
