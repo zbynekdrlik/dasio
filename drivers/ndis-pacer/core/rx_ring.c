@@ -305,7 +305,7 @@ int pacer_rx_wanted(struct pacer_rx_sink *const *sinks, uint32_t count, const st
 }
 
 int pacer_rx_deliver(struct pacer_rx_sink *const *sinks, uint32_t count, const struct pacer_rx_packet *p,
-                     const uint8_t *frame, uint32_t len, uint64_t time_100ns)
+                     const uint8_t *frame, uint32_t len, uint64_t time_100ns, int may_steal)
 {
     uint32_t i;
     int matched = 0;
@@ -345,7 +345,7 @@ int pacer_rx_deliver(struct pacer_rx_sink *const *sinks, uint32_t count, const s
             goes_up = 1;
         }
     }
-    if (!matched || goes_up) {
+    if (!may_steal || !matched || goes_up) {
         return 0;
     }
     for (i = 0; i < count; i++) {
@@ -394,7 +394,7 @@ void pacer_rx_ports_build(struct pacer_rx_sink *const *sinks, uint32_t count, st
     uint32_t e;
     uint32_t k;
 
-    /* Every named port's bit first, so none is ever clear while named. */
+    /* Every named port's bit set (one already set stays set). */
     for (i = 0; i < count; i++) {
         for (e = 0; e < sinks[i]->matches && e < PACER_RX_MAX_MATCHES; e++) {
             uint16_t port = sinks[i]->match[e].port;
@@ -414,7 +414,9 @@ void pacer_rx_ports_build(struct pacer_rx_sink *const *sinks, uint32_t count, st
             }
         }
     }
-    /* Then the recorded ports no table names any more. */
+    /* Then the recorded ports no table names any more: `named` skips
+     * every port a table still names, so a still-named port's bit is never
+     * cleared, whatever a racing reader sees of the rest. */
     for (k = 0; k < ports->recorded_count && k < PACER_RX_MAX_PORTS; k++) {
         if (!named(sinks, count, ports->recorded[k])) {
             port_bit(ports, ports->recorded[k], 0);
@@ -525,4 +527,15 @@ uint32_t pacer_rx_up_in_runs(void *chain, const struct pacer_rx_chain_ops *ops, 
         segment = after;
     }
     return up;
+}
+
+uint32_t pacer_rx_offer_all(void *chain, const struct pacer_rx_chain_ops *ops, void *ctx)
+{
+    uint32_t offered = 0;
+    void *node;
+    for (node = chain; node != NULL; node = ops->next(node)) {
+        (void)ops->offer(ctx, node);
+        offered++;
+    }
+    return offered;
 }

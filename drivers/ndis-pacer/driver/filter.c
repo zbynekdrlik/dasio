@@ -2877,7 +2877,8 @@ ktxTimer(
     }
 }
 
-ULONG TxMaxOutSetting = 0;
+// Never 0 (every slot): until the Parameters are read, the measured bound.
+ULONG TxMaxOutSetting = PACER_TX_MAX_OUT_FALLBACK;
 
 // Media TX (dasio#1): the dasio service's own audio frames, copied into
 // free test stream slots and sent down in one chain. Their completions go
@@ -2924,7 +2925,7 @@ txSendAtDispatch(
         ULONG Slot;
         PUCHAR Frame;
         PNET_BUFFER_LIST Nbl;
-        if (Filter->KtxFreeCount == 0 || (TxMaxOutSetting != 0 && Filter->KtxOut >= TxMaxOutSetting))
+        if (Filter->KtxFreeCount == 0 || Filter->KtxOut >= TxMaxOutSetting)
         {
             break;
         }
@@ -3230,7 +3231,8 @@ rxdReadRegistry(
     pacer_params_read(paramRead, Path, KTX_SLOTS, &Params);
     RxdEnable = Params.rxd_enable;
     RxdCpuSetting = Params.rxd_cpu;
-    // Media TX's bound on frames out (0: every slot), kept across reboots.
+    // Media TX's bound on frames out, kept across reboots: 1..KTX_SLOTS,
+    // 200 when missing or invalid (never every slot).
     TxMaxOutSetting = Params.tx_max_out;
     // Kernel RX (rxring.c): off unless 1.
     RxRingEnable = Params.rx_ring_enable;

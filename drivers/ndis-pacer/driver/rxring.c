@@ -28,7 +28,6 @@
 #define RX_RING_TAG     'gRxD'
 
 C_ASSERT(DASIO_RX_MAX_MATCHES == PACER_RX_MAX_MATCHES);
-C_ASSERT(sizeof(DASIO_RX_STATUS) == 13 * sizeof(ULONG64));
 
 struct _RX_RING
 {
@@ -115,8 +114,8 @@ rxSinksLocked(
     return Count;
 }
 
-// Under the RX ring lock, after a ring or a table changed: the ports the
-// receive path looks at with no lock.
+// Under the RX ring lock, after a ring or a table changed: what the
+// receive path reads with no lock, the ports and the stealing rings.
 static VOID
 rxPortsLocked(
     _Inout_ PRX_FILTER_RINGS Rings
@@ -124,7 +123,17 @@ rxPortsLocked(
 {
     struct pacer_rx_sink *Sinks[RX_RINGS_PER_FILTER];
     ULONG Count = rxSinksLocked(Rings, Sinks);
+    LONG Stealers = 0;
+    ULONG i;
     pacer_rx_ports_build(Sinks, Count, &Rings->Ports);
+    for (i = 0; i < Count; i++)
+    {
+        if (Sinks[i]->steal)
+        {
+            Stealers++;
+        }
+    }
+    Rings->Stealers = Stealers;
 }
 
 // Under the filter's RX ring lock, as the ring leaves it: its header's
@@ -149,6 +158,7 @@ rxRingFilterInit(
     ULONG i;
     FILTER_INIT_LOCK(&Filter->RxRing.Lock);
     Filter->RxRing.Count = 0;
+    Filter->RxRing.Stealers = 0;
     for (i = 0; i < RX_RINGS_PER_FILTER; i++)
     {
         Filter->RxRing.Rings[i] = NULL;
@@ -205,6 +215,8 @@ typedef struct _RX_RECEIVE
     PMS_FILTER                      Filter;
     ULONG                           ReceiveFlags;
     BOOLEAN                         DispatchLevel;
+    // 0: copy mode for this chain (it goes up whole): never stolen.
+    int                             MaySteal;
 } RX_RECEIVE, *PRX_RECEIVE;
 
 static void *
@@ -308,7 +320,7 @@ rxNblOffer(
             // NULL (unreadable) is counted with the too big ones and goes up.
             Frame = (PUCHAR)NdisGetDataBuffer(Nb, Length, Rings->Scratch, 1, 0);
         }
-        Take = pacer_rx_deliver(Sinks, Count, &Packet, Frame, Length, Now);
+        Take = pacer_rx_deliver(Sinks, Count, &Packet, Frame, Length, Now, Receive->MaySteal);
         for (i = 0; i < RX_RINGS_PER_FILTER; i++)
         {
             PRX_RING Ring = Rings->Rings[i];
@@ -363,6 +375,7 @@ rxRingReceive(
     Receive.Filter = Filter;
     Receive.ReceiveFlags = ReceiveFlags;
     Receive.DispatchLevel = NDIS_TEST_RECEIVE_AT_DISPATCH_LEVEL(ReceiveFlags);
+    Receive.MaySteal = 1;
 
     if (NDIS_TEST_RECEIVE_CAN_PEND(ReceiveFlags))
     {
@@ -383,7 +396,17 @@ rxRingReceive(
     }
 
     // They cannot pend (the miniport needs its chain back as it was when
-    // this returns): PACER_RX_SEGMENT (64) NBLs at a time, each segment's
+    // this returns). No ring steals: every NBL is offered (copied, never
+    // taken), and the original chain goes on unchanged, up in one piece
+    // however long. A ring that starts stealing meanwhile only copies
+    // these.
+    if (Rings->Stealers == 0)
+    {
+        Receive.MaySteal = 0;
+        (void)pacer_rx_offer_all(*NetBufferLists, &RxNblOps, &Receive);
+        return FALSE;
+    }
+    // A ring steals: PACER_RX_SEGMENT (64) NBLs at a time, each segment's
     // NBLs are decided first, then its kept ones go up in runs (the whole
     // chain when it is one segment and none was taken), each run's last
     // link restored right after its indication.

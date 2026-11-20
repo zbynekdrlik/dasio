@@ -115,13 +115,13 @@ jobs:
           ./test-rx-san
           gcc -std=c99 --coverage -O0 -o test-cov core/pacer_core.c tests/test_pacer_core.c
           ./test-cov
-          # Measured 100 % of lines (285, gcc 13).
+          # Measured 100 % of lines (286, gcc 13).
           line=$(gcov -n test-cov-pacer_core.gcda | grep -A1 "core/pacer_core.c'" | grep -o '[0-9.]*%' | head -1)
           echo "pacer_core.c lines: $line"
           awk -v l="${line%\%}" 'BEGIN { exit !(l >= 100) }'
           gcc -std=c99 --coverage -O0 -o test-rx-cov core/rx_ring.c tests/test_rx_ring.c
           ./test-rx-cov
-          # Measured 100 % of lines (282, gcc 13).
+          # Measured 100 % of lines (288, gcc 13).
           line=$(gcov -n test-rx-cov-rx_ring.gcda | grep -A1 "core/rx_ring.c'" | grep -o '[0-9.]*%' | head -1)
           echo "rx_ring.c lines: $line"
           awk -v l="${line%\%}" 'BEGIN { exit !(l >= 100) }'
@@ -162,6 +162,13 @@ jobs:
           test-msvc.exe || exit /b 1
           cl /nologo /W4 /WX /Fe:test-rx-msvc.exe core\rx_ring.c tests\test_rx_ring.c || exit /b 1
           test-rx-msvc.exe
+      # rxd.ps1 / rxring.ps1 split a status reply by each record's own
+      # version (scripts/records.ps1), in Windows PowerShell 5.1 as on the PCs.
+      - name: Status record parsing (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        working-directory: drivers/ndis-pacer
+        shell: powershell
+        run: .\tests\test_records.ps1
 
   # The NDIS send pacer driver, built with the image's WDK and test-signed
   # by the WDK build (test signing on the target PC). The package (.sys,

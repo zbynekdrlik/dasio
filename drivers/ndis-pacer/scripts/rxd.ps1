@@ -13,6 +13,7 @@ param(
     [ValidateRange(-1, 1023)][int]$Cpu = -1
 )
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "records.ps1")
 
 Add-Type -TypeDefinition @"
 using System;
@@ -51,19 +52,15 @@ switch ($Action) {
         Write-Output "deferred receive $Action (DPC CPU $Cpu)"
     }
     "status" {
-        # The fields of DASIO_RXD_STATUS (filteruser.h), in order.
-        # Version 3 adds ParamBad: the Parameters values that were there
-        # but unreadable at load (bit 0 RxdEnable, 1 RxdCpu, 2 TxMaxOut,
-        # 3 RxRingEnable).
+        # The fields of DASIO_RXD_STATUS (filteruser.h), in order. Version 3
+        # adds ParamBad: the Parameters values that were there but
+        # unreadable or invalid at load (bit 0 RxdEnable, 1 RxdCpu, 2
+        # TxMaxOut, 3 RxRingEnable). Each record is read by its own
+        # version, so an older filter's v2 records read too
+        # (scripts/test_pacer_status.py ties these to filteruser.h).
         $names = "Version", "IfIndex", "Enabled", "Cpu", "Deferred", "Inline", "DpcRuns", "MaxBatch", "Queued", "Dropped", "Priority", "ParamBad"
+        $layouts = @{ 2 = $names[0..10]; 3 = $names }
         $raw = [DasioRxd]::Call([DasioRxd]::STATUS, $null, 8 * $names.Count * 16)
-        $v = New-Object Int64[] ($raw.Length / 8)
-        [Buffer]::BlockCopy($raw, 0, $v, 0, $raw.Length)
-        if ($v.Length % $names.Count -ne 0) { throw "status of $($raw.Length) bytes is not a whole number of records" }
-        for ($i = 0; $i -lt $v.Length; $i += $names.Count) {
-            $o = [ordered]@{}
-            for ($j = 0; $j -lt $names.Count; $j++) { $o[$names[$j]] = $v[$i + $j] }
-            [pscustomobject]$o
-        }
+        ConvertTo-StatusRecords -Values (ConvertTo-StatusValues $raw "rxd") -Layouts $layouts -What "rxd"
     }
 }

@@ -447,10 +447,11 @@ void pacer_params_read(int (*read)(void *ctx, enum pacer_param which, uint32_t *
                        uint32_t tx_slots, struct pacer_params *out)
 {
     int which;
+    uint32_t fallback = PACER_TX_MAX_OUT_FALLBACK <= tx_slots ? PACER_TX_MAX_OUT_FALLBACK : tx_slots;
 
     out->rxd_enable = 0;
     out->rxd_cpu = -1;
-    out->tx_max_out = 0;
+    out->tx_max_out = fallback;
     out->rx_ring_enable = 0;
     out->bad = 0;
     for (which = 0; which < PACER_PARAM_COUNT; which++) {
@@ -458,9 +459,6 @@ void pacer_params_read(int (*read)(void *ctx, enum pacer_param which, uint32_t *
         int r = read(ctx, (enum pacer_param)which, &v);
         if (r == PACER_PARAM_BAD) {
             out->bad |= 1u << which;
-            if (which == PACER_PARAM_TX_MAX_OUT) {
-                out->tx_max_out = PACER_TX_MAX_OUT_FALLBACK <= tx_slots ? PACER_TX_MAX_OUT_FALLBACK : tx_slots;
-            }
         }
         if (r != PACER_PARAM_READ) {
             continue;
@@ -473,7 +471,12 @@ void pacer_params_read(int (*read)(void *ctx, enum pacer_param which, uint32_t *
             out->rxd_cpu = (int32_t)v;
             break;
         case PACER_PARAM_TX_MAX_OUT:
-            out->tx_max_out = v <= tx_slots ? v : 0;
+            /* 0 once meant every slot: never again. */
+            if (v == 0 || v > tx_slots) {
+                out->bad |= 1u << which;
+            } else {
+                out->tx_max_out = v;
+            }
             break;
         default:
             out->rx_ring_enable = v != 0;

@@ -212,22 +212,27 @@ int pacer_rx_wanted(struct pacer_rx_sink *const *sinks, uint32_t count, const st
  * (tagged, bad_csum) in each sink whose table names it. `frame` holds the
  * whole frame of `len` bytes, or is NULL when the caller could not read
  * it (counted as too big). Returns 1 when the frame must not go up to
- * tcpip: at least one sink matched, every matching sink steals, and none
- * counted it too big (each matching sink then counts it in stolen; a full
- * stealing ring drops it). 0: it goes up as before. */
+ * tcpip: `may_steal` is 1, at least one sink matched, every matching sink
+ * steals, and none counted it too big (each matching sink then counts it
+ * in stolen; a full stealing ring drops it). 0: it goes up as before
+ * (with `may_steal` 0 always: the caller sends the chain up whole). */
 int pacer_rx_deliver(struct pacer_rx_sink *const *sinks, uint32_t count, const struct pacer_rx_packet *p,
-                     const uint8_t *frame, uint32_t len, uint64_t time_100ns);
+                     const uint8_t *frame, uint32_t len, uint64_t time_100ns, int may_steal);
 
 /* The ports of every sink's table, for a look with no lock: a frame on
  * another port is never offered (the lock is not taken for it). One bit
  * per port. A rebuild (under the lock, whenever a ring or a table
- * changes) first sets the bit of every port a table names, then clears
- * the bits of the ports it recorded that no table names any more, each
- * byte written whole with only its own bits changed: a reader racing it
- * never misses a port a table named before and after, and at worst takes
- * the lock for a port just dropped. Ports past PACER_RX_MAX_PORTS distinct
- * ones are not recorded: their bits stay set (the lock taken for nothing,
- * never a missed frame). count, written once at the end of a rebuild: 0
+ * changes) sets the bit of every port a table names, then clears the
+ * bits of the ports it recorded that no table names any more. What keeps
+ * a port a table names before and after a rebuild safe is that the clear
+ * pass skips every port some table still names (`named` in rx_ring.c):
+ * its bit is never cleared, so a reader racing the rebuild always sees it
+ * (each byte is written whole, its other bits as they were). The order
+ * of the two passes adds nothing for it; a reader may take the lock for a
+ * port just dropped, or miss one just added (as a frame that came a
+ * moment earlier). Ports past PACER_RX_MAX_PORTS distinct ones are not
+ * recorded: their bits stay set (the lock taken for nothing, never a
+ * missed frame). count, written once at the end of a rebuild: 0
  * when no table names any port (the receive path does nothing), else the
  * ports named (past PACER_RX_MAX_PORTS distinct ones a repeat may count
  * again). Starts all zero (pacer_rx_ports_init). */
@@ -274,5 +279,12 @@ void *pacer_rx_split(void *chain, const struct pacer_rx_chain_ops *ops, void *ct
  * taken goes up whole and untouched. Returns the nodes indicated. */
 #define PACER_RX_SEGMENT 64u
 uint32_t pacer_rx_up_in_runs(void *chain, const struct pacer_rx_chain_ops *ops, void *ctx);
+
+/* Copy mode (no ring steals): offers every node of `chain` once, in
+ * order, and changes no link; the caller then sends the chain up whole,
+ * however long. The offer must not take (pacer_rx_deliver with
+ * `may_steal` 0): a node it took would go up all the same. Returns the
+ * nodes offered. */
+uint32_t pacer_rx_offer_all(void *chain, const struct pacer_rx_chain_ops *ops, void *ctx);
 
 #endif

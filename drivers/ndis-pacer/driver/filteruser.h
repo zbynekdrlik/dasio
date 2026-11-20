@@ -48,7 +48,8 @@
 // Administrators only).
 #define IOCTL_DASIO_TX_SEND                 CTL_CODE(FILE_DEVICE_PHYSICAL_NETCARD, 21, METHOD_BUFFERED, FILE_WRITE_ACCESS)
 // dasio: media TX's bound on frames out at the miniport, for all bound
-// adapters, live (input: one ULONG; 0 = every slot). Write access only.
+// adapters, live (input: one ULONG, 1..4096; 0, once every slot, is
+// refused: media TX is never unbounded). Write access only.
 #define IOCTL_DASIO_TX_SET                  CTL_CODE(FILE_DEVICE_PHYSICAL_NETCARD, 22, METHOD_BUFFERED, FILE_WRITE_ACCESS)
 // dasio: kernel RX (dasio#27, B23): received frames of the caller's own
 // flows copied into a ring mapped into its process, before tcpip. One ring
@@ -229,7 +230,7 @@ typedef struct _DASIO_KTX_STATUS
     ULONG64         TxMaxBatch;       // most frames in one call
     // Version 3: the bound on media frames out, and the failed completions
     // (the miniport refused the frame: lost).
-    ULONG64         TxMaxOut;         // 0: every slot
+    ULONG64         TxMaxOut;         // the bound: 1..4096 (200 when Parameters has none or an invalid one)
     ULONG64         MaxOut;           // most frames out at once, stream and media
     ULONG64         FailEvents;       // failures more than 1 s after the previous one
     ULONG64         LastFailStatus;   // NDIS_STATUS of the last failure
@@ -281,11 +282,14 @@ typedef struct _DASIO_RXD_STATUS
     ULONG64         Dropped;          // returned unindicated (pause)
     ULONG64         Priority;         // NBLs indicated at once while rxd is on (not deferred)
     // Version 3: the service's Parameters values that were there but could
-    // not be read when the driver loaded (another type than REG_DWORD): bit
-    // 0 RxdEnable, 1 RxdCpu, 2 TxMaxOut, 3 RxRingEnable. Each kept its
-    // default (TxMaxOut: 200); 0 = all read or missing.
+    // not be read when the driver loaded (another type than REG_DWORD), or
+    // were invalid (TxMaxOut 0 or above 4096): bit 0 RxdEnable, 1 RxdCpu,
+    // 2 TxMaxOut, 3 RxRingEnable. Each kept its default (TxMaxOut: 200);
+    // 0 = all read or missing.
     ULONG64         ParamBad;
 } DASIO_RXD_STATUS, *PDASIO_RXD_STATUS;
+// Version 2: 11 fields, version 3: 12 (rxd.ps1 reads both).
+C_ASSERT(sizeof(DASIO_RXD_STATUS) == 12 * sizeof(ULONG64));
 
 // dasio: kernel RX. A ring of SlotCount slots (a power of 2, 64..4096) on
 // the adapter with the given IfIndex, mapped into the calling process.
@@ -362,9 +366,12 @@ typedef struct _DASIO_RX_STATUS
     ULONG64         Full;             // not put: every slot unread
     ULONG64         Stolen;           // kept from tcpip (steal mode)
     ULONG64         TooBig;           // not put: longer than a slot, or unreadable
+    // Version 2:
     ULONG64         Tagged;           // its table named it, but it was VLAN-tagged: up, not put
     ULONG64         BadChecksum;      // its table named it, but its checksum was bad: up, not put
 } DASIO_RX_STATUS, *PDASIO_RX_STATUS;
+// Version 1: 11 fields, version 2: 13 (rxring.ps1 reads both).
+C_ASSERT(sizeof(DASIO_RX_STATUS) == 13 * sizeof(ULONG64));
 
 #endif //__FILTERUSER_H__
 

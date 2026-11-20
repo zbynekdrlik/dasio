@@ -237,20 +237,22 @@ enum pacer_param {
 struct pacer_params {
     uint32_t rxd_enable;     /* 0 or 1, default 0 */
     int32_t rxd_cpu;         /* default -1: the receiving CPU */
-    uint32_t tx_max_out;     /* 0..tx_slots, default 0: every slot */
+    uint32_t tx_max_out;     /* 1..tx_slots, never every slot */
     uint32_t rx_ring_enable; /* 0 or 1, default 0 */
-    uint32_t bad;            /* bit (1 << enum pacer_param) per unreadable value */
+    uint32_t bad;            /* bit (1 << enum pacer_param) per unreadable or invalid value */
 };
 
-/* The bound on media frames out when TxMaxOut is there but unreadable:
- * the value install.ps1 writes (measured on FOH), never "every slot"
- * (unbounded media TX failed frames with Realtek 10.79, dasio#1). */
+/* The bound on media frames out unless TxMaxOut gives a valid one: the
+ * value install.ps1 writes (measured on FOH; at most `tx_slots`). Media TX
+ * is never unbounded: with every slot out Realtek 10.79 failed frames
+ * (NDIS_STATUS_RESOURCES once ~448 were out, dasio#1). */
 #define PACER_TX_MAX_OUT_FALLBACK 200u
 
 /* Reads every parameter through `read` (one call per value; it returns
  * one of PACER_PARAM_READ / _MISSING / _BAD and sets `*value` on READ).
- * A TxMaxOut above `tx_slots` counts as 0 (every slot), as before; an
- * unreadable one as PACER_TX_MAX_OUT_FALLBACK (at most `tx_slots`). */
+ * TxMaxOut 1..`tx_slots` is the bound; missing, unreadable, 0 or above
+ * `tx_slots` it is PACER_TX_MAX_OUT_FALLBACK (at most `tx_slots`), and
+ * flagged in `bad` unless it was missing. */
 void pacer_params_read(int (*read)(void *ctx, enum pacer_param which, uint32_t *value), void *ctx,
                        uint32_t tx_slots, struct pacer_params *out);
 

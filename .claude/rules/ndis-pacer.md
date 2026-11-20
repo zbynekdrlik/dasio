@@ -52,9 +52,8 @@ paths:
 - Every Parameters value (RxdEnable, RxdCpu, TxMaxOut, RxRingEnable) is
   read in a query of its own (`pacer_params_read`): a value of another
   type (`reg add` without `/t` makes a REG_SZ) turns off only its own
-  feature (an unreadable TxMaxOut is 200, never every slot), shows in
-  `rxd.ps1 status` ParamBad (bit 0 RxdEnable, 1 RxdCpu, 2 TxMaxOut, 3
-  RxRingEnable; status v3) and is logged with DbgPrintEx. In one shared
+  feature, shows in `rxd.ps1 status` ParamBad (bit 0 RxdEnable, 1 RxdCpu,
+  2 TxMaxOut, 3 RxRingEnable; status v3) and is logged with DbgPrintEx. In one shared
   query it had turned rxd off and left media TX unbounded. Prove it on
   mbc at the next filter install: a REG_SZ RxRingEnable, then ParamBad 8,
   rxd on, `ktx.ps1 status` TxMaxOut 200; then the REG_DWORD back.
@@ -68,10 +67,13 @@ paths:
   `#error` (no CI build, no acquire load there) until one is added.
 - The receive path parses each frame on the stack with no lock; it takes
   the RX ring lock only for a frame on a port some ring's table names
-  (`pacer_rx_ports`: one bit per port, rebuilt under the lock by setting
-  the new bits before clearing the dropped ones, so a racing reader never
-  loses a still-named port), and does nothing while no ring names a port.
-  The lock sits alone on its cache lines. Each frame gets its own receive
+  (`pacer_rx_ports`: one bit per port, rebuilt under the lock), and does
+  nothing while no ring names a port. What keeps a still-named port safe
+  from a racing reader is `named()`: the rebuild's clear pass skips every
+  port some table still names, so its bit is never cleared (the order of
+  setting and clearing adds nothing to that). The lock sits alone on its
+  cache lines, and a cache line separates the lock-free port count from
+  the Scratch the lock holder writes. Each frame gets its own receive
   time. Readers' events are set after the lock, through a reference of
   their own.
 - Dante legs are untagged on every PC (owner, 18.11.2026): a frame with a
@@ -82,9 +84,11 @@ paths:
   only a frame to a unicast MAC (never a subnet broadcast).
 - Steal mode: NBLs that may pend are split (stolen ones returned to the
   miniport, the chain untouched when none is); a chain that cannot pend is
-  decided whole, then the kept NBLs go up in runs of consecutive ones
-  (the whole chain when none was taken), each run's last link restored
-  right after, 64 NBLs a segment.
+  decided 64 NBLs a segment, then the kept NBLs go up in runs of
+  consecutive ones (the whole chain when it is one segment and none was
+  taken), each run's last link restored right after. While no attached
+  ring steals (copy mode), a chain that cannot pend is only offered, never
+  taken, and goes up whole however long.
 - The reader's contract (filteruser.h): a non-inheritable handle; stop
   reading before RX_CLOSE or the handle's close (the mapping goes at
   once); RX_CLOSE before a second RX_OPEN on one handle; an orphan (owner
@@ -103,7 +107,11 @@ paths:
 - Verify on mbc first (the trial PC; dsg is PP's production bridge since
   18.11, no trials there), copy mode: Delivered = the flow's packets,
   Full 0, the ring's times against dstack's arrivals, and the longest DPC
-  of `dasiopacer.sys` with a ring open; then steal. A filter reinstall rebinds the
+  of `dasiopacer.sys` with a ring open; then steal. While a ring names a
+  port, every frame of an indication (a segment of 64 for a chain that
+  cannot pend in steal mode) waits until all of it has been offered, PTP
+  319/320 frames included: compare the PTP follower's jitter with and
+  without a ring open. A filter reinstall rebinds the
   NIC, and mbc's only NIC carries the remote path: a dead-man script at a
   fixed time, or someone at mbc. FOH only with someone on site.
 - `pacer-driver` needs `pacer-core`: an MSVC warning in a host test skips
@@ -114,6 +122,13 @@ paths:
 - `ktx.ps1 status` splits the reply into records of a fixed field count.
   A new field in `DASIO_KTX_STATUS` (or the RXD/PACER ones) needs the
   script's name list and the version constant changed in the same commit.
+- `rxd.ps1` and `rxring.ps1` split by each record's own Version
+  (`scripts/records.ps1`, tested in `tests/test_records.ps1`), so new
+  scripts read an older filter: a new version appends its fields behind a
+  `// Version N:` marker in the struct, the script's `$layouts` gets the
+  version, and the struct's `C_ASSERT` its size;
+  `scripts/test_pacer_status.py` ties names, versions and sizes to
+  `filteruser.h`.
 
 ## Media TX
 
@@ -127,9 +142,11 @@ paths:
 - Do not let media TX use every slot. With up to ~448 frames out, Realtek
   10.79 failed frames with NDIS_STATUS_RESOURCES (0xC000009A), and each
   failure was a hole at the receivers. `TxMaxOut` (Parameters, or `ktx.ps1
-  txset`) bounds the frames out; `install.ps1` writes 200, the value
-  measured on FOH (0 failures, 0 holes overnight). Frames over the bound
-  go to the socket and count in `TxNoSlot`.
+  txset`) bounds the frames out, 1..4096; `install.ps1` writes 200, the
+  value measured on FOH (0 failures, 0 holes overnight). Media TX is never
+  unbounded since 0.1.152: a missing, unreadable, 0 or larger Parameters
+  value is 200 (all but missing flagged in ParamBad), and `txset` refuses
+  0. Frames over the bound go to the socket and count in `TxNoSlot`.
 
 ## Test PCs and NIC drivers
 

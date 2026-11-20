@@ -9,6 +9,7 @@ param(
     [Parameter(Mandatory, Position = 0)][ValidateSet("status")][string]$Action
 )
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "records.ps1")
 
 Add-Type -TypeDefinition @"
 using System;
@@ -38,16 +39,12 @@ public static class DasioRxRing {
 
 switch ($Action) {
     "status" {
-        # The fields of DASIO_RX_STATUS (filteruser.h), in order.
+        # The fields of DASIO_RX_STATUS (filteruser.h), in order; version 1
+        # had the first 11. Each record is read by its own version
+        # (scripts/test_pacer_status.py ties these to filteruser.h).
         $names = "Version", "IfIndex", "Attached", "Flags", "SlotCount", "Matches", "Matched", "Delivered", "Full", "Stolen", "TooBig", "Tagged", "BadChecksum"
+        $layouts = @{ 1 = $names[0..10]; 2 = $names }
         $raw = [DasioRxRing]::Call([DasioRxRing]::STATUS, 8 * $names.Count * 64)
-        $v = New-Object Int64[] ($raw.Length / 8)
-        [Buffer]::BlockCopy($raw, 0, $v, 0, $raw.Length)
-        if ($v.Length % $names.Count -ne 0) { throw "status of $($raw.Length) bytes is not a whole number of records" }
-        for ($i = 0; $i -lt $v.Length; $i += $names.Count) {
-            $o = [ordered]@{}
-            for ($j = 0; $j -lt $names.Count; $j++) { $o[$names[$j]] = $v[$i + $j] }
-            [pscustomobject]$o
-        }
+        ConvertTo-StatusRecords -Values (ConvertTo-StatusValues $raw "rxring") -Layouts $layouts -What "rxring"
     }
 }
