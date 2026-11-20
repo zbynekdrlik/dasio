@@ -312,7 +312,8 @@ fn page_size() -> usize {
 /// The process's working set for `locked` bytes on top of `base`, as soft
 /// limits: the system may still grow the process past the maximum or trim
 /// it below the minimum under memory pressure; only the minimum's quota
-/// for locked pages matters here.
+/// for locked pages matters here. A hard limit someone else set on the
+/// process (none of dasio's tools sets one) becomes soft too.
 fn set_working_set(base: (usize, usize), locked: usize) -> io::Result<()> {
     let (min, max) = working_set(base, locked);
     // SAFETY: the current process's pseudo handle; plain values.
@@ -328,6 +329,30 @@ fn set_working_set(base: (usize, usize), locked: usize) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// Why [`Shared::lock`] locked nothing: the step and the OS error.
+#[derive(Debug)]
+pub struct LockFailed {
+    /// "reading the working set", "raising the working set" or "locking a
+    /// view".
+    pub step: &'static str,
+    pub err: io::Error,
+}
+
+impl LockFailed {
+    fn at(step: &'static str) -> LockFailed {
+        LockFailed {
+            step,
+            err: io::Error::last_os_error(),
+        }
+    }
+}
+
+impl std::fmt::Display for LockFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.step, self.err)
+    }
 }
 
 /// Sessions this process made (a test makes several devices in one process).
@@ -579,7 +604,7 @@ impl Shared {
     /// nothing of this section locked and the working set at what the other
     /// locked sections need: the device runs on as without a lock. The
     /// locks end with the views (unmapping unlocks).
-    pub fn lock(&mut self) -> io::Result<usize> {
+    pub fn lock(&mut self) -> Result<usize, LockFailed> {
         if self.locked != 0 {
             return Ok(self.locked);
         }
@@ -597,13 +622,16 @@ impl Shared {
                     GetProcessWorkingSetSizeEx(GetCurrentProcess(), &mut min, &mut max, &mut flags)
                 };
                 if ok == 0 {
-                    return Err(io::Error::last_os_error());
+                    return Err(LockFailed::at("reading the working set"));
                 }
                 locks.base = Some((min, max));
                 (min, max)
             }
         };
-        set_working_set(base, locks.bytes + bytes)?;
+        set_working_set(base, locks.bytes + bytes).map_err(|err| LockFailed {
+            step: "raising the working set",
+            err,
+        })?;
         for (i, &(addr, len)) in views.iter().enumerate() {
             // SAFETY: a range inside a view this struct mapped.
             if unsafe { VirtualLock(addr as *const _, len) } == 0 {
@@ -615,7 +643,10 @@ impl Shared {
                 // Back to what the other locked sections need; the lock's
                 // own error is the one to report.
                 let _ = set_working_set(base, locks.bytes);
-                return Err(e);
+                return Err(LockFailed {
+                    step: "locking a view",
+                    err: e,
+                });
             }
         }
         locks.bytes += bytes;
@@ -676,7 +707,9 @@ impl Drop for Shared {
             })
         };
         if self.locked != 0 {
-            // The working set stays raised until the next lock sets it
+            // Teardown only, on whichever thread drops the last handle: the
+            // mutex waits at most for another section's lock. The working
+            // set stays raised until the next lock sets it
             // for what is locked then.
             let mut locks = LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
             locks.bytes = locks.bytes.saturating_sub(self.locked);

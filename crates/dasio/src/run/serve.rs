@@ -253,8 +253,9 @@ fn lock_in_memory(shared: &mut Shared) {
             "the shared memory is locked in memory, the working set raised for it"
         ),
         Err(e) => warn!(
-            err = %e,
-            os_error = e.raw_os_error().unwrap_or(0),
+            step = e.step,
+            err = %e.err,
+            os_error = e.err.raw_os_error().unwrap_or(0),
             session = shared.session(),
             "the shared memory could not be locked in memory: it serves unlocked"
         ),

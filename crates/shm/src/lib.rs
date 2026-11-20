@@ -285,7 +285,7 @@ pub use lock::{LOCK_MARGIN, page_span, working_set};
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::{Shared, qpc_ns, request_rate, requested_rate};
+pub use windows::{LockFailed, Shared, qpc_ns, request_rate, requested_rate};
 
 #[cfg(test)]
 mod tests;
