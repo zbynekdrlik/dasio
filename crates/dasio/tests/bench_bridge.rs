@@ -274,12 +274,15 @@ fn the_44_1_khz_conversion_at_the_e2e_shape_takes_a_small_part_of_the_device_blo
 /// subtraction removes a bridge of 256 frames a block where the converted
 /// path runs about 117.6 (44.1 kHz) or 128 (48 kHz) app frames, so it
 /// overstates the bridge's share, and understates the conversion's, by
-/// about half the bridge's mean, which is printed beside it.
+/// about half the bridge's mean, which is printed beside it. Both rates are
+/// timed and printed before either is judged, so a failure at one still
+/// shows the other's numbers.
 #[test]
 fn the_conversion_at_foh_s_shape_takes_a_small_part_of_the_device_block() {
     let _alone = alone();
     let period = Duration::from_nanos(FRAMES as u64 * 1_000_000_000 / RATE);
     let direct = Plan::new(96_000, 96_000, FRAMES as u32).expect("96 kHz");
+    let mut timed = Vec::new();
     for rate in [44_100, 48_000] {
         let converted = Plan::new(96_000, rate, FRAMES as u32).expect("the app's rate");
         let (d_mean, d_worst, _) = time_served(&direct, CHANNELS, CHANNELS, BLOCKS);
@@ -294,6 +297,9 @@ fn the_conversion_at_foh_s_shape_takes_a_small_part_of_the_device_block() {
             converted.app_block,
             conversion.as_secs_f64() * 100.0 / period.as_secs_f64()
         );
+        timed.push((rate, conversion, mean, d_mean, played));
+    }
+    for (rate, conversion, mean, d_mean, played) in timed {
         if !cfg!(debug_assertions) {
             assert!(
                 conversion < period / 4,
