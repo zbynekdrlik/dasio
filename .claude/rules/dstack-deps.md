@@ -37,6 +37,7 @@ paths:
 ## Moving the dstack tag
 
 - Move all six dstack git deps together and update the lock for those packages only: `cargo update -p dstack -p dstack-audio-io -p dstack-asio -p dlink -p dstack-endpoint -p dstack-resample` (a lock refresh, not a build). Then read the tag's CHANGELOG "Consumers" line and port the API it names.
+- The CHANGELOG does not name every API change: also diff the tags' `pub` lines in cargo's git cache (`git -C ~/.cargo/git/db/dstack-* diff <old sha> <new sha> -- crates | grep -E '^[-+]\s*pub '`, the shas from Cargo.lock) and grep dasio for each changed item, struct literals included. v0.6.211 gave `stream::Timing` two fields, unnamed there, and two test literals stopped compiling (0.1.157, dev run 44941042658); build it with `Timing::new` or `Timing::of`.
 - Write a dstack issue as "dstack issue N" in commit messages, never "#N": the commit gate reads a bare "#N" as a dasio ticket and refuses the commit when that number does not exist here (0.1.108, dstack issue 325).
 
 ## Tests are a dstack test run (dasio#167)

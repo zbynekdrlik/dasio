@@ -18,18 +18,30 @@
 //! sample-exact. A Dante packet hole is not this either: dstack logs RX holes
 //! itself, and a hole's zero run is a packet's length.
 //!
+//! Those two shapes are all it sees of live audio. A continuous test tone on
+//! channels of their own (`tone`, owner 21.11.2026) is checked sample by
+//! sample instead ([`tone`]): any sample off the sine (a click, a short gap
+//! of any length, a slipped sample, a repeated block) or a step in its level
+//! is a break.
+//!
 //! The pump thread runs [`Watch::check_block`] (through [`Watched`], a
 //! [`Process`] in front of the device's own processor): per-channel state is
-//! allocated at the start, the breaks go into [`Events`], a fixed
-//! single-writer ring of atomics. The run loop drains it ([`Events::drain`]),
-//! groups the breaks of one block over channels ([`group`]) and logs them.
-//! The config is the instance folder's `watch.toml` ([`config`]), not a
-//! `device.toml` table: dstack's dtray refuses keys it does not know there.
+//! allocated at the start, the breaks go into [`Events`] (the tone's into
+//! [`tone::ToneEvents`]), fixed single-writer rings of atomics ([`Ring`]).
+//! The run loop drains them ([`Ring::drain`]), groups the zero and repeat
+//! breaks of one block over channels ([`group`]) and logs them. The config
+//! is the instance folder's `watch.toml` ([`config`]), not a `device.toml`
+//! table: dstack's dtray refuses keys it does not know there.
 
+pub mod tone;
+
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use dstack_audio_io::{Block, Process};
+
+pub use tone::{ToneBreak, ToneKind, Tones};
 
 /// The instance folder's file that turns the watch on.
 pub const FILE: &str = "watch.toml";
@@ -86,13 +98,61 @@ pub struct Config {
     /// The host's ASIO block, samples at the device rate.
     pub block: usize,
     /// The watched channels: (the device's RX index, its name).
-    pub rx: Vec<(usize, String)>,
+    pub rx: Names,
+    /// The channels that carry a continuous test tone ([`tone`]), the same
+    /// way; a channel may be in both lists.
+    pub tone: Names,
 }
 
+/// Channels as a config names them: (the device's RX index, its name).
+pub type Names = Vec<(usize, String)>;
+
 /// The keys of `watch.toml`.
-const KEYS: [&str; 3] = ["name", "block", "rx"];
+const KEYS: [&str; 4] = ["name", "block", "rx", "tone"];
+
+/// The list `key` of `table` against the device's RX channel names: `None`
+/// without the key, else `least` to [`MAX_CHANNELS`] names, each an RX
+/// channel of the device, each once.
+fn names(
+    table: &toml::Table,
+    key: &str,
+    least: usize,
+    device_rx: &[String],
+) -> Result<Option<Names>, String> {
+    let Some(value) = table.get(key) else {
+        return Ok(None);
+    };
+    let toml::Value::Array(items) = value else {
+        return Err(format!(
+            "{FILE}: `{key}` must be a list of RX channel names"
+        ));
+    };
+    if items.len() < least || items.len() > MAX_CHANNELS {
+        return Err(format!(
+            "{FILE}: `{key}` must name {least} to {MAX_CHANNELS} channels"
+        ));
+    }
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let toml::Value::String(want) = item else {
+            return Err(format!("{FILE}: `{key}` entries must be strings"));
+        };
+        let Some(i) = device_rx.iter().position(|n| n == want) else {
+            return Err(format!(
+                "{FILE}: `{key}` names \"{want}\", which is no RX channel of this device"
+            ));
+        };
+        if out.iter().any(|(j, _)| *j == i) {
+            return Err(format!("{FILE}: `{key}` names \"{want}\" twice"));
+        }
+        out.push((i, want.clone()));
+    }
+    Ok(Some(out))
+}
 
 /// Reads `watch.toml`'s `text` against the device's RX channel names.
+/// `rx` names 1 to [`MAX_CHANNELS`] channels; with a `tone` list (1 to
+/// [`MAX_CHANNELS`]) it may be empty or left out (a tone-only watch).
 pub fn config(text: &str, device_rx: &[String]) -> Result<Config, String> {
     let table: toml::Table = text.parse().map_err(|e| format!("{FILE}: {e}"))?;
     if let Some(k) = table.keys().find(|k| !KEYS.contains(&k.as_str())) {
@@ -112,50 +172,48 @@ pub fn config(text: &str, device_rx: &[String]) -> Result<Config, String> {
             .ok_or_else(|| format!("{FILE}: `block` {n} is not {MIN_BLOCK} to {MAX_BLOCK}"))?,
         _ => return Err(format!("{FILE}: `block` must be an integer (samples)")),
     };
-    let Some(toml::Value::Array(items)) = table.get("rx") else {
-        return Err(format!("{FILE}: `rx` must be a list of RX channel names"));
-    };
-    if items.is_empty() || items.len() > MAX_CHANNELS {
-        return Err(format!(
-            "{FILE}: `rx` must name 1 to {MAX_CHANNELS} channels"
-        ));
-    }
-    let mut rx = Vec::with_capacity(items.len());
-    for item in items {
-        let toml::Value::String(want) = item else {
-            return Err(format!("{FILE}: `rx` entries must be strings"));
-        };
-        let Some(i) = device_rx.iter().position(|n| n == want) else {
-            return Err(format!(
-                "{FILE}: `rx` names \"{want}\", which is no RX channel of this device"
-            ));
-        };
-        if rx.iter().any(|(j, _)| *j == i) {
-            return Err(format!("{FILE}: `rx` names \"{want}\" twice"));
+    let tone = names(&table, "tone", 1, device_rx)?;
+    // A tone-only watch needs no `rx`.
+    let rx = match (
+        names(&table, "rx", usize::from(tone.is_none()), device_rx)?,
+        &tone,
+    ) {
+        (Some(rx), _) => rx,
+        (None, Some(_)) => Vec::new(),
+        (None, None) => {
+            return Err(format!("{FILE}: `rx` must be a list of RX channel names"));
         }
-        rx.push((i, want.clone()));
-    }
-    Ok(Config { name, block, rx })
+    };
+    Ok(Config {
+        name,
+        block,
+        rx,
+        tone: tone.unwrap_or_default(),
+    })
 }
 
-/// A watch as the run holds it: its config and the ring its pump side
-/// writes (one ring for the run; each serving makes its own [`Watch`]).
+/// A watch as the run holds it: its config and the rings (and the tone
+/// figures) its pump side writes: one set for the run; each serving makes
+/// its own [`Watch`].
 pub struct Setup {
     pub cfg: Config,
     pub events: Arc<Events>,
+    pub tones: Arc<Tones>,
 }
 
 impl Setup {
     pub fn new(cfg: Config) -> Self {
+        let tones = Arc::new(Tones::new(cfg.tone.len()));
         Self {
             cfg,
             events: Arc::new(Events::default()),
+            tones,
         }
     }
 
     /// The pump side for a serving at the device's `rate`.
     pub fn watch(&self, rate: u32) -> Watch {
-        Watch::new(&self.cfg, rate, Arc::clone(&self.events))
+        Watch::new(&self.cfg, rate, Arc::clone(&self.events)).with_tones(Arc::clone(&self.tones))
     }
 }
 
@@ -205,79 +263,95 @@ pub fn whole_blocks(len: usize, block: usize) -> bool {
     (1..=MAX_BLOCKS).contains(&k) && len.abs_diff(k * block) <= TOLERANCE
 }
 
-/// The breaks between the pump thread and the run loop: one writer (the
-/// pump), one reader (the loop). A slot is `[at, info]`; `info` packs the
-/// channel (bits 40-55), the kind (bit 32) and the length (bits 0-31).
-pub struct Events {
-    slots: Box<[[AtomicU64; 2]]>,
-    head: AtomicU64,
+/// What a [`Ring`] slot holds: an item packed into `W` words.
+pub trait Slot<const W: usize> {
+    fn pack(&self) -> [u64; W];
+    fn unpack(words: [u64; W]) -> Self;
 }
 
-impl Default for Events {
+/// Items between the pump thread and the run loop: one writer (the pump),
+/// one reader (the loop), each item packed into a slot of `W` atomics.
+pub struct Ring<T, const W: usize> {
+    slots: Box<[[AtomicU64; W]]>,
+    head: AtomicU64,
+    item: PhantomData<fn() -> T>,
+}
+
+/// The zero and repeat breaks. A slot is `[at, info]`; `info` packs the
+/// channel (bits 40-55), the kind (bit 32) and the length (bits 0-31).
+pub type Events = Ring<Break, 2>;
+
+impl<T, const W: usize> Default for Ring<T, W> {
     fn default() -> Self {
         Self {
             slots: (0..CAPACITY)
-                .map(|_| [AtomicU64::new(0), AtomicU64::new(0)])
+                .map(|_| std::array::from_fn::<AtomicU64, W, _>(|_| AtomicU64::new(0)))
                 .collect(),
             head: AtomicU64::new(0),
+            item: PhantomData,
         }
     }
 }
 
-fn pack(b: &Break) -> u64 {
-    let kind = match b.kind {
-        Kind::Zero => 0,
-        Kind::Repeat => 1,
-    };
-    // The three fields never overlap: a sum, so no `|`/`^` twin.
-    ((b.channel as u64 & 0xFFFF) << 40) + (kind << 32) + u64::from(b.len)
-}
+impl Slot<2> for Break {
+    fn pack(&self) -> [u64; 2] {
+        let kind = match self.kind {
+            Kind::Zero => 0,
+            Kind::Repeat => 1,
+        };
+        // The three fields never overlap: a sum, so no `|`/`^` twin.
+        [
+            self.at,
+            ((self.channel as u64 & 0xFFFF) << 40) + (kind << 32) + u64::from(self.len),
+        ]
+    }
 
-fn unpack(at: u64, info: u64) -> Break {
-    Break {
-        channel: ((info >> 40) & 0xFFFF) as usize,
-        kind: if (info >> 32) & 1 == 1 {
-            Kind::Repeat
-        } else {
-            Kind::Zero
-        },
-        at,
-        len: (info & 0xFFFF_FFFF) as u32,
+    fn unpack([at, info]: [u64; 2]) -> Self {
+        Break {
+            channel: ((info >> 40) & 0xFFFF) as usize,
+            kind: if (info >> 32) & 1 == 1 {
+                Kind::Repeat
+            } else {
+                Kind::Zero
+            },
+            at,
+            len: (info & 0xFFFF_FFFF) as u32,
+        }
     }
 }
 
-impl Events {
+impl<T: Slot<W>, const W: usize> Ring<T, W> {
     /// The writer's side (the pump thread only): never blocks, never
-    /// allocates; a full ring overwrites its oldest break.
-    pub fn push(&self, b: Break) {
+    /// allocates; a full ring overwrites its oldest item.
+    pub fn push(&self, item: T) {
         let h = self.head.load(Ordering::Relaxed);
         let slot = &self.slots[(h % CAPACITY as u64) as usize];
-        slot[0].store(b.at, Ordering::Relaxed);
-        slot[1].store(pack(&b), Ordering::Relaxed);
+        for (cell, word) in slot.iter().zip(item.pack()) {
+            cell.store(word, Ordering::Relaxed);
+        }
         self.head.store(h + 1, Ordering::Release);
     }
 
-    /// The reader's side: the breaks pushed since `tail` (the reader's own
+    /// The reader's side: the items pushed since `tail` (the reader's own
     /// count), oldest first, into `out`; returns how many were lost to the
     /// ring's size. A slot the writer reached again while it was read is
     /// dropped and counted as lost. `tail` moves to the head.
-    pub fn drain(&self, tail: &mut u64, out: &mut Vec<Break>) -> u64 {
+    pub fn drain(&self, tail: &mut u64, out: &mut Vec<T>) -> u64 {
         self.drain_with(tail, out, || {})
     }
 
-    /// [`Events::drain`] with `during` run between the read and the check of
+    /// [`Ring::drain`] with `during` run between the read and the check of
     /// the head: a test's stand-in for the writer pushing meanwhile.
-    fn drain_with(&self, tail: &mut u64, out: &mut Vec<Break>, during: impl FnOnce()) -> u64 {
+    fn drain_with(&self, tail: &mut u64, out: &mut Vec<T>, during: impl FnOnce()) -> u64 {
         let h = self.head.load(Ordering::Acquire);
         let mut lost = (h - *tail).saturating_sub(CAPACITY as u64);
         let start = *tail + lost;
         let first = out.len();
         for i in start..h {
             let slot = &self.slots[(i % CAPACITY as u64) as usize];
-            out.push(unpack(
-                slot[0].load(Ordering::Relaxed),
-                slot[1].load(Ordering::Relaxed),
-            ));
+            out.push(T::unpack(std::array::from_fn(|k| {
+                slot[k].load(Ordering::Relaxed)
+            })));
         }
         during();
         let h2 = self.head.load(Ordering::Acquire);
@@ -396,10 +470,16 @@ pub struct Watch {
     decay: f64,
     /// The next block's position when the block has no media time.
     next: u64,
+    /// The tone channels, their breaks and figures, and the rate's limits.
+    tones: Vec<tone::Channel>,
+    tone_out: Arc<Tones>,
+    limits: tone::Limits,
 }
 
 impl Watch {
-    /// A watch of `cfg`'s channels at `rate` (Hz), breaks into `events`.
+    /// A watch of `cfg`'s channels at `rate` (Hz), breaks into `events`;
+    /// the tone breaks go into a ring of its own ([`Setup::watch`] gives it
+    /// the setup's).
     pub fn new(cfg: &Config, rate: u32, events: Arc<Events>) -> Self {
         Self {
             channels: cfg
@@ -410,7 +490,23 @@ impl Watch {
             events,
             decay: (-1.0 / (PEAK_HOLD_S * f64::from(rate.max(1)))).exp(),
             next: 0,
+            tones: cfg
+                .tone
+                .iter()
+                .map(|(i, _)| tone::Channel::new(*i))
+                .collect(),
+            tone_out: Arc::new(Tones::new(cfg.tone.len())),
+            limits: tone::Limits::new(rate),
         }
+    }
+
+    /// The watch with its tone breaks and figures going into `tones` (its
+    /// [`Setup`]'s, one per tone channel of the config). Private: only
+    /// [`Setup::watch`] pairs the two, from one config, so the pump never
+    /// indexes past the figures.
+    fn with_tones(mut self, tones: Arc<Tones>) -> Self {
+        self.tone_out = tones;
+        self
     }
 
     /// Checks `block`'s watched inputs. A jump in the media position (blocks
@@ -426,6 +522,12 @@ impl Watch {
                 c.feed(x, start + i as u64, self.decay, &self.events, ch);
             }
         }
+        for (ch, t) in self.tones.iter_mut().enumerate() {
+            for (i, &x) in block.input(t.rx).iter().enumerate() {
+                t.feed(x, start + i as u64, &self.limits, &self.tone_out.events, ch);
+            }
+            t.publish(self.tone_out.stats(ch));
+        }
         self.next = start + block.frames() as u64;
     }
 
@@ -433,6 +535,9 @@ impl Watch {
     pub fn forget(&mut self) {
         for c in &mut self.channels {
             c.reset();
+        }
+        for t in &mut self.tones {
+            t.reset();
         }
     }
 }

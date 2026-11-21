@@ -25,6 +25,7 @@ mod pump_look;
 use pump_look::look_at_pump;
 mod serve;
 use serve::Base;
+mod watch_log;
 
 /// Runs instance `instance` from the device config at `config` on `ip`
 /// with the media clock from `clock` (dantesync in production; the system
@@ -87,27 +88,10 @@ pub fn run(
     // only, the latency stays the owner's decision.
     let mut rx_arrival = crate::rx_arrival::Watch::default();
     let turnaround = Arc::new(Mutex::new(Turnaround::default()));
-    // The watch on received outputs of another ASIO host (dasio#207): the
-    // instance folder's watch.toml. A config that does not read leaves the
-    // watch off and the device running.
-    let watch = match crate::miss_watch::setup(&minutes_dir, &cfg.rx) {
-        Ok(Some(c)) => {
-            info!(
-                watch = %c.name,
-                block = c.block,
-                rx = %c.rx.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>().join(", "),
-                "watching received outputs for an ASIO host's missed buffers (dasio#207)"
-            );
-            Some(crate::miss_watch::Setup::new(c))
-        }
-        Ok(None) => None,
-        Err(e) => {
-            warn!(err = %e, "the output watch is off: its config does not read (dasio#207)");
-            None
-        }
-    };
-    let mut watch_tail = 0u64;
-    let mut watch_breaks = Vec::new();
+    // The watch on received outputs of another ASIO host and on test tones
+    // (dasio#207): the instance folder's watch.toml.
+    let watch = watch_log::start(&minutes_dir, &cfg.rx);
+    let mut watch_reader = watch_log::Reader::default();
     let base = Base {
         instance,
         shape,
@@ -226,34 +210,16 @@ pub fn run(
             ),
             None => {}
         }
-        // The watched outputs' breaks since the last tick (dasio#207).
+        // The watched outputs' and tones' breaks since the last tick
+        // (dasio#207).
         if let Some(w) = watch.as_ref() {
-            watch_breaks.clear();
-            let lost = w.events.drain(&mut watch_tail, &mut watch_breaks);
-            if lost > 0 {
-                warn!(
-                    lost,
-                    "the output watch lost breaks: more than its ring holds in 100 ms"
-                );
-            }
-            if !watch_breaks.is_empty() {
-                let now = media
+            let media_now = || {
+                media
                     .clock
                     .now_ns()
-                    .map(|ns| dstack::clock::to_samples(ns, cfg.sample_rate));
-                for g in crate::miss_watch::group(&watch_breaks, w.cfg.block) {
-                    warn!(
-                        watch = %w.cfg.name,
-                        kind = g.kind.name(),
-                        samples = g.len,
-                        ago_ms = now.map(|n| crate::miss_watch::age_ms(g.at, n, cfg.sample_rate)),
-                        channels = %crate::miss_watch::channel_names(&g, &w.cfg),
-                        broke = g.channels.len(),
-                        of = w.cfg.rx.len(),
-                        "a watched output broke like an ASIO host's missed buffer (dasio#207)"
-                    );
-                }
-            }
+                    .map(|ns| dstack::clock::to_samples(ns, cfg.sample_rate))
+            };
+            watch_reader.tick(w, media_now, cfg.sample_rate);
         }
         if profile_at.is_none_or(|t| {
             now.duration_since(t) >= Duration::from_secs(crate::pc_profile::CHECK_EVERY_S)
@@ -269,6 +235,10 @@ pub fn run(
                 rx_arrival.observe(crate::rx_arrival::flows(&media.rx), cfg.sample_rate)
             {
                 crate::rx_arrival::log(&r);
+            }
+            // Each watched tone's figures of the last 10 s (dasio#207).
+            if let Some(w) = watch.as_ref() {
+                watch_log::summary(w, cfg.sample_rate);
             }
             let v = stats.view();
             let (resets_asked, latencies_changed) = h.messages();
