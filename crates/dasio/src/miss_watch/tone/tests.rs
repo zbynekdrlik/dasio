@@ -274,6 +274,27 @@ fn a_small_level_step_is_one_level_break() {
 }
 
 #[test]
+fn an_abrupt_level_step_is_one_break_a_click() {
+    // A 0.2 dB gain step from one sample to the next (a block-wise gain
+    // without a ramp): its edge is a residual of (g - 1) x, -43 dB of a
+    // -20 dBFS tone at 1 kHz, so it is a click, and the fit after it takes
+    // the new level: one break, never a click and a level break.
+    let gain = 10f64.powf(0.2 / 20.0);
+    let mut s = tone(48_000, 1_000.0, -20.0);
+    for x in s.iter_mut().skip(30_000) {
+        *x = (*x * gain / STEP).round() * STEP;
+    }
+    let (breaks, f) = run(&s);
+    assert_eq!(shape(&breaks), vec![(ToneKind::Click, 30_000, 1)]);
+    let rel = db(breaks[0].rel);
+    assert!((-43.5..=-43.0).contains(&rel), "{rel}");
+    assert_eq!(
+        (f.breaks, f.checked),
+        (1, 48_000 - SETTLED_AT - ACQUIRE as u64)
+    );
+}
+
+#[test]
 fn a_slow_fade_moves_the_running_level_without_a_break() {
     // 0.14 dB/s: the running amplitude trails by about 0.14 x RUN_S =
     // 0.07 dB, inside the 0.1 dB step (it would not with a 1 s constant).
