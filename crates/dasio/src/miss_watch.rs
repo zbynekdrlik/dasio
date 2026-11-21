@@ -478,7 +478,8 @@ pub struct Watch {
 
 impl Watch {
     /// A watch of `cfg`'s channels at `rate` (Hz), breaks into `events`;
-    /// the tone breaks go into a ring of its own until [`Watch::with_tones`].
+    /// the tone breaks go into a ring of its own ([`Setup::watch`] gives it
+    /// the setup's).
     pub fn new(cfg: &Config, rate: u32, events: Arc<Events>) -> Self {
         Self {
             channels: cfg
@@ -500,8 +501,10 @@ impl Watch {
     }
 
     /// The watch with its tone breaks and figures going into `tones` (its
-    /// [`Setup`]'s, one per tone channel of the config).
-    pub fn with_tones(mut self, tones: Arc<Tones>) -> Self {
+    /// [`Setup`]'s, one per tone channel of the config). Private: only
+    /// [`Setup::watch`] pairs the two, from one config, so the pump never
+    /// indexes past the figures.
+    fn with_tones(mut self, tones: Arc<Tones>) -> Self {
         self.tone_out = tones;
         self
     }

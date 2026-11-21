@@ -576,6 +576,27 @@ fn the_level_window_is_a_period_rounded_up_at_least_level_min() {
 }
 
 #[test]
+fn a_block_s_phase_jump_is_two_sines_of_half_its_phase() {
+    let c = |hz: f64| 2.0 * (TAU * hz / f64::from(RATE)).cos();
+    // 750 Hz: 128 samples are one period, a repeated block is the tone.
+    assert!(block_jump(c(750.0), 128) < 1e-9);
+    assert!(block_jump(c(1_500.0), 64) < 1e-9);
+    // 375 Hz: half a period, the largest jump (2 x A).
+    assert!((block_jump(c(375.0), 128) - 2.0).abs() < 1e-9);
+    // 250 Hz: a third of a period, 2 sin(pi / 3).
+    assert!((block_jump(c(250.0), 128) - 3f64.sqrt()).abs() < 1e-9);
+    assert!(blind(block_jump(c(750.0), 128)));
+    assert!(!blind(block_jump(c(440.0), 128)));
+}
+
+#[test]
+fn a_tone_is_blind_to_a_block_under_ten_thresholds() {
+    assert!(!blind(10.0 * REL));
+    assert!(blind((10.0 * REL).next_down()));
+    assert!(blind(0.0));
+}
+
+#[test]
 fn db_and_hz_read_a_ratio_and_a_fit() {
     assert_eq!(db(10.0), 20.0);
     assert!((db(REL) + 60.0).abs() < 1e-9);

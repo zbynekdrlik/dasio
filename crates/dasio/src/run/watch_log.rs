@@ -119,16 +119,32 @@ pub(super) fn summary(w: &Setup, rate: u32) {
             );
             continue;
         }
+        // No level window ended (breaks faster than one): no amplitude.
+        let levels = s.amp_max > 0.0;
+        let hz = (tone::hz(s.c, rate) * 10.0).round() / 10.0;
         info!(
             watch = %w.cfg.name,
             channel = %name,
             checked = s.checked,
             breaks = s.breaks,
             worst_db = tenth_db(s.worst),
-            amp_min_dbfs = tenth_db(s.amp_min),
-            amp_max_dbfs = tenth_db(s.amp_max),
-            hz = (tone::hz(s.c, rate) * 10.0).round() / 10.0,
+            amp_min_dbfs = levels.then(|| tenth_db(s.amp_min)),
+            amp_max_dbfs = levels.then(|| tenth_db(s.amp_max)),
+            hz,
             "a watched test tone over the last 10 s (dasio#207)"
         );
+        let jump = tone::block_jump(s.c, w.cfg.block);
+        if tone::blind(jump) {
+            warn!(
+                watch = %w.cfg.name,
+                channel = %name,
+                hz,
+                block = w.cfg.block,
+                jump_db = tenth_db(jump),
+                "a watched test tone is blind to a repeated or skipped host block: the block is \
+                 a whole number of its periods; give the tone another frequency, e.g. 440 Hz \
+                 (dasio#207)"
+            );
+        }
     }
 }

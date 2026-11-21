@@ -264,6 +264,21 @@ pub fn hz(c: f64, rate: u32) -> f64 {
     (c / 2.0).acos() * f64::from(rate) / TAU
 }
 
+/// The largest residual, over the tone's amplitude, of the phase jump a
+/// repeated or skipped block of `block` samples leaves in a tone of `c`:
+/// `2 |sin(block w / 2)|`, 0 when the block is a whole number of the
+/// tone's periods (750 Hz in blocks of 128 at 96 kHz): the repeated block
+/// is then the tone itself.
+pub fn block_jump(c: f64, block: usize) -> f64 {
+    2.0 * (block as f64 * (c / 2.0).acos() / 2.0).sin().abs()
+}
+
+/// Whether a block's phase jump of `jump` is under ten thresholds
+/// (-40 dB): most repeated or skipped host blocks then go unseen.
+pub fn blind(jump: f64) -> bool {
+    jump < 10.0 * REL
+}
+
 /// What a rate sets: the band of `c` a tone may have, a click's longest
 /// run and the running amplitude's step per sample.
 #[derive(Debug, Clone, Copy)]
