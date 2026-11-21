@@ -151,8 +151,8 @@ fn the_output_watch_is_realtime_safe() {
         .map(|i| (0.1 * (w * i as f64 + 0.3).sin() / lsb).round() * lsb)
         .collect();
     tone[6_000] += 1e-3;
-    let mut input = vec![0.0f64; 2 * FRAMES];
-    let mut output = vec![0.0f64; 2 * FRAMES];
+    let mut input = [0.0f64; 2 * FRAMES];
+    let mut output = [0.0f64; 2 * FRAMES];
     let mut start = 0u64;
     for b in 0..BLOCKS {
         let at = b * FRAMES;

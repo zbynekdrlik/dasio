@@ -91,7 +91,7 @@ fn clean_tones_have_no_break_and_are_checked_from_the_first_fit() {
         for dbfs in [-60.0, -40.0, -20.0, -6.0] {
             let s = tone(48_000, hz, dbfs);
             for block in [64, 128, 256] {
-                let (breaks, figures) = run_at(&[s.clone()], block, RATE);
+                let (breaks, figures) = run_at(std::slice::from_ref(&s), block, RATE);
                 let f = figures[0];
                 assert_eq!(
                     (breaks, f.checked, f.breaks),
