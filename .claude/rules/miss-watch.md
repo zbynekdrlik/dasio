@@ -48,18 +48,18 @@ paths:
   It assumes 24-bit RX; a 16-bit sender would break it constantly.
 - The tone's frequency: a repeated or skipped host block moves its phase
   by the block's length in periods, a jump of `2 |sin(B w / 2)|` of the
-  tone (`block_jump`). When `block` is a whole number of periods (750,
-  1500 or 3000 Hz in blocks of 128 at 96 kHz; 1500/3000 Hz in 64 or 32)
-  the repeated block IS the tone and nothing shows, the miss this check
-  exists for. Under -40 dB (`blind`) the summary WARNs. Use 440 Hz (Live's
-  default) or 997 Hz; check `hz x block / rate` is not near a whole number
-  for every block size the host runs.
+  tone (`block_jump`). When `block` is a whole number of periods (at
+  96 kHz: 750, 1500 or 3000 Hz in blocks of 128; 1500 or 3000 Hz in 64;
+  3000 Hz in 32) the repeated block IS the tone and nothing shows, the
+  miss this check exists for. Under -40 dB (`blind`) the summary WARNs.
+  Use 440 Hz (Live's default) or 997 Hz; check `hz x block / rate` is not
+  near a whole number for every block size the host runs.
 - Mutation gate: every float comparison sits in a small pure helper with a
   boundary test (`above`, `in_band`, `present`, `settles`, `level_break`,
-  `blind`, like `loud`); the click end, the one-second cap and the level window's
-  position are pinned by sample-exact tests (two clicks RESUME + 2 / + 3
-  apart, a stop at 8 kHz fed one sample per block, a level ramp starting on
-  a window boundary). Keep `RUN_S` not 1.0: `RUN_S * r` -> `RUN_S + r` is
+  `blind`, like `loud`); the click end, the one-second cap and the level
+  window's position are pinned by sample-exact tests (two clicks RESUME + 2
+  / + 3 apart, a stop at 8 kHz fed one sample per block, a level ramp
+  starting on a window boundary). Keep `RUN_S` not 1.0: `RUN_S * r` -> `RUN_S + r` is
   then equivalent (the fade test tells 0.5 s from ~1 s).
 - The pump-path proof: `tests/rtsan.rs` runs a zero/repeat and a tone
   channel through `Watched::process` under RealtimeSanitizer (the CI
