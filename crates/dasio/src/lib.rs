@@ -329,18 +329,10 @@ mod tests {
     fn the_bridge_waits_into_the_work_margin_less_the_safety() {
         // FOH master: B 128, P 96 (1 ms), W 128 at 96 kHz; 200 us is 19
         // samples.
-        let t = Timing {
-            block: 128,
-            playout: 96,
-            margin: 128,
-        };
+        let t = Timing::new(128, 96, 128);
         assert_eq!(wait_offset(&t, 96_000), 128 + 96 + 128 - 19);
         // A margin smaller than the safety: never before the due time.
-        let t = Timing {
-            block: 128,
-            playout: 96,
-            margin: 8,
-        };
+        let t = Timing::new(128, 96, 8);
         assert_eq!(wait_offset(&t, 96_000), 128 + 96);
     }
 
