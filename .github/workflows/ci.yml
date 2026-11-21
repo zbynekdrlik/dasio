@@ -239,9 +239,15 @@ jobs:
 
   # Mutants in the code changed since main, the portable decision code
   # (`.cargo/mutants.toml`): a surviving mutant fails the build. Bounded:
-  # past 20 min the gate's setup is wrong, never its budget.
+  # past 20 min the gate's setup is wrong, never its budget. Two shards,
+  # mutant i on shard i % 2: one runner tests ~140 mutants in 10 min, and
+  # the tone check's diff (dasio#207) alone has 252.
   mutation:
     needs: [test]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -254,7 +260,7 @@ jobs:
         with:
           tool: cargo-mutants@27.1.0,cargo-nextest@0.9.148
       - run: git diff origin/main...HEAD > pr.diff
-      - run: cargo mutants --in-diff pr.diff --baseline=skip --jobs 2 -- --all-targets
+      - run: cargo mutants --in-diff pr.diff --baseline=skip --jobs 2 --shard ${{ matrix.shard }}/2 --sharding round-robin -- --all-targets
 
   version:
     if: github.event_name == 'pull_request'
