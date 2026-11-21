@@ -25,4 +25,5 @@ Design: `docs/design/2026-10-29-dante-asio-design.md`; MVP plan: `docs/plans/202
 - an ASIO app at its own sample rate (conversion, re-serve, latencies) → `.claude/rules/app-rate.md` (auto-loads on its `paths:`)
 - the measured RX arrival (information only, never a latency proposal) → `.claude/rules/rx-arrival.md` (auto-loads on its `paths:`)
 - the shared memory, its locked views → `.claude/rules/shm.md` (auto-loads on its `paths:`)
-- the CI mutation gate (Windows glue, bounded loops, equivalent mutants) → `.claude/rules/mutation-gate.md` (auto-loads on its `paths:`)
+- the output watch, its test-tone check (`watch.toml`, its log lines) → `.claude/rules/miss-watch.md` (auto-loads on its `paths:`)
+- the CI mutation gate (Windows glue, bounded loops, equivalent mutants, shards) → `.claude/rules/mutation-gate.md` (auto-loads on its `paths:`)

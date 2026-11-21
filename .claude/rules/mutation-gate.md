@@ -25,3 +25,8 @@ paths:
 - Error-path tests assert the whole message: a `contains("size 0")` let a
   `||`-as-`&&` mutant through (it failed one check later, same words).
   Test edge checks at an offset > 0 too (`len - at` as `len + at`).
+- The job runs in two shards (`--shard k/2 --sharding round-robin`): one
+  runner tests ~14 mutants a minute (141 in 10 min, PR #208), and the tone
+  check's diff had 252. Count a large diff's mutants before pushing:
+  `cargo mutants --list --in-diff <diff>` only parses, it builds nothing.
+  Past ~200 a shard (14 min), add a third rather than raising the timeout.
