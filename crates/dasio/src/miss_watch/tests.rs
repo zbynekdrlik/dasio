@@ -9,6 +9,7 @@ fn cfg(channels: usize) -> Config {
         name: "master".into(),
         block: HOST,
         rx: (0..channels).map(|i| (i, format!("ch {i}"))).collect(),
+        tone: vec![],
     }
 }
 
@@ -473,6 +474,7 @@ fn the_config_names_channels_by_the_device_s_rx_names() {
             name: "master".into(),
             block: 128,
             rx: vec![(1, "CG SNV L".into()), (0, "Hand 1 SNV".into())],
+            tone: vec![],
         }
     );
 }
@@ -666,7 +668,8 @@ fn setup_reads_the_instance_folder_s_file_or_nothing() {
         Ok(Some(Config {
             name: "master".into(),
             block: 128,
-            rx: vec![(3, "Ruchy 1".into())]
+            rx: vec![(3, "Ruchy 1".into())],
+            tone: vec![],
         }))
     );
     std::fs::write(
@@ -771,4 +774,129 @@ fn a_drain_drops_and_counts_what_the_writer_overwrote_meanwhile() {
     let mut next = Vec::new();
     assert_eq!(events.drain(&mut tail, &mut next), 0);
     assert_eq!(next, vec![b(1_000), b(1_001), b(1_002)]);
+}
+
+#[test]
+fn the_config_reads_tone_channels_next_to_rx() {
+    let c = config(
+        "name = \"m\"\nblock = 128\nrx = [\"Hand 1 SNV\"]\ntone = [\"CG SNV R\", \"CG SNV L\"]\n",
+        &names(),
+    )
+    .unwrap();
+    assert_eq!(c.rx, vec![(0, "Hand 1 SNV".to_string())]);
+    assert_eq!(
+        c.tone,
+        vec![(2, "CG SNV R".to_string()), (1, "CG SNV L".to_string())]
+    );
+    // A channel may be in both lists.
+    let c = config(
+        "name = \"m\"\nblock = 128\nrx = [\"Ruchy 1\"]\ntone = [\"Ruchy 1\"]\n",
+        &names(),
+    )
+    .unwrap();
+    assert_eq!((c.rx.len(), c.tone.len()), (1, 1));
+}
+
+#[test]
+fn a_tone_only_config_needs_no_rx() {
+    for text in [
+        "name = \"m\"\nblock = 128\ntone = [\"Ruchy 1\"]\n",
+        "name = \"m\"\nblock = 128\nrx = []\ntone = [\"Ruchy 1\"]\n",
+    ] {
+        let c = config(text, &names()).unwrap();
+        assert_eq!(
+            (c.rx, c.tone),
+            (vec![], vec![(3, "Ruchy 1".to_string())]),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn the_config_refuses_a_tone_list_it_cannot_watch() {
+    let rx = "name = \"m\"\nblock = 128\nrx = [\"Hand 1 SNV\"]\n";
+    for (tone, e) in [
+        ("tone = []", "`tone` must name 1 to 16 channels"),
+        (
+            "tone = \"Ruchy 1\"",
+            "`tone` must be a list of RX channel names",
+        ),
+        ("tone = [2]", "`tone` entries must be strings"),
+        (
+            "tone = [\"PETA\"]",
+            "`tone` names \"PETA\", which is no RX channel of this device",
+        ),
+        (
+            "tone = [\"Ruchy 1\", \"Ruchy 1\"]",
+            "`tone` names \"Ruchy 1\" twice",
+        ),
+    ] {
+        for text in [
+            format!("{rx}{tone}\n"),
+            format!("name = \"m\"\nblock = 128\n{tone}\n"),
+        ] {
+            assert_eq!(
+                config(&text, &names()).unwrap_err(),
+                format!("{FILE}: {e}"),
+                "{text}"
+            );
+        }
+    }
+    // Neither list: `rx` is missing.
+    assert_eq!(
+        config("name = \"m\"\nblock = 128\n", &names()).unwrap_err(),
+        format!("{FILE}: `rx` must be a list of RX channel names")
+    );
+}
+
+#[test]
+fn the_tone_list_takes_sixteen_channels_and_rx_up_to_sixteen_beside_it() {
+    let n17: Vec<String> = (0..17).map(|i| format!("c{i}")).collect();
+    let list = |k: usize| {
+        n17[..k]
+            .iter()
+            .map(|n| format!("\"{n}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let c = config(
+        &format!("name = \"m\"\nblock = 128\ntone = [{}]\n", list(16)),
+        &n17,
+    )
+    .unwrap();
+    assert_eq!((c.tone.len(), c.tone[15].0), (16, 15));
+    assert_eq!(
+        config(
+            &format!("name = \"m\"\nblock = 128\ntone = [{}]\n", list(17)),
+            &n17
+        )
+        .unwrap_err(),
+        format!("{FILE}: `tone` must name 1 to 16 channels")
+    );
+    assert_eq!(
+        config(
+            &format!(
+                "name = \"m\"\nblock = 128\nrx = [{}]\ntone = [\"c0\"]\n",
+                list(17)
+            ),
+            &n17
+        )
+        .unwrap_err(),
+        format!("{FILE}: `rx` must name 0 to 16 channels")
+    );
+}
+
+#[test]
+fn a_setup_starts_its_tone_figures_one_per_tone_channel() {
+    let c = config(
+        "name = \"m\"\nblock = 128\nrx = [\"Hand 1 SNV\"]\ntone = [\"CG SNV L\", \"CG SNV R\"]\n",
+        &names(),
+    )
+    .unwrap();
+    let set = Setup::new(c);
+    assert_eq!(set.tones.take(1).checked, 0);
+    let mut tail = 0;
+    let mut got = Vec::new();
+    assert_eq!(set.tones.events.drain(&mut tail, &mut got), 0);
+    assert!(got.is_empty());
 }
