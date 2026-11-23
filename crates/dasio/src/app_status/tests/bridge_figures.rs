@@ -103,6 +103,10 @@ fn a_bridge_json_with_every_figure_is_one_object_within_dstack_s_cap() {
         driver_output_latency_frames: u32::MAX,
         to_asio_target_ns: u64::MAX,
         from_asio_target_ns: u64::MAX,
+        startup: Part {
+            in_window: false,
+            startup: [u64::MAX; 3],
+        },
         ..bridge_running()
     };
     let j = bridge_json(&full);

@@ -9,6 +9,8 @@ use dstack::media::tx::{AppView, TxFillView};
 use dstack_asio::bridge::{AgeReport, BlockAge, UnderrunCounts, UnderrunWatch};
 use dstack_asio::state::{LATE_BIN_KEYS, LATE_BINS};
 
+use crate::startup::Part;
+
 /// Seconds the late count per minute is taken over.
 pub const LATE_WINDOW_S: u64 = 60;
 
@@ -35,6 +37,65 @@ pub struct Facts {
     /// The measured RX packet age at arrival (dasio#128): information,
     /// never advice; `None` before a packet was placed.
     pub rx: Option<crate::rx_arrival::Report>,
+    /// The start-up window (dasio#28): `late_blocks`, `driver_missed`,
+    /// `stale` and `waited` above are its counts while it is on, the
+    /// running ones after it, with its own here ([`DAW_STARTUP`] order).
+    pub startup: Part<4>,
+}
+
+/// The DAW kind's start-up counts ([`Facts::startup`]): the status key
+/// (`startup_<key>`) and the tray line's label, in the split's order.
+pub const DAW_STARTUP: [(&str, &str); 4] = [
+    ("late_blocks", "late"),
+    ("driver_missed", "driver missed"),
+    ("stale", "stale"),
+    ("waited", "waited"),
+];
+
+/// A bridge's start-up counts ([`BridgeFacts::startup`]), as
+/// [`DAW_STARTUP`].
+pub const BRIDGE_STARTUP: [(&str, &str); 3] = [
+    ("to_asio_underruns", "underruns to ASIO"),
+    ("from_asio_underruns", "underruns from ASIO"),
+    ("resets", "resets"),
+];
+
+/// The tray line's start-up part (dasio#28): which counts it shows. In the
+/// window they are the start-up's own; after it, the start-up window's
+/// counts that are not 0, by `keys`' labels (nothing when all are 0).
+fn startup_suffix<const N: usize>(p: &Part<N>, keys: &[(&str, &str); N]) -> String {
+    if p.in_window {
+        return format!(
+            " · start-up (first {} min)",
+            crate::startup::WINDOW.as_secs() / 60
+        );
+    }
+    let counted: Vec<String> = keys
+        .iter()
+        .zip(p.startup)
+        .filter(|&(_, n)| n > 0)
+        .map(|((_, label), n)| format!("{label} {n}"))
+        .collect();
+    if counted.is_empty() {
+        String::new()
+    } else {
+        format!(" · at start-up: {}", counted.join(", "))
+    }
+}
+
+/// The status JSON's start-up keys (dasio#28), each followed by a comma:
+/// `phase`, and after the window the start-up window's counts as
+/// `startup_<key>`.
+fn startup_json<const N: usize>(p: &Part<N>, keys: &[(&str, &str); N]) -> String {
+    if p.in_window {
+        return "\"phase\":\"start-up\",".to_string();
+    }
+    let counts: String = keys
+        .iter()
+        .zip(p.startup)
+        .map(|((key, _), n)| format!("\"startup_{key}\":{n},"))
+        .collect();
+    format!("\"phase\":\"running\",{counts}")
 }
 
 /// How the instance's audio TX goes out (dasio#125).
@@ -135,8 +196,9 @@ pub fn line(f: &Facts) -> String {
     let pc = pc_suffix(f.pc_problems);
     let tx = f.tx.suffix();
     let rx = crate::rx_arrival::suffix(f.rx);
+    let startup = startup_suffix(&f.startup, &DAW_STARTUP);
     format!(
-        "{} · {} @ {} kHz{} · in {:.2} / out {:.2} ms · late {}/min ({} total){rx}{tx}{pc}",
+        "{} · {} @ {} kHz{} · in {:.2} / out {:.2} ms · late {}/min ({} total){startup}{rx}{tx}{pc}",
         if f.attached { "DAW attached" } else { "no DAW" },
         f.block,
         f.sample_rate / 1000,
@@ -169,7 +231,7 @@ pub fn json(f: &Facts) -> String {
             "{{\"line\":\"{}\",\"state\":\"{}\",\"daw_attached\":{},\"block\":{},",
             "\"sample_rate\":{},\"latency_in\":{},\"latency_out\":{},\"spare_blocks\":{},",
             "\"late_blocks\":{},\"late_per_min\":{},\"driver_missed\":{},\"stale\":{},",
-            "\"waited\":{},\"heartbeat_ms\":{},\"pc_profile_problems\":{},{}{}}}"
+            "\"waited\":{},\"heartbeat_ms\":{},\"pc_profile_problems\":{},{}{}{}}}"
         ),
         line,
         state(f),
@@ -186,6 +248,7 @@ pub fn json(f: &Facts) -> String {
         f.waited,
         f.heartbeat_ms,
         f.pc_problems.map_or(-1, i64::from),
+        startup_json(&f.startup, &DAW_STARTUP),
         crate::rx_arrival::json(f.rx),
         f.tx.json(),
     )
@@ -245,6 +308,10 @@ pub struct BridgeFacts {
     /// fallback while no hold was measured (dasio#187); 0 when unknown.
     pub to_asio_target_ns: u64,
     pub from_asio_target_ns: u64,
+    /// The start-up window (dasio#28): the underruns, `resets` and
+    /// `late_bins` above are its counts while it is on, the running ones
+    /// after it, with its own here ([`BRIDGE_STARTUP`] order).
+    pub startup: Part<3>,
 }
 
 impl BridgeFacts {
@@ -282,6 +349,7 @@ impl BridgeFacts {
             driver_output_latency_frames: status.output_latency_frames,
             to_asio_target_ns: 0,
             from_asio_target_ns: 0,
+            startup: Part::default(),
         }
     }
 }
@@ -516,12 +584,13 @@ pub fn bridge_line(f: &BridgeFacts) -> String {
         }
     };
     format!(
-        "bridge to \"{}\": {now}{} · underruns to ASIO {} / from ASIO {} · resets {}{}{}{}{}",
+        "bridge to \"{}\": {now}{} · underruns to ASIO {} / from ASIO {} · resets {}{}{}{}{}{}",
         f.driver,
         delays_suffix(f),
         f.to_asio_underruns,
         f.from_asio_underruns,
         f.resets,
+        startup_suffix(&f.startup, &BRIDGE_STARTUP),
         pull_suffix(f.from_asio_pull),
         crate::rx_arrival::suffix(f.rx),
         f.tx.suffix(),
@@ -574,7 +643,7 @@ pub fn bridge_json(f: &BridgeFacts) -> String {
             "{{\"line\":\"{}\",\"state\":\"{}\",\"kind\":\"bridge\",\"daw_attached\":false,",
             "\"driver\":\"{}\",\"running\":{},\"reason\":\"{}\",\"rate\":{},",
             "\"buffer_frames\":{},\"to_asio_underruns\":{},\"from_asio_underruns\":{},",
-            "\"resets\":{},{}{}{}\"pc_profile_problems\":{},{}{}{}{}{}}}"
+            "\"resets\":{},{}{}{}\"pc_profile_problems\":{},{}{}{}{}{}{}}}"
         ),
         escaped(&bridge_line(f)),
         bridge_state(f),
@@ -590,6 +659,7 @@ pub fn bridge_json(f: &BridgeFacts) -> String {
         delays_json(f),
         converter_json(f.to_asio_converter_delay_ns, f.from_asio_converter_delay_ns),
         f.pc_problems.map_or(-1, i64::from),
+        startup_json(&f.startup, &BRIDGE_STARTUP),
         age_json(f.from_asio_age),
         pull_json(f.from_asio_pull),
         crate::rx_arrival::json(f.rx),

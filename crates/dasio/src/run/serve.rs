@@ -273,40 +273,57 @@ fn lock_in_memory(shared: &mut Shared) {
 /// now (`current`): the header's numbers, the bridge's counters, the late
 /// blocks of the last minute and the PC profile's problems
 /// (`u32::MAX`: none), and the measured RX packet age at arrival
-/// (dasio#128).
+/// (dasio#128). The header's late, missed, stale and waited counts are the
+/// phase's own from the run loop's `startup` split (dasio#28): the start-up
+/// window's while it is on, the running ones after it. `tuning`: the spare
+/// blocks and the TX path.
 pub(super) fn app_status(
     media: &dstack::daemon::media::Media,
     current: Arc<Mutex<Current>>,
     late_per_min: Arc<AtomicU64>,
     pc_problems: Arc<std::sync::atomic::AtomicU32>,
     rx_arrival: crate::rx_arrival::Arrival,
-    spare: u32,
-    kernel_tx: bool,
+    tuning: crate::Tuning,
+    startup: Arc<Mutex<crate::startup::Split<4>>>,
 ) {
     media.set_app_status(move || {
         let Ok(c) = current.lock() else {
             return String::new();
         };
         let h = c.shared.header();
+        let (shown, part) = {
+            let split = startup
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let totals = [
+                h.late.load(Ordering::Relaxed),
+                h.missed.load(Ordering::Relaxed),
+                c.stale.load(Ordering::Relaxed),
+                c.waited.load(Ordering::Relaxed),
+            ];
+            (split.shown(totals), split.part())
+        };
+        let [late_blocks, driver_missed, stale, waited] = shown;
         crate::app_status::json(&crate::app_status::Facts {
             attached: h.host_attached.load(Ordering::Relaxed) != 0,
             block: c.plan.app_block,
             sample_rate: c.plan.app_rate,
             latency_in: c.latency.0,
             latency_out: c.latency.1,
-            spare_blocks: spare,
-            late_blocks: h.late.load(Ordering::Relaxed),
-            driver_missed: h.missed.load(Ordering::Relaxed),
-            stale: c.stale.load(Ordering::Relaxed),
-            waited: c.waited.load(Ordering::Relaxed),
+            spare_blocks: tuning.spare,
+            late_blocks,
+            driver_missed,
+            stale,
+            waited,
             heartbeat_ms: h.heartbeat_ms.load(Ordering::Relaxed),
             late_per_min: late_per_min.load(Ordering::Relaxed),
             pc_problems: match pc_problems.load(Ordering::Relaxed) {
                 u32::MAX => None,
                 n => Some(n),
             },
-            tx: super::tx_path(kernel_tx),
+            tx: super::tx_path(tuning.kernel_tx),
             rx: rx_arrival.report(),
+            startup: part,
         })
     });
 }

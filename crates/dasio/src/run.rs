@@ -116,14 +116,19 @@ pub fn run(
     // What dtray's line and the CPU sampler read: the serving now (a rate
     // the DAW asks serves a new section).
     let current = Arc::new(Mutex::new(serving.current.clone()));
+    // The start-up window's counts apart from the running ones (dasio#28,
+    // owner 23.11.2026): the header's four, which the status shows too
+    // (late, driver_missed, stale, waited), and the pump's, the line only.
+    let header_split = Arc::new(Mutex::new(crate::startup::Split::<4>::default()));
+    let mut pump_split = crate::startup::Split::<9>::default();
     serve::app_status(
         &media,
         Arc::clone(&current),
         Arc::clone(&late_per_min),
         Arc::clone(&pc_problems),
         rx_arrival.arrival(),
-        spare,
-        tuning.kernel_tx,
+        tuning,
+        Arc::clone(&header_split),
     );
     let asked = Arc::new(AtomicBool::new(false));
     let device = prepared
@@ -242,23 +247,67 @@ pub fn run(
             }
             let v = stats.view();
             let (resets_asked, latencies_changed) = h.messages();
+            // The counts of the phase the device is in (dasio#28): the
+            // start-up window's while it is on, the running ones after it;
+            // its end logs the start-up counts once.
+            let header_totals = [
+                h.late.load(Ordering::Relaxed),
+                h.missed.load(Ordering::Relaxed),
+                stale.load(Ordering::Relaxed),
+                waited.load(Ordering::Relaxed),
+            ];
+            let pump_totals = [
+                v.late,
+                v.missed,
+                v.overruns,
+                v.rebootstraps,
+                lost.late_us,
+                lost.device_us,
+                u64::from(resets_asked),
+                u64::from(latencies_changed),
+                converter_dry,
+            ];
+            let since = start.elapsed();
+            let mut header = header_split
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let header_ended = header.take(since, header_totals);
+            let phase = header.phase();
+            let [late, driver_missed, stale_now, waited_now] = header.shown(header_totals);
+            drop(header);
+            let pump_ended = pump_split.take(since, pump_totals);
+            if let (Some(header_startup), Some(pump_startup)) = (header_ended, pump_ended) {
+                startup_ended(header_startup, pump_startup);
+            }
+            let [
+                pump_late,
+                missed,
+                overruns,
+                rebootstraps,
+                pump_lost_late_us,
+                pump_lost_device_us,
+                resets_asked,
+                latencies_changed,
+                converter_dry,
+            ] = pump_split.shown(pump_totals);
             info!(
+                phase = phase.name(),
                 seq = h.seq.load(Ordering::Relaxed),
                 ack = h.ack.load(Ordering::Relaxed),
-                late = h.late.load(Ordering::Relaxed),
-                driver_missed = h.missed.load(Ordering::Relaxed),
-                stale = stale.load(Ordering::Relaxed),
-                waited = waited.load(Ordering::Relaxed),
+                late,
+                driver_missed,
+                stale = stale_now,
+                waited = waited_now,
                 attached = h.host_attached.load(Ordering::Relaxed),
                 blocks = v.blocks,
-                pump_late = v.late,
-                missed = v.missed,
-                overruns = v.overruns,
-                rebootstraps = v.rebootstraps,
+                pump_late,
+                missed,
+                overruns,
+                rebootstraps,
                 max_process_us = v.max_process_us,
                 // The pump's lost time by cause (dasio#114).
-                pump_lost_late_us = lost.late_us,
-                pump_lost_device_us = lost.device_us,
+                pump_lost_late_us,
+                pump_lost_device_us,
                 resets_asked,
                 latencies_changed,
                 // How the DAW drives the driver (dasio#28 E4); 0 from a
@@ -402,6 +451,41 @@ pub fn run(
         None => Ok(()),
         Some(e) => Err(e),
     }
+}
+
+/// The start-up window's end (dasio#28): its counts once (the header's and
+/// the pump's, in the DAW kind's split order), apart from the running ones
+/// the counts lines carry from here.
+fn startup_ended(header: [u64; 4], pump: [u64; 9]) {
+    let [late, driver_missed, stale, waited] = header;
+    let [
+        pump_late,
+        missed,
+        overruns,
+        rebootstraps,
+        pump_lost_late_us,
+        pump_lost_device_us,
+        resets_asked,
+        latencies_changed,
+        converter_dry,
+    ] = pump;
+    info!(
+        window_s = crate::startup::WINDOW.as_secs(),
+        late,
+        driver_missed,
+        stale,
+        waited,
+        pump_late,
+        missed,
+        overruns,
+        rebootstraps,
+        pump_lost_late_us,
+        pump_lost_device_us,
+        resets_asked,
+        latencies_changed,
+        converter_dry,
+        "the start-up window ended: its counts are kept apart, the counts lines count the running ones from here"
+    );
 }
 
 /// The device's start both kinds share: the process on its own cores at
