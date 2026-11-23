@@ -9,6 +9,7 @@ exclude_globs = [
   "crates/asio-driver/src/driver.rs",
   "crates/asio-driver/src/driver/worker.rs",
   "crates/shm/src/windows.rs",
+  "crates/dasio/src/boot_calm/windows.rs",
   "crates/dasio/src/cpu_sets/windows.rs",
   "crates/dasio/src/cpu_snap/windows.rs",
   "crates/dasio/src/jitter.rs",
@@ -22,11 +23,13 @@ exclude_globs = [
   "crates/dasio/src/main.rs",
   "crates/dasio/src/probe.rs",
   "crates/dasio/src/run.rs",
+  "crates/dasio/src/run/counts.rs",
   "crates/dasio/src/run/profile.rs",
   "crates/dasio/src/run/pump_look.rs",
   "crates/dasio/src/run/serve.rs",
   "crates/dasio/src/run/watch_log.rs",
   "crates/dasio/src/run_bridge.rs",
+  "crates/dasio/src/run_bridge/counts.rs",
   "crates/dasio/src/service/windows.rs",
 ]
 # The `win` modules of register.rs and bridge.rs: Windows-only too.

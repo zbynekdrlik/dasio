@@ -103,6 +103,10 @@ fn a_bridge_json_with_every_figure_is_one_object_within_dstack_s_cap() {
         driver_output_latency_frames: u32::MAX,
         to_asio_target_ns: u64::MAX,
         from_asio_target_ns: u64::MAX,
+        startup: Part {
+            in_window: false,
+            startup: [u64::MAX; 3],
+        },
         ..bridge_running()
     };
     let j = bridge_json(&full);
@@ -223,9 +227,9 @@ fn the_bridge_s_status_loop_checks_the_underruns_once_a_counts_tick() {
         calls[0] < callback,
         "the call is in run(), not the driver's side"
     );
-    // The counts line carries the lateness bins.
+    // The counts line carries the lateness bins (the phase's, dasio#28).
     let bins = src
-        .find("late_bins = ?s.late_bins,")
+        .find("late_bins = ?c.late_bins,")
         .expect("the bins logged");
     assert!(
         (tick..tick_end).contains(&bins),

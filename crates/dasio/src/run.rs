@@ -13,12 +13,13 @@ use dstack::daemon::Place;
 use dstack::host::{self, Signals, Stopped};
 use dstack::media::source::Source;
 use dstack::stream::PumpStats;
-use shm::{HostUse, Shape, Shared};
+use shm::{Shape, Shared};
 use tracing::{error, info, warn};
 
 use crate::logfile::{COUNTS_EVERY, Every, STATUS_EVERY};
 use crate::turnaround::{Stamps, Turnaround, free_at, split};
 
+mod counts;
 pub(crate) mod profile;
 use profile::ProfileWatch;
 mod pump_look;
@@ -116,14 +117,18 @@ pub fn run(
     // What dtray's line and the CPU sampler read: the serving now (a rate
     // the DAW asks serves a new section).
     let current = Arc::new(Mutex::new(serving.current.clone()));
+    // The counts line's counts split by phase (dasio#28, owner 23.11.2026):
+    // the start-up window's apart from the running ones; the header's four
+    // the status shows too.
+    let mut phase_counts = counts::Counts::new();
     serve::app_status(
         &media,
         Arc::clone(&current),
         Arc::clone(&late_per_min),
         Arc::clone(&pc_problems),
         rx_arrival.arrival(),
-        spare,
-        tuning.kernel_tx,
+        tuning,
+        phase_counts.header(),
     );
     let asked = Arc::new(AtomicBool::new(false));
     let device = prepared
@@ -230,6 +235,8 @@ pub fn run(
                 crate::rx_arrival::log(&r);
             }
         }
+        // A DAW that stops and starts between two counts ticks (dasio#28).
+        phase_counts.peek(&serving.current);
         if counts.due(now) {
             if let Some(r) =
                 rx_arrival.observe(crate::rx_arrival::flows(&media.rx), cfg.sample_rate)
@@ -241,37 +248,8 @@ pub fn run(
                 watch_log::summary(w, cfg.sample_rate);
             }
             let v = stats.view();
-            let (resets_asked, latencies_changed) = h.messages();
-            info!(
-                seq = h.seq.load(Ordering::Relaxed),
-                ack = h.ack.load(Ordering::Relaxed),
-                late = h.late.load(Ordering::Relaxed),
-                driver_missed = h.missed.load(Ordering::Relaxed),
-                stale = stale.load(Ordering::Relaxed),
-                waited = waited.load(Ordering::Relaxed),
-                attached = h.host_attached.load(Ordering::Relaxed),
-                blocks = v.blocks,
-                pump_late = v.late,
-                missed = v.missed,
-                overruns = v.overruns,
-                rebootstraps = v.rebootstraps,
-                max_process_us = v.max_process_us,
-                // The pump's lost time by cause (dasio#114).
-                pump_lost_late_us = lost.late_us,
-                pump_lost_device_us = lost.device_us,
-                resets_asked,
-                latencies_changed,
-                // How the DAW drives the driver (dasio#28 E4); 0 from a
-                // driver before 0.1.36.
-                output_ready = u8::from(h.uses(HostUse::OutputReady)),
-                time_info = u8::from(h.uses(HostUse::TimeInfo)),
-                latency_reads = h.latency_reads.load(Ordering::Relaxed),
-                // The app's rate and its conversion (dasio#107): frames
-                // played as silence by the converter's dry TX FIFO.
-                app_rate = serving.current.plan.app_rate,
-                converter_dry,
-                "counts"
-            );
+            // The counts line, its counts the phase's (dasio#28).
+            phase_counts.tick(start.elapsed(), &serving.current, converter_dry, &v, lost);
             // The DAW's turnaround since the last counts (see turnaround).
             // Its wake-up and processing parts only when the driver gave
             // them (an older driver gives none): never a 0 that reads as

@@ -17,6 +17,7 @@ fn master() -> Facts {
         pc_problems: None,
         tx: TxPath::default(),
         rx: None,
+        startup: Part::default(),
     }
 }
 
@@ -155,6 +156,7 @@ fn bridge_running() -> BridgeFacts {
         driver_output_latency_frames: 0,
         to_asio_target_ns: 0,
         from_asio_target_ns: 0,
+        startup: Part::default(),
     }
 }
 
@@ -208,6 +210,8 @@ fn the_bridge_facts_come_from_the_runner_s_status() {
             // The targets come from the players, not the status.
             to_asio_target_ns: 0,
             from_asio_target_ns: 0,
+            // The run loop's split gives it (dasio#28).
+            startup: Part::default(),
         }
     );
     let running = dstack_asio::Status {
@@ -866,21 +870,26 @@ fn the_bridge_instance_hands_the_from_asio_side_to_the_tx_thread() {
 /// converter delays, the underrun tick; v0.6.176's network read of them.
 mod bridge_figures;
 
+/// The start-up window's counts apart from the running ones (dasio#28).
+mod start_up;
+
 #[test]
 fn the_bridge_counts_line_logs_the_peak_lateness_beside_the_bins() {
     // dstack v0.6.178 (dstack issues 393, 399): the run's peak lateness
     // behind the driver's schedule goes in the counts line right after the
     // bins, so the top bin's reach is read beside its count.
     let src = include_str!("../run_bridge.rs").replace("\r\n", "\n");
+    // The bins and the late callbacks are the phase's (dasio#28), the peak
+    // the run's.
     let bins = src
-        .find("late_bins = ?s.late_bins,\n")
+        .find("late_bins = ?c.late_bins,\n")
         .expect("the bins in the counts line");
     let peak = src
         .find("late_max_us = s.late_max_us,\n")
         .expect("the peak lateness in the counts line");
     assert!(bins < peak && peak - bins < 80, "right after the bins");
     let line = src[..bins].rfind("info!(").expect("the counts line");
-    assert!(src[line..bins].contains("late_callbacks = s.late_callbacks,"));
+    assert!(src[line..bins].contains("late_callbacks = c.late_callbacks,"));
 }
 
 /// dsg on Waves SoundGrid ASIO, 18.11.2026 (dasio#187): 96 kHz, the

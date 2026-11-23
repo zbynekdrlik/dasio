@@ -117,6 +117,27 @@ fn service_main(_args: Vec<OsString>) {
         error!(%e, "Running not reported");
     }
     info!(instance = args.instance, "service running");
+    // Within ten minutes of a boot the media starts only once Windows is
+    // calm (dasio#28, owner 23.11.2026), at most five minutes later; a
+    // restart outside that window and the test clock (CI) start at once.
+    // Before the address wait, so the address is looked up right before
+    // the start.
+    let calm = crate::boot_calm::before_start(
+        crate::boot_calm::windows::uptime(),
+        args.clock == ClockSource::System,
+        || {
+            let mut reader = crate::boot_calm::windows::Reader::open();
+            move || reader.read()
+        },
+        &stop,
+        std::thread::sleep,
+    );
+    if calm.why == crate::boot_calm::Why::Stopped {
+        if let Err(e) = h.set_service_status(status(ServiceState::Stopped, 0, Duration::ZERO)) {
+            error!(%e, "Stopped not reported");
+        }
+        return;
+    }
     // At boot the service starts before the NIC has its address; after a
     // link reset it comes back later. The device starts once it is there.
     // The address (`--ip`, or `--iface`'s interface) is looked up among the
