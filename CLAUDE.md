@@ -27,3 +27,4 @@ Design: `docs/design/2026-10-29-dante-asio-design.md`; MVP plan: `docs/plans/202
 - the shared memory, its locked views → `.claude/rules/shm.md` (auto-loads on its `paths:`)
 - the output watch, its test-tone check (`watch.toml`, its log lines) → `.claude/rules/miss-watch.md` (auto-loads on its `paths:`)
 - the CI mutation gate (Windows glue, bounded loops, equivalent mutants, shards) → `.claude/rules/mutation-gate.md` (auto-loads on its `paths:`)
+- the boot wait for a calm Windows, the start-up counts kept apart (`phase=`) → `.claude/rules/startup-counts.md` (auto-loads on its `paths:`)
