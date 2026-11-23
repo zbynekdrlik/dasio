@@ -36,6 +36,14 @@ impl Counts {
         }
     }
 
+    /// The run loop's peek at the DAW between ticks (each pass): a DAW
+    /// seen off since the last tick and attached at it started again.
+    pub(super) fn peek(&mut self, current: &Current) {
+        let h = current.shared.header();
+        self.attach
+            .peek(h.host_attached.load(Ordering::Relaxed) != 0);
+    }
+
     /// The header's split, for the status read ([`super::serve::app_status`]).
     pub(super) fn header(&self) -> Arc<Mutex<Split<4>>> {
         Arc::clone(&self.header)

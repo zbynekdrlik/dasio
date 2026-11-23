@@ -235,6 +235,8 @@ pub fn run(
                 crate::rx_arrival::log(&r);
             }
         }
+        // A DAW that stops and starts between two counts ticks (dasio#28).
+        phase_counts.peek(&serving.current);
         if counts.due(now) {
             if let Some(r) =
                 rx_arrival.observe(crate::rx_arrival::flows(&media.rx), cfg.sample_rate)

@@ -213,6 +213,8 @@ fn once(src: &str, needle: &str) -> usize {
 fn the_daw_kind_s_counts_tick_feeds_the_split_and_logs_its_phase() {
     let run = glue(include_str!("../run.rs"));
     let tick = once(&run, "if counts.due(now) {");
+    let peek = once(&run, "phase_counts.peek(&serving.current);");
+    assert!(peek < tick, "every loop pass, before the tick");
     let call = once(
         &run,
         "phase_counts.tick(start.elapsed(), &serving.current, converter_dry, &v, lost);",
@@ -288,6 +290,17 @@ fn a_daw_that_attaches_or_comes_back_on_a_new_section_opens_a_window() {
     assert!(!a.opened(true, 8));
     // A new section with no DAW on it yet, then the DAW.
     assert!(!a.opened(false, 9));
+    assert!(a.opened(true, 9));
+    // An engine toggle between two ticks: seen off by a loop pass.
+    a.peek(true);
+    a.peek(false);
+    a.peek(true);
+    assert!(a.opened(true, 9), "it stopped and started between ticks");
+    a.peek(true);
+    assert!(!a.opened(true, 9), "the toggle counts once");
+    a.peek(false);
+    assert!(!a.opened(false, 9), "off at the tick: no window yet");
+    a.peek(false);
     assert!(a.opened(true, 9));
     // A DAW attached at the first look: a window from the start, which the
     // start's window already is.

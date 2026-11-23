@@ -43,6 +43,9 @@ starts its media only once Windows is calm after a reboot.
   running.
 - A second instance on one PC sees the first one's spinning media threads
   in the CPU busy. It may wait for the cap.
+- In the log, tracing prints a `&str` field quoted (`reason="calm"`) and a
+  number bare (`waited_s=0`). A regex over `dasio.log` (CI, a deploy
+  check) matches `reason="?calm"?`.
 - `boot_calm/tests.rs` guards the service's wiring as text: the wait with
   the uptime, the test clock and the reader, then its stop, then the
   address wait and the device.
@@ -54,10 +57,10 @@ starts its media only once Windows is calm after a reboot.
 - In the DAW kind, a DAW that attaches opens a new window from the last
   tick (`Split::restart_window`). The owner's 21.11.2026 rule: misses count
   only from some minutes after a DAW's start.
-  - `startup::Attach` decides an attach: a DAW off at the last tick, or
-    one on another section (a rate change re-serves).
-  - A stop and start on the same section within one tick (10 s, e.g. an
-    engine toggle) is not seen.
+  - `startup::Attach` decides an attach: a DAW off at the last tick, seen
+    off by a loop pass since (`Counts::peek`, every 100 ms: an engine
+    toggle), or on another section (a rate change re-serves).
+  - A stop and start within one loop pass is not seen.
   - The log line is `a DAW attached: its start's counts are start-up
     counts for a new window`.
   - The start-up counts sum every window's.

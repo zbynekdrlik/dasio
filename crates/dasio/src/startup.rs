@@ -180,24 +180,34 @@ impl<const N: usize> Split<N> {
 }
 
 /// A DAW's attach as the counts ticks see it (the DAW kind): a DAW that
-/// attached since the last look opens a new start-up window. That is a DAW
-/// that was off at the last look, or one on another section: a rate change
-/// re-serves (a new section, its counts from 0) and the DAW is back within
-/// a tick. A DAW that stops and starts again on the same section within
-/// one tick (10 s) is not seen.
+/// attached since the last tick opens a new start-up window. That is a DAW
+/// that was off at the last tick or seen off between (the run loop looks
+/// every 100 ms: an engine toggle), or one on another section: a rate
+/// change re-serves (a new section, its counts from 0) and the DAW is back
+/// within a tick. A stop and start within one loop pass is not seen.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Attach {
     attached: bool,
     section: u64,
+    /// Seen off since the last tick.
+    seen_off: bool,
 }
 
 impl Attach {
+    /// A peek between ticks (each run loop pass): a DAW off now.
+    pub fn peek(&mut self, attached: bool) {
+        if !attached {
+            self.seen_off = true;
+        }
+    }
+
     /// The look at a tick: a DAW `attached` now to the section `section`
-    /// (its session); true when it attached since the last look.
+    /// (its session); true when it attached since the last tick.
     pub fn opened(&mut self, attached: bool, section: u64) -> bool {
-        let opened = attached && (!self.attached || section != self.section);
+        let opened = attached && (!self.attached || self.seen_off || section != self.section);
         self.attached = attached;
         self.section = section;
+        self.seen_off = false;
         opened
     }
 }
