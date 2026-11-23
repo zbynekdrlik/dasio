@@ -269,6 +269,19 @@ fn lock_in_memory(shared: &mut Shared) {
     }
 }
 
+/// The serving's header counts the start-up window splits (dasio#28), in
+/// [`crate::app_status::DAW_STARTUP`] order: the run loop's counts tick
+/// and the status read take the same.
+pub(super) fn header_totals(c: &Current) -> [u64; 4] {
+    let h = c.shared.header();
+    [
+        h.late.load(Ordering::Relaxed),
+        h.missed.load(Ordering::Relaxed),
+        c.stale.load(Ordering::Relaxed),
+        c.waited.load(Ordering::Relaxed),
+    ]
+}
+
 /// dtray's line for the instance (dstack's app status) from the serving
 /// now (`current`): the header's numbers, the bridge's counters, the late
 /// blocks of the last minute and the PC profile's problems
@@ -295,13 +308,7 @@ pub(super) fn app_status(
             let split = startup
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let totals = [
-                h.late.load(Ordering::Relaxed),
-                h.missed.load(Ordering::Relaxed),
-                c.stale.load(Ordering::Relaxed),
-                c.waited.load(Ordering::Relaxed),
-            ];
-            (split.shown(totals), split.part())
+            (split.shown(header_totals(&c)), split.part())
         };
         let [late_blocks, driver_missed, stale, waited] = shown;
         crate::app_status::json(&crate::app_status::Facts {

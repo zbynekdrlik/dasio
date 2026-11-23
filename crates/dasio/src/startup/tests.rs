@@ -220,7 +220,10 @@ fn the_daw_kind_s_counts_tick_feeds_the_split_and_logs_its_phase() {
     assert!(tick < call, "in the counts tick");
     once(&run, "phase_counts.header(),");
     let counts = glue(include_str!("../run/counts.rs"));
-    let attach = once(&counts, "if attached && !self.attached {");
+    let attach = once(
+        &counts,
+        "if self.attach.opened(attached, current.shared.session()) {",
+    );
     let restart = once(&counts, "header.restart_window();");
     once(&counts, "self.pump.restart_window();");
     let header = once(
@@ -239,8 +242,9 @@ fn the_daw_kind_s_counts_tick_feeds_the_split_and_logs_its_phase() {
     let line = once(&counts, "phase = header_tick.phase.name(),");
     let end = once(&counts, "\"counts\"\n        );");
     assert!(ended < line && line < end, "the end, then the counts line");
+    once(&counts, "let header_totals = header_totals(current);");
     let serve = glue(include_str!("../run/serve.rs"));
-    once(&serve, "(split.shown(totals), split.part())");
+    once(&serve, "(split.shown(header_totals(&c)), split.part())");
     once(&serve, "startup: part,");
 }
 
@@ -269,4 +273,24 @@ fn the_bridge_s_counts_tick_and_status_read_the_split() {
     }
     let counts = glue(include_str!("../run_bridge/counts.rs"));
     once(&counts, "startup_ended(status, bins, line);");
+}
+
+#[test]
+fn a_daw_that_attaches_or_comes_back_on_a_new_section_opens_a_window() {
+    let mut a = Attach::default();
+    assert!(!a.opened(false, 7), "no DAW");
+    assert!(a.opened(true, 7), "it attached");
+    assert!(!a.opened(true, 7), "still attached");
+    assert!(!a.opened(false, 7), "it stopped");
+    assert!(a.opened(true, 7), "it started again");
+    // A rate change: a new section, the DAW back on it within a tick.
+    assert!(a.opened(true, 8), "back on a new section");
+    assert!(!a.opened(true, 8));
+    // A new section with no DAW on it yet, then the DAW.
+    assert!(!a.opened(false, 9));
+    assert!(a.opened(true, 9));
+    // A DAW attached at the first look: a window from the start, which the
+    // start's window already is.
+    assert!(Attach::default().opened(true, 0));
+    assert!(Attach::default().opened(true, 3));
 }

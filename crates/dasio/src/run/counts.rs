@@ -13,9 +13,9 @@ use dstack::stream::PumpView;
 use shm::HostUse;
 use tracing::info;
 
-use super::serve::Current;
+use super::serve::{Current, header_totals};
 use crate::pump_loss::Lost;
-use crate::startup::{Split, WINDOW};
+use crate::startup::{Attach, Split, WINDOW};
 
 /// The split counts of a DAW instance: the header's four (late,
 /// driver_missed, stale, waited; the status shows them too, so its read
@@ -23,8 +23,8 @@ use crate::startup::{Split, WINDOW};
 pub(super) struct Counts {
     header: Arc<Mutex<Split<4>>>,
     pump: Split<9>,
-    /// A DAW was attached at the last tick.
-    attached: bool,
+    /// The DAW's attach at the last tick.
+    attach: Attach,
 }
 
 impl Counts {
@@ -32,7 +32,7 @@ impl Counts {
         Counts {
             header: Arc::new(Mutex::new(Split::default())),
             pump: Split::default(),
-            attached: false,
+            attach: Attach::default(),
         }
     }
 
@@ -55,12 +55,7 @@ impl Counts {
         let h = current.shared.header();
         let attached = h.host_attached.load(Ordering::Relaxed) != 0;
         let (resets_asked, latencies_changed) = h.messages();
-        let header_totals = [
-            h.late.load(Ordering::Relaxed),
-            h.missed.load(Ordering::Relaxed),
-            current.stale.load(Ordering::Relaxed),
-            current.waited.load(Ordering::Relaxed),
-        ];
+        let header_totals = header_totals(current);
         let pump_totals = [
             v.late,
             v.missed,
@@ -73,9 +68,10 @@ impl Counts {
             converter_dry,
         ];
         let mut header = self.header.lock().unwrap_or_else(PoisonError::into_inner);
-        // A DAW that attached since the last tick: its start's counts
-        // (this tick's included) are start-up counts too.
-        if attached && !self.attached {
+        // A DAW that attached since the last tick (or is back on a new
+        // section): its start's counts, this tick's included, are start-up
+        // counts too.
+        if self.attach.opened(attached, current.shared.session()) {
             header.restart_window();
             self.pump.restart_window();
             info!(
@@ -83,7 +79,6 @@ impl Counts {
                 "a DAW attached: its start's counts are start-up counts for a new window"
             );
         }
-        self.attached = attached;
         let header_tick = header.tick(since, header_totals);
         drop(header);
         let pump_tick = self.pump.tick(since, pump_totals);

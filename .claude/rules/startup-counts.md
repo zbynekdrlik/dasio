@@ -43,6 +43,9 @@ starts its media only once Windows is calm after a reboot.
   running.
 - A second instance on one PC sees the first one's spinning media threads
   in the CPU busy. It may wait for the cap.
+- `boot_calm/tests.rs` guards the service's wiring as text: the wait with
+  the uptime, the test clock and the reader, then its stop, then the
+  address wait and the device.
 
 ## The start-up counts (`startup::Split`)
 
@@ -50,10 +53,14 @@ starts its media only once Windows is calm after a reboot.
   start.
 - In the DAW kind, a DAW that attaches opens a new window from the last
   tick (`Split::restart_window`). The owner's 21.11.2026 rule: misses count
-  only from some minutes after a DAW's start. This holds for every attach:
-  a Live restart, or a re-attach after a rate change. The log line is `a
-  DAW attached: its start's counts are start-up counts for a new window`.
-  The start-up counts sum every window's.
+  only from some minutes after a DAW's start.
+  - `startup::Attach` decides an attach: a DAW off at the last tick, or
+    one on another section (a rate change re-serves).
+  - A stop and start on the same section within one tick (10 s, e.g. an
+    engine toggle) is not seen.
+  - The log line is `a DAW attached: its start's counts are start-up
+    counts for a new window`.
+  - The start-up counts sum every window's.
 - The split counters in both counts lines are the PHASE's counts, named in
   `phase="start-up"|"running"`.
 - Each window's end logs the start-up counts so far: `the start-up window
@@ -83,7 +90,8 @@ starts its media only once Windows is calm after a reboot.
   after `shown`, in the same order, in BOTH the tick and its
   `startup_ended` log.
 - If the status shows the counter, it also goes into the status read
-  (`serve.rs`, `StatusSplit::shown`) and into `app_status::DAW_STARTUP` /
+  (`serve::header_totals`, which the tick and the status share, or
+  `StatusSplit::shown`) and into `app_status::DAW_STARTUP` /
   `BRIDGE_STARTUP`.
 - The status JSON's start-up keys come LAST (`,"phase":...`). Older tests
   match runs of keys between `pc_profile_problems` and `kernel_tx`, so a

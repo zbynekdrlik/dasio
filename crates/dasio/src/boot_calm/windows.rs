@@ -28,8 +28,8 @@ pub fn uptime() -> Duration {
     Duration::from_millis(unsafe { GetTickCount64() })
 }
 
-/// The PC's CPU times now; `None` if the call fails.
-pub fn cpu_times() -> Option<CpuTimes> {
+/// The PC's CPU times now, or the error of the failed call.
+pub fn cpu_times() -> std::io::Result<CpuTimes> {
     let z = FILETIME {
         dwLowDateTime: 0,
         dwHighDateTime: 0,
@@ -37,10 +37,10 @@ pub fn cpu_times() -> Option<CpuTimes> {
     let (mut idle, mut kernel, mut user) = (z, z, z);
     // SAFETY: three valid FILETIMEs to write.
     if unsafe { GetSystemTimes(&mut idle, &mut kernel, &mut user) } == 0 {
-        return None;
+        return Err(std::io::Error::last_os_error());
     }
     let t = |f: FILETIME| crate::cpu_snap::filetime(f.dwHighDateTime, f.dwLowDateTime);
-    Some(CpuTimes {
+    Ok(CpuTimes {
         idle: t(idle),
         kernel: t(kernel),
         user: t(user),
@@ -141,7 +141,7 @@ impl Reader {
             }
         };
         Reader {
-            last: cpu_times(),
+            last: cpu_times().ok(),
             disk,
             cpu_warned: false,
         }
@@ -151,13 +151,16 @@ impl Reader {
     /// calm: the wait then runs to its cap, said once here.
     pub fn read(&mut self) -> Sample {
         let now = cpu_times();
-        if now.is_none() && !self.cpu_warned {
+        if let Err(e) = &now
+            && !self.cpu_warned
+        {
             self.cpu_warned = true;
             warn!(
-                err = %std::io::Error::last_os_error(),
+                err = %e,
                 "the CPU times cannot be read (GetSystemTimes): Windows is never judged calm, the device starts at the cap"
             );
         }
+        let now = now.ok();
         let cpu_percent = self
             .last
             .zip(now)
