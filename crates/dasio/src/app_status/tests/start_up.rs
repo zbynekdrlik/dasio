@@ -1,6 +1,7 @@
 //! The start-up window in the status (dasio#28, owner 23.11.2026): the
 //! counts shown are the start-up's while it is on, the running ones after
-//! it, with the start-up window's own beside them.
+//! it, with the start-up window's own beside them. Its keys come last in
+//! the JSON object, so no older key run is split.
 
 use super::*;
 
@@ -23,7 +24,7 @@ fn a_daw_instance_in_its_start_up_window_says_so() {
     );
     let j = json(&f);
     assert!(
-        j.contains("\"pc_profile_problems\":-1,\"phase\":\"start-up\",\"kernel_tx\""),
+        j.ends_with("\"ktx_failed\":0,\"phase\":\"start-up\"}"),
         "{j}"
     );
     assert!(
@@ -47,9 +48,9 @@ fn a_daw_instance_after_its_window_shows_the_start_up_counts_beside_the_running_
     );
     let j = json(&f);
     assert!(
-        j.contains(concat!(
-            "\"phase\":\"running\",\"startup_late_blocks\":12,\"startup_driver_missed\":0,",
-            "\"startup_stale\":2,\"startup_waited\":0,\"kernel_tx\""
+        j.ends_with(concat!(
+            "\"ktx_failed\":0,\"phase\":\"running\",\"startup_late_blocks\":12,",
+            "\"startup_driver_missed\":0,\"startup_stale\":2,\"startup_waited\":0}"
         )),
         "{j}"
     );
@@ -73,7 +74,10 @@ fn a_start_up_window_with_nothing_counted_leaves_the_line_as_it_was() {
     // master() has the default part: after the window, all 0.
     assert!(!line(&master()).contains("start-up"), "{}", line(&master()));
     assert!(
-        json(&master()).contains("\"phase\":\"running\",\"startup_late_blocks\":0,"),
+        json(&master()).ends_with(concat!(
+            ",\"phase\":\"running\",\"startup_late_blocks\":0,\"startup_driver_missed\":0,",
+            "\"startup_stale\":0,\"startup_waited\":0}"
+        )),
         "{}",
         json(&master())
     );
@@ -91,7 +95,7 @@ fn a_bridge_in_its_start_up_window_says_so() {
     );
     let j = bridge_json(&f);
     assert!(
-        j.contains("\"pc_profile_problems\":0,\"phase\":\"start-up\","),
+        j.ends_with("\"ktx_failed\":0,\"phase\":\"start-up\"}"),
         "{j}"
     );
     assert!(!j.contains("startup_"), "{j}");
@@ -116,9 +120,9 @@ fn a_bridge_after_its_window_shows_the_boot_s_underruns_apart() {
     );
     let j = bridge_json(&f);
     assert!(
-        j.contains(concat!(
-            "\"pc_profile_problems\":0,\"phase\":\"running\",\"startup_to_asio_underruns\":67,",
-            "\"startup_from_asio_underruns\":37,\"startup_resets\":0,"
+        j.ends_with(concat!(
+            "\"ktx_failed\":0,\"phase\":\"running\",\"startup_to_asio_underruns\":67,",
+            "\"startup_from_asio_underruns\":37,\"startup_resets\":0}"
         )),
         "{j}"
     );

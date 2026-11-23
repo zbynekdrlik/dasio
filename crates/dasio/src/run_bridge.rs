@@ -62,13 +62,12 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use dlink::bridge::RxPull;
 use dlink::bridge::pull::PullStats;
+use dlink::bridge::{RxPull, Stats};
 use dstack::host::{self, Signals, Stopped};
 use dstack::media::tx::{TxFill, TxFillStats};
 use dstack::stream::{self, Map, Pump, PumpStats, Timing};
-use dstack_asio::bridge::{Bridge, Seed, UnderrunWatch};
-use dstack_asio::state::LATE_BINS;
+use dstack_asio::bridge::{BlockAge, Bridge, Seed, UnderrunWatch};
 use dstack_asio::win::WinDevice;
 use dstack_asio::{Channels, MakeProcess, Opened, Process, Reason, Runner, Status};
 use tracing::{error, info, warn};
@@ -79,7 +78,8 @@ use crate::kind::BridgeConfig;
 use crate::logfile::{COUNTS_EVERY, Every, STATUS_EVERY};
 use crate::run::profile::ProfileWatch;
 use crate::run::{StopEvent, place_helpers, start_device};
-use crate::startup::Split;
+
+mod counts;
 
 /// How long the start waits for the runner's thread to hand over its
 /// status (it only makes the COM apartment and the runner first).
@@ -90,16 +90,6 @@ const PROFILE_FIRST: Duration = Duration::from_secs(60);
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// The start-up window's split of the counts the status shows too
-/// (dasio#28): the underruns to and from ASIO and the resets, in
-/// [`crate::app_status::BRIDGE_STARTUP`] order, and the driver callbacks'
-/// lateness bins; one lock for the status read and the counts tick.
-#[derive(Default)]
-struct StatusSplit {
-    counts: Split<3>,
-    bins: Split<LATE_BINS>,
 }
 
 /// The bridge instance being run: its number and its folder (its
@@ -205,63 +195,25 @@ pub fn run(
     // The measured RX packet age at arrival (dasio#128): information
     // only, the latency stays the owner's decision.
     let mut rx_arrival = crate::rx_arrival::Watch::default();
-    // The start-up window's counts apart from the running ones (dasio#28,
-    // owner 23.11.2026): the status' (shared with its read) and the line's.
-    let status_split = Arc::new(Mutex::new(StatusSplit::default()));
-    let mut counts_split = Split::<12>::default();
+    // The counts split by phase (dasio#28, owner 23.11.2026): the start-up
+    // window's apart from the running ones, in the line and the status.
+    let mut phase_counts = counts::Counts::new();
     // The bridge's facts as read now: the status JSON and the counts tick's
     // figures for dcontroller (the delay each way, dasio#187) read the same.
     let facts: Arc<dyn Fn() -> BridgeFacts + Send + Sync> = {
-        let kernel_tx = tuning.kernel_tx;
-        let rx_figures = rx_arrival.arrival();
-        let (status, to_stats, from_stats, driver, pc_problems, age, from_pull) = (
-            Arc::clone(&status),
-            Arc::clone(&to_stats),
-            Arc::clone(&from_stats),
-            bridge.driver.clone(),
-            Arc::clone(&pc_problems),
-            Arc::clone(&age),
-            from_pull.clone(),
-        );
-        let status_split = Arc::clone(&status_split);
-        Arc::new(move || {
-            let s = lock(&status).clone();
-            // The phase's counts (dasio#28): the start-up window's while
-            // it is on, the running ones after it, with the window's own.
-            let (counts, startup, late_bins) = {
-                let split = lock(&status_split);
-                let totals = [to_stats.underruns(), from_stats.underruns(), s.resets];
-                (
-                    split.counts.shown(totals),
-                    split.counts.part(),
-                    split.bins.shown(s.late_bins),
-                )
-            };
-            let [to_asio_underruns, from_asio_underruns, resets] = counts;
-            BridgeFacts {
-                rx: rx_figures.report(),
-                from_asio_pull: from_pull.as_ref().map(|p| p.view()),
-                to_asio_converter_delay_ns: to_stats.converter_delay_ns(),
-                from_asio_converter_delay_ns: from_stats.converter_delay_ns(),
-                to_asio_target_ns: (to_stats.target_ms() * 1e6) as u64,
-                from_asio_target_ns: (from_stats.target_ms() * 1e6) as u64,
-                resets,
-                late_bins,
-                startup,
-                ..BridgeFacts::of(
-                    &driver,
-                    &s,
-                    to_asio_underruns,
-                    from_asio_underruns,
-                    match pc_problems.load(Ordering::Relaxed) {
-                        u32::MAX => None,
-                        n => Some(n),
-                    },
-                    crate::run::tx_path(kernel_tx),
-                    age.report(),
-                )
-            }
-        })
+        let from = FactsFrom {
+            status: Arc::clone(&status),
+            to_stats: Arc::clone(&to_stats),
+            from_stats: Arc::clone(&from_stats),
+            driver: bridge.driver.clone(),
+            pc_problems: Arc::clone(&pc_problems),
+            age: Arc::clone(&age),
+            from_pull: from_pull.clone(),
+            rx_figures: rx_arrival.arrival(),
+            kernel_tx: tuning.kernel_tx,
+            phase: phase_counts.status(),
+        };
+        Arc::new(move || from.read())
     };
     {
         let facts = Arc::clone(&facts);
@@ -354,91 +306,59 @@ pub fn run(
                 .set_path(asio_to_dante, dante_to_asio);
             let v = stats.view();
             // The counts of the phase the device is in (dasio#28): the
-            // start-up window's while it is on, the running ones after it;
-            // its end logs the start-up counts once. Peaks, gauges and the
-            // progress counts (callbacks, pulls, blocks) stay as they are.
-            let status_totals = [to_stats.underruns(), from_stats.underruns(), s.resets];
-            let counts_totals = [
-                s.late_callbacks,
-                s.fast_callbacks,
-                s.overloads,
-                s.faults,
-                s.clock_waits,
-                s.resyncs,
-                to_fifo.as_ref().map_or(0, |f| f.overflows()),
-                pull_stats.as_ref().map_or(0, |p| p.restarts()),
-                pull_stats.as_ref().map_or(0, |p| p.idle_drains()),
-                v.late,
-                v.missed,
-                v.overruns,
-            ];
-            let since = start.elapsed();
-            let mut split = lock(&status_split);
-            let status_ended = split.counts.take(since, status_totals);
-            let bins_ended = split.bins.take(since, s.late_bins);
-            let phase = split.counts.phase();
-            let [to_asio_underruns, from_asio_underruns, resets] =
-                split.counts.shown(status_totals);
-            let late_bins = split.bins.shown(s.late_bins);
-            drop(split);
-            let counts_ended = counts_split.take(since, counts_totals);
-            if let (Some(status_startup), Some(bins_startup), Some(counts_startup)) =
-                (status_ended, bins_ended, counts_ended)
-            {
-                startup_ended(status_startup, bins_startup, counts_startup);
-            }
-            let [
-                late_callbacks,
-                fast_callbacks,
-                overloads,
-                faults,
-                clock_waits,
-                resyncs,
-                to_asio_overflows,
-                to_asio_pull_restarts,
-                to_asio_idle_drains,
-                pump_late,
-                missed,
-                overruns,
-            ] = counts_split.shown(counts_totals);
+            // start-up window's while it is on, the running ones after it.
+            // Peaks, gauges and the progress counts (callbacks, pulls,
+            // blocks) stay as they are.
+            let c = phase_counts.tick(
+                start.elapsed(),
+                &s,
+                &counts::Players {
+                    to_asio_underruns: to_stats.underruns(),
+                    from_asio_underruns: from_stats.underruns(),
+                    to_asio_overflows: to_fifo.as_ref().map_or(0, |f| f.overflows()),
+                    to_asio_pull_restarts: pull_stats.as_ref().map_or(0, |p| p.restarts()),
+                    to_asio_idle_drains: pull_stats.as_ref().map_or(0, |p| p.idle_drains()),
+                },
+                &v,
+            );
             info!(
-                phase = phase.name(),
+                phase = c.phase.name(),
                 state = ?s.state,
                 reason = s.reason.as_ref().map(ToString::to_string).unwrap_or_default(),
                 rate = s.rate,
                 buffer_frames = s.buffer_frames,
                 callbacks = s.callbacks,
-                late_callbacks = late_callbacks,
+                late_callbacks = c.late_callbacks,
                 // 0.25 ms bins under two periods (dstack v0.6.173), and
                 // the run's peak lateness behind the driver's schedule,
                 // how far the top bin reached (dstack v0.6.178, #393).
-                late_bins = ?late_bins,
+                late_bins = ?c.late_bins,
                 late_max_us = s.late_max_us,
-                fast_callbacks,
-                overloads,
-                faults,
+                fast_callbacks = c.fast_callbacks,
+                overloads = c.overloads,
+                faults = c.faults,
                 gap_max_ms = s.gap_max_ms,
-                resets,
-                clock_waits,
-                resyncs,
-                to_asio_underruns,
+                resets = c.resets,
+                clock_waits = c.clock_waits,
+                resyncs = c.resyncs,
+                to_asio_underruns = c.to_asio_underruns,
                 to_asio_ppm = to_stats.ppm(),
                 to_asio_target_ms = to_stats.target_ms(),
                 to_asio_converter_delay_ms = to_stats.converter_delay_ns() as f64 / 1e6,
-                to_asio_overflows,
+                to_asio_overflows = c.to_asio_overflows,
                 to_asio_pulls = pull_stats.as_ref().map_or(0, |p| p.pulls()),
-                to_asio_pull_restarts,
-                to_asio_idle_drains,
-                from_asio_underruns,
+                to_asio_pull_restarts = c.to_asio_pull_restarts,
+                to_asio_idle_drains = c.to_asio_idle_drains,
+                from_asio_underruns = c.from_asio_underruns,
                 from_asio_ppm = from_stats.ppm(),
                 from_asio_target_ms = from_stats.target_ms(),
                 from_asio_converter_delay_ms = from_stats.converter_delay_ns() as f64 / 1e6,
                 // None for a bridge with no channel from ASIO (no pull).
                 from_asio_pull = ?from_pull.as_ref().map(|p| p.view()),
                 blocks = v.blocks,
-                pump_late,
-                missed,
-                overruns,
+                pump_late = c.pump_late,
+                missed = c.missed,
+                overruns = c.overruns,
                 max_process_us = v.max_process_us,
                 "bridge counts"
             );
@@ -478,6 +398,68 @@ pub fn run(
     match why {
         None => Ok(()),
         Some(e) => Err(e),
+    }
+}
+
+/// What the bridge's facts are read from ([`FactsFrom::read`]): the
+/// runner's status, both players' stats, the driver's name, the PC
+/// profile's problems (`u32::MAX`: none), the from-ASIO figures and pull,
+/// the RX arrival, the TX path and the status' split counts (dasio#28).
+struct FactsFrom {
+    status: Arc<Mutex<Status>>,
+    to_stats: Arc<Stats>,
+    from_stats: Arc<Stats>,
+    driver: String,
+    pc_problems: Arc<std::sync::atomic::AtomicU32>,
+    age: Arc<BlockAge>,
+    from_pull: Option<Arc<TxFillStats>>,
+    rx_figures: crate::rx_arrival::Arrival,
+    kernel_tx: bool,
+    phase: Arc<Mutex<counts::StatusSplit>>,
+}
+
+impl FactsFrom {
+    /// The bridge's facts now; its underruns, resets and lateness bins the
+    /// phase's (dasio#28): the start-up window's while it is on, the
+    /// running ones after it, with the window's own.
+    fn read(&self) -> BridgeFacts {
+        let FactsFrom {
+            status,
+            to_stats,
+            from_stats,
+            driver,
+            pc_problems,
+            age,
+            from_pull,
+            rx_figures,
+            kernel_tx,
+            phase,
+        } = self;
+        let s = lock(status).clone();
+        let shown = lock(phase).shown(&s, to_stats.underruns(), from_stats.underruns());
+        BridgeFacts {
+            rx: rx_figures.report(),
+            from_asio_pull: from_pull.as_ref().map(|p| p.view()),
+            to_asio_converter_delay_ns: to_stats.converter_delay_ns(),
+            from_asio_converter_delay_ns: from_stats.converter_delay_ns(),
+            to_asio_target_ns: (to_stats.target_ms() * 1e6) as u64,
+            from_asio_target_ns: (from_stats.target_ms() * 1e6) as u64,
+            resets: shown.resets,
+            late_bins: shown.late_bins,
+            startup: shown.startup,
+            ..BridgeFacts::of(
+                driver,
+                &s,
+                shown.to_asio_underruns,
+                shown.from_asio_underruns,
+                match pc_problems.load(Ordering::Relaxed) {
+                    u32::MAX => None,
+                    n => Some(n),
+                },
+                crate::run::tx_path(*kernel_tx),
+                age.report(),
+            )
+        }
     }
 }
 
@@ -528,47 +510,6 @@ fn device_end(
         return Some(e);
     }
     None
-}
-
-/// The start-up window's end (dasio#28): its counts once (the status'
-/// three, the lateness bins and the line's, in the run loop's split
-/// order), apart from the running ones the counts lines carry from here.
-fn startup_ended(status: [u64; 3], bins: [u64; LATE_BINS], counts: [u64; 12]) {
-    let [to_asio_underruns, from_asio_underruns, resets] = status;
-    let [
-        late_callbacks,
-        fast_callbacks,
-        overloads,
-        faults,
-        clock_waits,
-        resyncs,
-        to_asio_overflows,
-        to_asio_pull_restarts,
-        to_asio_idle_drains,
-        pump_late,
-        missed,
-        overruns,
-    ] = counts;
-    info!(
-        window_s = crate::startup::WINDOW.as_secs(),
-        to_asio_underruns,
-        from_asio_underruns,
-        resets,
-        late_callbacks,
-        bins = ?bins,
-        fast_callbacks,
-        overloads,
-        faults,
-        clock_waits,
-        resyncs,
-        to_asio_overflows,
-        to_asio_pull_restarts,
-        to_asio_idle_drains,
-        pump_late,
-        missed,
-        overruns,
-        "the start-up window ended: its counts are kept apart, the counts lines count the running ones from here"
-    );
 }
 
 /// Starts `b`'s ASRC from the seed file at `path` (dasio#120, dstack

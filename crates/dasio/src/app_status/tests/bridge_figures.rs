@@ -227,9 +227,9 @@ fn the_bridge_s_status_loop_checks_the_underruns_once_a_counts_tick() {
         calls[0] < callback,
         "the call is in run(), not the driver's side"
     );
-    // The counts line carries the lateness bins.
+    // The counts line carries the lateness bins (the phase's, dasio#28).
     let bins = src
-        .find("late_bins = ?s.late_bins,")
+        .find("late_bins = ?c.late_bins,")
         .expect("the bins logged");
     assert!(
         (tick..tick_end).contains(&bins),

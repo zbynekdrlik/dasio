@@ -6,8 +6,10 @@ paths:
   - "crates/dasio/src/boot_calm/**"
   - "crates/dasio/src/service/windows.rs"
   - "crates/dasio/src/run.rs"
+  - "crates/dasio/src/run/counts.rs"
   - "crates/dasio/src/run/serve.rs"
   - "crates/dasio/src/run_bridge.rs"
+  - "crates/dasio/src/run_bridge/**"
   - "crates/dasio/src/app_status.rs"
   - "scripts/ci-service-test.ps1"
 ---
@@ -46,26 +48,48 @@ starts its media only once Windows is calm after a reboot.
 
 - The first 5 min after the device serves are its start-up window, on every
   start.
+- In the DAW kind, a DAW that attaches opens a new window from the last
+  tick (`Split::restart_window`). The owner's 21.11.2026 rule: misses count
+  only from some minutes after a DAW's start. This holds for every attach:
+  a Live restart, or a re-attach after a rate change. The log line is `a
+  DAW attached: its start's counts are start-up counts for a new window`.
+  The start-up counts sum every window's.
 - The split counters in both counts lines are the PHASE's counts, named in
   `phase="start-up"|"running"`.
-- The window's end logs the start-up counts once: `the start-up window
+- Each window's end logs the start-up counts so far: `the start-up window
   ended: ...`.
 - A total since the start is that line's value plus the running value.
   Compare two counts lines only within one phase.
+- The tray line's `late N/min (M total)`: M is the phase's count, so after
+  the window it is the running total. The ` · at start-up: ...` part beside
+  it holds the rest.
 - NOT split: peaks (`late_max_us`, `gap_max_ms`, `max_process_us`);
   progress counts (`blocks`, `callbacks`, `to_asio_pulls`, `seq`/`ack`,
   `latency_reads`); gauges; the `from_asio_pull` view; dstack's own status
   and dcontroller's figures; the per-minute CSV (already per-minute
   deltas).
 - A counter that went down restarted: a new driver run (the runner's counts
-  are per run), or a new section after a rate change. Its whole value is
-  new, as in `LateWindow`. A restart whose new count passes the old one
-  within a tick (10 s) is undercounted.
-- A new split counter:
-  - goes into its totals array and the destructuring after `shown` in the
-    same order, in BOTH the counts tick and the `startup_ended` log;
-  - if the status shows it, also into the status closure (`serve.rs` /
-    run_bridge's `facts`) and `app_status::DAW_STARTUP` / `BRIDGE_STARTUP`.
-- `app_status/tests.rs` guards the bridge counts line as text:
-  `late_callbacks = late_callbacks,`, then `late_bins = ?late_bins,` right
-  before `late_max_us = s.late_max_us,`.
+  are per run), or a new section after a rate change. This is the same
+  restart `LateWindow` detects, but here the whole new value counts.
+  A restart whose new count passes the old one within a tick (10 s) is
+  undercounted.
+- The split's glue lives in `run/counts.rs` and `run_bridge/counts.rs`.
+  Both are excluded from mutants and guarded as text in
+  `startup/tests.rs`.
+  - DAW kind: the whole counts line.
+  - Bridge: the totals and the named `Shown`. The "bridge counts" line
+    itself stays in `run_bridge.rs`: its own text guards need it there.
+- A new split counter goes into its totals array and the destructuring
+  after `shown`, in the same order, in BOTH the tick and its
+  `startup_ended` log.
+- If the status shows the counter, it also goes into the status read
+  (`serve.rs`, `StatusSplit::shown`) and into `app_status::DAW_STARTUP` /
+  `BRIDGE_STARTUP`.
+- The status JSON's start-up keys come LAST (`,"phase":...`). Older tests
+  match runs of keys between `pc_profile_problems` and `kernel_tx`, so a
+  key inserted there splits them.
+- Text guards on the bridge counts line:
+  - `app_status/tests.rs`: `late_callbacks = c.late_callbacks,`, then
+    `late_bins = ?c.late_bins,` right before `late_max_us = s.late_max_us,`;
+  - `app_status/tests/bridge_figures.rs`: `late_bins = ?c.late_bins,`
+    inside the tick.

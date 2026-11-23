@@ -882,14 +882,14 @@ fn the_bridge_counts_line_logs_the_peak_lateness_beside_the_bins() {
     // The bins and the late callbacks are the phase's (dasio#28), the peak
     // the run's.
     let bins = src
-        .find("late_bins = ?late_bins,\n")
+        .find("late_bins = ?c.late_bins,\n")
         .expect("the bins in the counts line");
     let peak = src
         .find("late_max_us = s.late_max_us,\n")
         .expect("the peak lateness in the counts line");
     assert!(bins < peak && peak - bins < 80, "right after the bins");
     let line = src[..bins].rfind("info!(").expect("the counts line");
-    assert!(src[line..bins].contains("late_callbacks = late_callbacks,"));
+    assert!(src[line..bins].contains("late_callbacks = c.late_callbacks,"));
 }
 
 /// dsg on Waves SoundGrid ASIO, 18.11.2026 (dasio#187): 96 kHz, the

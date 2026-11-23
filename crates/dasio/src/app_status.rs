@@ -83,19 +83,19 @@ fn startup_suffix<const N: usize>(p: &Part<N>, keys: &[(&str, &str); N]) -> Stri
     }
 }
 
-/// The status JSON's start-up keys (dasio#28), each followed by a comma:
-/// `phase`, and after the window the start-up window's counts as
-/// `startup_<key>`.
+/// The status JSON's start-up keys (dasio#28), the object's last, each
+/// after a comma: `phase`, and after the window the start-up window's
+/// counts as `startup_<key>`.
 fn startup_json<const N: usize>(p: &Part<N>, keys: &[(&str, &str); N]) -> String {
     if p.in_window {
-        return "\"phase\":\"start-up\",".to_string();
+        return ",\"phase\":\"start-up\"".to_string();
     }
     let counts: String = keys
         .iter()
         .zip(p.startup)
-        .map(|((key, _), n)| format!("\"startup_{key}\":{n},"))
+        .map(|((key, _), n)| format!(",\"startup_{key}\":{n}"))
         .collect();
-    format!("\"phase\":\"running\",{counts}")
+    format!(",\"phase\":\"running\"{counts}")
 }
 
 /// How the instance's audio TX goes out (dasio#125).
@@ -248,9 +248,9 @@ pub fn json(f: &Facts) -> String {
         f.waited,
         f.heartbeat_ms,
         f.pc_problems.map_or(-1, i64::from),
-        startup_json(&f.startup, &DAW_STARTUP),
         crate::rx_arrival::json(f.rx),
         f.tx.json(),
+        startup_json(&f.startup, &DAW_STARTUP),
     )
 }
 
@@ -659,12 +659,12 @@ pub fn bridge_json(f: &BridgeFacts) -> String {
         delays_json(f),
         converter_json(f.to_asio_converter_delay_ns, f.from_asio_converter_delay_ns),
         f.pc_problems.map_or(-1, i64::from),
-        startup_json(&f.startup, &BRIDGE_STARTUP),
         age_json(f.from_asio_age),
         pull_json(f.from_asio_pull),
         crate::rx_arrival::json(f.rx),
         crate::rx_arrival::pull_wait_json(f.rx),
         f.tx.json(),
+        startup_json(&f.startup, &BRIDGE_STARTUP),
     )
 }
 

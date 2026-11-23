@@ -121,6 +121,8 @@ impl Drop for DiskQueue {
 pub struct Reader {
     last: Option<CpuTimes>,
     disk: Option<DiskQueue>,
+    /// A failed `GetSystemTimes` was warned (once a wait).
+    cpu_warned: bool,
 }
 
 impl Reader {
@@ -141,12 +143,21 @@ impl Reader {
         Reader {
             last: cpu_times(),
             disk,
+            cpu_warned: false,
         }
     }
 
-    /// The PC since the last call.
+    /// The PC since the last call. A CPU that cannot be read is never
+    /// calm: the wait then runs to its cap, said once here.
     pub fn read(&mut self) -> Sample {
         let now = cpu_times();
+        if now.is_none() && !self.cpu_warned {
+            self.cpu_warned = true;
+            warn!(
+                err = %std::io::Error::last_os_error(),
+                "the CPU times cannot be read (GetSystemTimes): Windows is never judged calm, the device starts at the cap"
+            );
+        }
         let cpu_percent = self
             .last
             .zip(now)

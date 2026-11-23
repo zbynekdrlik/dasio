@@ -322,6 +322,33 @@ fn the_reasons_and_end_lines_name_each_outcome() {
     );
 }
 
+#[test]
+fn the_service_waits_for_a_calm_windows_before_the_address_and_the_device() {
+    // The SCM glue (Windows only, so read as text). A Windows checkout has
+    // CRLF lines.
+    let src = include_str!("../service/windows.rs").replace("\r\n", "\n");
+    let once = |needle: &str| {
+        let found: Vec<usize> = src.match_indices(needle).map(|(i, _)| i).collect();
+        assert_eq!(found.len(), 1, "{needle}: once in service/windows.rs");
+        found[0]
+    };
+    let calm = once("crate::boot_calm::before_start(");
+    let uptime = once("crate::boot_calm::windows::uptime(),");
+    let test_clock = once("args.clock == ClockSource::System,");
+    let reader = once("crate::boot_calm::windows::Reader::open();");
+    let stopped = once("if calm.why == crate::boot_calm::Why::Stopped {");
+    let address = once("wait_for_address(held, &stop, std::thread::sleep)");
+    let device = once("crate::run::run(");
+    assert!(
+        calm < uptime && uptime < test_clock && test_clock < reader && reader < stopped,
+        "the wait's arguments, then its stop"
+    );
+    assert!(
+        stopped < address && address < device,
+        "the wait before the address wait and the device"
+    );
+}
+
 #[cfg(windows)]
 #[test]
 fn the_windows_reader_gives_the_uptime_the_cpu_busy_and_the_disk_queue() {
