@@ -234,6 +234,9 @@ if ($flag -notmatch "TRUE") { throw "no restart after an error exit:`n$flag" }
 
 # The device drives a host on the driver: the probe through the service.
 Wait-Until { Test-Path (Join-Path $env:ProgramData "dasio\instance-$instance\dasio.log") } 20 "the device's log"
+# The test clock never waits for a calm Windows after a boot (dasio#28): a
+# fresh runner is minutes past its boot.
+Wait-Until { (Get-Content (Join-Path $env:ProgramData "dasio\instance-$instance\dasio.log") -ErrorAction SilentlyContinue) -match 'the wait for a calm Windows is over: the device starts its media reason="?test-clock"? waited_s=0' } 20 "the test clock's start without the boot wait"
 # On its interface's address, its control ports the first free slot (its
 # config names none, dasio#89; nothing else holds slot 0 on the runner).
 Wait-Until { (Get-Content (Join-Path $env:ProgramData "dasio\instance-$instance\dasio.log") -ErrorAction SilentlyContinue) -match "the device's address ip=$([regex]::Escape($ip)) place=" } 20 "the device on its interface's address"
