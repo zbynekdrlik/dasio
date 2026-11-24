@@ -5,7 +5,166 @@ fn p(pid: u32, name: &str, ms: u64) -> Proc {
         pid,
         name: name.into(),
         cpu_100ns: ms * 10_000,
+        read_bytes: 0,
+        write_bytes: 0,
     }
+}
+
+/// A process with IO bytes so far (its CPU time does not matter here).
+fn pio(pid: u32, name: &str, read: u64, write: u64) -> Proc {
+    Proc {
+        pid,
+        name: name.into(),
+        cpu_100ns: 0,
+        read_bytes: read,
+        write_bytes: write,
+    }
+}
+
+fn mv(id: u32, name: &str, read: u64, write: u64) -> Moved {
+    Moved {
+        id,
+        name: name.into(),
+        read,
+        write,
+    }
+}
+
+#[test]
+fn the_processes_are_ranked_by_the_bytes_they_moved_between_the_samples() {
+    let before = sample(
+        0,
+        vec![
+            pio(10, "Ableton Live 12 Suite.exe", 1_000, 5_000),
+            pio(20, "Ableton Index.exe", 300, 0),
+            pio(30, "idle.exe", 7, 7),
+            pio(40, "System", 0, 100),
+        ],
+        vec![],
+    );
+    let now = sample(
+        1000,
+        vec![
+            pio(10, "Ableton Live 12 Suite.exe", 1_500, 9_000),
+            pio(20, "Ableton Index.exe", 6_300, 0),
+            pio(30, "idle.exe", 7, 7),
+            pio(40, "System", 0, 3_100),
+        ],
+        vec![],
+    );
+    assert_eq!(
+        top_io(&before, &now, 6),
+        vec![
+            mv(20, "Ableton Index.exe", 6_000, 0),
+            mv(10, "Ableton Live 12 Suite.exe", 500, 4_000),
+            mv(40, "System", 0, 3_000),
+        ],
+        "read plus written, the most first; a process that moved nothing is left out"
+    );
+}
+
+#[test]
+fn io_a_new_process_counts_all_its_bytes_and_a_reused_id_is_a_new_process() {
+    // Two AudioGridderServer sandboxes share a name: each is matched by its
+    // own id, and id 10 now belongs to another exe.
+    let before = sample(
+        0,
+        vec![
+            pio(10, "old.exe", 9_000, 9_000),
+            pio(21, "AudioGridderServer.exe", 100, 0),
+            pio(22, "AudioGridderServer.exe", 5_000, 0),
+        ],
+        vec![],
+    );
+    let now = sample(
+        1000,
+        vec![
+            pio(10, "new.exe", 700, 0),
+            pio(21, "AudioGridderServer.exe", 400, 0),
+            pio(22, "AudioGridderServer.exe", 5_200, 0),
+            pio(23, "started.exe", 0, 50),
+        ],
+        vec![],
+    );
+    assert_eq!(
+        top_io(&before, &now, 6),
+        vec![
+            mv(10, "new.exe", 700, 0),
+            mv(21, "AudioGridderServer.exe", 300, 0),
+            mv(22, "AudioGridderServer.exe", 200, 0),
+            mv(23, "started.exe", 0, 50),
+        ]
+    );
+}
+
+#[test]
+fn io_counters_that_went_back_move_nothing_and_only_the_top_n_are_kept() {
+    let before = sample(0, vec![pio(10, "x.exe", 500, 500)], vec![]);
+    let now = sample(1000, vec![pio(10, "x.exe", 400, 400)], vec![]);
+    assert!(top_io(&before, &now, 6).is_empty());
+
+    let none = sample(0, vec![], vec![]);
+    let now = sample(
+        1000,
+        vec![
+            pio(3, "c", 10, 0),
+            pio(1, "a", 0, 10),
+            pio(2, "b", 15, 5),
+            pio(4, "d", 5, 0),
+        ],
+        vec![],
+    );
+    let ids: Vec<u32> = top_io(&none, &now, 3).iter().map(|m| m.id).collect();
+    assert_eq!(ids, vec![2, 1, 3], "ties go by id");
+}
+
+#[test]
+fn the_io_list_reads_name_id_and_kilobytes_rounded_down() {
+    let moved = vec![
+        mv(780, "Ableton Live 12 Suite.exe", 3_145_728, 1_536),
+        mv(4, "", 0, 1_023),
+        mv(9, "x", 2_047, 0),
+    ];
+    assert_eq!(
+        list_io(&moved),
+        "Ableton Live 12 Suite.exe(780)=r3072kB/w1kB, ?(4)=r0kB/w0kB, x(9)=r1kB/w0kB"
+    );
+    assert_eq!(list_io(&[]), "");
+}
+
+/// The gatherer on the real Windows: bytes this process writes to a file
+/// (and reads back) between two samples show as its IO.
+#[cfg(windows)]
+#[test]
+fn the_bytes_this_process_writes_show_as_its_io() {
+    use std::io::{Read, Write};
+    let mut g = windows::Gatherer::new(|| 0);
+    let before = g.sample(0);
+    let name = format!("dasio-cpu-snap-io-{}.bin", std::process::id());
+    let path = std::env::temp_dir().join(name);
+    let block = vec![0x5au8; 1 << 20];
+    {
+        let mut f = std::fs::File::create(&path).unwrap();
+        for _ in 0..4 {
+            f.write_all(&block).unwrap();
+        }
+        f.sync_all().unwrap();
+    }
+    let mut back = Vec::new();
+    std::fs::File::open(&path)
+        .unwrap()
+        .read_to_end(&mut back)
+        .unwrap();
+    std::fs::remove_file(&path).unwrap();
+    let now = g.sample(100);
+    let me = std::process::id();
+    let io = top_io(&before, &now, usize::MAX);
+    let mine = io
+        .iter()
+        .find(|m| m.id == me)
+        .unwrap_or_else(|| panic!("this process among the movers: {io:?}"));
+    assert!(mine.write >= 4 << 20, "wrote {} bytes", mine.write);
+    assert!(mine.read >= 4 << 20, "read {} bytes", mine.read);
 }
 
 fn t(tid: u32, name: &str, ms: u64) -> Thread {

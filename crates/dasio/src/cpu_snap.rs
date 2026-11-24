@@ -5,16 +5,24 @@
 //! logs what each spent since the sample before, which is at most a second
 //! back and so covers the stall. No kernel tracing: a standing ETW session
 //! lengthened band Live's callbacks on FOH (+50–150 % over-period callbacks,
-//! dasio#22, 10.11.2026). The diff, the ranking and the line are pure, so
-//! tested everywhere.
+//! dasio#22, 10.11.2026). The same sample carries each process's bytes read
+//! and written, so a burst also names who moved data in that span (the
+//! owner's "bursty disk work", dasio#22, 24.11.2026). The diff, the ranking
+//! and the line are pure, so tested everywhere.
 
-/// One process's CPU time so far.
+/// One process's CPU time and IO so far.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Proc {
     pub pid: u32,
     pub name: String,
     /// Kernel plus user time, in 100 ns units (Windows' FILETIME).
     pub cpu_100ns: u64,
+    /// Bytes read so far: every kind of IO Windows counts for the process
+    /// (files, devices, the network), `IO_COUNTERS.ReadTransferCount`; 0
+    /// when the counters cannot be read.
+    pub read_bytes: u64,
+    /// Bytes written so far, `IO_COUNTERS.WriteTransferCount`; 0 as above.
+    pub write_bytes: u64,
 }
 
 /// One of this process's threads and its CPU time so far.
@@ -122,6 +130,70 @@ pub fn list(spent: &[Spent]) -> String {
         .map(|s| {
             let name = if s.name.is_empty() { "?" } else { &s.name };
             format!("{name}({})={}.{}ms", s.id, s.us / 1000, s.us % 1000 / 100)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// What one process read and wrote between two samples, bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Moved {
+    pub id: u32,
+    pub name: String,
+    pub read: u64,
+    pub write: u64,
+}
+
+impl Moved {
+    fn total(&self) -> u64 {
+        self.read.saturating_add(self.write)
+    }
+}
+
+/// The processes listed by their IO in a burst's line.
+pub const TOP_IO: usize = 6;
+
+/// The processes that read plus wrote the most bytes from `before` to
+/// `now`, the most first (ties by id), at most `n`, none that moved
+/// nothing. The same process is the same id and name, as in [`ranked`]; a
+/// new one counts all its bytes.
+pub fn top_io(before: &Sample, now: &Sample, n: usize) -> Vec<Moved> {
+    let mut out: Vec<Moved> = now
+        .procs
+        .iter()
+        .map(|p| {
+            let (read, written) = before
+                .procs
+                .iter()
+                .find(|b| b.pid == p.pid && b.name == p.name)
+                .map_or((0, 0), |b| (b.read_bytes, b.write_bytes));
+            Moved {
+                id: p.pid,
+                name: p.name.clone(),
+                read: p.read_bytes.saturating_sub(read),
+                write: p.write_bytes.saturating_sub(written),
+            }
+        })
+        .filter(|m| m.total() > 0)
+        .collect();
+    out.sort_by(|a, b| b.total().cmp(&a.total()).then(a.id.cmp(&b.id)));
+    out.truncate(n);
+    out
+}
+
+/// `moved` as `name(id)=r<kB>/w<kB>`, comma separated, kB = 1024 bytes
+/// rounded down; an unnamed process is `?`.
+pub fn list_io(moved: &[Moved]) -> String {
+    moved
+        .iter()
+        .map(|m| {
+            let name = if m.name.is_empty() { "?" } else { &m.name };
+            format!(
+                "{name}({})=r{}kB/w{}kB",
+                m.id,
+                m.read / 1024,
+                m.write / 1024
+            )
         })
         .collect::<Vec<_>>()
         .join(", ")

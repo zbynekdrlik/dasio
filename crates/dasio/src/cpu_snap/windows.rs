@@ -1,5 +1,6 @@
-//! The Windows gatherer of [`super::Sample`]: every process's CPU time
-//! (Toolhelp's process list, `GetProcessTimes` on a limited-query handle)
+//! The Windows gatherer of [`super::Sample`]: every process's CPU time and
+//! IO bytes (Toolhelp's process list, `GetProcessTimes` and
+//! `GetProcessIoCounters` on a limited-query handle)
 //! and this process's threads' (Toolhelp's thread list, `GetThreadTimes`,
 //! `GetThreadDescription`). Documented calls only; a process or thread
 //! that cannot be opened (protected, or gone meanwhile) is left out.
@@ -12,8 +13,9 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
 };
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcessId, GetProcessTimes, GetThreadDescription, GetThreadTimes, OpenProcess,
-    OpenThread, PROCESS_QUERY_LIMITED_INFORMATION, THREAD_QUERY_LIMITED_INFORMATION,
+    GetCurrentProcessId, GetProcessIoCounters, GetProcessTimes, GetThreadDescription,
+    GetThreadTimes, IO_COUNTERS, OpenProcess, OpenThread, PROCESS_QUERY_LIMITED_INFORMATION,
+    THREAD_QUERY_LIMITED_INFORMATION,
 };
 
 use super::{Proc, Sample, Thread};
@@ -148,10 +150,15 @@ impl Gatherer {
                         // SAFETY: an open handle and four writable FILETIMEs.
                         unsafe { GetProcessTimes(o.h, c, x, k, u) }
                     })
-                    .map(|cpu_100ns| Proc {
-                        pid: o.id,
-                        name: o.name.clone(),
-                        cpu_100ns,
+                    .map(|cpu_100ns| {
+                        let (read_bytes, write_bytes) = io_of(o.h);
+                        Proc {
+                            pid: o.id,
+                            name: o.name.clone(),
+                            cpu_100ns,
+                            read_bytes,
+                            write_bytes,
+                        }
                     })
                 })
                 .collect(),
@@ -159,6 +166,19 @@ impl Gatherer {
             daw: thread_times(&self.daw),
         }
     }
+}
+
+/// Bytes read and written so far by the process behind `h` (the same
+/// limited-query handle `GetProcessTimes` reads), (0, 0) when Windows
+/// refuses, so a process whose counters stay unreadable shows no IO (one
+/// that turns readable later shows all its bytes once).
+fn io_of(h: HANDLE) -> (u64, u64) {
+    let mut io = IO_COUNTERS::default();
+    // SAFETY: an open process handle and a writable IO_COUNTERS.
+    if unsafe { GetProcessIoCounters(h, &mut io) } == 0 {
+        return (0, 0);
+    }
+    (io.ReadTransferCount, io.WriteTransferCount)
 }
 
 /// The CPU times of `open` threads; one that ended is left out.
@@ -340,9 +360,11 @@ fn run(start: std::time::Instant, gatherer: Gatherer, rx: &std::sync::mpsc::Rece
                 let procs = super::top_procs(&prev, &now, super::TOP_PROCS);
                 let threads = super::top_threads(&prev, &now, super::TOP_THREADS);
                 let daw = super::top_daw_threads(&prev, &now, super::TOP_DAW_THREADS);
+                let io = super::top_io(&prev, &now, super::TOP_IO);
                 tracing::warn!(
                     span_ms = now.at_ms.saturating_sub(prev.at_ms),
                     procs = %super::list(&procs),
+                    io = %super::list_io(&io),
                     dasio_threads = %super::list(&threads),
                     daw_threads = %super::list(&daw),
                     sample_us = us,
