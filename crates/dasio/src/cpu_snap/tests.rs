@@ -5,7 +5,289 @@ fn p(pid: u32, name: &str, ms: u64) -> Proc {
         pid,
         name: name.into(),
         cpu_100ns: ms * 10_000,
+        io: Some(Io {
+            read: 0,
+            write: 0,
+            other: 0,
+        }),
     }
+}
+
+/// A process with IO bytes so far (its CPU time does not matter here).
+fn pio(pid: u32, name: &str, read: u64, write: u64) -> Proc {
+    Proc {
+        pid,
+        name: name.into(),
+        cpu_100ns: 0,
+        io: Some(Io {
+            read,
+            write,
+            other: 0,
+        }),
+    }
+}
+
+/// A process whose IO counters Windows refused in this sample.
+fn refused(pid: u32, name: &str) -> Proc {
+    Proc {
+        pid,
+        name: name.into(),
+        cpu_100ns: 0,
+        io: None,
+    }
+}
+
+fn mv(id: u32, name: &str, read: u64, write: u64) -> Moved {
+    Moved {
+        id,
+        name: name.into(),
+        read,
+        write,
+        other: 0,
+    }
+}
+
+/// A process with socket ("other") bytes too.
+fn pnet(pid: u32, name: &str, read: u64, write: u64, other: u64) -> Proc {
+    Proc {
+        pid,
+        name: name.into(),
+        cpu_100ns: 0,
+        io: Some(Io { read, write, other }),
+    }
+}
+
+#[test]
+fn the_processes_are_ranked_by_the_bytes_they_moved_between_the_samples() {
+    let before = sample(
+        0,
+        vec![
+            pnet(10, "Ableton Live 12 Suite.exe", 1_000, 5_000, 1_000_000),
+            pnet(70, "sockets.exe", 0, 0, 0),
+            pio(20, "Ableton Index.exe", 300, 0),
+            pio(30, "idle.exe", 7, 7),
+            pio(40, "System", 0, 100),
+            pio(50, "tiny.exe", 0, 0),
+            pio(60, "kib.exe", 0, 0),
+            pio(80, "rkib.exe", 0, 0),
+        ],
+        vec![],
+    );
+    let now = sample(
+        1000,
+        vec![
+            pnet(10, "Ableton Live 12 Suite.exe", 1_500, 9_000, 3_000_000),
+            pnet(70, "sockets.exe", 0, 0, 9_000_000),
+            pio(20, "Ableton Index.exe", 6_300, 0),
+            pio(30, "idle.exe", 7, 7),
+            pio(40, "System", 0, 3_100),
+            pio(50, "tiny.exe", 1_000, 23),
+            pio(60, "kib.exe", 0, 1_024),
+            pio(80, "rkib.exe", 1_024, 0),
+        ],
+        vec![],
+    );
+    assert_eq!(
+        top_io(&before, &now, 6),
+        vec![
+            mv(20, "Ableton Index.exe", 6_000, 0),
+            Moved {
+                other: 2_000_000,
+                ..mv(10, "Ableton Live 12 Suite.exe", 500, 4_000)
+            },
+            mv(40, "System", 0, 3_000),
+            mv(60, "kib.exe", 0, 1_024),
+            mv(80, "rkib.exe", 1_024, 0),
+        ],
+        "read plus written, the most first, sockets shown apart; under 1 KiB read and under 1 KiB written is left out"
+    );
+}
+
+#[test]
+fn io_counts_only_a_process_read_in_both_samples() {
+    // Two AudioGridderServer sandboxes share a name: each is matched by its
+    // own id. Id 10 now belongs to another exe, 23 is new, and 30/31 had
+    // their counters refused in one of the samples: none of those counts,
+    // or a lifetime total would show as one span's bytes.
+    let before = sample(
+        0,
+        vec![
+            pio(10, "old.exe", 100, 100),
+            pio(21, "AudioGridderServer.exe", 10_000, 0),
+            pio(22, "AudioGridderServer.exe", 500_000, 0),
+            refused(30, "refused-before.exe"),
+            pio(31, "refused-now.exe", 0, 0),
+        ],
+        vec![],
+    );
+    let now = sample(
+        1000,
+        vec![
+            pio(10, "new.exe", 900_000, 0),
+            pio(21, "AudioGridderServer.exe", 40_000, 0),
+            pio(22, "AudioGridderServer.exe", 520_000, 0),
+            pio(23, "started.exe", 0, 50_000),
+            pio(30, "refused-before.exe", 40_000_000, 0),
+            refused(31, "refused-now.exe"),
+        ],
+        vec![],
+    );
+    assert_eq!(
+        top_io(&before, &now, 6),
+        vec![
+            mv(21, "AudioGridderServer.exe", 30_000, 0),
+            mv(22, "AudioGridderServer.exe", 20_000, 0),
+        ]
+    );
+}
+
+#[test]
+fn io_counters_that_went_back_move_nothing_and_only_the_top_n_are_kept() {
+    let before = sample(0, vec![pio(10, "x.exe", 50_000, 50_000)], vec![]);
+    let now = sample(1000, vec![pio(10, "x.exe", 40_000, 40_000)], vec![]);
+    assert!(top_io(&before, &now, 6).is_empty());
+
+    let zero = sample(
+        0,
+        vec![
+            pio(3, "c", 0, 0),
+            pio(1, "a", 0, 0),
+            pio(2, "b", 0, 0),
+            pio(4, "d", 0, 0),
+        ],
+        vec![],
+    );
+    let now = sample(
+        1000,
+        vec![
+            pio(3, "c", 10_240, 0),
+            pio(1, "a", 0, 10_240),
+            pio(2, "b", 15_360, 5_120),
+            pio(4, "d", 5_120, 0),
+        ],
+        vec![],
+    );
+    let ids: Vec<u32> = top_io(&zero, &now, 3).iter().map(|m| m.id).collect();
+    assert_eq!(ids, vec![2, 1, 3], "ties go by id");
+}
+
+#[test]
+fn the_io_list_reads_name_id_and_kibibytes_rounded_down() {
+    let moved = vec![
+        mv(780, "Ableton Live 12 Suite.exe", 3_145_728, 1_536),
+        mv(4, "", 0, 1_023),
+        Moved {
+            other: 5_120,
+            ..mv(9, "x", 2_047, 0)
+        },
+    ];
+    assert_eq!(
+        list_io(&moved),
+        "Ableton Live 12 Suite.exe(780)=r3072KiB/w1KiB/o0KiB, ?(4)=r0KiB/w0KiB/o0KiB, x(9)=r1KiB/w0KiB/o5KiB"
+    );
+    assert_eq!(list_io(&[]), "");
+}
+
+fn disk(n: u32, read: u64, write: u64, reads: u32, writes: u32, queue: u32) -> Disk {
+    Disk {
+        n,
+        read,
+        write,
+        reads,
+        writes,
+        queue,
+    }
+}
+
+fn dm(n: u32, read: u64, write: u64, requests: u64, queue: u32) -> DiskMoved {
+    DiskMoved {
+        n,
+        read,
+        write,
+        requests,
+        queue,
+    }
+}
+
+#[test]
+fn each_disk_in_both_samples_shows_its_bytes_and_requests_between_and_its_queue_now() {
+    let mut before = sample(0, vec![], vec![]);
+    before.disks = vec![
+        disk(0, 100, 5_000, 10, 4, 7),
+        disk(1, 9_000, 9_000, u32::MAX - 1, 50, 0),
+        disk(3, 500, 500, 0, 0, 0),
+        disk(4, 7, 7, 1, 1, 0),
+    ];
+    let mut now = sample(1000, vec![], vec![]);
+    now.disks = vec![
+        disk(0, 3_145_828, 6_536, 40, 16, 3),
+        disk(1, 9_500, 9_000, 3, 52, 0),
+        disk(2, 1 << 30, 0, 1, 1, 1),
+        disk(3, 400, 500, 0, 0, 0),
+        disk(4, 7, 7, 1, 1, 0),
+    ];
+    let moved = disk_moved(&before, &now);
+    assert_eq!(
+        moved,
+        vec![
+            dm(0, 3_145_728, 1_536, 42, 3),
+            dm(1, 500, 0, 7, 0),
+            dm(4, 0, 0, 0, 0),
+        ],
+        "disk 1's read count wrapped (5 reads + 2 writes); disk 2 is new and disk 3 reset, both left out"
+    );
+    assert_eq!(
+        list_disks(&moved),
+        "0:r3072KiB/w1KiB/n42/q3, 1:r0KiB/w0KiB/n7/q0, 4:r0KiB/w0KiB/n0/q0"
+    );
+    assert_eq!(list_disks(&[]), "");
+    assert!(disk_moved(&sample(0, vec![], vec![]), &now).is_empty());
+}
+
+/// The gatherer on the real Windows: bytes this process writes to a file
+/// (and reads back) between two samples show as its IO, a delta of the
+/// counters read in both.
+#[cfg(windows)]
+#[test]
+fn the_bytes_this_process_writes_show_as_its_io() {
+    use std::io::{Read, Write};
+    let mut g = windows::Gatherer::new(|| 0);
+    let before = g.sample(0);
+    let name = format!("dasio-cpu-snap-io-{}.bin", std::process::id());
+    let path = std::env::temp_dir().join(name);
+    let block = vec![0x5au8; 1 << 20];
+    {
+        let mut f = std::fs::File::create(&path).unwrap();
+        for _ in 0..4 {
+            f.write_all(&block).unwrap();
+        }
+        f.sync_all().unwrap();
+    }
+    let mut back = Vec::new();
+    std::fs::File::open(&path)
+        .unwrap()
+        .read_to_end(&mut back)
+        .unwrap();
+    std::fs::remove_file(&path).unwrap();
+    let now = g.sample(100);
+    let me = std::process::id();
+    // A real delta: this process was read in the first sample too (a
+    // process missing there would not count at all).
+    assert!(
+        before.procs.iter().any(|p| p.pid == me && p.io.is_some()),
+        "this process with its counters in the first sample"
+    );
+    let io = top_io(&before, &now, usize::MAX);
+    let mine = io
+        .iter()
+        .find(|m| m.id == me)
+        .unwrap_or_else(|| panic!("this process among the movers: {io:?}"));
+    assert!(mine.write >= 4 << 20, "wrote {} bytes", mine.write);
+    assert!(mine.read >= 4 << 20, "read {} bytes", mine.read);
+    // The flushed 4 MiB reached a physical disk, which counts it too.
+    assert!(!now.disks.is_empty(), "no physical disk could be read");
+    let written: u64 = disk_moved(&before, &now).iter().map(|d| d.write).sum();
+    assert!(written >= 4 << 20, "the disks wrote {written} bytes");
 }
 
 fn t(tid: u32, name: &str, ms: u64) -> Thread {
@@ -22,6 +304,7 @@ fn sample(at_ms: u64, procs: Vec<Proc>, threads: Vec<Thread>) -> Sample {
         procs,
         threads,
         daw: vec![],
+        disks: vec![],
     }
 }
 

@@ -1,5 +1,7 @@
-//! The Windows gatherer of [`super::Sample`]: every process's CPU time
-//! (Toolhelp's process list, `GetProcessTimes` on a limited-query handle)
+//! The Windows gatherer of [`super::Sample`]: every process's CPU time and
+//! IO bytes (Toolhelp's process list, `GetProcessTimes` and
+//! `GetProcessIoCounters` on a limited-query handle), every physical disk's
+//! bytes and queue (`IOCTL_DISK_PERFORMANCE` on a no-access handle)
 //! and this process's threads' (Toolhelp's thread list, `GetThreadTimes`,
 //! `GetThreadDescription`). Documented calls only; a process or thread
 //! that cannot be opened (protected, or gone meanwhile) is left out.
@@ -7,16 +9,22 @@
 use windows_sys::Win32::Foundation::{
     CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
 };
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
     TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
 };
+use windows_sys::Win32::System::IO::DeviceIoControl;
+use windows_sys::Win32::System::Ioctl::{DISK_PERFORMANCE, IOCTL_DISK_PERFORMANCE};
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcessId, GetProcessTimes, GetThreadDescription, GetThreadTimes, OpenProcess,
-    OpenThread, PROCESS_QUERY_LIMITED_INFORMATION, THREAD_QUERY_LIMITED_INFORMATION,
+    GetCurrentProcessId, GetProcessIoCounters, GetProcessTimes, GetThreadDescription,
+    GetThreadTimes, IO_COUNTERS, OpenProcess, OpenThread, PROCESS_QUERY_LIMITED_INFORMATION,
+    THREAD_QUERY_LIMITED_INFORMATION,
 };
 
-use super::{Proc, Sample, Thread};
+use super::{Disk, Io, Proc, Sample, Thread};
 
 /// Kernel plus user time of two FILETIMEs, 100 ns units.
 fn cpu(kernel: &FILETIME, user: &FILETIME) -> u64 {
@@ -80,6 +88,10 @@ pub struct Gatherer {
     procs: Vec<Open>,
     threads: Vec<Open>,
     daw: Vec<Open>,
+    /// The physical disks' numbers, found again at each refresh; a sample
+    /// opens each, reads it and closes it, so no handle stays open on a
+    /// disk (one would block a USB disk's safe removal).
+    disks: Vec<u32>,
     /// The DAW's process id (0: none): the driver's word in the shared
     /// directory, read at each refresh.
     host_pid: Box<dyn Fn() -> u32 + Send>,
@@ -96,6 +108,7 @@ impl Gatherer {
             procs: Vec::new(),
             threads: Vec::new(),
             daw: Vec::new(),
+            disks: Vec::new(),
             host_pid: Box::new(host_pid),
             refreshed: None,
             refresh_us: 0,
@@ -122,6 +135,9 @@ impl Gatherer {
         };
         keep_and_open(&mut self.threads, threads, open);
         keep_and_open(&mut self.daw, daw, open);
+        self.disks = (0..MAX_DISKS)
+            .filter(|&n| open_disk(n).map(close).is_some())
+            .collect();
         for o in self.threads.iter_mut().chain(self.daw.iter_mut()) {
             if o.name.is_empty() {
                 // SAFETY: opened above with limited query rights.
@@ -152,13 +168,100 @@ impl Gatherer {
                         pid: o.id,
                         name: o.name.clone(),
                         cpu_100ns,
+                        io: io_of(o.h),
                     })
                 })
                 .collect(),
             threads: thread_times(&self.threads),
             daw: thread_times(&self.daw),
+            disks: self.disks.iter().filter_map(|&n| disk_of(n)).collect(),
         }
     }
+}
+
+/// The most physical disks looked for (`\\.\PhysicalDrive0` up).
+const MAX_DISKS: u32 = 16;
+
+/// Physical disk `n` opened with no access rights, which is all
+/// `IOCTL_DISK_PERFORMANCE` needs (FILE_ANY_ACCESS); `None` without one.
+/// The caller closes the handle.
+fn open_disk(n: u32) -> Option<HANDLE> {
+    let path: Vec<u16> = format!("\\\\.\\PhysicalDrive{n}")
+        .encode_utf16()
+        .chain([0])
+        .collect();
+    // SAFETY: a NUL-terminated path; a query-only handle.
+    let h = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+    (h != INVALID_HANDLE_VALUE).then_some(h)
+}
+
+fn close(h: HANDLE) {
+    // SAFETY: a handle from `open_disk`, closed once.
+    unsafe { CloseHandle(h) };
+}
+
+/// Disk `n`'s bytes so far and its queue, read through a handle opened
+/// and closed here; `None` when the disk is gone, the call fails, it
+/// returns less than a whole DISK_PERFORMANCE or a negative byte count.
+fn disk_of(n: u32) -> Option<Disk> {
+    let h = open_disk(n)?;
+    let mut p = DISK_PERFORMANCE::default();
+    let mut got = 0u32;
+    // SAFETY: an open disk handle and a writable DISK_PERFORMANCE of the
+    // size passed.
+    let ok = unsafe {
+        DeviceIoControl(
+            h,
+            IOCTL_DISK_PERFORMANCE,
+            std::ptr::null(),
+            0,
+            (&raw mut p).cast(),
+            std::mem::size_of::<DISK_PERFORMANCE>() as u32,
+            &mut got,
+            std::ptr::null_mut(),
+        )
+    } != 0;
+    close(h);
+    let full = got as usize >= std::mem::size_of::<DISK_PERFORMANCE>();
+    if !(ok && full) {
+        return None;
+    }
+    // A negative byte count is no reading (as 0 it would make the next
+    // span's delta the disk's whole lifetime).
+    let (Ok(read), Ok(write)) = (u64::try_from(p.BytesRead), u64::try_from(p.BytesWritten)) else {
+        return None;
+    };
+    Some(Disk {
+        n,
+        read,
+        write,
+        reads: p.ReadCount,
+        writes: p.WriteCount,
+        queue: p.QueueDepth,
+    })
+}
+
+/// Bytes read and written so far by the process behind `h` (the same
+/// limited-query handle `GetProcessTimes` reads), `None` when Windows
+/// refuses.
+fn io_of(h: HANDLE) -> Option<Io> {
+    let mut io = IO_COUNTERS::default();
+    // SAFETY: an open process handle and a writable IO_COUNTERS.
+    (unsafe { GetProcessIoCounters(h, &mut io) } != 0).then_some(Io {
+        read: io.ReadTransferCount,
+        write: io.WriteTransferCount,
+        other: io.OtherTransferCount,
+    })
 }
 
 /// The CPU times of `open` threads; one that ended is left out.
@@ -324,6 +427,7 @@ fn run(start: std::time::Instant, gatherer: Gatherer, rx: &std::sync::mpsc::Rece
     let (mut prev, us) = cost.take(ms());
     tracing::info!(
         procs = prev.procs.len(),
+        disks = prev.disks.len(),
         threads = prev.threads.len(),
         daw_threads = prev.daw.len(),
         sample_us = us,
@@ -340,9 +444,13 @@ fn run(start: std::time::Instant, gatherer: Gatherer, rx: &std::sync::mpsc::Rece
                 let procs = super::top_procs(&prev, &now, super::TOP_PROCS);
                 let threads = super::top_threads(&prev, &now, super::TOP_THREADS);
                 let daw = super::top_daw_threads(&prev, &now, super::TOP_DAW_THREADS);
+                let io = super::top_io(&prev, &now, super::TOP_IO);
+                let disks = super::disk_moved(&prev, &now);
                 tracing::warn!(
                     span_ms = now.at_ms.saturating_sub(prev.at_ms),
                     procs = %super::list(&procs),
+                    disks = %super::list_disks(&disks),
+                    io = %super::list_io(&io),
                     dasio_threads = %super::list(&threads),
                     daw_threads = %super::list(&daw),
                     sample_us = us,
@@ -363,6 +471,8 @@ fn run(start: std::time::Instant, gatherer: Gatherer, rx: &std::sync::mpsc::Rece
                 max_us = cost.max_us,
                 last_refresh_us = cost.gatherer.refresh_us,
                 procs = prev.procs.len(),
+                io_refused = prev.procs.iter().filter(|p| p.io.is_none()).count(),
+                disks = prev.disks.len(),
                 threads = prev.threads.len(),
                 daw_threads = prev.daw.len(),
                 "CPU samples' own cost in the last 10 min"
