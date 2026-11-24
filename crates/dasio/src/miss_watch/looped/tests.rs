@@ -265,6 +265,19 @@ fn lines_join_one_lag_within_one_sample() {
             line(1_000, 128, 500, 0.5, &[1])
         ]
     );
+    // Another lag between two channels of one lag does not split them.
+    let got = lines(&[
+        a_loop(0, 1_000, 256, 700, 0.25),
+        a_loop(1, 1_000, 128, 500, 0.5),
+        a_loop(2, 1_000, 256, 900, 0.125),
+    ]);
+    assert_eq!(
+        got,
+        vec![
+            line(1_000, 256, 900, 0.25, &[0, 2]),
+            line(1_000, 128, 500, 0.5, &[1])
+        ]
+    );
     // A channel twice in a line is named once.
     let got = lines(&[a_loop(1, 1_000, 64, 70, 0.1), a_loop(1, 1_001, 64, 80, 0.2)]);
     assert_eq!(got, vec![line(1_000, 64, 80, 0.2, &[1])]);

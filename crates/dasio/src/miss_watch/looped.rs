@@ -194,22 +194,27 @@ pub fn lines(loops: &[Loop]) -> Vec<Line> {
     sorted.sort_by_key(|l| (l.at, l.channel));
     let mut out: Vec<Line> = Vec::new();
     for l in sorted {
-        match out.last_mut() {
-            Some(line) if line.lag == l.lag && l.at - line.at <= 1 => {
-                line.channels.push(l.channel);
-                line.channels.sort_unstable();
-                line.channels.dedup();
-                line.len = line.len.max(l.len);
-                line.peak = line.peak.max(l.peak);
-            }
-            _ => out.push(Line {
-                at: l.at,
-                lag: l.lag,
-                len: l.len,
-                peak: l.peak,
-                channels: vec![l.channel],
-            }),
+        // The newest line of this lag: a loop of another lag at the same
+        // sample may lie between two channels of one.
+        if let Some(line) = out
+            .iter_mut()
+            .rev()
+            .find(|line| line.lag == l.lag && l.at - line.at <= 1)
+        {
+            line.channels.push(l.channel);
+            line.channels.sort_unstable();
+            line.channels.dedup();
+            line.len = line.len.max(l.len);
+            line.peak = line.peak.max(l.peak);
+            continue;
         }
+        out.push(Line {
+            at: l.at,
+            lag: l.lag,
+            len: l.len,
+            peak: l.peak,
+            channels: vec![l.channel],
+        });
     }
     out
 }
