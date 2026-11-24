@@ -10,6 +10,7 @@ fn cfg(channels: usize) -> Config {
         block: HOST,
         rx: (0..channels).map(|i| (i, format!("ch {i}"))).collect(),
         tone: vec![],
+        program: vec![],
     }
 }
 
@@ -475,6 +476,7 @@ fn the_config_names_channels_by_the_device_s_rx_names() {
             block: 128,
             rx: vec![(1, "CG SNV L".into()), (0, "Hand 1 SNV".into())],
             tone: vec![],
+            program: vec![],
         }
     );
 }
@@ -670,6 +672,7 @@ fn setup_reads_the_instance_folder_s_file_or_nothing() {
             block: 128,
             rx: vec![(3, "Ruchy 1".into())],
             tone: vec![],
+            program: vec![],
         }))
     );
     std::fs::write(

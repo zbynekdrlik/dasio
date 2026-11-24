@@ -117,10 +117,11 @@ impl Process for Nothing {
 }
 
 /// The output watch on the pump's path (dasio#207): `Watched::process`
-/// carries the same marker, so a zero/repeat channel and a test-tone
-/// channel run every branch under the sanitizer: a zero break, the tone's
-/// fits, its level windows, a click and its end, each block's figures, a
-/// discontinuity and a jump in the media position.
+/// carries the same marker, so a zero/repeat channel, a test-tone channel
+/// and a program channel run every branch under the sanitizer: a zero
+/// break, the tone's fits, its level windows, a click and its end, a
+/// program splice and its decision, each block's figures, a discontinuity
+/// and a jump in the media position.
 #[test]
 fn the_output_watch_is_realtime_safe() {
     const RATE: u32 = 96_000;
@@ -131,6 +132,7 @@ fn the_output_watch_is_realtime_safe() {
         block: FRAMES,
         rx: vec![(0, "rx".into())],
         tone: vec![(1, "tone".into())],
+        program: vec![(2, "program".into())],
     };
     let set = Setup::new(cfg);
     let mut p = Watched::new(Nothing, Some(set.watch(RATE)));
@@ -151,13 +153,22 @@ fn the_output_watch_is_realtime_safe() {
         .map(|i| (0.1 * (w * i as f64 + 0.3).sin() / lsb).round() * lsb)
         .collect();
     tone[6_000] += 1e-3;
-    let mut input = [0.0f64; 2 * FRAMES];
-    let mut output = [0.0f64; 2 * FRAMES];
+    // RX 2: a loud 24-bit sine with 32 samples skipped at 6 000 (a splice,
+    // decided 263 samples later).
+    let program: Vec<f64> = (0..n)
+        .map(|i| {
+            let j = if i >= 6_000 { i + 32 } else { i };
+            (0.5 * (w * j as f64).sin() / lsb).round() * lsb
+        })
+        .collect();
+    let mut input = [0.0f64; 3 * FRAMES];
+    let mut output = [0.0f64; 3 * FRAMES];
     let mut start = 0u64;
     for b in 0..BLOCKS {
         let at = b * FRAMES;
         input[..FRAMES].copy_from_slice(&rx[at..at + FRAMES]);
-        input[FRAMES..].copy_from_slice(&tone[at..at + FRAMES]);
+        input[FRAMES..2 * FRAMES].copy_from_slice(&tone[at..at + FRAMES]);
+        input[2 * FRAMES..].copy_from_slice(&program[at..at + FRAMES]);
         if b == 400 {
             p.discontinuity();
         }
@@ -180,6 +191,10 @@ fn the_output_watch_is_realtime_safe() {
         "the tone's click ran: {tones:?}"
     );
     assert!(set.tones.take(0).checked > 0, "the tone was checked");
+    let (mut tail, mut jumps) = (0, Vec::new());
+    set.programs.events.drain(&mut tail, &mut jumps);
+    assert_eq!(jumps.len(), 1, "the program splice ran: {jumps:?}");
+    assert!(set.programs.take(0).checked > 0, "the program was checked");
 }
 
 /// Allocates in a real-time context: a violation under the sanitizer.

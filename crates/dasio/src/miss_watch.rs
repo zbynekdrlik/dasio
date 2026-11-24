@@ -24,6 +24,12 @@
 //! of any length, a slipped sample, a repeated block) or a step in its level
 //! is a break.
 //!
+//! Real program audio has no test tone, and a master's miss on the Yamaha
+//! card is neither of the first two shapes: a block's worth of signal is
+//! skipped or repeated, a step between two valid waveforms. Channels in
+//! `program` are checked for that step ([`program`]), by the fourth
+//! difference of the samples against the quiet before and after it.
+//!
 //! The pump thread runs [`Watch::check_block`] (through [`Watched`], a
 //! [`Process`] in front of the device's own processor): per-channel state is
 //! allocated at the start, the breaks go into [`Events`] (the tone's into
@@ -33,6 +39,7 @@
 //! is the instance folder's `watch.toml` ([`config`]), not a `device.toml`
 //! table: dstack's dtray refuses keys it does not know there.
 
+pub mod program;
 pub mod tone;
 
 use std::marker::PhantomData;
@@ -41,6 +48,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use dstack_audio_io::{Block, Process};
 
+pub use program::{ProgramJump, Programs};
 pub use tone::{ToneBreak, ToneKind, Tones};
 
 /// The instance folder's file that turns the watch on.
@@ -102,13 +110,16 @@ pub struct Config {
     /// The channels that carry a continuous test tone ([`tone`]), the same
     /// way; a channel may be in both lists.
     pub tone: Names,
+    /// The channels of program audio ([`program`]): checked for the step a
+    /// missed host buffer leaves; a channel may be in the other lists too.
+    pub program: Names,
 }
 
 /// Channels as a config names them: (the device's RX index, its name).
 pub type Names = Vec<(usize, String)>;
 
 /// The keys of `watch.toml`.
-const KEYS: [&str; 4] = ["name", "block", "rx", "tone"];
+const KEYS: [&str; 5] = ["name", "block", "rx", "tone", "program"];
 
 /// The list `key` of `table` against the device's RX channel names: `None`
 /// without the key, else `least` to [`MAX_CHANNELS`] names, each an RX
@@ -152,7 +163,8 @@ fn names(
 
 /// Reads `watch.toml`'s `text` against the device's RX channel names.
 /// `rx` names 1 to [`MAX_CHANNELS`] channels; with a `tone` list (1 to
-/// [`MAX_CHANNELS`]) it may be empty or left out (a tone-only watch).
+/// [`MAX_CHANNELS`]) or a `program` list (the same) it may be empty or left
+/// out (a tone-only or program-only watch).
 pub fn config(text: &str, device_rx: &[String]) -> Result<Config, String> {
     let table: toml::Table = text.parse().map_err(|e| format!("{FILE}: {e}"))?;
     if let Some(k) = table.keys().find(|k| !KEYS.contains(&k.as_str())) {
@@ -173,14 +185,13 @@ pub fn config(text: &str, device_rx: &[String]) -> Result<Config, String> {
         _ => return Err(format!("{FILE}: `block` must be an integer (samples)")),
     };
     let tone = names(&table, "tone", 1, device_rx)?;
-    // A tone-only watch needs no `rx`.
-    let rx = match (
-        names(&table, "rx", usize::from(tone.is_none()), device_rx)?,
-        &tone,
-    ) {
+    let program = names(&table, "program", 1, device_rx)?;
+    // A tone-only or program-only watch needs no `rx`.
+    let other = tone.is_some() || program.is_some();
+    let rx = match (names(&table, "rx", usize::from(!other), device_rx)?, other) {
         (Some(rx), _) => rx,
-        (None, Some(_)) => Vec::new(),
-        (None, None) => {
+        (None, true) => Vec::new(),
+        (None, false) => {
             return Err(format!("{FILE}: `rx` must be a list of RX channel names"));
         }
     };
@@ -189,6 +200,7 @@ pub fn config(text: &str, device_rx: &[String]) -> Result<Config, String> {
         block,
         rx,
         tone: tone.unwrap_or_default(),
+        program: program.unwrap_or_default(),
     })
 }
 
@@ -199,21 +211,25 @@ pub struct Setup {
     pub cfg: Config,
     pub events: Arc<Events>,
     pub tones: Arc<Tones>,
+    pub programs: Arc<Programs>,
 }
 
 impl Setup {
     pub fn new(cfg: Config) -> Self {
         let tones = Arc::new(Tones::new(cfg.tone.len()));
+        let programs = Arc::new(Programs::new(cfg.program.len()));
         Self {
             cfg,
             events: Arc::new(Events::default()),
             tones,
+            programs,
         }
     }
 
     /// The pump side for a serving at the device's `rate`.
     pub fn watch(&self, rate: u32) -> Watch {
-        Watch::new(&self.cfg, rate, Arc::clone(&self.events)).with_tones(Arc::clone(&self.tones))
+        Watch::new(&self.cfg, rate, Arc::clone(&self.events))
+            .with_outputs(Arc::clone(&self.tones), Arc::clone(&self.programs))
     }
 }
 
@@ -233,6 +249,16 @@ pub fn channel_names(g: &Group, cfg: &Config) -> String {
     g.channels
         .iter()
         .filter_map(|&c| cfg.rx.get(c).map(|(_, n)| n.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The names of the `program` channels `channels` (places in the config's
+/// `program`) in the config's words, in the order given.
+pub fn program_names(channels: &[usize], cfg: &Config) -> String {
+    channels
+        .iter()
+        .filter_map(|&c| cfg.program.get(c).map(|(_, n)| n.as_str()))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -474,6 +500,9 @@ pub struct Watch {
     tones: Vec<tone::Channel>,
     tone_out: Arc<Tones>,
     limits: tone::Limits,
+    /// The program channels, their events and figures.
+    programs: Vec<program::Channel>,
+    program_out: Arc<Programs>,
 }
 
 impl Watch {
@@ -497,15 +526,22 @@ impl Watch {
                 .collect(),
             tone_out: Arc::new(Tones::new(cfg.tone.len())),
             limits: tone::Limits::new(rate),
+            programs: cfg
+                .program
+                .iter()
+                .map(|(i, _)| program::Channel::new(*i))
+                .collect(),
+            program_out: Arc::new(Programs::new(cfg.program.len())),
         }
     }
 
-    /// The watch with its tone breaks and figures going into `tones` (its
-    /// [`Setup`]'s, one per tone channel of the config). Private: only
-    /// [`Setup::watch`] pairs the two, from one config, so the pump never
-    /// indexes past the figures.
-    fn with_tones(mut self, tones: Arc<Tones>) -> Self {
+    /// The watch with its tone and program events and figures going into
+    /// `tones` and `programs` (its [`Setup`]'s, one per channel of the
+    /// config's lists). Private: only [`Setup::watch`] pairs them, from one
+    /// config, so the pump never indexes past the figures.
+    fn with_outputs(mut self, tones: Arc<Tones>, programs: Arc<Programs>) -> Self {
         self.tone_out = tones;
+        self.program_out = programs;
         self
     }
 
@@ -528,6 +564,12 @@ impl Watch {
             }
             t.publish(self.tone_out.stats(ch));
         }
+        for (ch, p) in self.programs.iter_mut().enumerate() {
+            for (i, &x) in block.input(p.rx).iter().enumerate() {
+                p.feed(x, start + i as u64, &self.program_out.events, ch);
+            }
+            p.publish(self.program_out.stats(ch));
+        }
         self.next = start + block.frames() as u64;
     }
 
@@ -538,6 +580,9 @@ impl Watch {
         }
         for t in &mut self.tones {
             t.reset();
+        }
+        for p in &mut self.programs {
+            p.reset();
         }
     }
 }
