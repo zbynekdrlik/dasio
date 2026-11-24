@@ -28,7 +28,9 @@
 //! card is neither of the first two shapes: a block's worth of signal is
 //! skipped or repeated, a step between two valid waveforms. Channels in
 //! `program` are checked for that step ([`program`]), by the fourth
-//! difference of the samples against the quiet before and after it.
+//! difference of the samples against the quiet before and after it, and
+//! for a loop ([`looped`]): the same samples again and again, a device
+//! replaying its buffer while it is not served.
 //!
 //! The pump thread runs [`Watch::check_block`] (through [`Watched`], a
 //! [`Process`] in front of the device's own processor): per-channel state is
@@ -39,6 +41,7 @@
 //! is the instance folder's `watch.toml` ([`config`]), not a `device.toml`
 //! table: dstack's dtray refuses keys it does not know there.
 
+pub mod looped;
 pub mod program;
 pub mod silence;
 pub mod tone;
@@ -49,6 +52,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use dstack_audio_io::{Block, Process};
 
+pub use looped::Loop;
 pub use program::{ProgramJump, Programs};
 pub use tone::{ToneBreak, ToneKind, Tones};
 
@@ -503,6 +507,8 @@ pub struct Watch {
     limits: tone::Limits,
     /// The program channels, their events and figures.
     programs: Vec<program::Channel>,
+    /// The same channels' loop check, one per program channel.
+    loops: Vec<looped::Channel>,
     program_out: Arc<Programs>,
 }
 
@@ -531,6 +537,11 @@ impl Watch {
                 .program
                 .iter()
                 .map(|(i, _)| program::Channel::new(*i))
+                .collect(),
+            loops: cfg
+                .program
+                .iter()
+                .map(|_| looped::Channel::new(cfg.block))
                 .collect(),
             program_out: Arc::new(Programs::new(cfg.program.len())),
         }
@@ -565,9 +576,11 @@ impl Watch {
             }
             t.publish(self.tone_out.stats(ch));
         }
-        for (ch, p) in self.programs.iter_mut().enumerate() {
+        let both = self.programs.iter_mut().zip(self.loops.iter_mut());
+        for (ch, (p, l)) in both.enumerate() {
             for (i, &x) in block.input(p.rx).iter().enumerate() {
                 p.feed(x, start + i as u64, &self.program_out.events, ch);
+                l.feed(x, start + i as u64, &self.program_out.loops, ch);
             }
             p.publish(self.program_out.stats(ch));
         }
@@ -584,6 +597,9 @@ impl Watch {
         }
         for p in &mut self.programs {
             p.reset();
+        }
+        for l in &mut self.loops {
+            l.reset();
         }
     }
 }

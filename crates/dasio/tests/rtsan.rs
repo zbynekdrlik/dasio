@@ -120,8 +120,10 @@ impl Process for Nothing {
 /// carries the same marker, so a zero/repeat channel, a test-tone channel
 /// and a program channel run every branch under the sanitizer: a zero
 /// break, the tone's fits, its level windows, a click and its end, a
-/// program splice and its decision, each block's figures, a discontinuity
-/// and a jump in the media position.
+/// program splice and its decision, a program loop (the splice of the
+/// 1 kHz sine, 32 samples skipped of a period of 96, makes the 64 samples
+/// after it equal the 64 before: a run at the lag of two blocks), each
+/// block's figures, a discontinuity and a jump in the media position.
 #[test]
 fn the_output_watch_is_realtime_safe() {
     const RATE: u32 = 96_000;
@@ -195,6 +197,12 @@ fn the_output_watch_is_realtime_safe() {
     set.programs.events.drain(&mut tail, &mut jumps);
     assert_eq!(jumps.len(), 1, "the program splice ran: {jumps:?}");
     assert!(set.programs.take(0).checked > 0, "the program was checked");
+    let (mut tail, mut loops) = (0, Vec::new());
+    set.programs.loops.drain(&mut tail, &mut loops);
+    assert!(
+        loops.iter().any(|l| l.lag == 2 * FRAMES as u32),
+        "the program loop ran: {loops:?}"
+    );
 }
 
 /// Allocates in a real-time context: a violation under the sanitizer.

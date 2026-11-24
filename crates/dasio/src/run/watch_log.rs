@@ -1,14 +1,14 @@
 //! The device loop's log of the output watch (dasio#207): the Windows glue
 //! over the portable `crate::miss_watch`. Its start line, each break (the
 //! zero and repeat breaks grouped over channels, each tone break on its
-//! own, the program splices grouped over channels) and every 10 s each
-//! tone and program channel's figures.
+//! own, the program splices and the program loops grouped over channels)
+//! and every 10 s each tone and program channel's figures.
 
 use tracing::{info, warn};
 
 use crate::miss_watch::program::{self, Tracker};
 use crate::miss_watch::silence::Silence;
-use crate::miss_watch::{self, Break, ProgramJump, Setup, ToneBreak, tone};
+use crate::miss_watch::{self, Break, Loop, ProgramJump, Setup, ToneBreak, looped, tone};
 
 /// The watch of the instance folder `dir` (its watch.toml) against the
 /// device's RX channel names, its start logged. A config that does not read
@@ -51,6 +51,8 @@ pub(super) struct Reader {
     program_tail: u64,
     program_jumps: Vec<ProgramJump>,
     program_lines: Tracker,
+    loop_tail: u64,
+    loops: Vec<Loop>,
     tone_silence: Silence,
     program_silence: Silence,
 }
@@ -94,7 +96,19 @@ impl Reader {
                 "the program check lost events: more than its ring holds in 100 ms (dasio#207)"
             );
         }
-        if self.breaks.is_empty() && self.tone_breaks.is_empty() && self.program_jumps.is_empty() {
+        self.loops.clear();
+        let lost = w.programs.loops.drain(&mut self.loop_tail, &mut self.loops);
+        if lost > 0 {
+            warn!(
+                lost,
+                "the loop check lost events: more than its ring holds in 100 ms (dasio#207)"
+            );
+        }
+        if self.breaks.is_empty()
+            && self.tone_breaks.is_empty()
+            && self.program_jumps.is_empty()
+            && self.loops.is_empty()
+        {
             return;
         }
         let now = now();
@@ -138,6 +152,22 @@ impl Reader {
                  quiet around it, peak_dbfs = the peak itself (under about -50 is a step nobody \
                  hears), grid = at modulo the block (the host's misses share one value), rem = the distance to the channel's previous jump modulo the \
                  host block (0 = a whole number of blocks, like the host's misses) (dasio#207)"
+            );
+        }
+        for l in looped::lines(&self.loops) {
+            warn!(
+                watch = %w.cfg.name,
+                channels = %miss_watch::program_names(&l.channels, &w.cfg),
+                at = l.at,
+                lag = l.lag,
+                samples = l.len,
+                ms = looped::ms(l.len, rate),
+                peak_dbfs = tenth_db(l.peak),
+                grid = program::grid(l.at, w.cfg.block),
+                ago_ms = now.map(|n| miss_watch::age_ms(l.at, n, rate)),
+                "a watched program output looped: the same samples came again `lag` samples \
+                 later, over `samples` samples (a device replaying its buffer while its host \
+                 does not serve it); peak_dbfs = the loudest repeated sample (dasio#207)"
             );
         }
     }

@@ -126,4 +126,26 @@ paths:
   dBFS) fired 24-32 dB events at `K = 16` with scattered `grid` values,
   while a signal start on a silent channel reads 70-72 dB on both channels
   at once.
+- The loop check (`miss_watch/looped.rs`, 0.1.164, on the `program`
+  channels): per sample, the run of samples exactly equal to the sample 1,
+  2 and 4 config blocks before. A run of at least one lag less 4 samples
+  that varies inside is WARN `a watched program output looped` (`channels`,
+  `at` = the first repeated sample, `lag`, `samples`, `ms`, `peak_dbfs` =
+  the loudest repeated sample, `grid`). Smallest lag first, one report per
+  sample; no level floor and no upper length (real 24-bit audio never
+  repeats sample for sample). It reports when the run ENDS. A bit-exact
+  signal whose period divides a lag (750/1500/3000 Hz at 96 kHz and blocks
+  of 64/128) is one endless run, reported once when it stops; a 1 kHz sine
+  with 32 samples skipped is a 64-sample run at lag 64 (the rtsan test).
+- Why it exists (24.11.2026 19:25:17Z): master's outputs replayed the
+  card's two half-buffers (256 samples) about 20 times, 55 ms, right after
+  a song jump of band Live. The lines then: tone `click samples=1 db=0.3`
+  (a phase slip of 256 samples: `2 |sin(256 w / 2)|` = +0.31 dB at 440 Hz;
+  one block of 128 would read +5.7 dB, 64 +4.0 dB), the tone window
+  `checked` short by 62 blocks, and 10 program events exactly 512 apart
+  with ONE peak and ONE ratio (39.5 dB = one more equal step inside each
+  256-sample window, so the step recurs every 256 samples and the hold-off
+  shows every second). Equal peaks on a sine mean the same samples again.
+  The zero/repeat watch stays quiet on such a loop (one block of lag, 8
+  blocks at most, channel above -60 dBFS).
 - The log keeps 4 x 10 MB: pull a service's lines the same day.
