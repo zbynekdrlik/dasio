@@ -104,6 +104,7 @@ fn jumps_at(ats: &[(usize, u64)]) -> Vec<ProgramJump> {
             channel,
             at,
             ratio: 100.0,
+            steps: 5000,
         })
         .collect()
 }
@@ -129,6 +130,10 @@ fn a_block_skipped_from_a_sine_is_one_event_at_the_splice() {
     let (jumps, sums) = run(&[s]);
     assert_eq!(places(&jumps), vec![(0, 5002)]);
     close(jumps[0].ratio, 19816.43501584979);
+    // The peak of `e`, in 24-bit steps: a Python model of the same integer
+    // signal (round(0.5 sin(2 pi 1000 i / 96000) 2^23), 128 samples cut at
+    // 5000, h = x - 4 x1 + 6 x2 - 4 x3 + x4) has its largest |h| at 5002.
+    assert_eq!(jumps[0].steps, 952_350);
     assert_eq!(sums[0].checked, (N - 128 - 530) as u64);
     assert_eq!(sums[0].jumps, 1);
     close(sums[0].worst, 19816.43501584979);
@@ -449,6 +454,7 @@ fn an_event_round_trips_through_a_slot() {
         channel: 13,
         at: 0x1234_5678_9abc,
         ratio: 1234.5678,
+        steps: 0x7fff_ffff_ffff,
     };
     assert_eq!(ProgramJump::unpack(j.pack()), j);
     let events = ProgramEvents::default();
@@ -663,4 +669,36 @@ fn a_setup_starts_its_program_figures_one_per_program_channel() {
     let mut got = Vec::new();
     assert_eq!(set.programs.events.drain(&mut tail, &mut got), 0);
     assert!(got.is_empty());
+}
+
+#[test]
+fn a_peak_is_carried_in_steps_and_read_in_dbfs_to_a_tenth() {
+    assert_eq!(steps(1024.0 * QUANT), 1024);
+    assert_eq!(steps(952_350.0 * QUANT), 952_350);
+    assert_eq!(peak_dbfs(8_388_608), 0.0);
+    assert_eq!(peak_dbfs(4_194_304), -6.0);
+    assert_eq!(peak_dbfs(1024), -78.3);
+    // 3 steps: -128.9 dBFS; none counts as one step, never -inf.
+    assert_eq!(peak_dbfs(0), peak_dbfs(1));
+    assert!(peak_dbfs(0).is_finite());
+}
+
+#[test]
+fn the_grid_is_the_place_in_the_block_and_cannot_overflow() {
+    assert_eq!(grid(0, 128), 0);
+    assert_eq!(grid(127, 128), 127);
+    assert_eq!(grid(128, 128), 0);
+    assert_eq!(grid(3 * 128 + 5, 128), 5);
+    assert_eq!(grid(u64::MAX, 128), 127);
+    assert_eq!(grid(u64::MAX, 64), 63);
+}
+
+#[test]
+fn a_line_carries_the_largest_peak_and_the_first_events_grid() {
+    let mut j = jumps_at(&[(0, 1000), (1, 1001)]);
+    j[0].steps = 3000;
+    j[1].steps = 9000;
+    let l = Tracker::default().lines(&j, 128);
+    assert_eq!(l.len(), 1);
+    assert_eq!((l[0].steps, l[0].grid), (9000, 1000 % 128));
 }

@@ -89,7 +89,9 @@ paths:
 - Its log lines: `a watched program output jumped` (`channels` every
   program channel whose peak is within +-1 sample, `at` the media sample of
   the peak, `db` peak over the larger window mean (the mean at least one
-  24-bit step), `since_prev` samples since that channel's previous event,
+  24-bit step), `peak_dbfs` the peak of `e` itself, 20 log10(steps / 2^23)
+  to a tenth (the largest of the line's channels, like `db`), `grid` =
+  `at % block` of the config's `block`, `since_prev` samples since that channel's previous event,
   `rem` = `since_prev % block`; both absent for a channel's first event);
   every 10 s per program channel `a watched program output over the last
   10 s` (`checked` samples judged, `jumps`, `worst_db` = the largest
@@ -112,4 +114,16 @@ paths:
   share one value of `at % <host block>` until the host's audio engine
   restarts; a radio dropout or a musical false hit lands anywhere. Compute
   it when reading (`rem` uses the config's `block`, not the host's).
+- Reading `peak_dbfs` and `grid` (24.11.2026): an event under about -50
+  dBFS peak is a step nobody hears, whatever its `db`. The host's misses
+  share ONE `grid` (see above): no need to compute `at % block` by hand.
+  `grid` uses the config's `block`, so with `block = 64` under a host at
+  128 the host's misses still share one value (the host's blocks are a
+  multiple of 64 apart). The carried peak is exact
+  (`ProgramJump.steps`, pinned in the splice test; derived with a Python
+  model of the same integer signal).
+- Measured (live run 24.11.2026): quiet program material (floor -84 to -94
+  dBFS) fired 24-32 dB events at `K = 16` with scattered `grid` values,
+  while a signal start on a silent channel reads 70-72 dB on both channels
+  at once.
 - The log keeps 4 x 10 MB: pull a service's lines the same day.

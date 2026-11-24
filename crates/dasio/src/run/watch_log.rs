@@ -129,11 +129,14 @@ impl Reader {
                 channels = %miss_watch::program_names(&l.channels, &w.cfg),
                 at = l.at,
                 db = tenth_db(l.ratio),
+                peak_dbfs = program::peak_dbfs(l.steps),
+                grid = l.grid,
                 since_prev = l.since_prev,
                 rem = l.rem,
                 ago_ms = now.map(|n| miss_watch::age_ms(l.at, n, rate)),
                 "a watched program output jumped: a step in the audio, db = its peak over the \
-                 quiet around it, rem = the distance to the channel's previous jump modulo the \
+                 quiet around it, peak_dbfs = the peak itself (under about -50 is a step nobody \
+                 hears), grid = at modulo the block (the host's misses share one value), rem = the distance to the channel's previous jump modulo the \
                  host block (0 = a whole number of blocks, like the host's misses) (dasio#207)"
             );
         }
