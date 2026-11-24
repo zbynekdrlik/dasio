@@ -88,8 +88,10 @@ pub struct Gatherer {
     procs: Vec<Open>,
     threads: Vec<Open>,
     daw: Vec<Open>,
-    /// The physical disks, opened once (their number and handle).
-    disks: Vec<(u32, HANDLE)>,
+    /// The physical disks' numbers, found again at each refresh; a sample
+    /// opens each, reads it and closes it, so no handle stays open on a
+    /// disk (one would block a USB disk's safe removal).
+    disks: Vec<u32>,
     /// The DAW's process id (0: none): the driver's word in the shared
     /// directory, read at each refresh.
     host_pid: Box<dyn Fn() -> u32 + Send>,
@@ -106,7 +108,7 @@ impl Gatherer {
             procs: Vec::new(),
             threads: Vec::new(),
             daw: Vec::new(),
-            disks: open_disks(),
+            disks: Vec::new(),
             host_pid: Box::new(host_pid),
             refreshed: None,
             refresh_us: 0,
@@ -133,6 +135,9 @@ impl Gatherer {
         };
         keep_and_open(&mut self.threads, threads, open);
         keep_and_open(&mut self.daw, daw, open);
+        self.disks = (0..MAX_DISKS)
+            .filter(|&n| open_disk(n).map(close).is_some())
+            .collect();
         for o in self.threads.iter_mut().chain(self.daw.iter_mut()) {
             if o.name.is_empty() {
                 // SAFETY: opened above with limited query rights.
@@ -169,11 +174,7 @@ impl Gatherer {
                 .collect(),
             threads: thread_times(&self.threads),
             daw: thread_times(&self.daw),
-            disks: self
-                .disks
-                .iter()
-                .filter_map(|&(n, h)| disk_of(n, h))
-                .collect(),
+            disks: self.disks.iter().filter_map(|&n| disk_of(n)).collect(),
         }
     }
 }
@@ -181,35 +182,38 @@ impl Gatherer {
 /// The most physical disks looked for (`\\.\PhysicalDrive0` up).
 const MAX_DISKS: u32 = 16;
 
-/// Every physical disk that opens with no access rights, which is all
-/// `IOCTL_DISK_PERFORMANCE` needs (FILE_ANY_ACCESS).
-fn open_disks() -> Vec<(u32, HANDLE)> {
-    (0..MAX_DISKS)
-        .filter_map(|n| {
-            let path: Vec<u16> = format!("\\\\.\\PhysicalDrive{n}")
-                .encode_utf16()
-                .chain([0])
-                .collect();
-            // SAFETY: a NUL-terminated path; a query-only handle, closed in
-            // Drop.
-            let h = unsafe {
-                CreateFileW(
-                    path.as_ptr(),
-                    0,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE,
-                    std::ptr::null(),
-                    OPEN_EXISTING,
-                    0,
-                    std::ptr::null_mut(),
-                )
-            };
-            (h != INVALID_HANDLE_VALUE).then_some((n, h))
-        })
-        .collect()
+/// Physical disk `n` opened with no access rights, which is all
+/// `IOCTL_DISK_PERFORMANCE` needs (FILE_ANY_ACCESS); `None` without one.
+/// The caller closes the handle.
+fn open_disk(n: u32) -> Option<HANDLE> {
+    let path: Vec<u16> = format!("\\\\.\\PhysicalDrive{n}")
+        .encode_utf16()
+        .chain([0])
+        .collect();
+    // SAFETY: a NUL-terminated path; a query-only handle.
+    let h = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+    (h != INVALID_HANDLE_VALUE).then_some(h)
 }
 
-/// Disk `n`'s bytes so far and its queue, `None` when the call fails.
-fn disk_of(n: u32, h: HANDLE) -> Option<Disk> {
+fn close(h: HANDLE) {
+    // SAFETY: a handle from `open_disk`, closed once.
+    unsafe { CloseHandle(h) };
+}
+
+/// Disk `n`'s bytes so far and its queue, read through a handle opened
+/// and closed here; `None` when the disk is gone or the call fails.
+fn disk_of(n: u32) -> Option<Disk> {
+    let h = open_disk(n)?;
     let mut p = DISK_PERFORMANCE::default();
     let mut got = 0u32;
     // SAFETY: an open disk handle and a writable DISK_PERFORMANCE of the
@@ -226,6 +230,7 @@ fn disk_of(n: u32, h: HANDLE) -> Option<Disk> {
             std::ptr::null_mut(),
         )
     } != 0;
+    close(h);
     ok.then(|| Disk {
         n,
         read: u64::try_from(p.BytesRead).unwrap_or(0),
@@ -273,10 +278,6 @@ impl Drop for Gatherer {
         {
             // SAFETY: opened by `refresh`, closed once here.
             unsafe { CloseHandle(o.h) };
-        }
-        for (_, h) in self.disks.drain(..) {
-            // SAFETY: opened by `open_disks`, closed once here.
-            unsafe { CloseHandle(h) };
         }
     }
 }

@@ -180,10 +180,10 @@ fn each_disk_in_both_samples_shows_its_bytes_between_and_its_queue_now() {
     let moved = disk_moved(&before, &now);
     assert_eq!(
         moved,
-        vec![disk(0, 3_145_728, 1_536, 3), disk(1, 0, 0, 0)],
-        "disk 2 is new and left out; disk 1's read went back and moved nothing"
+        vec![disk(0, 3_145_728, 1_536, 3), disk(1, 8_000, 0, 0)],
+        "disk 2 is new and left out; disk 1's read went back (a reset): 8000 since"
     );
-    assert_eq!(list_disks(&moved), "0:r3072KiB/w1KiB/q3, 1:r0KiB/w0KiB/q0");
+    assert_eq!(list_disks(&moved), "0:r3072KiB/w1KiB/q3, 1:r7KiB/w0KiB/q0");
     assert_eq!(list_disks(&[]), "");
     assert!(disk_moved(&sample(0, vec![], vec![]), &now).is_empty());
 }

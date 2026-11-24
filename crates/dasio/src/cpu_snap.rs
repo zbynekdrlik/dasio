@@ -172,7 +172,7 @@ impl Moved {
 }
 
 /// The processes listed by their IO in a burst's line.
-pub const TOP_IO: usize = 6;
+pub const TOP_IO: usize = 8;
 
 /// The fewest bytes a process must move to be listed: the line prints KiB,
 /// so less would read `r0KiB/w0KiB`.
@@ -212,7 +212,8 @@ pub fn top_io(before: &Sample, now: &Sample, n: usize) -> Vec<Moved> {
 
 /// What each disk in both samples read and wrote between them, with its
 /// queue depth at `now`, by disk number. A disk only in `now` is left out;
-/// a counter that went back (a reset) moved nothing.
+/// a counter that went back was reset within the span (diskperf, a driver
+/// reset), so its value now is what it moved since.
 pub fn disk_moved(before: &Sample, now: &Sample) -> Vec<Disk> {
     now.disks
         .iter()
@@ -220,12 +221,17 @@ pub fn disk_moved(before: &Sample, now: &Sample) -> Vec<Disk> {
             let was = before.disks.iter().find(|b| b.n == d.n)?;
             Some(Disk {
                 n: d.n,
-                read: d.read.saturating_sub(was.read),
-                write: d.write.saturating_sub(was.write),
+                read: since(was.read, d.read),
+                write: since(was.write, d.write),
                 queue: d.queue,
             })
         })
         .collect()
+}
+
+/// What a counter moved from `was` to `now`; all of `now` after a reset.
+fn since(was: u64, now: u64) -> u64 {
+    if now >= was { now - was } else { now }
 }
 
 /// `disks` as `<n>:r<KiB>/w<KiB>/q<depth>`, comma separated, KiB rounded
