@@ -43,8 +43,11 @@ pub struct Disk {
     pub n: u32,
     pub read: u64,
     pub write: u64,
-    /// Time the disk was idle so far, 100 ns units.
-    pub idle_100ns: u64,
+    /// Reads plus writes completed so far.
+    pub requests: u64,
+    /// The time those requests took, summed, 100 ns units (`ReadTime` plus
+    /// `WriteTime`, booked as each completes).
+    pub busy_100ns: u64,
     /// The requests in flight when read.
     pub queue: u32,
 }
@@ -226,9 +229,13 @@ pub struct DiskMoved {
     pub n: u32,
     pub read: u64,
     pub write: u64,
-    /// How long it was idle in the span, ms: the span minus this is how
-    /// long it was busy, which a queue read after the stall cannot show.
-    pub idle_ms: u64,
+    /// Reads plus writes that completed in the span.
+    pub requests: u64,
+    /// The time those requests took, summed, ms: more than the span when
+    /// they overlapped. This shows the disk pressure that a queue read
+    /// after the stall cannot. (Not `IdleTime`: Windows books an idle stretch
+    /// only when the next request starts, so it lands in the wrong span.)
+    pub busy_ms: u64,
     /// The requests in flight at `now`, the burst's sample, so after the
     /// stall.
     pub queue: u32,
@@ -247,7 +254,8 @@ pub fn disk_moved(before: &Sample, now: &Sample) -> Vec<DiskMoved> {
                 n: d.n,
                 read: since(was.read, d.read),
                 write: since(was.write, d.write),
-                idle_ms: since(was.idle_100ns, d.idle_100ns) / 10_000,
+                requests: since(was.requests, d.requests),
+                busy_ms: since(was.busy_100ns, d.busy_100ns) / 10_000,
                 queue: d.queue,
             })
         })
@@ -259,18 +267,19 @@ fn since(was: u64, now: u64) -> u64 {
     if now >= was { now - was } else { now }
 }
 
-/// `disks` as `<n>:r<KiB>/w<KiB>/i<idle ms>/q<depth>`, comma separated,
-/// KiB rounded down.
+/// `disks` as `<n>:r<KiB>/w<KiB>/n<requests>/t<busy ms>/q<depth>`, comma
+/// separated, KiB rounded down.
 pub fn list_disks(disks: &[DiskMoved]) -> String {
     disks
         .iter()
         .map(|d| {
             format!(
-                "{}:r{}KiB/w{}KiB/i{}ms/q{}",
+                "{}:r{}KiB/w{}KiB/n{}/t{}ms/q{}",
                 d.n,
                 d.read / 1024,
                 d.write / 1024,
-                d.idle_ms,
+                d.requests,
+                d.busy_ms,
                 d.queue
             )
         })

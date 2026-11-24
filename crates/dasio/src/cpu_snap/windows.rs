@@ -235,7 +235,10 @@ fn disk_of(n: u32) -> Option<Disk> {
         n,
         read: u64::try_from(p.BytesRead).unwrap_or(0),
         write: u64::try_from(p.BytesWritten).unwrap_or(0),
-        idle_100ns: u64::try_from(p.IdleTime).unwrap_or(0),
+        requests: u64::from(p.ReadCount) + u64::from(p.WriteCount),
+        busy_100ns: u64::try_from(p.ReadTime)
+            .unwrap_or(0)
+            .saturating_add(u64::try_from(p.WriteTime).unwrap_or(0)),
         queue: p.QueueDepth,
     })
 }

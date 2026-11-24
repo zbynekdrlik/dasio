@@ -185,22 +185,24 @@ fn the_io_list_reads_name_id_and_kibibytes_rounded_down() {
     assert_eq!(list_io(&[]), "");
 }
 
-fn disk(n: u32, read: u64, write: u64, idle_100ns: u64, queue: u32) -> Disk {
+fn disk(n: u32, read: u64, write: u64, requests: u64, busy_100ns: u64, queue: u32) -> Disk {
     Disk {
         n,
         read,
         write,
-        idle_100ns,
+        requests,
+        busy_100ns,
         queue,
     }
 }
 
-fn dm(n: u32, read: u64, write: u64, idle_ms: u64, queue: u32) -> DiskMoved {
+fn dm(n: u32, read: u64, write: u64, requests: u64, busy_ms: u64, queue: u32) -> DiskMoved {
     DiskMoved {
         n,
         read,
         write,
-        idle_ms,
+        requests,
+        busy_ms,
         queue,
     }
 }
@@ -209,24 +211,27 @@ fn dm(n: u32, read: u64, write: u64, idle_ms: u64, queue: u32) -> DiskMoved {
 fn each_disk_in_both_samples_shows_its_bytes_between_and_its_queue_now() {
     let mut before = sample(0, vec![], vec![]);
     before.disks = vec![
-        disk(0, 100, 5_000, 1_000_000, 7),
-        disk(1, 9_000, 9_000, 5_000_000, 0),
+        disk(0, 100, 5_000, 10, 1_000_000, 7),
+        disk(1, 9_000, 9_000, 50, 5_000_000, 0),
     ];
     let mut now = sample(1000, vec![], vec![]);
     now.disks = vec![
-        disk(0, 3_145_828, 6_536, 8_500_000, 3),
-        disk(1, 8_000, 9_000, 2_000_000, 0),
-        disk(2, 1 << 30, 0, 0, 1),
+        disk(0, 3_145_828, 6_536, 52, 8_500_000, 3),
+        disk(1, 8_000, 9_000, 50, 2_000_000, 0),
+        disk(2, 1 << 30, 0, 1, 0, 1),
     ];
     let moved = disk_moved(&before, &now);
     assert_eq!(
         moved,
-        vec![dm(0, 3_145_728, 1_536, 750, 3), dm(1, 8_000, 0, 200, 0)],
-        "disk 2 is new and left out; disk 1's read and idle went back (a reset): their values since"
+        vec![
+            dm(0, 3_145_728, 1_536, 42, 750, 3),
+            dm(1, 8_000, 0, 0, 200, 0)
+        ],
+        "disk 2 is new and left out; disk 1's read and busy time went back (a reset): their values since"
     );
     assert_eq!(
         list_disks(&moved),
-        "0:r3072KiB/w1KiB/i750ms/q3, 1:r7KiB/w0KiB/i200ms/q0"
+        "0:r3072KiB/w1KiB/n42/t750ms/q3, 1:r7KiB/w0KiB/n0/t200ms/q0"
     );
     assert_eq!(list_disks(&[]), "");
     assert!(disk_moved(&sample(0, vec![], vec![]), &now).is_empty());
