@@ -300,6 +300,29 @@ fn a_jump_in_the_media_position_starts_the_channel_again() {
 }
 
 #[test]
+fn the_two_windows_cover_exactly_the_samples_they_say() {
+    // An impulse at sample 0 gives e = 1, 4, 6, 4, 1 at samples 0 to 4 and
+    // zeros after. The later window is the newest 256 samples, the earlier
+    // one 526 to 271 samples back: each takes the five values in at its
+    // near edge and lets them go at its far edge, one sample at a time.
+    let mut c = Channel::new(0);
+    let out = ProgramEvents::default();
+    let (mut later, mut earlier) = (Vec::new(), Vec::new());
+    for i in 0..=531u64 {
+        c.feed(if i == 0 { 1.0 } else { 0.0 }, i, &out, 0);
+        later.push(c.later);
+        earlier.push(c.earlier);
+    }
+    let at = |v: &[f64], from: usize| v[from..from + 6].to_vec();
+    assert_eq!(at(&later, 0), vec![1.0, 5.0, 11.0, 15.0, 16.0, 16.0]);
+    assert_eq!(at(&later, 254), vec![16.0, 16.0, 15.0, 11.0, 5.0, 1.0]);
+    assert_eq!(later[260], 0.0);
+    assert_eq!(at(&earlier, 270), vec![0.0, 1.0, 5.0, 11.0, 15.0, 16.0]);
+    assert_eq!(at(&earlier, 525), vec![16.0, 16.0, 15.0, 11.0, 5.0, 1.0]);
+    assert_eq!(earlier[531], 0.0);
+}
+
+#[test]
 fn the_fourth_difference_passes_a_step_as_1_3_3_1() {
     let mut before = [0.0; 4];
     let mut got = Vec::new();
