@@ -33,7 +33,7 @@ paths:
   enough to fit; the program channel's one says digital silence). A silent
   channel logs `nothing checked` at its first silent window and then every
   10 min (the 61st, 121st ... window in a row), with `silent_s` = the silent
-  windows in a row x 10 (`silence.rs`); a window that checked something logs
+  windows in a row x 10 (`miss_watch/silence.rs`, portable so the mutation gate runs it: `run` is Windows-only); a window that checked something logs
   its summary as always and restarts the count, so no line for 10 min is
   not a missing line. WARN `a watched test tone is blind to a repeated or
   skipped host block` beside it: the tone's frequency is wrong, see below.

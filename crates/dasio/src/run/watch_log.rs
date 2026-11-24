@@ -6,11 +6,8 @@
 
 use tracing::{info, warn};
 
-mod silence;
-
-use silence::Silence;
-
 use crate::miss_watch::program::{self, Tracker};
+use crate::miss_watch::silence::Silence;
 use crate::miss_watch::{self, Break, ProgramJump, Setup, ToneBreak, tone};
 
 /// The watch of the instance folder `dir` (its watch.toml) against the

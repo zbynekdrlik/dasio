@@ -11,13 +11,13 @@ const EVERY: u32 = 60;
 const WINDOW_S: u32 = 10;
 
 /// Whether the `n`-th silent window in a row (1-based) is logged: 1, 61, 121, ...
-pub(super) fn silent_due(n: u32) -> bool {
+pub fn silent_due(n: u32) -> bool {
     n % EVERY == 1
 }
 
 /// Each channel's count of silent windows in a row.
 #[derive(Default)]
-pub(super) struct Silence {
+pub struct Silence {
     runs: Vec<u32>,
 }
 
@@ -25,7 +25,7 @@ impl Silence {
     /// One channel's window ended: `checked` = it judged something. Returns
     /// the seconds the channel has been silent when its `nothing checked`
     /// line is due, else `None`. A checked window restarts the count.
-    pub(super) fn note(&mut self, channel: usize, checked: bool) -> Option<u32> {
+    pub fn note(&mut self, channel: usize, checked: bool) -> Option<u32> {
         if self.runs.len() <= channel {
             self.runs.resize(channel + 1, 0);
         }

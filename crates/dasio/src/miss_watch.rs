@@ -40,6 +40,7 @@
 //! table: dstack's dtray refuses keys it does not know there.
 
 pub mod program;
+pub mod silence;
 pub mod tone;
 
 use std::marker::PhantomData;
