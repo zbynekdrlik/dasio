@@ -211,7 +211,8 @@ fn close(h: HANDLE) {
 }
 
 /// Disk `n`'s bytes so far and its queue, read through a handle opened
-/// and closed here; `None` when the disk is gone or the call fails.
+/// and closed here; `None` when the disk is gone, the call fails or it
+/// returns less than a whole DISK_PERFORMANCE.
 fn disk_of(n: u32) -> Option<Disk> {
     let h = open_disk(n)?;
     let mut p = DISK_PERFORMANCE::default();
@@ -231,14 +232,13 @@ fn disk_of(n: u32) -> Option<Disk> {
         )
     } != 0;
     close(h);
-    ok.then(|| Disk {
+    let full = got as usize >= std::mem::size_of::<DISK_PERFORMANCE>();
+    (ok && full).then(|| Disk {
         n,
         read: u64::try_from(p.BytesRead).unwrap_or(0),
         write: u64::try_from(p.BytesWritten).unwrap_or(0),
-        requests: u64::from(p.ReadCount) + u64::from(p.WriteCount),
-        busy_100ns: u64::try_from(p.ReadTime)
-            .unwrap_or(0)
-            .saturating_add(u64::try_from(p.WriteTime).unwrap_or(0)),
+        reads: p.ReadCount,
+        writes: p.WriteCount,
         queue: p.QueueDepth,
     })
 }

@@ -69,6 +69,7 @@ fn the_processes_are_ranked_by_the_bytes_they_moved_between_the_samples() {
             pio(40, "System", 0, 100),
             pio(50, "tiny.exe", 0, 0),
             pio(60, "kib.exe", 0, 0),
+            pio(80, "rkib.exe", 0, 0),
         ],
         vec![],
     );
@@ -81,7 +82,8 @@ fn the_processes_are_ranked_by_the_bytes_they_moved_between_the_samples() {
             pio(30, "idle.exe", 7, 7),
             pio(40, "System", 0, 3_100),
             pio(50, "tiny.exe", 1_000, 23),
-            pio(60, "kib.exe", 1_000, 24),
+            pio(60, "kib.exe", 0, 1_024),
+            pio(80, "rkib.exe", 1_024, 0),
         ],
         vec![],
     );
@@ -94,9 +96,10 @@ fn the_processes_are_ranked_by_the_bytes_they_moved_between_the_samples() {
                 ..mv(10, "Ableton Live 12 Suite.exe", 500, 4_000)
             },
             mv(40, "System", 0, 3_000),
-            mv(60, "kib.exe", 1_000, 24),
+            mv(60, "kib.exe", 0, 1_024),
+            mv(80, "rkib.exe", 1_024, 0),
         ],
-        "read plus written, the most first, sockets shown apart; under 1 KiB read plus written is left out"
+        "read plus written, the most first, sockets shown apart; under 1 KiB read and under 1 KiB written is left out"
     );
 }
 
@@ -185,53 +188,57 @@ fn the_io_list_reads_name_id_and_kibibytes_rounded_down() {
     assert_eq!(list_io(&[]), "");
 }
 
-fn disk(n: u32, read: u64, write: u64, requests: u64, busy_100ns: u64, queue: u32) -> Disk {
+fn disk(n: u32, read: u64, write: u64, reads: u32, writes: u32, queue: u32) -> Disk {
     Disk {
         n,
         read,
         write,
-        requests,
-        busy_100ns,
+        reads,
+        writes,
         queue,
     }
 }
 
-fn dm(n: u32, read: u64, write: u64, requests: u64, busy_ms: u64, queue: u32) -> DiskMoved {
+fn dm(n: u32, read: u64, write: u64, requests: u64, queue: u32) -> DiskMoved {
     DiskMoved {
         n,
         read,
         write,
         requests,
-        busy_ms,
         queue,
     }
 }
 
 #[test]
-fn each_disk_in_both_samples_shows_its_bytes_between_and_its_queue_now() {
+fn each_disk_in_both_samples_shows_its_bytes_and_requests_between_and_its_queue_now() {
     let mut before = sample(0, vec![], vec![]);
     before.disks = vec![
-        disk(0, 100, 5_000, 10, 1_000_000, 7),
-        disk(1, 9_000, 9_000, 50, 5_000_000, 0),
+        disk(0, 100, 5_000, 10, 4, 7),
+        disk(1, 9_000, 9_000, u32::MAX - 1, 50, 0),
+        disk(3, 500, 500, 0, 0, 0),
+        disk(4, 7, 7, 1, 1, 0),
     ];
     let mut now = sample(1000, vec![], vec![]);
     now.disks = vec![
-        disk(0, 3_145_828, 6_536, 52, 8_500_000, 3),
-        disk(1, 8_000, 9_000, 50, 2_000_000, 0),
-        disk(2, 1 << 30, 0, 1, 0, 1),
+        disk(0, 3_145_828, 6_536, 40, 16, 3),
+        disk(1, 9_500, 9_000, 3, 52, 0),
+        disk(2, 1 << 30, 0, 1, 1, 1),
+        disk(3, 400, 500, 0, 0, 0),
+        disk(4, 7, 7, 1, 1, 0),
     ];
     let moved = disk_moved(&before, &now);
     assert_eq!(
         moved,
         vec![
-            dm(0, 3_145_728, 1_536, 42, 750, 3),
-            dm(1, 8_000, 0, 0, 200, 0)
+            dm(0, 3_145_728, 1_536, 42, 3),
+            dm(1, 500, 0, 7, 0),
+            dm(4, 0, 0, 0, 0),
         ],
-        "disk 2 is new and left out; disk 1's read and busy time went back (a reset): their values since"
+        "disk 1's read count wrapped (5 reads + 2 writes); disk 2 is new and disk 3 reset, both left out"
     );
     assert_eq!(
         list_disks(&moved),
-        "0:r3072KiB/w1KiB/n42/t750ms/q3, 1:r7KiB/w0KiB/n0/t200ms/q0"
+        "0:r3072KiB/w1KiB/n42/q3, 1:r0KiB/w0KiB/n7/q0, 4:r0KiB/w0KiB/n0/q0"
     );
     assert_eq!(list_disks(&[]), "");
     assert!(disk_moved(&sample(0, vec![], vec![]), &now).is_empty());

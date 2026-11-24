@@ -43,11 +43,10 @@ pub struct Disk {
     pub n: u32,
     pub read: u64,
     pub write: u64,
-    /// Reads plus writes completed so far.
-    pub requests: u64,
-    /// The time those requests took, summed, 100 ns units (`ReadTime` plus
-    /// `WriteTime`, booked as each completes).
-    pub busy_100ns: u64,
+    /// Reads completed so far (Windows' 32-bit count, it wraps).
+    pub reads: u32,
+    /// Writes completed so far (32-bit, wraps).
+    pub writes: u32,
     /// The requests in flight when read.
     pub queue: u32,
 }
@@ -185,14 +184,14 @@ impl Moved {
 /// The processes listed by their IO in a burst's line.
 pub const TOP_IO: usize = 8;
 
-/// The fewest bytes a process must move to be listed: the line prints KiB,
-/// so less would read `r0KiB/w0KiB`.
+/// The fewest bytes a process must read or write to be listed: the line
+/// prints KiB, so less would read `r0KiB/w0KiB`.
 pub const MOVED_AT_LEAST: u64 = 1024;
 
 /// The processes that read plus wrote the most bytes from `before` to
-/// `now`, the most first (ties by id), at most `n`, none that read plus
-/// wrote less than [`MOVED_AT_LEAST`] (a socket-only process is not a disk
-/// suspect). The same process is the same id and name, as in [`ranked`].
+/// `now`, the most first (ties by id), at most `n`, none that read and
+/// wrote less than [`MOVED_AT_LEAST`] each (a socket-only process is not a
+/// disk suspect). The same process is the same id and name, as in [`ranked`].
 /// Unlike CPU, only a process with readable counters in both samples
 /// counts: a new one (the gatherer opens new processes only every 10 s)
 /// or one whose counters Windows refused once would show its lifetime
@@ -216,7 +215,7 @@ pub fn top_io(before: &Sample, now: &Sample, n: usize) -> Vec<Moved> {
                 other: is.other.saturating_sub(was.other),
             })
         })
-        .filter(|m| m.total() >= MOVED_AT_LEAST)
+        .filter(|m| m.read >= MOVED_AT_LEAST || m.write >= MOVED_AT_LEAST)
         .collect();
     out.sort_by(|a, b| b.total().cmp(&a.total()).then(a.id.cmp(&b.id)));
     out.truncate(n);
@@ -231,55 +230,45 @@ pub struct DiskMoved {
     pub write: u64,
     /// Reads plus writes that completed in the span.
     pub requests: u64,
-    /// The time those requests took, summed, ms: more than the span when
-    /// they overlapped. This shows the disk pressure that a queue read
-    /// after the stall cannot. (Not `IdleTime`: Windows books an idle stretch
-    /// only when the next request starts, so it lands in the wrong span.)
-    pub busy_ms: u64,
     /// The requests in flight at `now`, the burst's sample, so after the
     /// stall.
     pub queue: u32,
 }
 
 /// What each disk in both samples did between them, by disk number. A
-/// disk only in `now` is left out; a counter that went back was reset
-/// within the span (diskperf, a driver reset), so its value now is what it
-/// moved since.
+/// disk only in `now` is left out, and so is one whose byte counters went
+/// back (reset within the span: diskperf, a driver reset, another disk
+/// under the same number), since no delta of it is true. The 32-bit
+/// request counts are taken modulo 2^32, so their wrap is no reset.
 pub fn disk_moved(before: &Sample, now: &Sample) -> Vec<DiskMoved> {
     now.disks
         .iter()
         .filter_map(|d| {
             let was = before.disks.iter().find(|b| b.n == d.n)?;
-            Some(DiskMoved {
+            (d.read >= was.read && d.write >= was.write).then(|| DiskMoved {
                 n: d.n,
-                read: since(was.read, d.read),
-                write: since(was.write, d.write),
-                requests: since(was.requests, d.requests),
-                busy_ms: since(was.busy_100ns, d.busy_100ns) / 10_000,
+                read: d.read - was.read,
+                write: d.write - was.write,
+                requests: u64::from(d.reads.wrapping_sub(was.reads))
+                    + u64::from(d.writes.wrapping_sub(was.writes)),
                 queue: d.queue,
             })
         })
         .collect()
 }
 
-/// What a counter moved from `was` to `now`; all of `now` after a reset.
-fn since(was: u64, now: u64) -> u64 {
-    if now >= was { now - was } else { now }
-}
-
-/// `disks` as `<n>:r<KiB>/w<KiB>/n<requests>/t<busy ms>/q<depth>`, comma
-/// separated, KiB rounded down.
+/// `disks` as `<n>:r<KiB>/w<KiB>/n<requests>/q<depth>`, comma separated,
+/// KiB rounded down.
 pub fn list_disks(disks: &[DiskMoved]) -> String {
     disks
         .iter()
         .map(|d| {
             format!(
-                "{}:r{}KiB/w{}KiB/n{}/t{}ms/q{}",
+                "{}:r{}KiB/w{}KiB/n{}/q{}",
                 d.n,
                 d.read / 1024,
                 d.write / 1024,
                 d.requests,
-                d.busy_ms,
                 d.queue
             )
         })
