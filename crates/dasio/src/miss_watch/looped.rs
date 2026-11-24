@@ -37,8 +37,7 @@ use super::{Ring, Slot, TOLERANCE};
 pub const LAGS: [usize; 3] = [1, 2, 4];
 /// A loop's run has at least one sample in this many that differs from the
 /// sample before it. Silence with two stray 24-bit steps one lag apart
-/// repeats sample for sample too, with two changes in the whole run; a
-/// -100 dBFS 20 Hz sine still changes in one sample of nine.
+/// repeats sample for sample too, with two changes in the whole run.
 pub const VARY: u64 = 16;
 
 /// One loop on one program channel.
