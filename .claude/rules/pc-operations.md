@@ -201,3 +201,8 @@ Owner rules from dasio#1. They hold for every change on a PC running dasio.
   see late packets for ~2 min while the clock converges (mbc 19.11:
   stream-obs clean from 01:00:45Z, 2 min after the flow started). Fixes
   pending: dstack#431 (the in-process follower retries), dsync's own.
+- **netaudio's `subscription add` cannot query the Yamaha card** ("TX
+  channel ... not found", by number and by label, 23.11 and 24.11.2026).
+  Subscribe our own receiver with `/opt/pipx/venvs/netaudio/bin/python
+  scripts/dante_sub_rx.py <rx-device> <n>=<channel>@<device>` (`<n>=-`
+  clears), then verify in dcontroller `/api/devices` and by signal.
