@@ -43,6 +43,7 @@ fn cfg(channels: usize) -> Config {
         block: 128,
         rx: vec![],
         tone: (0..channels).map(|i| (i, format!("free {i}"))).collect(),
+        program: vec![],
     }
 }
 

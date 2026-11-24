@@ -1,11 +1,13 @@
 //! The device loop's log of the output watch (dasio#207): the Windows glue
 //! over the portable `crate::miss_watch`. Its start line, each break (the
 //! zero and repeat breaks grouped over channels, each tone break on its
-//! own) and every 10 s each tone channel's figures.
+//! own, the program splices grouped over channels) and every 10 s each
+//! tone and program channel's figures.
 
 use tracing::{info, warn};
 
-use crate::miss_watch::{self, Break, Setup, ToneBreak, tone};
+use crate::miss_watch::program::{self, Tracker};
+use crate::miss_watch::{self, Break, ProgramJump, Setup, ToneBreak, tone};
 
 /// The watch of the instance folder `dir` (its watch.toml) against the
 /// device's RX channel names, its start logged. A config that does not read
@@ -18,6 +20,7 @@ pub(super) fn start(dir: &std::path::Path, device_rx: &[String]) -> Option<Setup
                 block = c.block,
                 rx = %names(&c.rx),
                 tone = %names(&c.tone),
+                program = %names(&c.program),
                 "watching received outputs for an ASIO host's missed buffers (dasio#207)"
             );
             Some(Setup::new(c))
@@ -44,6 +47,9 @@ pub(super) struct Reader {
     breaks: Vec<Break>,
     tone_tail: u64,
     tone_breaks: Vec<ToneBreak>,
+    program_tail: u64,
+    program_jumps: Vec<ProgramJump>,
+    program_lines: Tracker,
 }
 
 /// A dB figure for the log: to a tenth.
@@ -74,7 +80,18 @@ impl Reader {
                 "the tone check lost breaks: more than its ring holds in 100 ms (dasio#207)"
             );
         }
-        if self.breaks.is_empty() && self.tone_breaks.is_empty() {
+        self.program_jumps.clear();
+        let lost = w
+            .programs
+            .events
+            .drain(&mut self.program_tail, &mut self.program_jumps);
+        if lost > 0 {
+            warn!(
+                lost,
+                "the program check lost events: more than its ring holds in 100 ms (dasio#207)"
+            );
+        }
+        if self.breaks.is_empty() && self.tone_breaks.is_empty() && self.program_jumps.is_empty() {
             return;
         }
         let now = now();
@@ -103,11 +120,27 @@ impl Reader {
                  against the tone), level = its level stepped (db: the step) (dasio#207)"
             );
         }
+        for l in self.program_lines.lines(&self.program_jumps, w.cfg.block) {
+            warn!(
+                watch = %w.cfg.name,
+                channels = %miss_watch::program_names(&l.channels, &w.cfg),
+                at = l.at,
+                db = tenth_db(l.ratio),
+                since_prev = l.since_prev,
+                rem = l.rem,
+                ago_ms = now.map(|n| miss_watch::age_ms(l.at, n, rate)),
+                "a watched program output jumped: a step in the audio, db = its peak over the \
+                 quiet around it, rem = the distance to the channel's previous jump modulo the \
+                 host block (0 = a whole number of blocks, like the host's misses) (dasio#207)"
+            );
+        }
     }
 }
 
-/// Each tone channel's figures since the last summary (every 10 s), logged.
+/// Each tone and program channel's figures since the last summary (every
+/// 10 s), logged.
 pub(super) fn summary(w: &Setup, rate: u32) {
+    program_summary(w);
     for (i, (_, name)) in w.cfg.tone.iter().enumerate() {
         let s = w.tones.take(i);
         if s.checked == 0 {
@@ -146,5 +179,30 @@ pub(super) fn summary(w: &Setup, rate: u32) {
                  (dasio#207)"
             );
         }
+    }
+}
+
+/// Each program channel's figures since the last summary (every 10 s).
+fn program_summary(w: &Setup) {
+    for (i, (_, name)) in w.cfg.program.iter().enumerate() {
+        let s = w.programs.take(i);
+        if s.checked == 0 {
+            info!(
+                watch = %w.cfg.name,
+                channel = %name,
+                "a watched program output: nothing checked in the last 10 s (digital silence) \
+                 (dasio#207)"
+            );
+            continue;
+        }
+        info!(
+            watch = %w.cfg.name,
+            channel = %name,
+            checked = s.checked,
+            jumps = s.jumps,
+            worst_db = (s.worst > 0.0).then(|| tenth_db(s.worst)),
+            floor_dbfs = (program::floor_dbfs(&s) * 10.0).round() / 10.0,
+            "a watched program output over the last 10 s (dasio#207)"
+        );
     }
 }
