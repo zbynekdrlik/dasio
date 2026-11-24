@@ -6,9 +6,12 @@
 //! back and so covers the stall. No kernel tracing: a standing ETW session
 //! lengthened band Live's callbacks on FOH (+50–150 % over-period callbacks,
 //! dasio#22, 10.11.2026). The same sample carries each process's bytes read
-//! and written, so a burst also names who moved data in that span (the
-//! owner's "bursty disk work", dasio#22, 24.11.2026). The diff, the ranking
-//! and the line are pure, so tested everywhere.
+//! and written and each physical disk's, so a burst also says how much the
+//! disks moved in that span and which processes moved data (the owner's
+//! "bursty disk work", dasio#22, 24.11.2026). A process's count includes
+//! its network and device IO (band Live streams to AudioGridder over TCP),
+//! the disks' count is only the disks'. The diffs, the rankings and the
+//! line are pure, so tested everywhere.
 
 /// One process's CPU time and IO so far.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +33,17 @@ pub struct Io {
     pub write: u64,
 }
 
+/// One physical disk's counters so far (`IOCTL_DISK_PERFORMANCE`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Disk {
+    /// Its number, `\\.\PhysicalDrive<n>`.
+    pub n: u32,
+    pub read: u64,
+    pub write: u64,
+    /// The requests in flight when read.
+    pub queue: u32,
+}
+
 /// One of this process's threads and its CPU time so far.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Thread {
@@ -49,6 +63,8 @@ pub struct Sample {
     /// The threads of the DAW that has the instance's buffers (empty
     /// without one, or with a driver before 0.1.52, which does not say).
     pub daw: Vec<Thread>,
+    /// The physical disks (empty where they cannot be read).
+    pub disks: Vec<Disk>,
 }
 
 /// What one process or thread spent between two samples, µs.
@@ -158,9 +174,13 @@ impl Moved {
 /// The processes listed by their IO in a burst's line.
 pub const TOP_IO: usize = 6;
 
+/// The fewest bytes a process must move to be listed: the line prints KiB,
+/// so less would read `r0KiB/w0KiB`.
+pub const MOVED_AT_LEAST: u64 = 1024;
+
 /// The processes that read plus wrote the most bytes from `before` to
-/// `now`, the most first (ties by id), at most `n`, none that moved
-/// nothing. The same process is the same id and name, as in [`ranked`].
+/// `now`, the most first (ties by id), at most `n`, none that moved less
+/// than [`MOVED_AT_LEAST`]. The same process is the same id and name, as in [`ranked`].
 /// Unlike CPU, only a process with readable counters in both samples
 /// counts: a new one (the gatherer opens new processes only every 10 s)
 /// or one whose counters Windows refused once would show its lifetime
@@ -183,11 +203,47 @@ pub fn top_io(before: &Sample, now: &Sample, n: usize) -> Vec<Moved> {
                 write: is.write.saturating_sub(was.write),
             })
         })
-        .filter(|m| m.total() > 0)
+        .filter(|m| m.total() >= MOVED_AT_LEAST)
         .collect();
     out.sort_by(|a, b| b.total().cmp(&a.total()).then(a.id.cmp(&b.id)));
     out.truncate(n);
     out
+}
+
+/// What each disk in both samples read and wrote between them, with its
+/// queue depth at `now`, by disk number. A disk only in `now` is left out;
+/// a counter that went back (a reset) moved nothing.
+pub fn disk_moved(before: &Sample, now: &Sample) -> Vec<Disk> {
+    now.disks
+        .iter()
+        .filter_map(|d| {
+            let was = before.disks.iter().find(|b| b.n == d.n)?;
+            Some(Disk {
+                n: d.n,
+                read: d.read.saturating_sub(was.read),
+                write: d.write.saturating_sub(was.write),
+                queue: d.queue,
+            })
+        })
+        .collect()
+}
+
+/// `disks` as `<n>:r<KiB>/w<KiB>/q<depth>`, comma separated, KiB rounded
+/// down.
+pub fn list_disks(disks: &[Disk]) -> String {
+    disks
+        .iter()
+        .map(|d| {
+            format!(
+                "{}:r{}KiB/w{}KiB/q{}",
+                d.n,
+                d.read / 1024,
+                d.write / 1024,
+                d.queue
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// `moved` as `name(id)=r<KiB>/w<KiB>`, comma separated, KiB rounded

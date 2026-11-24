@@ -1,6 +1,7 @@
 //! The Windows gatherer of [`super::Sample`]: every process's CPU time and
 //! IO bytes (Toolhelp's process list, `GetProcessTimes` and
-//! `GetProcessIoCounters` on a limited-query handle)
+//! `GetProcessIoCounters` on a limited-query handle), every physical disk's
+//! bytes and queue (`IOCTL_DISK_PERFORMANCE` on a no-access handle)
 //! and this process's threads' (Toolhelp's thread list, `GetThreadTimes`,
 //! `GetThreadDescription`). Documented calls only; a process or thread
 //! that cannot be opened (protected, or gone meanwhile) is left out.
@@ -8,17 +9,22 @@
 use windows_sys::Win32::Foundation::{
     CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
 };
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
     TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
 };
+use windows_sys::Win32::System::IO::DeviceIoControl;
+use windows_sys::Win32::System::Ioctl::{DISK_PERFORMANCE, IOCTL_DISK_PERFORMANCE};
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcessId, GetProcessIoCounters, GetProcessTimes, GetThreadDescription,
     GetThreadTimes, IO_COUNTERS, OpenProcess, OpenThread, PROCESS_QUERY_LIMITED_INFORMATION,
     THREAD_QUERY_LIMITED_INFORMATION,
 };
 
-use super::{Io, Proc, Sample, Thread};
+use super::{Disk, Io, Proc, Sample, Thread};
 
 /// Kernel plus user time of two FILETIMEs, 100 ns units.
 fn cpu(kernel: &FILETIME, user: &FILETIME) -> u64 {
@@ -82,6 +88,8 @@ pub struct Gatherer {
     procs: Vec<Open>,
     threads: Vec<Open>,
     daw: Vec<Open>,
+    /// The physical disks, opened once (their number and handle).
+    disks: Vec<(u32, HANDLE)>,
     /// The DAW's process id (0: none): the driver's word in the shared
     /// directory, read at each refresh.
     host_pid: Box<dyn Fn() -> u32 + Send>,
@@ -98,6 +106,7 @@ impl Gatherer {
             procs: Vec::new(),
             threads: Vec::new(),
             daw: Vec::new(),
+            disks: open_disks(),
             host_pid: Box::new(host_pid),
             refreshed: None,
             refresh_us: 0,
@@ -160,8 +169,69 @@ impl Gatherer {
                 .collect(),
             threads: thread_times(&self.threads),
             daw: thread_times(&self.daw),
+            disks: self
+                .disks
+                .iter()
+                .filter_map(|&(n, h)| disk_of(n, h))
+                .collect(),
         }
     }
+}
+
+/// The most physical disks looked for (`\\.\PhysicalDrive0` up).
+const MAX_DISKS: u32 = 16;
+
+/// Every physical disk that opens with no access rights, which is all
+/// `IOCTL_DISK_PERFORMANCE` needs (FILE_ANY_ACCESS).
+fn open_disks() -> Vec<(u32, HANDLE)> {
+    (0..MAX_DISKS)
+        .filter_map(|n| {
+            let path: Vec<u16> = format!("\\\\.\\PhysicalDrive{n}")
+                .encode_utf16()
+                .chain([0])
+                .collect();
+            // SAFETY: a NUL-terminated path; a query-only handle, closed in
+            // Drop.
+            let h = unsafe {
+                CreateFileW(
+                    path.as_ptr(),
+                    0,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    std::ptr::null(),
+                    OPEN_EXISTING,
+                    0,
+                    std::ptr::null_mut(),
+                )
+            };
+            (h != INVALID_HANDLE_VALUE).then_some((n, h))
+        })
+        .collect()
+}
+
+/// Disk `n`'s bytes so far and its queue, `None` when the call fails.
+fn disk_of(n: u32, h: HANDLE) -> Option<Disk> {
+    let mut p = DISK_PERFORMANCE::default();
+    let mut got = 0u32;
+    // SAFETY: an open disk handle and a writable DISK_PERFORMANCE of the
+    // size passed.
+    let ok = unsafe {
+        DeviceIoControl(
+            h,
+            IOCTL_DISK_PERFORMANCE,
+            std::ptr::null(),
+            0,
+            (&raw mut p).cast(),
+            std::mem::size_of::<DISK_PERFORMANCE>() as u32,
+            &mut got,
+            std::ptr::null_mut(),
+        )
+    } != 0;
+    ok.then(|| Disk {
+        n,
+        read: u64::try_from(p.BytesRead).unwrap_or(0),
+        write: u64::try_from(p.BytesWritten).unwrap_or(0),
+        queue: p.QueueDepth,
+    })
 }
 
 /// Bytes read and written so far by the process behind `h` (the same
@@ -203,6 +273,10 @@ impl Drop for Gatherer {
         {
             // SAFETY: opened by `refresh`, closed once here.
             unsafe { CloseHandle(o.h) };
+        }
+        for (_, h) in self.disks.drain(..) {
+            // SAFETY: opened by `open_disks`, closed once here.
+            unsafe { CloseHandle(h) };
         }
     }
 }
@@ -339,6 +413,7 @@ fn run(start: std::time::Instant, gatherer: Gatherer, rx: &std::sync::mpsc::Rece
     let (mut prev, us) = cost.take(ms());
     tracing::info!(
         procs = prev.procs.len(),
+        disks = prev.disks.len(),
         threads = prev.threads.len(),
         daw_threads = prev.daw.len(),
         sample_us = us,
@@ -356,9 +431,11 @@ fn run(start: std::time::Instant, gatherer: Gatherer, rx: &std::sync::mpsc::Rece
                 let threads = super::top_threads(&prev, &now, super::TOP_THREADS);
                 let daw = super::top_daw_threads(&prev, &now, super::TOP_DAW_THREADS);
                 let io = super::top_io(&prev, &now, super::TOP_IO);
+                let disks = super::disk_moved(&prev, &now);
                 tracing::warn!(
                     span_ms = now.at_ms.saturating_sub(prev.at_ms),
                     procs = %super::list(&procs),
+                    disks = %super::list_disks(&disks),
                     io = %super::list_io(&io),
                     dasio_threads = %super::list(&threads),
                     daw_threads = %super::list(&daw),
@@ -380,6 +457,8 @@ fn run(start: std::time::Instant, gatherer: Gatherer, rx: &std::sync::mpsc::Rece
                 max_us = cost.max_us,
                 last_refresh_us = cost.gatherer.refresh_us,
                 procs = prev.procs.len(),
+                io_refused = prev.procs.iter().filter(|p| p.io.is_none()).count(),
+                disks = prev.disks.len(),
                 threads = prev.threads.len(),
                 daw_threads = prev.daw.len(),
                 "CPU samples' own cost in the last 10 min"
