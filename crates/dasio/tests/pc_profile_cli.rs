@@ -269,13 +269,43 @@ const ROOT: &str = r"HTREE\ROOT\0";
 /// The trimmed, non-empty lines PowerShell prints for `cmd` (its error
 /// output goes to the test's log: a read that skips a device it cannot
 /// read still exits 1, so the callers judge the lines).
+/// How long a test's PowerShell script may run. They take a few seconds; on
+/// 24.11.2026 a `Get-PnpDevice` enumeration never returned, the job ran to
+/// its 40 min timeout and the text of another test's failure was lost with
+/// it (run 45380980643, dasio#28).
+const PS_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// A PowerShell `cmd`'s output lines, trimmed, none empty. A script still
+/// running after [`PS_LIMIT`] is killed and fails the test, named.
 fn ps(cmd: &str) -> Vec<String> {
-    let out = Command::new("powershell")
+    use std::io::Read;
+    let mut child = Command::new("powershell")
         .args(["-NoProfile", "-Command", cmd])
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .unwrap();
-    eprintln!("{cmd}: {}", String::from_utf8_lossy(&out.stderr));
-    String::from_utf8_lossy(&out.stdout)
+    // Both pipes are read while the script runs: a full pipe would block it.
+    fn read(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = pipe.read_to_end(&mut bytes);
+            bytes
+        })
+    }
+    let out = read(child.stdout.take().unwrap());
+    let err = read(child.stderr.take().unwrap());
+    let started = std::time::Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        if started.elapsed() > PS_LIMIT {
+            let _ = child.kill();
+            panic!("PowerShell still ran after {} s: {cmd}", PS_LIMIT.as_secs());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let (out, err) = (out.join().unwrap(), err.join().unwrap());
+    eprintln!("{cmd}: {}", String::from_utf8_lossy(&err));
+    String::from_utf8_lossy(&out)
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
@@ -653,17 +683,54 @@ fn check_refuses_a_network_adapter_and_a_device_the_dante_nic_hangs_on() {
 /// affinity 0xF -> 0x1" where none was expected).
 static PING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// A waiting ping of this test's own, started once no other `ping.exe` is
+/// listed. The keeper and the check find a process by its exe name, the
+/// first in Windows' list: a ping the test before killed a few ms ago can
+/// still be listed (a process stays until its last handle closes), and the
+/// read then meets that dead one. On 24.11.2026 the second keeper test
+/// failed 8 ms after the first ended (run 45380980643, dasio#28).
+fn waiting_ping() -> std::process::Child {
+    let listed = || {
+        let out = Command::new("tasklist")
+            .args(["/FI", "IMAGENAME eq ping.exe", "/FO", "CSV", "/NH"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| l.to_ascii_lowercase().starts_with("\"ping.exe\""))
+            .map(String::from)
+            .collect::<Vec<_>>()
+    };
+    let started = std::time::Instant::now();
+    loop {
+        let left = listed();
+        if left.is_empty() {
+            break;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "another ping.exe still runs: {left:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    eprintln!(
+        "no other ping.exe after {} ms",
+        started.elapsed().as_millis()
+    );
+    Command::new("ping")
+        .args(["-n", "60", "127.0.0.1"])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap()
+}
+
 #[test]
 fn the_keeper_gives_a_running_process_its_entry_s_priority_and_affinity() {
     // dasio#185: one pass of `dasio pc-profile keep` over a real process
     // of the runner (a waiting ping, started here), read back.
     let _one_ping = PING.lock().unwrap_or_else(|e| e.into_inner());
     use dasio::pc_profile::{Reader, keep::Fights, parse, windows::Pc, windows::keep::pass};
-    let mut child = Command::new("ping")
-        .args(["-n", "60", "127.0.0.1"])
-        .stdout(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut child = waiting_ping();
     let p = parse(
         "name = \"ci\"\n[[process]]\nexe = \"ping.exe\"\naffinity = \"0x1\"\npriority = \"below normal\"\n",
     )
@@ -773,11 +840,7 @@ fn the_keeper_gives_a_running_process_its_io_memory_and_gpu_priority_and_boost()
         Extras, GPU_PRIORITIES, Reader, check, keep::Fights, parse, windows::Pc,
         windows::keep::pass,
     };
-    let mut child = Command::new("ping")
-        .args(["-n", "60", "127.0.0.1"])
-        .stdout(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut child = waiting_ping();
     let entry = |io: &str, memory: &str, gpu: &str, boost: bool| {
         parse(&format!(
             "name = \"ci\"\n[[process]]\nexe = \"ping.exe\"\nio_priority = \"{io}\"\nmemory_priority = \"{memory}\"\ngpu_priority = \"{gpu}\"\npriority_boost = {boost}\n"
