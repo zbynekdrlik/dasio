@@ -5,7 +5,11 @@ fn p(pid: u32, name: &str, ms: u64) -> Proc {
         pid,
         name: name.into(),
         cpu_100ns: ms * 10_000,
-        io: Some(Io { read: 0, write: 0 }),
+        io: Some(Io {
+            read: 0,
+            write: 0,
+            other: 0,
+        }),
     }
 }
 
@@ -15,7 +19,11 @@ fn pio(pid: u32, name: &str, read: u64, write: u64) -> Proc {
         pid,
         name: name.into(),
         cpu_100ns: 0,
-        io: Some(Io { read, write }),
+        io: Some(Io {
+            read,
+            write,
+            other: 0,
+        }),
     }
 }
 
@@ -35,6 +43,17 @@ fn mv(id: u32, name: &str, read: u64, write: u64) -> Moved {
         name: name.into(),
         read,
         write,
+        other: 0,
+    }
+}
+
+/// A process with socket ("other") bytes too.
+fn pnet(pid: u32, name: &str, read: u64, write: u64, other: u64) -> Proc {
+    Proc {
+        pid,
+        name: name.into(),
+        cpu_100ns: 0,
+        io: Some(Io { read, write, other }),
     }
 }
 
@@ -43,7 +62,8 @@ fn the_processes_are_ranked_by_the_bytes_they_moved_between_the_samples() {
     let before = sample(
         0,
         vec![
-            pio(10, "Ableton Live 12 Suite.exe", 1_000, 5_000),
+            pnet(10, "Ableton Live 12 Suite.exe", 1_000, 5_000, 1_000_000),
+            pnet(70, "sockets.exe", 0, 0, 0),
             pio(20, "Ableton Index.exe", 300, 0),
             pio(30, "idle.exe", 7, 7),
             pio(40, "System", 0, 100),
@@ -55,7 +75,8 @@ fn the_processes_are_ranked_by_the_bytes_they_moved_between_the_samples() {
     let now = sample(
         1000,
         vec![
-            pio(10, "Ableton Live 12 Suite.exe", 1_500, 9_000),
+            pnet(10, "Ableton Live 12 Suite.exe", 1_500, 9_000, 3_000_000),
+            pnet(70, "sockets.exe", 0, 0, 9_000_000),
             pio(20, "Ableton Index.exe", 6_300, 0),
             pio(30, "idle.exe", 7, 7),
             pio(40, "System", 0, 3_100),
@@ -68,11 +89,14 @@ fn the_processes_are_ranked_by_the_bytes_they_moved_between_the_samples() {
         top_io(&before, &now, 6),
         vec![
             mv(20, "Ableton Index.exe", 6_000, 0),
-            mv(10, "Ableton Live 12 Suite.exe", 500, 4_000),
+            Moved {
+                other: 2_000_000,
+                ..mv(10, "Ableton Live 12 Suite.exe", 500, 4_000)
+            },
             mv(40, "System", 0, 3_000),
             mv(60, "kib.exe", 1_000, 24),
         ],
-        "read plus written, the most first; under 1 KiB in all is left out"
+        "read plus written, the most first, sockets shown apart; under 1 KiB read plus written is left out"
     );
 }
 
@@ -149,20 +173,34 @@ fn the_io_list_reads_name_id_and_kibibytes_rounded_down() {
     let moved = vec![
         mv(780, "Ableton Live 12 Suite.exe", 3_145_728, 1_536),
         mv(4, "", 0, 1_023),
-        mv(9, "x", 2_047, 0),
+        Moved {
+            other: 5_120,
+            ..mv(9, "x", 2_047, 0)
+        },
     ];
     assert_eq!(
         list_io(&moved),
-        "Ableton Live 12 Suite.exe(780)=r3072KiB/w1KiB, ?(4)=r0KiB/w0KiB, x(9)=r1KiB/w0KiB"
+        "Ableton Live 12 Suite.exe(780)=r3072KiB/w1KiB/o0KiB, ?(4)=r0KiB/w0KiB/o0KiB, x(9)=r1KiB/w0KiB/o5KiB"
     );
     assert_eq!(list_io(&[]), "");
 }
 
-fn disk(n: u32, read: u64, write: u64, queue: u32) -> Disk {
+fn disk(n: u32, read: u64, write: u64, idle_100ns: u64, queue: u32) -> Disk {
     Disk {
         n,
         read,
         write,
+        idle_100ns,
+        queue,
+    }
+}
+
+fn dm(n: u32, read: u64, write: u64, idle_ms: u64, queue: u32) -> DiskMoved {
+    DiskMoved {
+        n,
+        read,
+        write,
+        idle_ms,
         queue,
     }
 }
@@ -170,20 +208,26 @@ fn disk(n: u32, read: u64, write: u64, queue: u32) -> Disk {
 #[test]
 fn each_disk_in_both_samples_shows_its_bytes_between_and_its_queue_now() {
     let mut before = sample(0, vec![], vec![]);
-    before.disks = vec![disk(0, 100, 5_000, 7), disk(1, 9_000, 9_000, 0)];
+    before.disks = vec![
+        disk(0, 100, 5_000, 1_000_000, 7),
+        disk(1, 9_000, 9_000, 5_000_000, 0),
+    ];
     let mut now = sample(1000, vec![], vec![]);
     now.disks = vec![
-        disk(0, 3_145_828, 6_536, 3),
-        disk(1, 8_000, 9_000, 0),
-        disk(2, 1 << 30, 0, 1),
+        disk(0, 3_145_828, 6_536, 8_500_000, 3),
+        disk(1, 8_000, 9_000, 2_000_000, 0),
+        disk(2, 1 << 30, 0, 0, 1),
     ];
     let moved = disk_moved(&before, &now);
     assert_eq!(
         moved,
-        vec![disk(0, 3_145_728, 1_536, 3), disk(1, 8_000, 0, 0)],
-        "disk 2 is new and left out; disk 1's read went back (a reset): 8000 since"
+        vec![dm(0, 3_145_728, 1_536, 750, 3), dm(1, 8_000, 0, 200, 0)],
+        "disk 2 is new and left out; disk 1's read and idle went back (a reset): their values since"
     );
-    assert_eq!(list_disks(&moved), "0:r3072KiB/w1KiB/q3, 1:r7KiB/w0KiB/q0");
+    assert_eq!(
+        list_disks(&moved),
+        "0:r3072KiB/w1KiB/i750ms/q3, 1:r7KiB/w0KiB/i200ms/q0"
+    );
     assert_eq!(list_disks(&[]), "");
     assert!(disk_moved(&sample(0, vec![], vec![]), &now).is_empty());
 }

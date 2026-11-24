@@ -235,6 +235,7 @@ fn disk_of(n: u32) -> Option<Disk> {
         n,
         read: u64::try_from(p.BytesRead).unwrap_or(0),
         write: u64::try_from(p.BytesWritten).unwrap_or(0),
+        idle_100ns: u64::try_from(p.IdleTime).unwrap_or(0),
         queue: p.QueueDepth,
     })
 }
@@ -248,6 +249,7 @@ fn io_of(h: HANDLE) -> Option<Io> {
     (unsafe { GetProcessIoCounters(h, &mut io) } != 0).then_some(Io {
         read: io.ReadTransferCount,
         write: io.WriteTransferCount,
+        other: io.OtherTransferCount,
     })
 }
 

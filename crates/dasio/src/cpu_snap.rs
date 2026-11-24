@@ -8,9 +8,10 @@
 //! dasio#22, 10.11.2026). The same sample carries each process's bytes read
 //! and written and each physical disk's, so a burst also says how much the
 //! disks moved in that span and which processes moved data (the owner's
-//! "bursty disk work", dasio#22, 24.11.2026). A process's count includes
-//! its network and device IO (band Live streams to AudioGridder over TCP),
-//! the disks' count is only the disks'. The diffs, the rankings and the
+//! "bursty disk work", dasio#22, 24.11.2026). A process's read/write bytes
+//! are its file and device IO (cached reads included); its sockets (band
+//! Live streams to AudioGridder over TCP) land in "other", shown apart.
+//! The disks' count is only the disks'. The diffs, the rankings and the
 //! line are pure, so tested everywhere.
 
 /// One process's CPU time and IO so far.
@@ -25,12 +26,14 @@ pub struct Proc {
     pub io: Option<Io>,
 }
 
-/// A process's IO so far: every kind Windows counts for it (files,
-/// devices, the network), `IO_COUNTERS.Read/WriteTransferCount`.
+/// A process's IO so far, `IO_COUNTERS`' transfer counts: `read` and
+/// `write` (file and device reads and writes) and `other` (control
+/// calls, where Windows counts socket sends and receives).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Io {
     pub read: u64,
     pub write: u64,
+    pub other: u64,
 }
 
 /// One physical disk's counters so far (`IOCTL_DISK_PERFORMANCE`).
@@ -40,6 +43,8 @@ pub struct Disk {
     pub n: u32,
     pub read: u64,
     pub write: u64,
+    /// Time the disk was idle so far, 100 ns units.
+    pub idle_100ns: u64,
     /// The requests in flight when read.
     pub queue: u32,
 }
@@ -163,9 +168,12 @@ pub struct Moved {
     pub name: String,
     pub read: u64,
     pub write: u64,
+    /// Bytes of other IO (sockets): shown, not ranked.
+    pub other: u64,
 }
 
 impl Moved {
+    /// The bytes a process is ranked by: read plus written.
     fn total(&self) -> u64 {
         self.read.saturating_add(self.write)
     }
@@ -179,8 +187,9 @@ pub const TOP_IO: usize = 8;
 pub const MOVED_AT_LEAST: u64 = 1024;
 
 /// The processes that read plus wrote the most bytes from `before` to
-/// `now`, the most first (ties by id), at most `n`, none that moved less
-/// than [`MOVED_AT_LEAST`]. The same process is the same id and name, as in [`ranked`].
+/// `now`, the most first (ties by id), at most `n`, none that read plus
+/// wrote less than [`MOVED_AT_LEAST`] (a socket-only process is not a disk
+/// suspect). The same process is the same id and name, as in [`ranked`].
 /// Unlike CPU, only a process with readable counters in both samples
 /// counts: a new one (the gatherer opens new processes only every 10 s)
 /// or one whose counters Windows refused once would show its lifetime
@@ -201,6 +210,7 @@ pub fn top_io(before: &Sample, now: &Sample, n: usize) -> Vec<Moved> {
                 name: p.name.clone(),
                 read: is.read.saturating_sub(was.read),
                 write: is.write.saturating_sub(was.write),
+                other: is.other.saturating_sub(was.other),
             })
         })
         .filter(|m| m.total() >= MOVED_AT_LEAST)
@@ -210,19 +220,34 @@ pub fn top_io(before: &Sample, now: &Sample, n: usize) -> Vec<Moved> {
     out
 }
 
-/// What each disk in both samples read and wrote between them, with its
-/// queue depth at `now`, by disk number. A disk only in `now` is left out;
-/// a counter that went back was reset within the span (diskperf, a driver
-/// reset), so its value now is what it moved since.
-pub fn disk_moved(before: &Sample, now: &Sample) -> Vec<Disk> {
+/// What one disk did between two samples.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiskMoved {
+    pub n: u32,
+    pub read: u64,
+    pub write: u64,
+    /// How long it was idle in the span, ms: the span minus this is how
+    /// long it was busy, which a queue read after the stall cannot show.
+    pub idle_ms: u64,
+    /// The requests in flight at `now`, the burst's sample, so after the
+    /// stall.
+    pub queue: u32,
+}
+
+/// What each disk in both samples did between them, by disk number. A
+/// disk only in `now` is left out; a counter that went back was reset
+/// within the span (diskperf, a driver reset), so its value now is what it
+/// moved since.
+pub fn disk_moved(before: &Sample, now: &Sample) -> Vec<DiskMoved> {
     now.disks
         .iter()
         .filter_map(|d| {
             let was = before.disks.iter().find(|b| b.n == d.n)?;
-            Some(Disk {
+            Some(DiskMoved {
                 n: d.n,
                 read: since(was.read, d.read),
                 write: since(was.write, d.write),
+                idle_ms: since(was.idle_100ns, d.idle_100ns) / 10_000,
                 queue: d.queue,
             })
         })
@@ -234,17 +259,18 @@ fn since(was: u64, now: u64) -> u64 {
     if now >= was { now - was } else { now }
 }
 
-/// `disks` as `<n>:r<KiB>/w<KiB>/q<depth>`, comma separated, KiB rounded
-/// down.
-pub fn list_disks(disks: &[Disk]) -> String {
+/// `disks` as `<n>:r<KiB>/w<KiB>/i<idle ms>/q<depth>`, comma separated,
+/// KiB rounded down.
+pub fn list_disks(disks: &[DiskMoved]) -> String {
     disks
         .iter()
         .map(|d| {
             format!(
-                "{}:r{}KiB/w{}KiB/q{}",
+                "{}:r{}KiB/w{}KiB/i{}ms/q{}",
                 d.n,
                 d.read / 1024,
                 d.write / 1024,
+                d.idle_ms,
                 d.queue
             )
         })
@@ -252,18 +278,19 @@ pub fn list_disks(disks: &[Disk]) -> String {
         .join(", ")
 }
 
-/// `moved` as `name(id)=r<KiB>/w<KiB>`, comma separated, KiB rounded
-/// down; an unnamed process is `?`.
+/// `moved` as `name(id)=r<KiB>/w<KiB>/o<KiB>`, comma separated, KiB
+/// rounded down; an unnamed process is `?`.
 pub fn list_io(moved: &[Moved]) -> String {
     moved
         .iter()
         .map(|m| {
             let name = if m.name.is_empty() { "?" } else { &m.name };
             format!(
-                "{name}({})=r{}KiB/w{}KiB",
+                "{name}({})=r{}KiB/w{}KiB/o{}KiB",
                 m.id,
                 m.read / 1024,
-                m.write / 1024
+                m.write / 1024,
+                m.other / 1024
             )
         })
         .collect::<Vec<_>>()
