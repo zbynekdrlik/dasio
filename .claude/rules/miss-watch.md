@@ -134,8 +134,8 @@ paths:
   the loudest repeated sample, `grid`). Smallest lag first, one report per
   sample; no level floor and no upper length (real 24-bit audio never
   repeats sample for sample). It reports when the run ENDS. A bit-exact
-  signal whose period divides a lag (750/1500/3000 Hz at 96 kHz and blocks
-  of 64/128) is one endless run, reported once when it stops; a 1 kHz sine
+  signal whose period divides a lag (at 96 kHz and a block of 64: 375, 750,
+  1500, 3000 Hz) is one endless run, reported once when it stops; a 1 kHz sine
   with 32 samples skipped is a 64-sample run at lag 64 (the rtsan test).
 - Why it exists (24.11.2026 19:25:17Z): master's outputs replayed the
   card's two half-buffers (256 samples) about 20 times, 55 ms, right after
