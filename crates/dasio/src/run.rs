@@ -245,7 +245,7 @@ pub fn run(
             }
             // Each watched tone's figures of the last 10 s (dasio#207).
             if let Some(w) = watch.as_ref() {
-                watch_log::summary(w, cfg.sample_rate);
+                watch_log::summary(&mut watch_reader, w, cfg.sample_rate);
             }
             let v = stats.view();
             // The counts line, its counts the phase's (dasio#28).

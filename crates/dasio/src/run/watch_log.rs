@@ -7,6 +7,7 @@
 use tracing::{info, warn};
 
 use crate::miss_watch::program::{self, Tracker};
+use crate::miss_watch::silence::Silence;
 use crate::miss_watch::{self, Break, ProgramJump, Setup, ToneBreak, tone};
 
 /// The watch of the instance folder `dir` (its watch.toml) against the
@@ -50,6 +51,8 @@ pub(super) struct Reader {
     program_tail: u64,
     program_jumps: Vec<ProgramJump>,
     program_lines: Tracker,
+    tone_silence: Silence,
+    program_silence: Silence,
 }
 
 /// A dB figure for the log: to a tenth.
@@ -139,17 +142,23 @@ impl Reader {
 
 /// Each tone and program channel's figures since the last summary (every
 /// 10 s), logged.
-pub(super) fn summary(w: &Setup, rate: u32) {
-    program_summary(w);
+pub(super) fn summary(r: &mut Reader, w: &Setup, rate: u32) {
+    program_summary(&mut r.program_silence, w);
     for (i, (_, name)) in w.cfg.tone.iter().enumerate() {
         let s = w.tones.take(i);
+        let silent = r.tone_silence.note(i, s.checked > 0);
         if s.checked == 0 {
-            info!(
-                watch = %w.cfg.name,
-                channel = %name,
-                "a watched test tone: nothing checked in the last 10 s (no tone, at or under \
-                 -80 dBFS, outside 40 Hz to 0.45 of the rate, or not clean enough to fit) (dasio#207)"
-            );
+            // Logged at the first silent window and then every 10 min.
+            if let Some(silent_s) = silent {
+                info!(
+                    watch = %w.cfg.name,
+                    channel = %name,
+                    silent_s,
+                    "a watched test tone: nothing checked in the last 10 s (no tone, at or under \
+                     -80 dBFS, outside 40 Hz to 0.45 of the rate, or not clean enough to fit) \
+                     (dasio#207)"
+                );
+            }
             continue;
         }
         // No level window ended (breaks faster than one): no amplitude.
@@ -183,16 +192,20 @@ pub(super) fn summary(w: &Setup, rate: u32) {
 }
 
 /// Each program channel's figures since the last summary (every 10 s).
-fn program_summary(w: &Setup) {
+fn program_summary(silence: &mut Silence, w: &Setup) {
     for (i, (_, name)) in w.cfg.program.iter().enumerate() {
         let s = w.programs.take(i);
+        let silent = silence.note(i, s.checked > 0);
         if s.checked == 0 {
-            info!(
-                watch = %w.cfg.name,
-                channel = %name,
-                "a watched program output: nothing checked in the last 10 s (digital silence) \
-                 (dasio#207)"
-            );
+            if let Some(silent_s) = silent {
+                info!(
+                    watch = %w.cfg.name,
+                    channel = %name,
+                    silent_s,
+                    "a watched program output: nothing checked in the last 10 s (digital \
+                     silence) (dasio#207)"
+                );
+            }
             continue;
         }
         info!(

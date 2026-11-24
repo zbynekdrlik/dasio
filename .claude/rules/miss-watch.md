@@ -30,7 +30,12 @@ paths:
   `breaks`, `worst_db`, `amp_min_dbfs`, `amp_max_dbfs`, `hz`; the two
   amplitudes are left out when no level window ended) or `nothing checked`
   (no tone, at or under -80 dBFS, outside 40 Hz..0.45 x rate, or not clean
-  enough to fit). WARN `a watched test tone is blind to a repeated or
+  enough to fit; the program channel's one says digital silence). A silent
+  channel logs `nothing checked` at its first silent window and then every
+  10 min (the 61st, 121st ... window in a row), with `silent_s` = the silent
+  windows in a row x 10 (`miss_watch/silence.rs`, portable so the mutation gate runs it: `run` is Windows-only); a window that checked something logs
+  its summary as always and restarts the count, so no line for 10 min is
+  not a missing line. WARN `a watched test tone is blind to a repeated or
   skipped host block` beside it: the tone's frequency is wrong, see below.
 - Reading a tone break: click `db` = worst residual against the tone
   (-60 dB is the threshold); `samples` = the damaged run: a zero run's own
@@ -102,3 +107,9 @@ paths:
   (`checked` = samples - 530 for a clean channel; peaks at the splice + 2
   for a 1 kHz sine); the 24-bit RX makes the sliding sums exact. The
   detector's tests are in `miss_watch/program/tests.rs`.
+- Reading master's splices (21.11 to 24.11.2026): the host's block grid is
+  fixed in the media sample position, so the `at` of the host's splices all
+  share one value of `at % <host block>` until the host's audio engine
+  restarts; a radio dropout or a musical false hit lands anywhere. Compute
+  it when reading (`rem` uses the config's `block`, not the host's).
+- The log keeps 4 x 10 MB: pull a service's lines the same day.
