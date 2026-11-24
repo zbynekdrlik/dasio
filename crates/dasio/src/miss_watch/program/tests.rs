@@ -275,9 +275,9 @@ fn digital_silence_is_not_judged_and_a_stop_ends_it_after_its_span() {
 #[test]
 fn the_figures_do_not_depend_on_the_pump_block() {
     let s = splice(&sine(N, 1000.0, 0.5, 0.0), 5000, 128);
-    let a = run_with(&[s.clone()], 256, None);
+    let a = run_with(std::slice::from_ref(&s), 256, None);
     for pump in [1, 37, 128, 4096] {
-        let b = run_with(&[s.clone()], pump, None);
+        let b = run_with(std::slice::from_ref(&s), pump, None);
         assert_eq!(places(&a.0), places(&b.0), "pump {pump}");
         assert_eq!(a.1, b.1, "pump {pump}");
     }
@@ -289,7 +289,7 @@ fn a_jump_in_the_media_position_starts_the_channel_again() {
     // 2560 samples in (pump block 10), the position jumps by 100 000: the
     // splice, 2442 samples into the new stretch, is found at its media
     // position.
-    let (jumps, sums) = run_with(&[s.clone()], 256, Some((10, 100_000)));
+    let (jumps, sums) = run_with(std::slice::from_ref(&s), 256, Some((10, 100_000)));
     assert_eq!(places(&jumps), vec![(0, 102_560 + 2442)]);
     // 2030 samples judged before the jump (decisions from sample 530 to
     // 2559), 16 782 after it.
