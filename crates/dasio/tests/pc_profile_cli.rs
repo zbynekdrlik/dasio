@@ -266,26 +266,25 @@ const KDNIC: &str = r"ROOT\KDNIC\0000";
 /// The device tree's root.
 const ROOT: &str = r"HTREE\ROOT\0";
 
-/// The trimmed, non-empty lines PowerShell prints for `cmd` (its error
-/// output goes to the test's log: a read that skips a device it cannot
-/// read still exits 1, so the callers judge the lines).
-/// How long a test's PowerShell script may run. They take a few seconds; on
+/// How long a test's helper program may run. They take a few seconds; on
 /// 24.11.2026 a `Get-PnpDevice` enumeration never returned, the job ran to
 /// its 40 min timeout and the text of another test's failure was lost with
 /// it (run 45380980643, dasio#28).
 const PS_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// A PowerShell `cmd`'s output lines, trimmed, none empty. A script still
-/// running after [`PS_LIMIT`] is killed and fails the test, named.
-fn ps(cmd: &str) -> Vec<String> {
+/// What `cmd` printed to its output and to its error output. It gets no
+/// input (a program that asks for some reads the end at once), and one
+/// still running after [`PS_LIMIT`] is killed and fails the test, named by
+/// `what`.
+fn bounded(mut cmd: Command, what: &str) -> (Vec<u8>, Vec<u8>) {
     use std::io::Read;
-    let mut child = Command::new("powershell")
-        .args(["-NoProfile", "-Command", cmd])
+    let mut child = cmd
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    // Both pipes are read while the script runs: a full pipe would block it.
+    // Both pipes are read while the program runs: a full pipe would block it.
     fn read(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
         std::thread::spawn(move || {
             let mut bytes = Vec::new();
@@ -299,11 +298,20 @@ fn ps(cmd: &str) -> Vec<String> {
     while child.try_wait().unwrap().is_none() {
         if started.elapsed() > PS_LIMIT {
             let _ = child.kill();
-            panic!("PowerShell still ran after {} s: {cmd}", PS_LIMIT.as_secs());
+            panic!("still ran after {} s: {what}", PS_LIMIT.as_secs());
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    let (out, err) = (out.join().unwrap(), err.join().unwrap());
+    (out.join().unwrap(), err.join().unwrap())
+}
+
+/// The trimmed, non-empty lines PowerShell prints for `cmd` (its error
+/// output goes to the test's log: a read that skips a device it cannot
+/// read still exits 1, so the callers judge the lines).
+fn ps(cmd: &str) -> Vec<String> {
+    let mut powershell = Command::new("powershell");
+    powershell.args(["-NoProfile", "-Command", cmd]);
+    let (out, err) = bounded(powershell, &format!("PowerShell: {cmd}"));
     eprintln!("{cmd}: {}", String::from_utf8_lossy(&err));
     String::from_utf8_lossy(&out)
         .lines()
@@ -691,11 +699,10 @@ static PING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// failed 8 ms after the first ended (run 45380980643, dasio#28).
 fn waiting_ping() -> std::process::Child {
     let listed = || {
-        let out = Command::new("tasklist")
-            .args(["/FI", "IMAGENAME eq ping.exe", "/FO", "CSV", "/NH"])
-            .output()
-            .unwrap();
-        String::from_utf8_lossy(&out.stdout)
+        let mut tasklist = Command::new("tasklist");
+        tasklist.args(["/FI", "IMAGENAME eq ping.exe", "/FO", "CSV", "/NH"]);
+        let (out, _) = bounded(tasklist, "tasklist for ping.exe");
+        String::from_utf8_lossy(&out)
             .lines()
             .filter(|l| l.to_ascii_lowercase().starts_with("\"ping.exe\""))
             .map(String::from)
