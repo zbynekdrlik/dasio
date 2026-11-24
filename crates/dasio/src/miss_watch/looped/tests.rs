@@ -107,9 +107,9 @@ fn a_ring_of_256_played_again_is_one_loop_at_lag_256() {
     let sig = with_loop(3_000, 256, 19 * 256, 3_000);
     let want = vec![a_loop(0, 3_000, 256, 4_864, loudest(&sig[3_000..7_864]))];
     assert_eq!(want[0].peak, 998.0 * LSB);
-    assert_eq!(run(&[sig.clone()]), want);
+    assert_eq!(run(std::slice::from_ref(&sig)), want);
     // The pump's block size changes nothing.
-    assert_eq!(run_with(&[sig.clone()], 64, 48, None), want);
+    assert_eq!(run_with(std::slice::from_ref(&sig), 64, 48, None), want);
     // A config block of the host's own 128: the ring is two of them.
     assert_eq!(run_with(&[sig], 128, 256, None), want);
 }
