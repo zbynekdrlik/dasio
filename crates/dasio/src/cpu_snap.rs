@@ -17,12 +17,17 @@ pub struct Proc {
     pub name: String,
     /// Kernel plus user time, in 100 ns units (Windows' FILETIME).
     pub cpu_100ns: u64,
-    /// Bytes read so far: every kind of IO Windows counts for the process
-    /// (files, devices, the network), `IO_COUNTERS.ReadTransferCount`; 0
-    /// when the counters cannot be read.
-    pub read_bytes: u64,
-    /// Bytes written so far, `IO_COUNTERS.WriteTransferCount`; 0 as above.
-    pub write_bytes: u64,
+    /// Bytes read and written so far, `None` when Windows refused the
+    /// counters for this sample.
+    pub io: Option<Io>,
+}
+
+/// A process's IO so far: every kind Windows counts for it (files,
+/// devices, the network), `IO_COUNTERS.Read/WriteTransferCount`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Io {
+    pub read: u64,
+    pub write: u64,
 }
 
 /// One of this process's threads and its CPU time so far.
@@ -155,24 +160,28 @@ pub const TOP_IO: usize = 6;
 
 /// The processes that read plus wrote the most bytes from `before` to
 /// `now`, the most first (ties by id), at most `n`, none that moved
-/// nothing. The same process is the same id and name, as in [`ranked`]; a
-/// new one counts all its bytes.
+/// nothing. The same process is the same id and name, as in [`ranked`].
+/// Unlike CPU, only a process with readable counters in both samples
+/// counts: a new one (the gatherer opens new processes only every 10 s)
+/// or one whose counters Windows refused once would show its lifetime
+/// bytes, gigabytes for a DAW that loaded a set, as one span's.
 pub fn top_io(before: &Sample, now: &Sample, n: usize) -> Vec<Moved> {
     let mut out: Vec<Moved> = now
         .procs
         .iter()
-        .map(|p| {
-            let (read, written) = before
+        .filter_map(|p| {
+            let was = before
                 .procs
                 .iter()
-                .find(|b| b.pid == p.pid && b.name == p.name)
-                .map_or((0, 0), |b| (b.read_bytes, b.write_bytes));
-            Moved {
+                .find(|b| b.pid == p.pid && b.name == p.name)?
+                .io?;
+            let is = p.io?;
+            Some(Moved {
                 id: p.pid,
                 name: p.name.clone(),
-                read: p.read_bytes.saturating_sub(read),
-                write: p.write_bytes.saturating_sub(written),
-            }
+                read: is.read.saturating_sub(was.read),
+                write: is.write.saturating_sub(was.write),
+            })
         })
         .filter(|m| m.total() > 0)
         .collect();
@@ -181,15 +190,15 @@ pub fn top_io(before: &Sample, now: &Sample, n: usize) -> Vec<Moved> {
     out
 }
 
-/// `moved` as `name(id)=r<kB>/w<kB>`, comma separated, kB = 1024 bytes
-/// rounded down; an unnamed process is `?`.
+/// `moved` as `name(id)=r<KiB>/w<KiB>`, comma separated, KiB rounded
+/// down; an unnamed process is `?`.
 pub fn list_io(moved: &[Moved]) -> String {
     moved
         .iter()
         .map(|m| {
             let name = if m.name.is_empty() { "?" } else { &m.name };
             format!(
-                "{name}({})=r{}kB/w{}kB",
+                "{name}({})=r{}KiB/w{}KiB",
                 m.id,
                 m.read / 1024,
                 m.write / 1024

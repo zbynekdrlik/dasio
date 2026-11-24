@@ -5,8 +5,7 @@ fn p(pid: u32, name: &str, ms: u64) -> Proc {
         pid,
         name: name.into(),
         cpu_100ns: ms * 10_000,
-        read_bytes: 0,
-        write_bytes: 0,
+        io: Some(Io { read: 0, write: 0 }),
     }
 }
 
@@ -16,8 +15,17 @@ fn pio(pid: u32, name: &str, read: u64, write: u64) -> Proc {
         pid,
         name: name.into(),
         cpu_100ns: 0,
-        read_bytes: read,
-        write_bytes: write,
+        io: Some(Io { read, write }),
+    }
+}
+
+/// A process whose IO counters Windows refused in this sample.
+fn refused(pid: u32, name: &str) -> Proc {
+    Proc {
+        pid,
+        name: name.into(),
+        cpu_100ns: 0,
+        io: None,
     }
 }
 
@@ -64,35 +72,39 @@ fn the_processes_are_ranked_by_the_bytes_they_moved_between_the_samples() {
 }
 
 #[test]
-fn io_a_new_process_counts_all_its_bytes_and_a_reused_id_is_a_new_process() {
+fn io_counts_only_a_process_read_in_both_samples() {
     // Two AudioGridderServer sandboxes share a name: each is matched by its
-    // own id, and id 10 now belongs to another exe.
+    // own id. Id 10 now belongs to another exe, 23 is new, and 30/31 had
+    // their counters refused in one of the samples: none of those counts,
+    // or a lifetime total would show as one span's bytes.
     let before = sample(
         0,
         vec![
-            pio(10, "old.exe", 9_000, 9_000),
+            pio(10, "old.exe", 100, 100),
             pio(21, "AudioGridderServer.exe", 100, 0),
             pio(22, "AudioGridderServer.exe", 5_000, 0),
+            refused(30, "refused-before.exe"),
+            pio(31, "refused-now.exe", 0, 0),
         ],
         vec![],
     );
     let now = sample(
         1000,
         vec![
-            pio(10, "new.exe", 700, 0),
+            pio(10, "new.exe", 9_000, 0),
             pio(21, "AudioGridderServer.exe", 400, 0),
             pio(22, "AudioGridderServer.exe", 5_200, 0),
             pio(23, "started.exe", 0, 50),
+            pio(30, "refused-before.exe", 40_000_000, 0),
+            refused(31, "refused-now.exe"),
         ],
         vec![],
     );
     assert_eq!(
         top_io(&before, &now, 6),
         vec![
-            mv(10, "new.exe", 700, 0),
             mv(21, "AudioGridderServer.exe", 300, 0),
             mv(22, "AudioGridderServer.exe", 200, 0),
-            mv(23, "started.exe", 0, 50),
         ]
     );
 }
@@ -103,7 +115,16 @@ fn io_counters_that_went_back_move_nothing_and_only_the_top_n_are_kept() {
     let now = sample(1000, vec![pio(10, "x.exe", 400, 400)], vec![]);
     assert!(top_io(&before, &now, 6).is_empty());
 
-    let none = sample(0, vec![], vec![]);
+    let zero = sample(
+        0,
+        vec![
+            pio(3, "c", 0, 0),
+            pio(1, "a", 0, 0),
+            pio(2, "b", 0, 0),
+            pio(4, "d", 0, 0),
+        ],
+        vec![],
+    );
     let now = sample(
         1000,
         vec![
@@ -114,12 +135,12 @@ fn io_counters_that_went_back_move_nothing_and_only_the_top_n_are_kept() {
         ],
         vec![],
     );
-    let ids: Vec<u32> = top_io(&none, &now, 3).iter().map(|m| m.id).collect();
+    let ids: Vec<u32> = top_io(&zero, &now, 3).iter().map(|m| m.id).collect();
     assert_eq!(ids, vec![2, 1, 3], "ties go by id");
 }
 
 #[test]
-fn the_io_list_reads_name_id_and_kilobytes_rounded_down() {
+fn the_io_list_reads_name_id_and_kibibytes_rounded_down() {
     let moved = vec![
         mv(780, "Ableton Live 12 Suite.exe", 3_145_728, 1_536),
         mv(4, "", 0, 1_023),
@@ -127,13 +148,14 @@ fn the_io_list_reads_name_id_and_kilobytes_rounded_down() {
     ];
     assert_eq!(
         list_io(&moved),
-        "Ableton Live 12 Suite.exe(780)=r3072kB/w1kB, ?(4)=r0kB/w0kB, x(9)=r1kB/w0kB"
+        "Ableton Live 12 Suite.exe(780)=r3072KiB/w1KiB, ?(4)=r0KiB/w0KiB, x(9)=r1KiB/w0KiB"
     );
     assert_eq!(list_io(&[]), "");
 }
 
 /// The gatherer on the real Windows: bytes this process writes to a file
-/// (and reads back) between two samples show as its IO.
+/// (and reads back) between two samples show as its IO, a delta of the
+/// counters read in both.
 #[cfg(windows)]
 #[test]
 fn the_bytes_this_process_writes_show_as_its_io() {
@@ -158,6 +180,12 @@ fn the_bytes_this_process_writes_show_as_its_io() {
     std::fs::remove_file(&path).unwrap();
     let now = g.sample(100);
     let me = std::process::id();
+    // A real delta: this process was read in the first sample too (a
+    // process missing there would not count at all).
+    assert!(
+        before.procs.iter().any(|p| p.pid == me && p.io.is_some()),
+        "this process with its counters in the first sample"
+    );
     let io = top_io(&before, &now, usize::MAX);
     let mine = io
         .iter()

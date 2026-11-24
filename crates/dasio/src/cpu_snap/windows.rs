@@ -18,7 +18,7 @@ use windows_sys::Win32::System::Threading::{
     THREAD_QUERY_LIMITED_INFORMATION,
 };
 
-use super::{Proc, Sample, Thread};
+use super::{Io, Proc, Sample, Thread};
 
 /// Kernel plus user time of two FILETIMEs, 100 ns units.
 fn cpu(kernel: &FILETIME, user: &FILETIME) -> u64 {
@@ -150,15 +150,11 @@ impl Gatherer {
                         // SAFETY: an open handle and four writable FILETIMEs.
                         unsafe { GetProcessTimes(o.h, c, x, k, u) }
                     })
-                    .map(|cpu_100ns| {
-                        let (read_bytes, write_bytes) = io_of(o.h);
-                        Proc {
-                            pid: o.id,
-                            name: o.name.clone(),
-                            cpu_100ns,
-                            read_bytes,
-                            write_bytes,
-                        }
+                    .map(|cpu_100ns| Proc {
+                        pid: o.id,
+                        name: o.name.clone(),
+                        cpu_100ns,
+                        io: io_of(o.h),
                     })
                 })
                 .collect(),
@@ -169,16 +165,15 @@ impl Gatherer {
 }
 
 /// Bytes read and written so far by the process behind `h` (the same
-/// limited-query handle `GetProcessTimes` reads), (0, 0) when Windows
-/// refuses, so a process whose counters stay unreadable shows no IO (one
-/// that turns readable later shows all its bytes once).
-fn io_of(h: HANDLE) -> (u64, u64) {
+/// limited-query handle `GetProcessTimes` reads), `None` when Windows
+/// refuses.
+fn io_of(h: HANDLE) -> Option<Io> {
     let mut io = IO_COUNTERS::default();
     // SAFETY: an open process handle and a writable IO_COUNTERS.
-    if unsafe { GetProcessIoCounters(h, &mut io) } == 0 {
-        return (0, 0);
-    }
-    (io.ReadTransferCount, io.WriteTransferCount)
+    (unsafe { GetProcessIoCounters(h, &mut io) } != 0).then_some(Io {
+        read: io.ReadTransferCount,
+        write: io.WriteTransferCount,
+    })
 }
 
 /// The CPU times of `open` threads; one that ended is left out.
