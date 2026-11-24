@@ -237,8 +237,9 @@ pub struct DiskMoved {
 
 /// What each disk in both samples did between them, by disk number. A
 /// disk only in `now` is left out, and so is one whose byte counters went
-/// back (reset within the span: diskperf, a driver reset, another disk
-/// under the same number), since no delta of it is true. The 32-bit
+/// back (reset within the span: diskperf, a driver reset), since no delta
+/// of it is true. Disks are matched by number only: another disk under the
+/// same number within one span would show as one disk's delta. The 32-bit
 /// request counts are taken modulo 2^32, so their wrap is no reset.
 pub fn disk_moved(before: &Sample, now: &Sample) -> Vec<DiskMoved> {
     now.disks
