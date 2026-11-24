@@ -21,7 +21,9 @@
 //! Real 24-bit audio that moves from sample to sample never repeats sample
 //! for sample, so there is no level floor: the log line carries the peak
 //! for how loud the loop was. A bit-exact signal whose period divides a lag
-//! repeats for as long as it plays: one event, when it stops.
+//! repeats for as long as it plays: one event, when it stops. A loop of
+//! which fewer than one sample in [`VARY`] changes (a ring that is mostly
+//! digital silence or one held value) is not reported.
 //!
 //! The state is one fixed ring per channel, made once ([`Channel::new`]);
 //! nothing allocates, locks or blocks (it runs on the pump path like the
@@ -35,8 +37,9 @@ use super::{Ring, Slot, TOLERANCE};
 pub const LAGS: [usize; 3] = [1, 2, 4];
 /// A loop's run has at least one sample in this many that differs from the
 /// sample before it. Silence with two stray 24-bit steps one lag apart
-/// repeats sample for sample too, with two changes in the whole run.
-pub const VARY: u64 = 4;
+/// repeats sample for sample too, with two changes in the whole run; a
+/// -100 dBFS 20 Hz sine still changes in one sample of nine.
+pub const VARY: u64 = 16;
 
 /// One loop on one program channel.
 #[derive(Debug, Clone, Copy, PartialEq)]

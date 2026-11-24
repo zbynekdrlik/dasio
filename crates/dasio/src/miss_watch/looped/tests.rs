@@ -319,13 +319,13 @@ fn a_loop_is_a_lag_less_the_tolerance_at_least() {
     assert!(looped(4_864, 256));
 }
 
-/// One sample in four at least differs from the one before.
+/// One sample in 16 at least differs from the one before.
 #[test]
-fn a_run_that_moves_in_a_quarter_of_its_samples_is_varied() {
-    assert!(varied(16, 64));
-    assert!(!varied(15, 64));
-    assert!(varied(1, 4));
-    assert!(!varied(1, 5));
+fn a_run_that_moves_in_one_sample_of_16_is_varied() {
+    assert!(varied(4, 64));
+    assert!(!varied(3, 64));
+    assert!(varied(1, 16));
+    assert!(!varied(1, 17));
     assert!(!varied(0, 1));
     assert!(varied(4_863, 4_864));
 }

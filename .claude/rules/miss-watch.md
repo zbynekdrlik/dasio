@@ -129,8 +129,9 @@ paths:
 - The loop check (`miss_watch/looped.rs`, 0.1.164, on the `program`
   channels): per sample, the run of samples exactly equal to the sample 1,
   2 and 4 config blocks before. A run of at least one lag less 4 samples in
-  which at least one sample in four differs from the one before (`varied`:
-  silence with two stray steps one lag apart repeats too, with two changes)
+  which at least one sample in 16 differs from the one before (`varied`:
+  silence with two stray steps one lag apart repeats too, with two changes;
+  so a ring that is mostly digital silence or one held value is not told)
   is WARN `a watched program output looped` (`channels`,
   `at` = the first repeated sample, `lag`, `samples`, `ms`, `peak_dbfs` =
   the loudest repeated sample, `grid`). Smallest lag first, one report per
