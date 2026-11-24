@@ -35,6 +35,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use super::looped::LoopEvents;
 use super::{Ring, Slot};
 
 /// Samples of the two windows whose means a peak is judged against.
@@ -143,10 +144,11 @@ impl Stats {
     }
 }
 
-/// The program side's output for the run: its events and each channel's
-/// figures.
+/// The program side's output for the run: its events, the loop check's
+/// ([`super::looped`]) and each channel's figures.
 pub struct Programs {
     pub events: ProgramEvents,
+    pub loops: LoopEvents,
     stats: Box<[Stats]>,
 }
 
@@ -155,6 +157,7 @@ impl Programs {
     pub fn new(channels: usize) -> Self {
         Self {
             events: ProgramEvents::default(),
+            loops: LoopEvents::default(),
             stats: (0..channels).map(|_| Stats::default()).collect(),
         }
     }
