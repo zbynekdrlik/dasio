@@ -80,21 +80,29 @@ pub struct ProgramJump {
     /// The peak over the larger of the two window means (at least
     /// [`QUANT`]).
     pub ratio: f64,
+    /// The peak of `e` itself, in 24-bit steps.
+    pub steps: u64,
 }
 
-/// The events: a slot is `[at, channel, ratio]`.
-pub type ProgramEvents = Ring<ProgramJump, 3>;
+/// The events: a slot is `[at, channel, ratio, steps]`.
+pub type ProgramEvents = Ring<ProgramJump, 4>;
 
-impl Slot<3> for ProgramJump {
-    fn pack(&self) -> [u64; 3] {
-        [self.at, self.channel as u64, self.ratio.to_bits()]
+impl Slot<4> for ProgramJump {
+    fn pack(&self) -> [u64; 4] {
+        [
+            self.at,
+            self.channel as u64,
+            self.ratio.to_bits(),
+            self.steps,
+        ]
     }
 
-    fn unpack([at, channel, ratio]: [u64; 3]) -> Self {
+    fn unpack([at, channel, ratio, steps]: [u64; 4]) -> Self {
         ProgramJump {
             channel: channel as usize,
             at,
             ratio: f64::from_bits(ratio),
+            steps,
         }
     }
 }
@@ -181,6 +189,22 @@ pub fn above_floor(peak: f64) -> bool {
 /// The peak over the larger of the two window means, at least [`QUANT`].
 pub fn ratio(peak: f64, before: f64, after: f64) -> f64 {
     peak / before.max(after).max(QUANT)
+}
+
+/// A peak of `e` in 24-bit steps (`e` is a whole number of them).
+pub fn steps(peak: f64) -> u64 {
+    (peak / QUANT).round() as u64
+}
+
+/// A peak of `steps` 24-bit steps in dBFS, to a tenth (at least one step,
+/// so it stays finite).
+pub fn peak_dbfs(steps: u64) -> f64 {
+    (super::tone::db(steps.max(1) as f64 * QUANT) * 10.0).round() / 10.0
+}
+
+/// An event's place on the block grid: `at` modulo `block`.
+pub fn grid(at: u64, block: usize) -> u64 {
+    at % block as u64
 }
 
 /// A window's mean of `e` from its running sum (a sum that rounding left
@@ -310,6 +334,7 @@ impl Channel {
                 channel: ch,
                 at,
                 ratio: r,
+                steps: steps(peak),
             });
         }
     }
@@ -334,6 +359,10 @@ pub struct Line {
     pub at: u64,
     /// The largest ratio of the line's events.
     pub ratio: f64,
+    /// The largest peak of the line's events, 24-bit steps.
+    pub steps: u64,
+    /// The earliest event's place on the block grid, `at % block`.
+    pub grid: u64,
     /// The channels (places in the config's `program`), ascending.
     pub channels: Vec<usize>,
     /// Samples since the previous event of the line's first event's channel,
@@ -366,12 +395,15 @@ impl Tracker {
                         l.channels.sort_unstable();
                     }
                     l.ratio = l.ratio.max(j.ratio);
+                    l.steps = l.steps.max(j.steps);
                 }
                 _ => {
                     let since = self.last[j.channel].and_then(|p| j.at.checked_sub(p));
                     out.push(Line {
                         at: j.at,
                         ratio: j.ratio,
+                        steps: j.steps,
+                        grid: grid(j.at, block),
                         channels: vec![j.channel],
                         since_prev: since,
                         rem: since.map(|s| s % block as u64),
