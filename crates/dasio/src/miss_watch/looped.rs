@@ -10,17 +10,18 @@
 //! Per program channel, per sample: for each lag of 1, 2 and 4 host blocks
 //! ([`LAGS`]), the run of samples exactly equal to the sample that lag
 //! before. A run that ends after at least one lag less
-//! [`TOLERANCE`](super::TOLERANCE) samples, with samples that differ inside
-//! it (not silence, not one held value), is a **loop**: a [`Loop`] with the
-//! media position of its first repeated sample, the lag, the run's length
-//! and its loudest sample. The lags are judged smallest first and one
+//! [`TOLERANCE`](super::TOLERANCE) samples, in which at least one sample in
+//! [`VARY`] differs from the one before it ([`varied`]: not silence, not one
+//! held value, not a few stray steps in silence one lag apart), is a
+//! **loop**: a [`Loop`] with the media position of its first repeated
+//! sample, the lag, the run's length and its loudest sample. The lags are judged smallest first and one
 //! sample reports once, so a loop of one block is not reported again at two
 //! and four.
 //!
-//! Real 24-bit audio never repeats sample for sample, so there is no level
-//! floor: the log line carries the peak for how loud the loop was. A
-//! bit-exact test signal whose period divides a lag repeats for as long as
-//! it plays: one event, when it stops.
+//! Real 24-bit audio that moves from sample to sample never repeats sample
+//! for sample, so there is no level floor: the log line carries the peak
+//! for how loud the loop was. A bit-exact signal whose period divides a lag
+//! repeats for as long as it plays: one event, when it stops.
 //!
 //! The state is one fixed ring per channel, made once ([`Channel::new`]);
 //! nothing allocates, locks or blocks (it runs on the pump path like the
@@ -32,6 +33,10 @@ use super::{Ring, Slot, TOLERANCE};
 
 /// The lags checked, in host blocks (the config's `block`).
 pub const LAGS: [usize; 3] = [1, 2, 4];
+/// A loop's run has at least one sample in this many that differs from the
+/// sample before it. Silence with two stray 24-bit steps one lag apart
+/// repeats sample for sample too, with two changes in the whole run.
+pub const VARY: u64 = 4;
 
 /// One loop on one program channel.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -85,6 +90,12 @@ pub fn looped(run: u32, lag: u64) -> bool {
     u64::from(run) + TOLERANCE as u64 >= lag
 }
 
+/// Whether a run of `len` repeated samples, `changes` of them unlike the
+/// sample before, moves enough to be audio: one in [`VARY`] at least.
+pub fn varied(changes: u32, len: u32) -> bool {
+    u64::from(changes) * VARY >= u64::from(len)
+}
+
 /// `len` samples at `rate` in ms, to a tenth.
 pub fn ms(len: u32, rate: u32) -> f64 {
     (f64::from(len) * 10_000.0 / f64::from(rate.max(1))).round() / 10.0
@@ -95,7 +106,8 @@ pub fn ms(len: u32, rate: u32) -> f64 {
 struct Run {
     len: u32,
     start: u64,
-    varies: bool,
+    /// Samples of the run unlike the sample before them.
+    changes: u32,
     peak: f64,
 }
 
@@ -106,7 +118,7 @@ pub(super) struct Channel {
     mask: u64,
     /// Samples fed since the start.
     n: u64,
-    /// The sample before (a loop must vary within its run).
+    /// The sample before (a loop's run must move, [`varied`]).
     last: f64,
     lags: [u64; 3],
     runs: [Run; 3],
@@ -127,7 +139,9 @@ impl Channel {
         }
     }
 
-    /// Back to the start (a discontinuity), allocating nothing.
+    /// Back to the start (a discontinuity), allocating nothing: a run in
+    /// progress is dropped, like every check's state. The fill is four
+    /// blocks of samples (2 KiB at a block of 64).
     pub(super) fn reset(&mut self) {
         self.ring.fill(0.0);
         self.last = 0.0;
@@ -143,18 +157,18 @@ impl Channel {
             // The slot of `i - lag` is read before sample `i` is written, so
             // a ring of exactly the largest lag is enough.
             if x == self.ring[(i.wrapping_sub(lag) & self.mask) as usize] {
-                // Variation counts only between samples of the run.
+                // A change counts only between samples of the run.
                 if run.len == 0 {
                     run.start = at;
-                    run.varies = false;
+                    run.changes = 0;
                     run.peak = 0.0;
                 } else if x != self.last {
-                    run.varies = true;
+                    run.changes = run.changes.saturating_add(1);
                 }
                 run.len = run.len.saturating_add(1);
                 run.peak = run.peak.max(x.abs());
             } else if run.len != 0 {
-                if !told && run.varies && looped(run.len, lag) {
+                if !told && varied(run.changes, run.len) && looped(run.len, lag) {
                     out.push(Loop {
                         channel: ch,
                         at: run.start,

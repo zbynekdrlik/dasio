@@ -128,12 +128,15 @@ paths:
   at once.
 - The loop check (`miss_watch/looped.rs`, 0.1.164, on the `program`
   channels): per sample, the run of samples exactly equal to the sample 1,
-  2 and 4 config blocks before. A run of at least one lag less 4 samples
-  that varies inside is WARN `a watched program output looped` (`channels`,
+  2 and 4 config blocks before. A run of at least one lag less 4 samples in
+  which at least one sample in four differs from the one before (`varied`:
+  silence with two stray steps one lag apart repeats too, with two changes)
+  is WARN `a watched program output looped` (`channels`,
   `at` = the first repeated sample, `lag`, `samples`, `ms`, `peak_dbfs` =
   the loudest repeated sample, `grid`). Smallest lag first, one report per
-  sample; no level floor and no upper length (real 24-bit audio never
-  repeats sample for sample). It reports when the run ENDS. A bit-exact
+  sample; no level floor and no upper length (24-bit audio that moves never
+  repeats sample for sample). It reports when the run ENDS; a discontinuity
+  drops a run in progress. A bit-exact
   signal whose period divides a lag (at 96 kHz and a block of 64: 375, 750,
   1500, 3000 Hz) is one endless run, reported once when it stops; a 1 kHz sine
   with 32 samples skipped is a 64-sample run at lag 64 (the rtsan test).

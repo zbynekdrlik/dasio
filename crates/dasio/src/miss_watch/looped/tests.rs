@@ -170,6 +170,18 @@ fn a_held_value_and_silence_are_no_loop() {
     assert_eq!(run(&[silent]), Vec::<Loop>::new());
 }
 
+/// Digital silence with two stray 24-bit steps one lag apart repeats sample
+/// for sample for a whole lag, with two changes in it: not a loop.
+#[test]
+fn stray_steps_in_silence_one_lag_apart_are_no_loop() {
+    let mut sig = fresh(0, 3_000);
+    sig.extend_from_slice(&[0.0; 600]);
+    sig.extend(fresh(3_607, 3_000));
+    sig[3_100] = LSB;
+    sig[3_164] = LSB;
+    assert_eq!(run(&[sig]), Vec::<Loop>::new());
+}
+
 /// Samples exactly zero inside the loop do not end it.
 #[test]
 fn a_loop_through_zero_samples_is_one_loop() {
@@ -305,6 +317,17 @@ fn a_loop_is_a_lag_less_the_tolerance_at_least() {
     assert!(looped(252, 256));
     assert!(!looped(251, 256));
     assert!(looped(4_864, 256));
+}
+
+/// One sample in four at least differs from the one before.
+#[test]
+fn a_run_that_moves_in_a_quarter_of_its_samples_is_varied() {
+    assert!(varied(16, 64));
+    assert!(!varied(15, 64));
+    assert!(varied(1, 4));
+    assert!(!varied(1, 5));
+    assert!(!varied(0, 1));
+    assert!(varied(4_863, 4_864));
 }
 
 #[test]
