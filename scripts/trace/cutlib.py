@@ -1,0 +1,179 @@
+"""dasio#207: shared reader of the cut files `etl-cut.ps1` writes (rows C/R/S/I/D/T/P/M/K).
+
+The csw_*.py tools all start from `load()`. Row formats are documented in the header of etl-cut.ps1.
+Times in a cut are 100 ns steps from the cut's -AtUtc; `load()` turns them into milliseconds.
+
+R rows (a thread made ready) carry byTid/byPid from the event header; in a kernel trace both read 4294967295.
+The readers ignore them and take the thread running on that CPU at that time as the waker.
+A row that cannot be parsed (a cut interrupted mid-line) is skipped and counted in `Cut.skipped`.
+"""
+import bisect
+import collections
+
+KERNEL = 0xFFFF000000000000
+
+# KWAIT_REASON and KTHREAD_STATE values as they appear in C rows.
+WAIT = {0: "Executive", 4: "DelayExecution", 5: "Suspended", 6: "UserRequest", 7: "WrExecutive", 13: "WrUserRequest",
+        15: "WrQueue", 16: "WrLpcReceive", 17: "WrLpcReply", 21: "WrKeyedEvent", 27: "WrResource", 28: "WrPushLock",
+        29: "WrMutex", 30: "WrQuantumEnd", 31: "WrDispatchInt", 32: "WrPreempted", 33: "WrYield", 34: "WrFastMutex",
+        35: "WrGuardedMutex", 37: "WrAlertByThreadId", 38: "WrDeferredPreempt"}
+STATE = {0: "Init", 1: "Ready", 2: "Running", 3: "Standby", 4: "Terminated", 5: "Waiting", 6: "Transition", 7: "DeferredReady"}
+WR_RESOURCE = 27
+WAITING = 5
+USER_REQUEST = 6
+
+
+def parse_tags(items):
+    """`--tag NAME=image.exe` (repeatable) -> {image lower case: NAME}. No tag, no renaming."""
+    tags = {}
+    for item in items or []:
+        name, sep, image = item.partition("=")
+        if not sep or not name or not image:
+            raise SystemExit(f"--tag wants NAME=image.exe, got {item!r}")
+        tags[image.lower()] = name
+    return tags
+
+
+def add_tag_option(ap):
+    ap.add_argument("--tag", action="append", default=[], metavar="NAME=image.exe",
+                    help="show this image under a short NAME (repeatable); default: the image name")
+
+
+def add_audio_option(ap):
+    ap.add_argument("--audio-module", action="append", default=[], metavar="TEXT",
+                    help="also treat a thread started in a module whose name contains TEXT as an audio thread "
+                         "(repeatable; 'asio' always counts, so do threads named AudioCalc or dasio)")
+
+
+def is_audio_thread(name, start, extra=()):
+    """True for a thread named AudioCalc/dasio, or started in a module named like an ASIO driver (or `extra`)."""
+    start = start.lower()
+    return name in ("AudioCalc", "dasio") or "asio" in start or any(x.lower() in start for x in extra)
+
+
+class Cut:
+    """One loaded cut: the process/thread/module tables and the event rows, times in ms."""
+
+    def __init__(self, tags=None):
+        self.tags = tags or {}
+        self.threads = {}   # tid -> (pid, start address, base priority, name)
+        self.procs = {}     # pid -> image
+        self.mods = collections.defaultdict(list)   # pid -> [(base, end, file, in system32)]
+        self.kern = []      # the modules at kernel addresses, sorted
+        self.cs, self.rd, self.sm, self.isr, self.dpc, self.ks = [], [], [], [], [], []
+        self.last_on = {}   # cpu -> the thread switched in last before the window
+        self.skipped = 0    # rows that could not be parsed
+
+    def mod(self, pid, addr):
+        """`file+offset` of the module holding `addr`, else the bare address."""
+        lst = self.kern if addr >= KERNEL else self.mods.get(pid, [])
+        i = bisect.bisect_right(lst, (addr, 1 << 70, "", True)) - 1
+        if i >= 0 and lst[i][0] <= addr < lst[i][1]:
+            return f"{lst[i][2]}+{addr - lst[i][0]:x}"
+        return f"{addr:x}"
+
+    def who(self, tid):
+        """`image:tid(name)` of a thread, the image shown under its --tag name when given."""
+        if tid == 0:
+            return "idle"
+        t = self.threads.get(tid)
+        if not t:
+            return f"tid {tid}"
+        img = self.procs.get(t[0], f"pid {t[0]}")
+        return f"{self.tags.get(img.lower(), img)}:{tid}" + (f"({t[3]})" if t[3] else "")
+
+    def label(self, pid):
+        img = self.procs.get(pid, str(pid))
+        return self.tags.get(img.lower(), img)
+
+    def pids(self, images):
+        """pid -> image for ALL processes whose image is one of `images` (case ignored): an earlier, dead process
+        with the same image is still in the P rows, and a reader works on the threads of every one of them."""
+        want = {i.lower() for i in images}
+        return {p: n for p, n in sorted(self.procs.items()) if n.lower() in want}
+
+    def need_pids(self, images):
+        """Like `pids`, but prints `no process X in the cut` for each image that is missing and returns None then
+        (a reader ends with exit code 1)."""
+        found = self.pids(images)
+        have = {n.lower() for n in found.values()}
+        missing = [i for i in images if i.lower() not in have]
+        for i in missing:
+            print("no process", i, "in the cut")
+        return None if missing else found
+
+    def threads_of(self, pids):
+        """The tids of every thread of the given pids."""
+        return {t for t, v in self.threads.items() if v[0] in pids}
+
+    def report_skipped(self):
+        if self.skipped:
+            print(f"{self.skipped} malformed rows skipped")
+
+
+def load(path, kinds="CRSIDTPMK", window=None, tags=None):
+    """Read a cut. `kinds` picks the row letters to keep; `window` = (from_ms, to_ms) drops C/R/S/I/D rows outside it
+    (the thread running on each CPU before the window is kept in `last_on`)."""
+    cut = Cut(tags)
+    lo, hi = window if window else (None, None)
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            k = line[:1]
+            if not k or k not in kinds:
+                continue
+            if not line.endswith("\n"):
+                # etl-cut.ps1 ends every row with a newline: a last line without one was cut mid-row, and may
+                # still parse as a row with a wrong value.
+                cut.skipped += 1
+                continue
+            try:
+                p = line.rstrip("\n").split(",")
+                # Every field is checked before the window is applied, so a bad row outside it is counted too.
+                if k == "C":
+                    row = (int(p[1]) / 1e4, int(p[2]), int(p[3]), int(p[4]), int(p[5]), int(p[6]), int(p[7]), int(p[8]), int(p[9]))
+                    dest = cut.cs
+                elif k == "R":
+                    row = (int(p[1]) / 1e4, int(p[2]), int(p[3]), int(p[6]), int(p[7]))
+                    dest = cut.rd
+                elif k == "S":
+                    row = (int(p[1]) / 1e4, int(p[2]), int(p[3]), int(p[4], 16))
+                    dest = cut.sm
+                elif k == "I":
+                    row = (int(p[1]) / 1e4, int(p[2]), int(p[3], 16))
+                    dest = cut.isr
+                elif k == "D":
+                    row = (int(p[1]) / 1e4, int(p[2]), int(p[3], 16))
+                    dest = cut.dpc
+                elif k == "K":
+                    row = (int(p[1]) / 1e4, int(p[3]), int(p[4]), int(p[5]), [int(x, 16) for x in p[6].split(";") if x])
+                    dest = cut.ks
+                elif k == "T":
+                    cut.threads[int(p[3])] = (int(p[2]), int(p[4], 16), int(p[5]), p[6] if len(p) > 6 else "")
+                    continue
+                elif k == "P":
+                    cut.procs[int(p[2])] = p[4]
+                    continue
+                elif k == "M":
+                    base = int(p[3], 16)
+                    name = p[5]
+                    cut.mods[int(p[2])].append((base, base + int(p[4], 16), name.split("\\")[-1].lower(),
+                                                "\\windows\\system32\\" in name.lower()))
+                    continue
+                else:
+                    continue
+            except (ValueError, IndexError):
+                cut.skipped += 1
+                continue
+            if lo is not None and k != "K" and not lo <= row[0] <= hi:
+                if k == "C" and row[0] < lo:
+                    cut.last_on[row[1]] = row[2]
+                continue
+            dest.append(row)
+    for v in cut.mods.values():
+        v.sort()
+    cut.kern = sorted(m for v in cut.mods.values() for m in v if m[0] >= KERNEL)
+    # Time order whatever the order in the file (the K rows stay in file order: the kernel part of a stamp
+    # comes before its user part).
+    for rows in (cut.cs, cut.rd, cut.sm, cut.isr, cut.dpc):
+        rows.sort()
+    return cut
