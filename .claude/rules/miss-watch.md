@@ -153,3 +153,11 @@ paths:
   The zero/repeat watch stays quiet on such a loop (one block of lag, 8
   blocks at most, channel above -60 dBFS).
 - The log keeps 4 x 10 MB: pull a service's lines the same day.
+- Live's test tone plays only while Live's Settings window is open:
+  closing Settings stops it (dasio#207, 25.11.2026: a 200-start run read
+  `nothing checked` from the close on, so it proved nothing). Minimizing
+  the main window keeps it (Settings is hidden, not closed). Keep Settings
+  open for the whole run, read the watch's first tone window before the
+  run starts, and switch the tone off in Settings afterwards. Settings
+  opens through Options > Settings; find its window by EnumWindows on
+  Live's process (a title search also matches AbleSet's "Setlist").
