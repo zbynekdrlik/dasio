@@ -9,6 +9,7 @@ other.exe:2000 runs on CPU 9. The worker waits 0.8 ms on a kernel resource, read
 import contextlib
 import io
 import pathlib
+import random
 import re
 import sys
 import tempfile
@@ -339,6 +340,43 @@ class DumpOptions(Temp):
         for bad in ("a-b", "9-8"):
             with self.subTest(cpus=bad), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 csw_dump.main([CUT, "40", "56", "--proc", "daw.exe", "--cpus", bad])
+
+
+class TruncatedAndShuffled(Temp):
+    def test_last_row_without_its_newline_is_skipped_even_when_it_parses(self):
+        # an S row with all its fields, but cut inside the address: it parses, with a wrong address
+        base = fixture_text()
+        path = self.cut_file(base + "S,455000,8,1000,FFFFF800")
+        cut = cutlib.load(path)
+        self.assertEqual(cut.skipped, 1)
+        self.assertNotIn(0xFFFFF800, [r[3] for r in cut.sm])
+        self.assertEqual(len(cut.sm), len(cutlib.load(CUT).sm))
+        _, out = run(csw_res, path, "--proc", "daw.exe")
+        self.assertIn("1 malformed rows skipped", out)
+
+    def test_a_cut_with_its_final_newline_counts_nothing(self):
+        self.assertEqual(cutlib.load(CUT).skipped, 0)
+
+    def test_malformed_row_outside_the_window_is_counted(self):
+        path = self.cut_file(fixture_text() + "C,990000,x,y\n")
+        _, out = run(csw_dump, path, "44", "55", "--proc", "daw.exe", "--cpus", "8-9")
+        self.assertIn("1 malformed rows skipped", out)
+        self.assertEqual(cutlib.load(path, window=(44, 55)).skipped, 1)
+
+    def test_rows_in_any_order_read_like_rows_in_time_order(self):
+        lines = fixture_text().splitlines()
+        timed = [i for i, l in enumerate(lines) if l[0] in "CRSID"]
+        rows = [lines[i] for i in timed]
+        random.Random(207).shuffle(rows)
+        for i, r in zip(timed, rows):
+            lines[i] = r
+        self.assertNotEqual(lines, fixture_text().splitlines())
+        shuffled = self.cut_file("\n".join(lines) + "\n")
+        for args in (["--tid", "1000"], []):
+            _, ordered = run(csw_an, CUT, "--proc", "daw.exe", *args)
+            _, mixed = run(csw_an, shuffled, "--proc", "daw.exe", *args)
+            self.assertEqual(ordered, mixed)
+        self.assertIn("0.0 .. 99.4 ms", mixed)
 
 
 if __name__ == "__main__":

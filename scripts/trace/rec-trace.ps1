@@ -8,7 +8,8 @@
 # GO LIVE (song -GoLive), then per cycle: jump (the -Songs in turn), 0.5 s, play 1.5 s with record armed, stop, 1 s.
 # REC STOP at the end (song -RecStop). No event in -Max cycles: the trace is cancelled, no file.
 # -GoLive, -Songs and -RecStop are AbleSet setlist indexes of the set being tested; there is no default.
-# -Songs is one comma-separated string (powershell -File does not bind an array).
+# -Songs is one string of numbers separated by commas (powershell -File does not bind an array); an array given
+# in a PowerShell session arrives joined by spaces and is read the same way.
 param([Parameter(Mandatory)][int]$GoLive, [Parameter(Mandatory)][string]$Songs, [Parameter(Mandatory)][int]$RecStop,
       [int]$Max = 400, [string]$Etl = 'C:\ProgramData\dasio\tmp\csw.etl', [string]$Profile = 'C:\ProgramData\dasio\tmp\dasio-csw.wprp!DasioCsw',
       [string]$Log = 'C:\dasio-runs\seq-rec-trace.txt', [string]$Flag = 'C:\dasio-runs\stop.flag', [string]$Osc = '',
@@ -16,9 +17,9 @@ param([Parameter(Mandatory)][int]$GoLive, [Parameter(Mandatory)][string]$Songs, 
 $ErrorActionPreference = 'Stop'
 if (-not $Osc) { $Osc = Join-Path $PSScriptRoot 'ableset-osc.ps1' }
 $songList = @()
-foreach ($x in ($Songs -split ',')) {
+foreach ($x in ($Songs.Trim() -split '[,\s]+')) {
   $n = 0
-  if (-not [int]::TryParse($x.Trim(), [ref]$n)) { throw "-Songs wants song numbers separated by commas, like 7,3,6; got '$Songs'" }
+  if (-not [int]::TryParse($x, [ref]$n)) { throw "-Songs wants song numbers separated by commas, like 7,3,6; got '$Songs'" }
   $songList += $n
 }
 # Runs wpr with its stderr discarded: under 'Stop' a stderr line would end the script. Returns wpr's exit code.
@@ -72,7 +73,10 @@ try {
 } catch { L ('FAILED: ' + $_.Exception.Message)
 } finally {
   # Cancel and close first: Send can throw (no -Osc file, reply port taken) and must not leave a heavy trace running.
-  if ($traced) { try { [void](Wpr @('-cancel')); L 'trace cancelled' } catch { L ('cancel failed: ' + $_.Exception.Message) } }
+  if ($traced) {
+    try { $rc = Wpr @('-cancel'); if ($rc -eq 0) { L 'trace cancelled' } else { L "trace cancel failed exit $rc" } }
+    catch { L ('cancel failed: ' + $_.Exception.Message) }
+  }
   $u.Close()
   try { Send /global/stop } catch { L ('final stop failed: ' + $_.Exception.Message) }
   L 'end'

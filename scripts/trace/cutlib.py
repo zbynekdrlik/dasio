@@ -121,40 +121,59 @@ def load(path, kinds="CRSIDTPMK", window=None, tags=None):
             k = line[:1]
             if not k or k not in kinds:
                 continue
+            if not line.endswith("\n"):
+                # etl-cut.ps1 ends every row with a newline: a last line without one was cut mid-row, and may
+                # still parse as a row with a wrong value.
+                cut.skipped += 1
+                continue
             try:
                 p = line.rstrip("\n").split(",")
-                if k in "CRSIDK":
-                    t = int(p[1]) / 1e4
-                    if lo is not None and k != "K" and not lo <= t <= hi:
-                        if k == "C" and t < lo:
-                            cut.last_on[int(p[2])] = int(p[3])
-                        continue
+                # Every field is checked before the window is applied, so a bad row outside it is counted too.
                 if k == "C":
-                    cut.cs.append((t, int(p[2]), int(p[3]), int(p[4]), int(p[5]), int(p[6]), int(p[7]), int(p[8]), int(p[9])))
+                    row = (int(p[1]) / 1e4, int(p[2]), int(p[3]), int(p[4]), int(p[5]), int(p[6]), int(p[7]), int(p[8]), int(p[9]))
+                    dest = cut.cs
                 elif k == "R":
-                    cut.rd.append((t, int(p[2]), int(p[3]), int(p[6]), int(p[7])))
+                    row = (int(p[1]) / 1e4, int(p[2]), int(p[3]), int(p[6]), int(p[7]))
+                    dest = cut.rd
                 elif k == "S":
-                    cut.sm.append((t, int(p[2]), int(p[3]), int(p[4], 16)))
+                    row = (int(p[1]) / 1e4, int(p[2]), int(p[3]), int(p[4], 16))
+                    dest = cut.sm
                 elif k == "I":
-                    cut.isr.append((t, int(p[2]), int(p[3], 16)))
+                    row = (int(p[1]) / 1e4, int(p[2]), int(p[3], 16))
+                    dest = cut.isr
                 elif k == "D":
-                    cut.dpc.append((t, int(p[2]), int(p[3], 16)))
+                    row = (int(p[1]) / 1e4, int(p[2]), int(p[3], 16))
+                    dest = cut.dpc
                 elif k == "K":
-                    cut.ks.append((t, int(p[3]), int(p[4]), int(p[5]), [int(x, 16) for x in p[6].split(";") if x]))
+                    row = (int(p[1]) / 1e4, int(p[3]), int(p[4]), int(p[5]), [int(x, 16) for x in p[6].split(";") if x])
+                    dest = cut.ks
                 elif k == "T":
                     cut.threads[int(p[3])] = (int(p[2]), int(p[4], 16), int(p[5]), p[6] if len(p) > 6 else "")
+                    continue
                 elif k == "P":
                     cut.procs[int(p[2])] = p[4]
+                    continue
                 elif k == "M":
                     base = int(p[3], 16)
                     name = p[5]
                     cut.mods[int(p[2])].append((base, base + int(p[4], 16), name.split("\\")[-1].lower(),
                                                 "\\windows\\system32\\" in name.lower()))
+                    continue
+                else:
+                    continue
             except (ValueError, IndexError):
                 cut.skipped += 1
+                continue
+            if lo is not None and k != "K" and not lo <= row[0] <= hi:
+                if k == "C" and row[0] < lo:
+                    cut.last_on[row[1]] = row[2]
+                continue
+            dest.append(row)
     for v in cut.mods.values():
         v.sort()
     cut.kern = sorted(m for v in cut.mods.values() for m in v if m[0] >= KERNEL)
+    # Time order whatever the order in the file (the K rows stay in file order: the kernel part of a stamp
+    # comes before its user part).
     for rows in (cut.cs, cut.rd, cut.sm, cut.isr, cut.dpc):
         rows.sort()
     return cut
