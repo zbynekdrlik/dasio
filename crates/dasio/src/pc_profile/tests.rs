@@ -52,7 +52,7 @@ struct Pc {
     hardware_ids: Vec<String>,
     /// When the NIC's keys were written and it started (`nic_times()`
     /// reads `None` without), or the error `nic_times()` gives.
-    nic_times: Option<nic_restart::NicTimes>,
+    nic_times: Option<super::nic_restart::NicTimes>,
     nic_times_err: Option<String>,
     /// The PC's devices, for `[[device]]`.
     dev: device_kind::Fake,
@@ -74,7 +74,7 @@ impl Reader for Pc {
     fn nic_hardware_ids(&self) -> Vec<String> {
         self.hardware_ids.clone()
     }
-    fn nic_times(&self) -> Result<Option<nic_restart::NicTimes>, String> {
+    fn nic_times(&self) -> Result<Option<super::nic_restart::NicTimes>, String> {
         match &self.nic_times_err {
             Some(e) => Err(e.clone()),
             None => Ok(self.nic_times),
