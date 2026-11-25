@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- dasio#207: as dasio-csw.wprp plus a stack at every context switch (the stack of the thread switched in:
+     where it waited). Heavy (1.5 GB ring): a short capture only, seconds, to name the code in an audio thread
+     that waits on a kernel resource.
+     wpr -start <this file>!DasioCswStk    then    wpr -stop <out.etl> -skipPdbGen
+     etl-cut.ps1 keeps the stacks (K rows) only of threads whose last wait was WrResource; read them with csw_stk.py. -->
+<WindowsPerformanceRecorder Version="1.0" Author="dasio" Comments="dasio#207 the audio thread's stack at a lock wait">
+  <Profiles>
+    <SystemCollector Id="DasioCswStkCollector" Name="NT Kernel Logger">
+      <BufferSize Value="1024" />
+      <Buffers Value="1536" />
+    </SystemCollector>
+    <SystemProvider Id="DasioCswStkProvider">
+      <Keywords>
+        <Keyword Value="ProcessThread" />
+        <Keyword Value="Loader" />
+        <Keyword Value="CSwitch" />
+        <Keyword Value="ReadyThread" />
+        <Keyword Value="SampledProfile" />
+        <Keyword Value="Interrupt" />
+        <Keyword Value="DPC" />
+      </Keywords>
+      <Stacks>
+        <Stack Value="CSwitch" />
+      </Stacks>
+    </SystemProvider>
+    <Profile Id="DasioCswStk.Verbose.Memory" Name="DasioCswStk" Description="dasio#207: context switches with stacks" LoggingMode="Memory" DetailLevel="Verbose">
+      <Collectors>
+        <SystemCollectorId Value="DasioCswStkCollector">
+          <SystemProviderId Value="DasioCswStkProvider" />
+        </SystemCollectorId>
+      </Collectors>
+    </Profile>
+  </Profiles>
+</WindowsPerformanceRecorder>

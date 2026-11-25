@@ -27,6 +27,8 @@ jobs:
       - run: cargo fmt --all --check
       # Rules the compiler does not check (dasio#28, E14).
       - run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      # The kernel-trace readers read a synthetic cut; there is no Windows ETW in CI (dasio#207).
+      - run: python3 -m unittest discover -s scripts/trace -p 'test_*.py'
       - run: python3 scripts/integrity.py
 
   supply-chain:
