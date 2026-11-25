@@ -105,8 +105,15 @@ paths:
   no RSS (`Get-NetAdapterRss` finds nothing), its receive DPCs are the
   USB controller's. Not must-have. `apply` writes the values but never
   restarts the NIC (it prints `set ... (takes effect after a restart of
-  the Dante NIC)`), and the check reads the registry, not the running driver:
-  a written NIC value reads fine before the restart. FOH's (0-3,
+  the Dante NIC)`), and the check reads the registry, not the running driver
+  (dasio#26, 0.1.166): `nic_restart::check` compares the last write of the
+  NIC's class and device keys with the adapter's last start
+  (`DEVPKEY_Device_LastArrivalDate`); keys written more than 10 s after it,
+  while a NIC-keyed entry reads as wanted, give ONE non-must problem
+  `the Dante NIC's registry settings: written, NIC not restarted (...)`
+  (`unreadable (...)` when a time cannot be read). It clears after the NIC
+  restarts; not must-have, since install.ps1 applies without restarting and
+  refuses only on exit 2. Key-level time: it cannot name the value. FOH's (0-3,
   base 0) and dsg's hand entries in their site profiles win until the
   rollout removes them; a site overrides all three or none (a lone base
   0 with the computed 3/3 reads 0-3 with 3 processors). The range holds

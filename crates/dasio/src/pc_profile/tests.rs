@@ -15,6 +15,7 @@ mod keep_others;
 mod layout;
 mod must;
 mod nic_driver_kind;
+mod nic_restart;
 mod power;
 mod process_integrity;
 mod system_hive;
@@ -49,6 +50,10 @@ struct Pc {
     absent_err: Option<String>,
     /// The Dante NIC's hardware IDs.
     hardware_ids: Vec<String>,
+    /// When the NIC's keys were written and it started (`nic_times()`
+    /// reads `None` without), or the error `nic_times()` gives.
+    nic_times: Option<nic_restart::NicTimes>,
+    nic_times_err: Option<String>,
     /// The PC's devices, for `[[device]]`.
     dev: device_kind::Fake,
     /// The running processes, for `others_affinity`; `processes()` fails
@@ -68,6 +73,12 @@ impl Reader for Pc {
     }
     fn nic_hardware_ids(&self) -> Vec<String> {
         self.hardware_ids.clone()
+    }
+    fn nic_times(&self) -> Result<Option<nic_restart::NicTimes>, String> {
+        match &self.nic_times_err {
+            Some(e) => Err(e.clone()),
+            None => Ok(self.nic_times),
+        }
     }
     fn devices(&self) -> &dyn Devices {
         &self.dev
