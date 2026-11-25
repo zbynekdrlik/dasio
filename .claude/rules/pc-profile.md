@@ -368,6 +368,26 @@ paths:
   `powercfg /export` Lasso's plan first, `/import` it under a NEW GUID
   after (the deleted copy's GUID is refused), pin that, and set reserved
   CPUs only after Lasso is gone (a second `apply`).
+- A player's own PC (alex-nb, dasio#234, 25.11.2026) comes with its own
+  Lasso rules: `AutomaticGamingModeProcessPaths=ableton live 12 suite.exe`
+  with `GamingChangePowerPlan=true` switched the plan to Balanced at every
+  Live start (System log: ProcessGovernor `reset policy scheme`), and
+  `DefaultAffinitiesEx=ableton live 12 suite.exe,0,2-11` ran Live on
+  dasio's CPUs. The baseline has no entry for those lists: read every
+  `Default*` and `*ProcessPaths` line before the install, give Live a
+  `[[process]]` entry (DAW CPUs), then remove Lasso. Its GUI rewrites
+  prolasso.ini as UTF-16 at start and drops keys it does not know (181 ->
+  161 lines); its uninstaller cleared `ReservedCpuSets` there too (a second
+  `apply`, a reboot to take it).
+- A new PC's other two pieces (alex-nb, 25.11.2026): `install.ps1` sets
+  dtray's autostart (HKLM Run) but does not start it, so start it once
+  for the logged-on user (`explorer.exe "C:\Program Files\dasio\dtray.exe"`).
+  An old DanteSync (`C:\Program Files\DanteSync`, service `dantesync`;
+  alex-nb had 1.18.0) is replaced by dsync through dsync's own
+  `install.ps1`, read and pinned to a commit (raw URL + sha256). It removes
+  the legacy service and folder and Dante Time Sync's leftovers, keeps the
+  data dir, and installs Npcap only when it is missing (the NIC untouched).
+  Read dsync's `[PTP] LOCK` and dasio's `media clock out of holdover` after.
 - Before a PC's Lasso goes: Lasso's `DefaultPriorities` for exes without
   a `[[process]]` entry (FOH: dsend, dlisten above normal, cg below
   normal, dvs_service high) and its I/O, GPU and memory priorities become
