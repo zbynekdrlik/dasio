@@ -388,6 +388,25 @@ paths:
   the legacy service and folder and Dante Time Sync's leftovers, keeps the
   data dir, and installs Npcap only when it is missing (the NIC untouched).
   Read dsync's `[PTP] LOCK` and dasio's `media clock out of holdover` after.
+- A Realtek USB Dante NIC (dasio#237, alex-nb 25.11.2026): the baseline
+  holds `*FlowControl` 0 on every Dante NIC (must-have: a PAUSE stops the
+  whole send queue) and the USB driver's `EnableExtraPowerSaving` 0,
+  `PendingTransmits` 8, `TransmitBufferLen` 64 (dstack#465's standard;
+  absent_ok, so a PCIe NIC is untouched). A driver install RESETS the
+  advanced values (alex-nb's 1153.22: EEE, Green, power saving, URBs and
+  buffers back to the driver's defaults): run `apply` after it and restart
+  the NIC (dead-man), until the check's "written, NIC not restarted" line is
+  gone.
+- Its clock: an RTL8153 (alex-nb, drivers 1153.13 and 1153.22) hands
+  sparse inbound frames to Windows ~1 ms late, so with PTP as its only
+  inbound traffic the PC's PTP follower settles ~0.9-1.0 ms behind the
+  network, and its own packets arrive that much late at every receiver
+  (1.3 ms at iem-mixer against 0.25 ms for band-asio-dante). A/B: an RX flow
+  on gives the follower `PhaseLost { error_ns: -952837 }` within 6 s; the
+  flow off gives +1019325. Until dsync/dstack handle it, such a PC keeps
+  a silent RX flow: alex-klavir RX 1 <- `Null L@foh-abl-yamaha-accelerator`.
+  Read it as the device's RX arrival mean: ~0.00 ms on a lagging PC
+  against 0.2-0.3 ms on mbc and FOH.
 - Before a PC's Lasso goes: Lasso's `DefaultPriorities` for exes without
   a `[[process]]` entry (FOH: dsend, dlisten above normal, cg below
   normal, dvs_service high) and its I/O, GPU and memory priorities become

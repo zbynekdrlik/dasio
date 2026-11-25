@@ -276,9 +276,9 @@ why = "EEE off on every Dante NIC that has this keyword (owner 20.11.2026: EEE o
 key = '{nic_class}'
 name = "*FlowControl"
 string = "0"
-nic_service = "rt640x64"
 must = true
-why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+absent_ok = true
+why = "no PAUSE frames on the Dante NIC, whatever its driver: a PAUSE stops the whole send queue (dstack#425, its NIC standard dstack#465). *FlowControl is the NDIS standard keyword. It was scoped to FOH's rt640x64 (dasio#1); FOH, dsg and mbc read 0, but alex-nb's USB RTL8153 came with 3 (dasio#237). A NIC without the keyword is fine"
 
 [[registry]]
 key = '{nic_class}'
@@ -409,6 +409,27 @@ string = "0"
 nic_service = "rt640x64"
 must = true
 why = "the Dante NIC as tuned on FOH (Realtek 10.79, dasio#1)"
+
+[[registry]]
+key = '{nic_class}'
+name = "EnableExtraPowerSaving"
+string = "0"
+absent_ok = true
+why = "Realtek USB NICs' Idle Power Saving off (dstack#465's standard; mbc's RTL8156 0, alex-nb's RTL8153 came with 1, dasio#237). Realtek USB drivers only; a NIC without the keyword is fine"
+
+[[registry]]
+key = '{nic_class}'
+name = "PendingTransmits"
+string = "8"
+absent_ok = true
+why = "8 transmit URBs on a Realtek USB Dante NIC (dstack#465's standard: 3 -> 8 cut late packets on mbc and dsg; alex-nb's RTL8153 came with 4, dasio#237). Realtek USB drivers only"
+
+[[registry]]
+key = '{nic_class}'
+name = "TransmitBufferLen"
+string = "64"
+absent_ok = true
+why = "64 transmit buffers on a Realtek USB Dante NIC (dstack#465's standard with PendingTransmits 8; alex-nb's RTL8153 came with 32, dasio#237). Realtek USB drivers only"
 
 [[registry]]
 key = '{nic_class}'
