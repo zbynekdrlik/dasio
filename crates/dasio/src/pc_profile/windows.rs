@@ -6,7 +6,8 @@
 use std::path::Path;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_SUCCESS, HANDLE, INVALID_HANDLE_VALUE,
+    CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_SUCCESS, FILETIME, HANDLE,
+    INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Security::{
     GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TOKEN_MANDATORY_LABEL,
@@ -19,7 +20,7 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
 use windows_sys::Win32::System::Registry::{
     HKEY, HKEY_LOCAL_MACHINE, HKEY_USERS, KEY_READ, REG_BINARY, REG_DWORD, REG_EXPAND_SZ,
     REG_MULTI_SZ, REG_QWORD, REG_SZ, RRF_RT_ANY, RegCloseKey, RegEnumKeyExW, RegGetValueW,
-    RegOpenKeyExW, RegSetKeyValueW,
+    RegOpenKeyExW, RegQueryInfoKeyW, RegSetKeyValueW,
 };
 use windows_sys::Win32::System::Threading::{
     ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, GetPriorityClass,
@@ -123,6 +124,9 @@ pub struct Pc {
     nic_service: Option<String>,
     /// The Dante NIC's hardware IDs (its Enum key's `HardwareID`).
     nic_hardware_ids: Vec<String>,
+    /// The Dante NIC's device instance path (its Enum key's name), for the
+    /// time it last started.
+    nic_instance: Option<String>,
     /// The Dante NIC's device instance path, then its parents' (empty when
     /// not read: `[[device]]` then disables nothing).
     nic_chain: Vec<String>,
@@ -163,6 +167,7 @@ impl Pc {
             nic_device,
             nic_service,
             nic_hardware_ids,
+            nic_instance: instance.clone(),
             // Walked only for a profile with devices: no entry, nothing to
             // guard (and no warning for a NIC not read).
             nic_chain: match instance.as_deref() {
@@ -244,6 +249,24 @@ impl Reader for Pc {
 
     fn nic_hardware_ids(&self) -> Vec<String> {
         self.nic_hardware_ids.clone()
+    }
+
+    fn nic_times(&self) -> Result<Option<super::nic_restart::NicTimes>, String> {
+        use super::nic_restart::{NicTimes, filetime_secs};
+        let (Some(class), Some(dev), Some(id)) = (
+            self.nic_class.as_deref(),
+            self.nic_device.as_deref(),
+            self.nic_instance.as_deref(),
+        ) else {
+            return Ok(None);
+        };
+        // The later of the two keys the entries sit on (dasio#26).
+        let written = key_last_write(class)?.max(key_last_write(dev)?);
+        let started = device::last_arrival(id)?;
+        Ok(Some(NicTimes {
+            keys_written: filetime_secs(written),
+            started: filetime_secs(started),
+        }))
     }
 
     fn devices(&self) -> &dyn Devices {
@@ -420,6 +443,50 @@ fn key_exists(key: &str) -> Result<bool, String> {
         return Ok(false);
     }
     Err(format!(r"HKLM\{key}: os error {r}"))
+}
+
+/// When HKLM\`key` was last written, as FILETIME ticks (dasio#26).
+fn key_last_write(key: &str) -> Result<u64, String> {
+    let mut h: HKEY = std::ptr::null_mut();
+    let k = wide(key);
+    // SAFETY: a valid name; the key is closed below when opened.
+    let r = unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, k.as_ptr(), 0, KEY_READ, &mut h) };
+    // A key not there was never written (the device key exists only once
+    // something is set on it).
+    if r == ERROR_FILE_NOT_FOUND {
+        return Ok(0);
+    }
+    if r != ERROR_SUCCESS {
+        return Err(format!(r"HKLM\{key}: os error {r}"));
+    }
+    let mut ft = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    // SAFETY: an open key; every optional out is null except the last
+    // write time, one writable FILETIME.
+    let r = unsafe {
+        RegQueryInfoKeyW(
+            h,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut ft,
+        )
+    };
+    // SAFETY: opened above.
+    unsafe { RegCloseKey(h) };
+    if r != ERROR_SUCCESS {
+        return Err(format!(r"HKLM\{key}: last write time: os error {r}"));
+    }
+    Ok((u64::from(ft.dwHighDateTime) << 32) | u64::from(ft.dwLowDateTime))
 }
 
 /// The scheduled tasks `pattern` names, by their full path: each task is

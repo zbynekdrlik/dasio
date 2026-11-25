@@ -61,6 +61,7 @@ pub mod hold;
 pub mod keep;
 pub mod layout;
 pub mod nic_driver;
+pub mod nic_restart;
 mod os_text;
 pub(crate) mod power;
 mod process;
@@ -320,6 +321,10 @@ pub trait Reader {
     /// The Dante NIC's PnP hardware IDs (its Enum key's `HardwareID`),
     /// most specific first; empty when the NIC was not found.
     fn nic_hardware_ids(&self) -> Vec<String>;
+    /// When the Dante NIC's registry keys were last written and its adapter
+    /// last started ([`nic_restart`], dasio#26); `Ok(None)` when the NIC
+    /// was not found.
+    fn nic_times(&self) -> Result<Option<nic_restart::NicTimes>, String>;
     /// The PC's devices, for `[[device]]` ([`device`]).
     fn devices(&self) -> &dyn Devices;
     /// Every running process the keeper could open to set, with the PC's
@@ -823,6 +828,7 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
         }
     }
     out.extend(absent::check(&p.absent, r));
+    out.extend(nic_restart::check(p, r));
     out.extend(nic_driver::check(&p.nic_driver, r));
     out.extend(device::check(&p.device, r.devices()));
     out

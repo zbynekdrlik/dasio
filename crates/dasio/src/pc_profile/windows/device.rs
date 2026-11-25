@@ -15,7 +15,8 @@ use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
     CR_REMOVE_VETOED, CR_SUCCESS, DN_HAS_PROBLEM, MAX_DEVICE_ID_LEN,
 };
 use windows_sys::Win32::Devices::Properties::{
-    DEVPKEY_Device_Children, DEVPKEY_Device_RemovalRelations, DEVPROP_TYPE_STRING_LIST,
+    DEVPKEY_Device_Children, DEVPKEY_Device_LastArrivalDate, DEVPKEY_Device_RemovalRelations,
+    DEVPROP_TYPE_FILETIME, DEVPROP_TYPE_STRING_LIST,
 };
 use windows_sys::Win32::Foundation::DEVPROPKEY;
 
@@ -227,6 +228,38 @@ fn string_list(dev: u32, key: &DEVPROPKEY, what: &str) -> Result<Vec<String>, St
         }
     }
     Err(format!("{what}: still growing after {LIST_TRIES} reads"))
+}
+
+/// When device `id` last arrived, i.e. started, as FILETIME ticks
+/// (DEVPKEY_Device_LastArrivalDate, dasio#26): what a written NIC value is
+/// compared with. An error when the device is not on this PC or the
+/// property is missing or not a time.
+pub fn last_arrival(id: &str) -> Result<u64, String> {
+    let Some((dev, _)) = locate(id)? else {
+        return Err(format!("device {id}: not on this PC"));
+    };
+    let mut ticks = 0u64;
+    let mut len = std::mem::size_of::<u64>() as u32;
+    let mut kind = 0u32;
+    // SAFETY: a devnode handle from CM_Locate_DevNode, a property key, an
+    // out type, and an 8-byte buffer for a FILETIME, its size in `len`.
+    let cr = unsafe {
+        CM_Get_DevNode_PropertyW(
+            dev,
+            &DEVPKEY_Device_LastArrivalDate,
+            &mut kind,
+            (&mut ticks as *mut u64).cast(),
+            &mut len,
+            0,
+        )
+    };
+    match cr {
+        CR_SUCCESS if kind == DEVPROP_TYPE_FILETIME && len == 8 => Ok(ticks),
+        CR_SUCCESS => Err(format!(
+            "its last arrival: property type {kind}, {len} bytes, not a FILETIME"
+        )),
+        cr => Err(cr_text("reading its last arrival", cr)),
+    }
 }
 
 /// What stops with `id` when it stops, one step: its children and its
