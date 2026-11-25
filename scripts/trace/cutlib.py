@@ -2,6 +2,10 @@
 
 The csw_*.py tools all start from `load()`. Row formats are documented in the header of etl-cut.ps1.
 Times in a cut are 100 ns steps from the cut's -AtUtc; `load()` turns them into milliseconds.
+
+R rows (a thread made ready) carry byTid/byPid from the event header; in a kernel trace both read 4294967295.
+The readers ignore them and take the thread running on that CPU at that time as the waker.
+A row that cannot be parsed (a cut interrupted mid-line) is skipped and counted in `Cut.skipped`.
 """
 import bisect
 import collections
@@ -58,6 +62,7 @@ class Cut:
         self.kern = []      # the modules at kernel addresses, sorted
         self.cs, self.rd, self.sm, self.isr, self.dpc, self.ks = [], [], [], [], [], []
         self.last_on = {}   # cpu -> the thread switched in last before the window
+        self.skipped = 0    # rows that could not be parsed
 
     def mod(self, pid, addr):
         """`file+offset` of the module holding `addr`, else the bare address."""
@@ -82,9 +87,28 @@ class Cut:
         return self.tags.get(img.lower(), img)
 
     def pids(self, images):
-        """pid -> image for every process whose image is one of `images` (case ignored)."""
+        """pid -> image for ALL processes whose image is one of `images` (case ignored): an earlier, dead process
+        with the same image is still in the P rows, and a reader works on the threads of every one of them."""
         want = {i.lower() for i in images}
-        return {p: n for p, n in self.procs.items() if n.lower() in want}
+        return {p: n for p, n in sorted(self.procs.items()) if n.lower() in want}
+
+    def need_pids(self, images):
+        """Like `pids`, but prints `no process X in the cut` for each image that is missing and returns None then
+        (a reader ends with exit code 1)."""
+        found = self.pids(images)
+        have = {n.lower() for n in found.values()}
+        missing = [i for i in images if i.lower() not in have]
+        for i in missing:
+            print("no process", i, "in the cut")
+        return None if missing else found
+
+    def threads_of(self, pids):
+        """The tids of every thread of the given pids."""
+        return {t for t, v in self.threads.items() if v[0] in pids}
+
+    def report_skipped(self):
+        if self.skipped:
+            print(f"{self.skipped} malformed rows skipped")
 
 
 def load(path, kinds="CRSIDTPMK", window=None, tags=None):
@@ -97,34 +121,37 @@ def load(path, kinds="CRSIDTPMK", window=None, tags=None):
             k = line[:1]
             if not k or k not in kinds:
                 continue
-            p = line.rstrip("\n").split(",")
-            if k in "CRSIDK":
-                t = int(p[1]) / 1e4
-                if lo is not None and k != "K" and not lo <= t <= hi:
-                    if k == "C" and t < lo:
-                        cut.last_on[int(p[2])] = int(p[3])
-                    continue
-            if k == "C":
-                cut.cs.append((t, int(p[2]), int(p[3]), int(p[4]), int(p[5]), int(p[6]), int(p[7]), int(p[8]), int(p[9])))
-            elif k == "R":
-                cut.rd.append((t, int(p[2]), int(p[3]), int(p[6]), int(p[7])))
-            elif k == "S":
-                cut.sm.append((t, int(p[2]), int(p[3]), int(p[4], 16)))
-            elif k == "I":
-                cut.isr.append((t, int(p[2]), int(p[3], 16)))
-            elif k == "D":
-                cut.dpc.append((t, int(p[2]), int(p[3], 16)))
-            elif k == "K":
-                cut.ks.append((t, int(p[3]), int(p[4]), int(p[5]), [int(x, 16) for x in p[6].split(";") if x]))
-            elif k == "T":
-                cut.threads[int(p[3])] = (int(p[2]), int(p[4], 16), int(p[5]), p[6] if len(p) > 6 else "")
-            elif k == "P":
-                cut.procs[int(p[2])] = p[4]
-            elif k == "M":
-                base = int(p[3], 16)
-                name = p[5]
-                cut.mods[int(p[2])].append((base, base + int(p[4], 16), name.split("\\")[-1].lower(),
-                                            "\\windows\\system32\\" in name.lower()))
+            try:
+                p = line.rstrip("\n").split(",")
+                if k in "CRSIDK":
+                    t = int(p[1]) / 1e4
+                    if lo is not None and k != "K" and not lo <= t <= hi:
+                        if k == "C" and t < lo:
+                            cut.last_on[int(p[2])] = int(p[3])
+                        continue
+                if k == "C":
+                    cut.cs.append((t, int(p[2]), int(p[3]), int(p[4]), int(p[5]), int(p[6]), int(p[7]), int(p[8]), int(p[9])))
+                elif k == "R":
+                    cut.rd.append((t, int(p[2]), int(p[3]), int(p[6]), int(p[7])))
+                elif k == "S":
+                    cut.sm.append((t, int(p[2]), int(p[3]), int(p[4], 16)))
+                elif k == "I":
+                    cut.isr.append((t, int(p[2]), int(p[3], 16)))
+                elif k == "D":
+                    cut.dpc.append((t, int(p[2]), int(p[3], 16)))
+                elif k == "K":
+                    cut.ks.append((t, int(p[3]), int(p[4]), int(p[5]), [int(x, 16) for x in p[6].split(";") if x]))
+                elif k == "T":
+                    cut.threads[int(p[3])] = (int(p[2]), int(p[4], 16), int(p[5]), p[6] if len(p) > 6 else "")
+                elif k == "P":
+                    cut.procs[int(p[2])] = p[4]
+                elif k == "M":
+                    base = int(p[3], 16)
+                    name = p[5]
+                    cut.mods[int(p[2])].append((base, base + int(p[4], 16), name.split("\\")[-1].lower(),
+                                                "\\windows\\system32\\" in name.lower()))
+            except (ValueError, IndexError):
+                cut.skipped += 1
     for v in cut.mods.values():
         v.sort()
     cut.kern = sorted(m for v in cut.mods.values() for m in v if m[0] >= KERNEL)

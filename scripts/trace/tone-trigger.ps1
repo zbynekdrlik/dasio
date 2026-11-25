@@ -10,15 +10,19 @@ $ErrorActionPreference = 'Stop'
 "start $((Get-Date).ToUniversalTime().ToString('HH:mm:ss.fff'))" | Set-Content $Out
 $share = [IO.FileShare]'ReadWrite,Delete'
 $u = New-Object Net.Sockets.UdpClient
-$fs = New-Object IO.FileStream($Log, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
-$pos = $fs.Length; $buf = New-Object byte[] 65536; $carry = ''; $hit = $null; $turns = 0
+$fs = $null; $buf = New-Object byte[] 65536; $carry = ''; $hit = $null; $turns = 0
+# One decoder for the whole file: a read can end inside a multibyte UTF-8 character.
+$dec = [Text.Encoding]::UTF8.GetDecoder()
 $end = [DateTime]::UtcNow.AddMinutes($Minutes)
 try {
+  $fs = New-Object IO.FileStream($Log, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
+  $pos = $fs.Length
   while ([DateTime]::UtcNow -lt $end -and -not $hit) {
     $len = $fs.Length
     if ($len -gt $pos) {
       $fs.Position = $pos; $n = $fs.Read($buf, 0, [int][Math]::Min([int64]$buf.Length, $len - $pos)); $pos += $n
-      $lines = ($carry + [Text.Encoding]::UTF8.GetString($buf, 0, $n)).Split("`n"); $carry = $lines[$lines.Count - 1]
+      $chars = New-Object char[] ($n + 4); $cn = $dec.GetChars($buf, 0, $n, $chars, 0)
+      $lines = ($carry + [string]::new($chars, 0, $cn)).Split("`n"); $carry = $lines[$lines.Count - 1]
       for ($i = 0; $i -lt $lines.Count - 1; $i++) {
         if ($lines[$i] -match 'a watched test tone broke|a watched program output looped') { $hit = $lines[$i]; break }
       }
@@ -26,7 +30,7 @@ try {
       Start-Sleep -Milliseconds 40
       # The log rotates at 10 MB: the open handle then stays on the renamed file.
       if ((++$turns % 100) -eq 0 -and (New-Object IO.FileInfo($Log)).Length -lt $pos) {
-        $fs.Close(); $fs = New-Object IO.FileStream($Log, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share); $pos = 0; $carry = ''
+        $fs.Close(); $fs = New-Object IO.FileStream($Log, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share); $pos = 0; $carry = ''; $dec.Reset()
       }
     }
   }
@@ -36,4 +40,4 @@ try {
     "hit $((Get-Date).ToUniversalTime().ToString('HH:mm:ss.fff')) $hit" | Add-Content $Out
   } else { 'timeout' | Add-Content $Out }
 } catch { "FAILED: $_" | Add-Content $Out
-} finally { $fs.Close(); $u.Close(); 'end' | Add-Content $Out }
+} finally { if ($fs) { $fs.Close() }; $u.Close(); 'end' | Add-Content $Out }

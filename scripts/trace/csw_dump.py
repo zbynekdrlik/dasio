@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """dasio#207: every row of a trace cut (etl-cut.ps1) between two times, with names.
 
-    csw_dump.py <cut file> FROM_MS TO_MS --proc daw.exe [--tag NAME=image.exe] [--cpus 8-15] [--all] [--no-samples]
+    csw_dump.py <cut file> FROM_MS TO_MS --proc daw.exe [--tag NAME=image.exe] [--cpus 8-15 | --cpus 3] [--all] [--no-samples]
 
 Switches on the given CPUs (any process), wake-ups of the process's threads (any CPU), samples and DPCs on the
 given CPUs. --all also lists wake-ups of other processes' threads made on those CPUs.
@@ -19,17 +19,29 @@ def main(argv=None) -> int:
     ap.add_argument("lo", type=float)
     ap.add_argument("hi", type=float)
     ap.add_argument("--proc", required=True, help="image name of the process whose wake-ups are listed")
-    ap.add_argument("--cpus", default="8-15")
+    ap.add_argument("--cpus", default="8-15",
+                    help="the CPUs to list: one (3) or a range (8-15). The default is the DAW CPUs of one PC layout; "
+                         "give your own")
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--no-samples", action="store_true")
     cutlib.add_tag_option(ap)
     a = ap.parse_args(argv)
-    c0, c1 = (int(x) for x in a.cpus.split("-"))
+    try:
+        c0, _, c1 = a.cpus.partition("-")
+        c0 = int(c0)
+        c1 = int(c1) if c1 else c0
+    except ValueError:
+        ap.error(f"--cpus wants N or A-B, got {a.cpus!r}")
+    if c1 < c0:
+        ap.error(f"--cpus range {a.cpus!r} runs backwards")
     cut = cutlib.load(a.cut, kinds="CRSDTPM", window=(a.lo, a.hi), tags=cutlib.parse_tags(a.tag))
     mod, who = cut.mod, cut.who
 
-    pid = next(iter(cut.pids([a.proc])), -1)
-    mine = {t for t, v in cut.threads.items() if v[0] == pid}
+    cut.report_skipped()
+    pids = cut.need_pids([a.proc])
+    if pids is None:
+        return 1
+    mine = cut.threads_of(pids)
     rows = ([(r[0], "C", r) for r in cut.cs] + [(r[0], "R", r) for r in cut.rd]
             + [(r[0], "S", r) for r in cut.sm] + [(r[0], "D", r) for r in cut.dpc])
     rows.sort(key=lambda r: r[0])

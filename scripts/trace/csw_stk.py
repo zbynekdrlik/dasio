@@ -92,7 +92,11 @@ def main(argv=None) -> int:
             return f"{name}+{rva:x}"
         return f"{addr:x}"
 
-    two = {p: cut.label(p) for p in cut.pids(a.proc)}
+    cut.report_skipped()
+    found = cut.need_pids(a.proc)
+    if found is None:
+        return 1
+    two = {p: cut.label(p) for p in found}
     audio = set()
     for tid, v in threads.items():
         if v[0] in two:

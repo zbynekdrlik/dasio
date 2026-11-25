@@ -37,15 +37,20 @@ def main(argv=None) -> int:
         else:
             print(f"thread {tid}: not in the thread list")
 
-    pid = next(iter(cut.pids([a.proc])), -1)
+    cut.report_skipped()
+    pids = cut.need_pids([a.proc])
+    if pids is None:
+        return 1
     audio = set()
     for tid, v in threads.items():
-        if v[0] != pid:
+        if v[0] not in pids:
             continue
+        pid = v[0]
         start = mod(pid, v[1])
         if cutlib.is_audio_thread(v[3], start, a.audio_module):
             audio.add(tid)
-    print(f"{a.proc} pid {pid}: {len(audio)} audio threads")
+    pidtxt = ",".join(str(p) for p in pids)
+    print(f"{a.proc} pid {pidtxt}: {len(audio)} audio threads")
 
     by_cpu = collections.defaultdict(list)
     for c in cs:
@@ -77,22 +82,28 @@ def main(argv=None) -> int:
         i = bisect.bisect_right(ins[old], t)
         back = ins[old][i] if i < len(ins[old]) else None
         dur = (back - t) * 1000.0 if back is not None else -1.0
-        kinds[(WAIT.get(reason, reason), dur >= a.min_us)] += 1
+        kinds[(WAIT.get(reason, reason), "out" if dur < 0 else "long" if dur >= a.min_us else "short")] += 1
         if dur >= a.min_us or dur < 0:
             j = bisect.bisect_right(rdy[old], (t, 99))
             r = rdy[old][j] if j < len(rdy[old]) else None
             by = who(running(r[1], r[0])) if r else "?"
             s = smp[old]
             q = bisect.bisect_right(s, (t, 1 << 70)) - 1
-            last = f"{mod(pid, s[q][1])} ({(t - s[q][0]):.2f} ms before)" if q >= 0 else "-"
+            last = f"{mod(threads[old][0], s[q][1])} ({(t - s[q][0]):.2f} ms before)" if q >= 0 else "-"
             found.append((dur, t, who(old), WAIT.get(reason, reason), by, last))
     print("switch-outs of audio threads that are not the wait for work, by reason (long = at least "
           f"{a.min_us:.0f} us):")
-    for (k, long_), n in sorted(kinds.items(), key=lambda x: -x[1]):
-        print(f"  {k:20} {'long ' if long_ else 'short'} x{n}")
-    print(f"\nthe long ones ({len(found)}), longest first:")
-    for dur, t, w, k, by, last in sorted(found, reverse=True)[: a.rows]:
+    labels = {"long": "long ", "short": "short", "out": "still out at the cut's end"}
+    for (k, kind), n in sorted(kinds.items(), key=lambda x: -x[1]):
+        print(f"  {k:20} {labels[kind]} x{n}")
+    done = [f for f in found if f[0] >= 0]
+    still = [f for f in found if f[0] < 0]
+    print(f"\nthe long ones ({len(done)}), longest first:")
+    for dur, t, w, k, by, last in sorted(done, reverse=True)[: a.rows]:
         print(f"  {dur:9.0f} us at {t:10.3f} ms  {w:28} {k:18} made ready by {by:34} last sample {last}")
+    print(f"\nstill out at the cut's end ({len(still)}):")
+    for dur, t, w, k, by, last in sorted(still, key=lambda f: f[1])[: a.rows]:
+        print(f"  out at {t:10.3f} ms  {w:28} {k:18} made ready by {by:34} last sample {last}")
     return 0
 
 

@@ -17,7 +17,11 @@ Found why master Ableton clicked (25.11.2026). Tools: `dasio-csw.wprp`, `dasio-c
   The ring is shared, not per CPU.
 - The trigger: `rec-trace.ps1` listens on UDP and stops the trace; `tone-trigger.ps1` on the PC that listens to the
   tone sends at the first `a watched test tone broke` / `a watched program output looped` line of dasio.log
-  (about 0.2 s after the log line). `-GoLive`, `-Songs`, `-RecStop` are the AbleSet setlist indexes of the set.
+  (about 0.2 s after the log line). `-GoLive`, `-Songs` (one string: `-Songs 7,3,6,4,5`), `-RecStop` are the AbleSet
+  setlist indexes of the set. `rec-trace.ps1` finds `ableset-osc.ps1` beside itself unless `-Osc` is given.
+- A reader ends with exit 1 and `no process X in the cut` when `--proc` is not in the cut; a damaged cut (stopped
+  mid-line) is read, the bad rows are skipped and counted (`N malformed rows skipped`). `--proc` matches every pid of
+  the image (a dead earlier process stays in the P rows).
 - Not tracerpt: 3.8 MB/s of CSV (14 min for 231 MB). `etl-cut.ps1` uses the ETW consumer API from PowerShell
   (the offsets of EVENT_TRACE_LOGFILEW it uses: callback at 424, mode at 28). Verified by the header read-back in
   the summary: cpus, pointer size, perf_freq. If these look wrong, the offsets are wrong; do not trust the rows.
@@ -30,7 +34,8 @@ Found why master Ableton clicked (25.11.2026). Tools: `dasio-csw.wprp`, `dasio-c
   guess (the most regular thread) is wrong.
 - `Waiting/WrResource` = a kernel lock; the window lock when the wakers are other processes' GUI threads.
   `WrAlertByThreadId` = a user-mode lock.
-- ReadyThread rows carry no waker: the waker is the thread running on that CPU at that time (the tools say so).
+- R rows (ReadyThread) carry byTid/byPid from the event header; in a kernel trace both read 4294967295, so the readers
+  ignore them and take the thread running on that CPU at that time as the waker.
 - ISR-MSI is opcode 50.
 - `csw_stk.py` joins the kernel and the user part of a stack by its stamp and names system dll exports from
   `C:\Windows\System32` of the PC it runs on.

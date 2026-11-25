@@ -34,13 +34,20 @@ def main(argv=None) -> int:
             ss = collections.Counter(mod(t[0], ip).split("+")[0] for _, _, st, ip in sm if st == tid)
             print(f"thread {tid}: {who(tid)} base pri {t[2]} start {mod(t[0], t[1])}; samples: {ss.most_common(8)}")
 
-    two = {p: cut.label(p) for p in cut.pids(a.proc)}
-    for pid, tag in two.items():
+    cut.report_skipped()
+    found = cut.need_pids(a.proc)
+    if found is None:
+        return 1
+    two = {p: cut.label(p) for p in found}
+    by_tag = {}     # every pid of one image shown under one label
+    for p, tag in two.items():
+        by_tag.setdefault(tag, set()).add(p)
+    for tag, tpids in by_tag.items():
         audio, main = set(), set()
         for tid, v in threads.items():
-            if v[0] != pid:
+            if v[0] not in tpids:
                 continue
-            start = mod(pid, v[1])
+            start = mod(v[0], v[1])
             if cutlib.is_audio_thread(v[3], start, a.audio_module):
                 audio.add(tid)
             if v[3] == "MainThread":
@@ -49,7 +56,7 @@ def main(argv=None) -> int:
             user, kernel, kip = collections.Counter(), collections.Counter(), collections.Counter()
             for _, _, st, ip in sm:
                 if st in group:
-                    m = mod(pid, ip)
+                    m = mod(threads[st][0], ip)
                     if ip >= KERNEL:
                         kernel[m.split("+")[0]] += 1
                         if not m.startswith("ntoskrnl"):
@@ -97,7 +104,8 @@ def main(argv=None) -> int:
         print(f"  x{n:4} total {tot[(w, by)]:8.0f} us  {w:30} made ready by {by}")
     print("the 25 longest:")
     for t, dur, w, by in sorted(waits, key=lambda x: -x[1])[:25]:
-        print(f"  {dur:8.0f} us at {t:10.3f} ms  {w:30} made ready by {by}")
+        print(f"  {dur:8.0f} us at {t:10.3f} ms  {w:30} made ready by {by}" if dur >= 0
+              else f"  still out at {t:10.3f} ms  {w:30} made ready by {by}")
     return 0
 
 

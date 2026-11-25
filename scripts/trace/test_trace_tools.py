@@ -11,6 +11,7 @@ import io
 import pathlib
 import re
 import sys
+import tempfile
 import unittest
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -26,6 +27,30 @@ import cutlib  # noqa: E402
 CUT = str(HERE / "fixtures" / "mini.cut")
 
 
+READERS = [csw_an, csw_res, csw_smp, csw_stk, csw_dump]
+
+
+def args_for(tool, path, image):
+    """The command line of a reader for one image, whatever its positional arguments are."""
+    if tool is csw_dump:
+        return [path, "40", "50", "--proc", image]
+    return [path, "--proc", image]
+
+
+class Temp(unittest.TestCase):
+    def cut_file(self, text):
+        """Write a cut to a temp file (removed when the test ends)."""
+        f = tempfile.NamedTemporaryFile("w", suffix=".cut", delete=False, encoding="utf-8", newline="\n")
+        f.write(text)
+        f.close()
+        self.addCleanup(pathlib.Path(f.name).unlink)
+        return f.name
+
+
+def fixture_text():
+    return pathlib.Path(CUT).read_text(encoding="utf-8")
+
+
 def run(tool, *args):
     """Run a tool's main() on the fixture; return (exit code, stdout)."""
     out = io.StringIO()
@@ -34,7 +59,7 @@ def run(tool, *args):
     return code, out.getvalue()
 
 
-class Analyse(unittest.TestCase):
+class Analyse(Temp):
     def test_finds_the_gap_and_the_audio_thread_given_tid(self):
         code, out = run(csw_an, CUT, "--proc", "daw.exe", "--tid", "1000")
         self.assertEqual(code, 0)
@@ -66,7 +91,7 @@ class Analyse(unittest.TestCase):
         self.assertNotIn("daw.exe:1000", out)
 
 
-class Resources(unittest.TestCase):
+class Resources(Temp):
     def test_lists_a_wrresource_wait_with_duration_and_waker(self):
         code, out = run(csw_res, CUT, "--proc", "daw.exe")
         self.assertEqual(code, 0)
@@ -101,7 +126,7 @@ class Resources(unittest.TestCase):
         self.assertIn("daw.exe pid 100: 3 audio threads", out)
 
 
-class Stacks(unittest.TestCase):
+class Stacks(Temp):
     def test_groups_a_kernel_and_user_stack_by_stamp(self):
         code, out = run(csw_stk, CUT, "--proc", "daw.exe")
         self.assertEqual(code, 0)
@@ -124,17 +149,17 @@ class Stacks(unittest.TestCase):
             csw_stk.main([CUT])
 
 
-class Samples(unittest.TestCase):
+class Samples(Temp):
     def test_counts_samples_per_module_and_lists_both_waits(self):
         code, out = run(csw_smp, CUT, "--proc", "daw.exe", "--proc", "other.exe")
         self.assertEqual(code, 0)
-        self.assertRegex(out, r"daw\.exe audio threads \(2\): samples user 1, kernel 0")
+        self.assertRegex(out, r"daw\.exe audio threads \(2\): samples user 1, kernel 2")
         self.assertIn("user modules: card_asio.dll x1", out)
-        self.assertIn("WrResource waits of the processes' threads: 2", out)
+        self.assertIn("WrResource waits of the processes' threads: 3", out)
         self.assertRegex(out, r"x\s+1 total\s+8600 us\s+daw\.exe:1000\s+made ready by other\.exe:2000\(gui\)")
 
 
-class Dump(unittest.TestCase):
+class Dump(Temp):
     def test_lists_rows_in_the_window_only(self):
         code, out = run(csw_dump, CUT, "44", "55", "--proc", "daw.exe", "--cpus", "8-9")
         self.assertEqual(code, 0)
@@ -149,7 +174,7 @@ class Dump(unittest.TestCase):
         self.assertIn("cpu9: other.exe:2000(gui)", out.splitlines()[0])
 
 
-class Lib(unittest.TestCase):
+class Lib(Temp):
     def test_tag_parsing(self):
         self.assertEqual(cutlib.parse_tags(["A=Foo.exe"]), {"foo.exe": "A"})
         self.assertEqual(cutlib.parse_tags([]), {})
@@ -161,6 +186,159 @@ class Lib(unittest.TestCase):
         self.assertEqual(cut.mod(100, 0x10002000), "card_asio.dll+2000")
         self.assertEqual(cut.mod(0, 0xFFFFF80000200010), "card.sys+10")
         self.assertTrue(re.fullmatch(r"[0-9a-f]+", cut.mod(100, 0x5000)))
+
+
+def tid_rows(tid, pid, name):
+    return f"T,1,{pid},{tid},10001000,15,{name}"
+
+
+class Findings(Temp):
+    """Edge cases found in review: unknown process, damaged cuts, several pids of one image, option handling."""
+
+    def test_unknown_process_ends_with_exit_1_in_every_reader(self):
+        for tool in READERS:
+            with self.subTest(tool=tool.__name__):
+                code, out = run(tool, *args_for(tool, CUT, "nothere.exe"))
+                self.assertEqual(code, 1)
+                self.assertIn("no process nothere.exe in the cut", out)
+
+    def test_one_missing_image_of_several_ends_with_exit_1(self):
+        for tool in (csw_smp, csw_stk):
+            code, out = run(tool, CUT, "--proc", "daw.exe", "--proc", "nothere.exe")
+            self.assertEqual(code, 1)
+            self.assertIn("no process nothere.exe in the cut", out)
+
+    def test_empty_cut_ends_with_exit_1_not_a_traceback(self):
+        path = self.cut_file("")
+        for tool in READERS:
+            with self.subTest(tool=tool.__name__):
+                code, out = run(tool, *args_for(tool, path, "daw.exe"))
+                self.assertEqual(code, 1)
+                self.assertIn("no process daw.exe in the cut", out)
+
+    def test_truncated_last_row_is_skipped_and_counted(self):
+        path = self.cut_file(fixture_text() + "C,123,4")
+        for tool in READERS:
+            with self.subTest(tool=tool.__name__):
+                code, out = run(tool, *args_for(tool, path, "daw.exe"))
+                self.assertEqual(code, 0)
+                self.assertIn("1 malformed rows skipped", out)
+
+    def test_clean_cut_prints_no_malformed_line(self):
+        for tool in READERS:
+            _, out = run(tool, *args_for(tool, CUT, "daw.exe"))
+            self.assertNotIn("malformed", out)
+
+    def test_several_garbage_rows_are_all_counted_and_the_good_rows_still_read(self):
+        # each reader counts only the row kinds it reads: csw_res not K, csw_stk not S
+        path = self.cut_file(fixture_text() + "C,x,y\nS,1\nK,5\nM,1,2\nT,1\n")
+        code, out = run(csw_res, path, "--proc", "daw.exe")
+        self.assertEqual(code, 0)
+        self.assertIn("4 malformed rows skipped", out)
+        self.assertIn("the long ones (2)", out)
+        code, out = run(csw_stk, path, "--proc", "daw.exe")
+        self.assertEqual(code, 0)
+        self.assertIn("4 malformed rows skipped", out)
+        self.assertIn("stacks of those threads after a WrResource wait: 2", out)
+
+    def test_every_pid_of_an_image_is_read(self):
+        # a dead earlier daw.exe (pid 101) with an audio worker that waited 2 ms on a kernel resource
+        extra = ("P,1,101,4,daw.exe\n" + tid_rows(1010, 101, "AudioCalc") + "\n"
+                 + "M,10,101,10000000,100000,\\Device\\X\\card_asio.dll\n"
+                 + "C,600000,12,1010,0,15,0,0,2,0\nC,610000,12,0,1010,0,15,27,5,0\nC,630000,12,1010,0,15,0,0,2,0\n"
+                 + "S,615000,12,1010,10002000\n")
+        path = self.cut_file(fixture_text() + extra)
+        _, out = run(csw_res, path, "--proc", "daw.exe")
+        self.assertIn("daw.exe pid 100,101: 3 audio threads", out)
+        self.assertRegex(out, r"2000 us at\s+61\.000 ms\s+daw\.exe:1010\(AudioCalc\)\s+WrResource")
+        _, out = run(csw_smp, path, "--proc", "daw.exe")
+        self.assertRegex(out, r"daw\.exe audio threads \(3\): samples user 2")
+
+    def test_audio_thread_guess_follows_period_ms(self):
+        rows = ["P,1,10,4,p.exe", tid_rows(11, 10, ""), tid_rows(12, 10, "")]
+        for k in range(60):
+            for tid, step in ((11, 1.0), (12, 2.0)):
+                ms = k * step
+                rows.append(f"C,{int(ms * 10000)},3,{tid},0,15,0,0,2,0")
+                rows.append(f"C,{int(ms * 10000) + 1000},3,0,{tid},0,15,6,5,0")
+        path = self.cut_file("\n".join(rows) + "\n")
+        _, out = run(csw_an, path, "--proc", "p.exe")
+        self.assertIn("audio thread taken: p.exe:11", out)      # 1.0 ms is nearer the default 1.3333 than 2.0
+        _, out = run(csw_an, path, "--proc", "p.exe", "--period-ms", "2.0")
+        self.assertIn("audio thread taken: p.exe:12", out)
+
+    def test_timeline_trim_matches_whole_tids_not_substrings(self):
+        rows = ["P,1,10,4,p.exe", tid_rows(123, 10, "audio"), tid_rows(1234, 10, "other")]
+        for k in range(10):
+            ms = k * 1.5 if k < 5 else 20.0 + k * 1.5       # a gap of about 14 ms after 6.0 ms
+            rows.append(f"C,{int(ms * 10000)},3,123,0,15,0,0,2,0")
+            rows.append(f"C,{int(ms * 10000) + 1000},3,0,123,0,15,6,5,0")
+        for k in range(8):
+            ms = 8.0 + k
+            rows.append(f"C,{int(ms * 10000)},4,1234,0,15,0,0,2,0")
+            rows.append(f"C,{int(ms * 10000) + 1000},4,0,1234,0,15,6,5,0")
+        path = self.cut_file("\n".join(rows) + "\n")
+        _, out = run(csw_an, path, "--proc", "p.exe", "--tid", "123", "--timeline", "30")
+        timeline = out[out.index("=== timeline"):out.index("=== inside the gap")]
+        self.assertIn("showing the audio thread's and the card's only", timeline)
+        self.assertIn("p.exe:123(audio)", timeline)
+        self.assertNotIn("p.exe:1234", timeline)
+
+    def test_from_and_to_limit_the_gaps(self):
+        _, out = run(csw_an, CUT, "--proc", "daw.exe", "--tid", "1000", "--from", "50", "--to", "99")
+        self.assertIn("gaps >= 3.0 ms: 0", out)
+        _, out = run(csw_an, CUT, "--proc", "daw.exe", "--tid", "1000", "--from", "40", "--to", "46")
+        self.assertIn("gaps >= 3.0 ms: 1", out)
+
+    def test_tids_option_describes_threads_and_names_a_missing_one(self):
+        _, out = run(csw_res, CUT, "--proc", "daw.exe", "--tids", "1000,9999")
+        self.assertIn("thread 1000: daw.exe:1000 base pri 15 start card_asio.dll+1000; samples: [('card_asio.dll', 1)", out)
+        self.assertIn("thread 9999: not in the thread list", out)
+
+    def test_wait_without_a_switch_in_is_still_out_not_minus_one(self):
+        _, out = run(csw_res, CUT, "--proc", "daw.exe")
+        self.assertIn("WrResource           still out at the cut's end x1", out)
+        self.assertIn("still out at the cut's end (1):", out)
+        self.assertRegex(out, r"out at\s+98\.000 ms\s+daw\.exe:1001\(AudioCalc\)")
+        self.assertNotIn("-1 us", out)
+        self.assertIn("the long ones (2)", out)
+
+    def test_kernel_samples_split_ntoskrnl_from_other_kernel_modules(self):
+        _, out = run(csw_smp, CUT, "--proc", "daw.exe")
+        self.assertIn("kernel modules: ntoskrnl.exe x1, card.sys x1", out)
+        self.assertIn("kernel non-ntoskrnl addresses: card.sys+500 x1", out)
+
+
+class DumpOptions(Temp):
+    def test_all_adds_wakeups_of_other_processes_on_the_cpus(self):
+        _, plain = run(csw_dump, CUT, "40", "56", "--proc", "daw.exe", "--cpus", "8-9")
+        _, every = run(csw_dump, CUT, "40", "56", "--proc", "daw.exe", "--cpus", "8-9", "--all")
+        self.assertNotIn("READY  other.exe:2000", plain)
+        self.assertIn("41.000 cpu 9 READY  other.exe:2000(gui) by other.exe:2000(gui)", every)
+
+    def test_no_samples_drops_the_sample_rows(self):
+        _, with_s = run(csw_dump, CUT, "44", "56", "--proc", "daw.exe", "--cpus", "8-9")
+        _, without = run(csw_dump, CUT, "44", "56", "--proc", "daw.exe", "--cpus", "8-9", "--no-samples")
+        self.assertIn("SAMPLE", with_s)
+        self.assertNotIn("SAMPLE", without)
+        self.assertIn("SWITCH", without)
+
+    def test_a_single_cpu_lists_only_that_cpu(self):
+        _, out = run(csw_dump, CUT, "40", "56", "--proc", "daw.exe", "--cpus", "9")
+        self.assertIn("running at the start: cpu9: ", out)
+        self.assertNotIn("cpu8", out)
+        self.assertIn("50.000 cpu 9 DPC", out)
+        self.assertNotIn(" cpu 8 SAMPLE", out)
+
+    def test_a_range_lists_each_cpu_of_it(self):
+        _, out = run(csw_dump, CUT, "40", "56", "--proc", "daw.exe", "--cpus", "8-9")
+        self.assertIn("cpu8: ", out.splitlines()[0])
+        self.assertIn("cpu9: ", out.splitlines()[0])
+
+    def test_bad_cpus_is_a_usage_error(self):
+        for bad in ("a-b", "9-8"):
+            with self.subTest(cpus=bad), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                csw_dump.main([CUT, "40", "56", "--proc", "daw.exe", "--cpus", bad])
 
 
 if __name__ == "__main__":
