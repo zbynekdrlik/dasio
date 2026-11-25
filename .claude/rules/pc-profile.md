@@ -397,6 +397,12 @@ paths:
   buffers back to the driver's defaults): run `apply` after it and restart
   the NIC (dead-man), until the check's "written, NIC not restarted" line is
   gone.
+- A written `ReservedCpuSets` is not a reserved CPU until Windows boots:
+  the check names it (dasio#237, `pc_profile/reserved.rs`): `dasio's
+  reserved CPUs (ReservedCpuSets): written (0x..) but Windows reserves 0x..
+  now: it reads the value at boot, so a reboot is pending`. It reads the
+  `Allocated` CPU sets, as the service's start does. alex-nb ran 4 h after
+  `apply` with nothing reserved and its TX thread oversleeping 5-10 ms.
 - Its clock: an RTL8153 (alex-nb, drivers 1153.13 and 1153.22) hands
   sparse inbound frames to Windows ~1 ms late, so with PTP as its only
   inbound traffic the PC's PTP follower settles ~0.9-1.0 ms behind the

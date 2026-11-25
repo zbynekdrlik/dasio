@@ -18,6 +18,7 @@ mod nic_driver_kind;
 mod nic_restart;
 mod power;
 mod process_integrity;
+mod reserved;
 mod system_hive;
 
 /// A PC as a test sets it up: the reader the check sees.
@@ -54,6 +55,10 @@ struct Pc {
     /// reads `None` without), or the error `nic_times()` gives.
     nic_times: Option<super::nic_restart::NicTimes>,
     nic_times_err: Option<String>,
+    /// The CPUs Windows reserves now (`reserved_cpus()` reads `None`
+    /// without), or the error it gives.
+    reserved: Option<u64>,
+    reserved_err: Option<String>,
     /// The PC's devices, for `[[device]]`.
     dev: device_kind::Fake,
     /// The running processes, for `others_affinity`; `processes()` fails
@@ -73,6 +78,12 @@ impl Reader for Pc {
     }
     fn nic_hardware_ids(&self) -> Vec<String> {
         self.hardware_ids.clone()
+    }
+    fn reserved_cpus(&self) -> Result<Option<u64>, String> {
+        match &self.reserved_err {
+            Some(e) => Err(e.clone()),
+            None => Ok(self.reserved),
+        }
     }
     fn nic_times(&self) -> Result<Option<super::nic_restart::NicTimes>, String> {
         match &self.nic_times_err {
