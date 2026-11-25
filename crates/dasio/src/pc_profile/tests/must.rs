@@ -291,6 +291,78 @@ fn the_baseline_holds_eee_off_on_every_dante_nic() {
     assert_eq!(texts(&check(&only, &pcie)).len(), 3);
 }
 
+/// No PAUSE frames on any Dante NIC (`*FlowControl` 0, must-have) and a
+/// Realtek USB NIC's queue and power values as dstack's NIC standard
+/// (`EnableExtraPowerSaving` 0, `PendingTransmits` 8, `TransmitBufferLen`
+/// 64, WARN): alex-nb's RTL8153 came with 3 / 1 / 4 / 32, the baseline had
+/// `*FlowControl` scoped to rt640x64 and none of the others (dasio#237). A
+/// NIC without a keyword is fine (FOH's and dsg's PCIe Realtek have no
+/// USB keywords).
+#[test]
+fn the_baseline_holds_flow_control_off_and_the_usb_nic_values_on_every_dante_nic() {
+    let wants = [
+        ("*FlowControl", "0", true),
+        ("EnableExtraPowerSaving", "0", false),
+        ("PendingTransmits", "8", false),
+        ("TransmitBufferLen", "64", false),
+    ];
+    let mut b = baseline().unwrap();
+    b.registry
+        .retain(|e| wants.iter().any(|(n, _, _)| e.name == *n));
+    let only = Profile {
+        registry: b.registry,
+        ..parse("name = \"pc\"\nnic_guid = \"{G}\"\n").unwrap()
+    };
+    assert_eq!(only.registry.len(), 4, "{:?}", only.registry);
+    for (n, _, must) in wants {
+        let e = only.registry.iter().find(|e| e.name == n).unwrap();
+        assert_eq!(e.must, must, "{n}");
+        assert!(e.absent_ok && e.nic_service.is_none(), "{n}: {e:?}");
+    }
+    let mut usb = Pc {
+        nic_service: Some("rtu53cx22x64".into()),
+        ..Pc::default()
+    };
+    // A NIC without the keywords.
+    assert_eq!(texts(&check(&only, &usb)), Vec::<String>::new());
+    // alex-nb's RTL8153 as it came (25.11.2026).
+    for (n, v) in [
+        ("*FlowControl", "3"),
+        ("EnableExtraPowerSaving", "1"),
+        ("PendingTransmits", "4"),
+        ("TransmitBufferLen", "32"),
+    ] {
+        usb.reg
+            .insert(("{nic_class}".into(), n.into()), Value::String(v.into()));
+    }
+    let off = texts(&check(&only, &usb));
+    assert_eq!(off.len(), 4, "{off:?}");
+    assert!(
+        off.iter()
+            .any(|t| t.starts_with("must-have: registry {nic_class}\\*FlowControl: \"3\"")),
+        "{off:?}"
+    );
+    assert_eq!(
+        off.iter().filter(|t| t.starts_with("must-have: ")).count(),
+        1,
+        "{off:?}"
+    );
+    assert!(must_have_failure(&off).is_some());
+    assert_eq!(plan(&only, &usb).len(), 4);
+    for (n, v, _) in wants {
+        usb.reg
+            .insert(("{nic_class}".into(), n.into()), Value::String(v.into()));
+    }
+    assert_eq!(texts(&check(&only, &usb)), Vec::<String>::new());
+    // FOH's and dsg's PCIe Realtek: flow control is held there too.
+    let mut pcie = realtek();
+    pcie.reg.insert(
+        ("{nic_class}".into(), "*FlowControl".into()),
+        Value::String("3".into()),
+    );
+    assert_eq!(texts(&check(&only, &pcie)).len(), 1);
+}
+
 /// A Dante NIC the PC does not have is ONE must-have problem: the entries
 /// on its keys are neither read one by one (Windows reads each as
 /// unreadable, the driver-free LSO entries too) nor written (dasio#24).
