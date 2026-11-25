@@ -269,6 +269,12 @@ impl Reader for Pc {
         }))
     }
 
+    fn reserved_cpus(&self) -> Result<Option<u64>, String> {
+        // The same `Allocated` flag the service's start reads (dasio#120).
+        let sets = crate::cpu_sets::windows::read()?;
+        Ok(Some(crate::cpu_sets::reserved_mask(&sets)))
+    }
+
     fn devices(&self) -> &dyn Devices {
         self
     }

@@ -65,6 +65,7 @@ pub mod nic_restart;
 mod os_text;
 pub(crate) mod power;
 mod process;
+pub mod reserved;
 #[cfg(windows)]
 pub mod windows;
 
@@ -325,6 +326,10 @@ pub trait Reader {
     /// last started ([`nic_restart`], dasio#26); `Ok(None)` when the NIC
     /// was not found.
     fn nic_times(&self) -> Result<Option<nic_restart::NicTimes>, String>;
+    /// The group-0 CPUs Windows reserves now (their CPU sets carry the
+    /// `Allocated` flag), for a written `ReservedCpuSets` ([`reserved`],
+    /// dasio#237); `Ok(None)` where there is nothing to read.
+    fn reserved_cpus(&self) -> Result<Option<u64>, String>;
     /// The PC's devices, for `[[device]]` ([`device`]).
     fn devices(&self) -> &dyn Devices;
     /// Every running process the keeper could open to set, with the PC's
@@ -829,6 +834,7 @@ pub fn check(p: &Profile, r: &dyn Reader) -> Vec<Problem> {
     }
     out.extend(absent::check(&p.absent, r));
     out.extend(nic_restart::check(p, r));
+    out.extend(reserved::check(p, r));
     out.extend(nic_driver::check(&p.nic_driver, r));
     out.extend(device::check(&p.device, r.devices()));
     out
