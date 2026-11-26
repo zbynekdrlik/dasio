@@ -91,6 +91,27 @@ def with_retries(attempt, tries=FIND_TRIES, log=print):
     return 1
 
 
+def device_missing(rx_name, seen):
+    """The RX device is not in the discovery: tell the retry loop through `seen` (exit 1 for this attempt), or,
+    with no loop (`seen` None), end the program as before."""
+    if seen is None:
+        raise SystemExit(f"RX device {rx_name} not found")
+    seen["found"] = False
+    return 1
+
+
+def make_attempt(call, seen):
+    """One retry attempt around `call()` -> exit code: `seen["found"]` is set again before each call, so a miss
+    in one attempt never carries into the next."""
+
+    def attempt():
+        seen["found"] = True
+        rc = call()
+        return rc or 0, seen["found"]
+
+    return attempt
+
+
 async def run(application, devices, rx_name, pairs, seen=None):
     """Subscribe on `rx_name`. A device missing from the discovery sets `seen["found"]` false (when given)
     and returns 1; without `seen` it ends the program as before."""
@@ -101,10 +122,7 @@ async def run(application, devices, rx_name, pairs, seen=None):
     desired = parse_pairs(pairs)
     matches = match_device_identifier(devices, rx_name)
     if not matches:
-        if seen is None:
-            raise SystemExit(f"RX device {rx_name} not found")
-        seen["found"] = False
-        return 1
+        return device_missing(rx_name, seen)
     [(_, rx)] = select_device(matches)
     await populate_devices(application, [rx])
     print(
@@ -137,11 +155,10 @@ def main(argv):
     async def run_once(application, devices, rx_name, pairs):
         return await run(application, devices, rx_name, pairs, seen)
 
-    def attempt():
-        seen["found"] = True
-        rc = run_command(run_once, argv[1], argv[2:], populate_controls=False, device_identifiers=(argv[1],))
-        return rc or 0, seen["found"]
-
+    attempt = make_attempt(
+        lambda: run_command(run_once, argv[1], argv[2:], populate_controls=False, device_identifiers=(argv[1],)),
+        seen,
+    )
     return with_retries(attempt)
 
 
