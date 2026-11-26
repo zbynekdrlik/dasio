@@ -22,6 +22,10 @@ result does not mention.
 
 import sys
 
+#: Times the RX device is looked for. mDNS discovery misses a device now and then: on alex-klavir, 26.11.2026,
+#: 6 of ~14 calls said "not found" and found it a few seconds later; one miss left a stop-gap flow off 3 min.
+FIND_TRIES = 4
+
 
 class UsageError(ValueError):
     """A bad `<rxnum>=...` argument."""
@@ -72,7 +76,24 @@ def describe(result, desired):
     return lines, 1 if (bad or missing) else 0
 
 
-async def run(application, devices, rx_name, pairs):
+def with_retries(attempt, tries=FIND_TRIES, log=print):
+    """Run `attempt()` -> `(exit code, device found)` until the RX device is found, at most `tries` times.
+
+    The found attempt's own exit code is the result; a device never found is exit 1.
+    """
+    for n in range(1, tries + 1):
+        code, found = attempt()
+        if found:
+            return code
+        if n < tries:
+            log(f"RX device not found (try {n} of {tries}): looking again")
+    log(f"RX device not found in {tries} tries")
+    return 1
+
+
+async def run(application, devices, rx_name, pairs, seen=None):
+    """Subscribe on `rx_name`. A device missing from the discovery sets `seen["found"]` false (when given)
+    and returns 1; without `seen` it ends the program as before."""
     from netaudio.cli_support.execution import populate_devices
     from netaudio.cli_support.selection import match_device_identifier, select_device
     from netaudio.dante.subscription_operations import reconcile_receiver_subscriptions
@@ -80,7 +101,10 @@ async def run(application, devices, rx_name, pairs):
     desired = parse_pairs(pairs)
     matches = match_device_identifier(devices, rx_name)
     if not matches:
-        raise SystemExit(f"RX device {rx_name} not found")
+        if seen is None:
+            raise SystemExit(f"RX device {rx_name} not found")
+        seen["found"] = False
+        return 1
     [(_, rx)] = select_device(matches)
     await populate_devices(application, [rx])
     print(
@@ -108,8 +132,17 @@ def main(argv):
         return 2
     from netaudio.cli_support.execution import run_command
 
-    rc = run_command(run, argv[1], argv[2:], populate_controls=False, device_identifiers=(argv[1],))
-    return rc or 0
+    seen = {"found": True}
+
+    async def run_once(application, devices, rx_name, pairs):
+        return await run(application, devices, rx_name, pairs, seen)
+
+    def attempt():
+        seen["found"] = True
+        rc = run_command(run_once, argv[1], argv[2:], populate_controls=False, device_identifiers=(argv[1],))
+        return rc or 0, seen["found"]
+
+    return with_retries(attempt)
 
 
 if __name__ == "__main__":
