@@ -717,13 +717,14 @@ fn escaped(t: &str) -> String {
 pub fn bridge_json(f: &BridgeFacts) -> String {
     format!(
         concat!(
-            "{{\"line\":\"{}\",\"state\":\"{}\",\"kind\":\"bridge\",\"daw_attached\":false,",
+            "{{\"line\":\"{}\",\"state\":\"{}\",\"low_latency\":\"{}\",\"kind\":\"bridge\",\"daw_attached\":false,",
             "\"driver\":\"{}\",\"running\":{},\"reason\":\"{}\",\"rate\":{},",
             "\"buffer_frames\":{},\"to_asio_underruns\":{},\"from_asio_underruns\":{},",
-            "\"resets\":{},{}{}{}\"low_latency\":\"{}\",\"pc_profile_problems\":{},{}{}{}{}{}{}}}"
+            "\"resets\":{},{}{}{}\"pc_profile_problems\":{},{}{}{}{}{}{}}}"
         ),
         escaped(&bridge_line(f)),
         bridge_state(f),
+        readiness(f.pc_problems, f.tx, f.rx).key(),
         escaped(&f.driver),
         f.running,
         f.reason_code.unwrap_or(""),
@@ -735,7 +736,6 @@ pub fn bridge_json(f: &BridgeFacts) -> String {
         late_bins_json(&f.late_bins),
         delays_json(f),
         converter_json(f.to_asio_converter_delay_ns, f.from_asio_converter_delay_ns),
-        readiness(f.pc_problems, f.tx, f.rx).key(),
         f.pc_problems.map_or(-1, i64::from),
         age_json(f.from_asio_age),
         pull_json(f.from_asio_pull),

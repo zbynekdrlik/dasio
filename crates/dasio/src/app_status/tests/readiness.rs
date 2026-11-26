@@ -205,7 +205,7 @@ fn a_bridge_names_its_failing_items_before_its_underruns() {
     );
     let j = bridge_json(&f);
     assert!(
-        j.contains("\"low_latency\":\"not\",\"pc_profile_problems\":1,"),
+        j.contains("\"state\":\"warn\",\"low_latency\":\"not\",\"kind\":\"bridge\","),
         "{j}"
     );
     let ready = BridgeFacts {
