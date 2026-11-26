@@ -206,3 +206,10 @@ Owner rules from dasio#1. They hold for every change on a PC running dasio.
   Subscribe our own receiver with `/opt/pipx/venvs/netaudio/bin/python
   scripts/dante_sub_rx.py <rx-device> <n>=<channel>@<device>` (`<n>=-`
   clears), then verify in dcontroller `/api/devices` and by signal.
+  - mDNS discovery misses a device now and then (alex-klavir 26.11.2026: 6 of
+    ~14 calls). The script looks for the RX device up to `FIND_TRIES` (4)
+    times before it gives up. Still read the RX back in dcontroller after a
+    timed on/off; a status of `Unresolved` turns `connected` within ~1 min.
+- **A dead-man script undoes its change** when no `keep` file comes. It does
+  not only restart the NIC: on alex-nb (26.11.2026) a NIC registry change was
+  left in place by a script that only restarted.

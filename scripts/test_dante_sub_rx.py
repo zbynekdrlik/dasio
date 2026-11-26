@@ -65,5 +65,82 @@ class Describe(unittest.TestCase):
         self.assertIn("not in the result: [2]", lines)
 
 
+class Retries(unittest.TestCase):
+    """mDNS discovery misses the RX device now and then (alex-klavir 26.11.2026: `RX device alex-klavir not
+    found` on 6 of ~14 calls, each found again a few seconds later). A missed device is tried again, a bounded
+    number of times; a device that was found ends the loop with that attempt's own exit code."""
+
+    def attempts(self, outcomes):
+        calls = []
+
+        def attempt():
+            calls.append(1)
+            return outcomes[len(calls) - 1]
+
+        return calls, attempt
+
+    def test_a_device_found_at_once_runs_one_attempt(self):
+        calls, attempt = self.attempts([(0, True)])
+        self.assertEqual(sub.with_retries(attempt, log=lambda m: None), 0)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_missed_device_is_tried_again_and_its_found_attempt_decides(self):
+        calls, attempt = self.attempts([(1, False), (1, False), (1, True)])
+        self.assertEqual(sub.with_retries(attempt, log=lambda m: None), 1)
+        self.assertEqual(len(calls), 3)
+        calls, attempt = self.attempts([(1, False), (0, True)])
+        self.assertEqual(sub.with_retries(attempt, log=lambda m: None), 0)
+        self.assertEqual(len(calls), 2)
+
+    def test_a_device_never_found_stops_after_the_tries_with_exit_1(self):
+        said = []
+        calls, attempt = self.attempts([(0, False)] * 10)
+        self.assertEqual(sub.with_retries(attempt, tries=4, log=said.append), 1)
+        self.assertEqual(len(calls), 4)
+        self.assertIn("not found in 4 tries", said[-1])
+
+    def test_the_default_tries_more_than_once(self):
+        self.assertGreater(sub.FIND_TRIES, 1)
+
+    def test_a_missing_device_marks_the_attempt_or_ends_the_program_without_a_loop(self):
+        seen = {"found": True}
+        self.assertEqual(sub.device_missing("alex-klavir", seen), 1)
+        self.assertFalse(seen["found"])
+        with self.assertRaises(SystemExit) as ctx:
+            sub.device_missing("alex-klavir", None)
+        self.assertIn("RX device alex-klavir not found", str(ctx.exception))
+
+    def test_each_attempt_starts_found_so_a_miss_never_carries_over(self):
+        seen = {"found": True}
+        results = iter([None, 0, 1])
+
+        def call():
+            rc = next(results)
+            if rc is None:  # the first call misses the device
+                sub.device_missing("x", seen)
+                return 1
+            return rc
+
+        attempt = sub.make_attempt(call, seen)
+        self.assertEqual(attempt(), (1, False))
+        self.assertEqual(attempt(), (0, True))
+        self.assertEqual(attempt(), (1, True))
+
+    def test_an_attempt_with_no_exit_code_is_exit_0(self):
+        attempt = sub.make_attempt(lambda: None, {"found": True})
+        self.assertEqual(attempt(), (0, True))
+
+    def test_the_loop_retries_a_real_attempt_until_found(self):
+        seen = {"found": True}
+        misses = iter([True, True, False])
+
+        def call():
+            if next(misses):
+                return sub.device_missing("x", seen)
+            return 0
+
+        self.assertEqual(sub.with_retries(sub.make_attempt(call, seen), log=lambda m: None), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
