@@ -594,11 +594,13 @@ fn every_present_network_adapter_is_read_with_its_parents() {
 fn what_stops_with_a_device_is_its_children_and_its_removal_relations() {
     // dasio#181: disabling a device removes its children and its removal
     // relations; the guard's read of them against Windows' own properties,
-    // on a device that has removal relations (a disk: its volumes).
+    // on a device that has removal relations (a disk: its volumes). Only the
+    // disk drives are read: one property read per present device of the
+    // whole runner ran past PS_LIMIT on main (run 45767659097, 26.11.2026).
     use dasio::pc_profile::{Devices, parse, windows::Pc};
     let pc = Pc::new(&parse("name = \"ci\"\n").unwrap());
     let lines = ps(
-        "Get-PnpDevice -PresentOnly | Get-PnpDeviceProperty -KeyName DEVPKEY_Device_RemovalRelations -ErrorAction SilentlyContinue | Where-Object { $_.Data } | Select-Object -First 1 | ForEach-Object { $_.InstanceId; $_.Data }",
+        "Get-PnpDevice -PresentOnly -Class DiskDrive | Get-PnpDeviceProperty -KeyName DEVPKEY_Device_RemovalRelations -ErrorAction SilentlyContinue | Where-Object { $_.Data } | Select-Object -First 1 | ForEach-Object { $_.InstanceId; $_.Data }",
     );
     let (id, relations) = lines
         .split_first()
