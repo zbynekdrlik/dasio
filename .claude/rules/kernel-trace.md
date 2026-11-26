@@ -39,8 +39,28 @@ Found why master Ableton clicked (25.11.2026). Tools: `dasio-csw.wprp`, `dasio-c
 - ISR-MSI is opcode 50.
 - `csw_stk.py` joins the kernel and the user part of a stack by its stamp and names system dll exports from
   `C:\Windows\System32` of the PC it runs on.
+- A long WrResource wait: follow its holder. `csw_res.py` prints the holder chain under each long wait (`--chain`,
+  default 3 steps). It names who made the waiter ready, what that thread had waited on itself, and who made it
+  ready. FOH 26.11.2026 (1.60.0, one late master block in 200 record starts), all from one cut with no stacks:
+  - master's AudioCalc waited 1455 us on WrResource, made ready by master's MainThread;
+  - MainThread had waited 2006 us on WrPushLock, made ready by System 976, started in `dxgmms2.sys` (the GPU
+    scheduler);
+  - so master's window drawing waited on the GPU while holding the window lock.
+  A System thread's start module is not in a cut without kernel M rows: read the PC's driver bases
+  (`EnumDeviceDrivers` + `GetDeviceDriverBaseNameW`; valid until its next reboot).
+- `csw_an.py` lists the 22 threads with the most switch-ins. A card's ASIO thread can fall below them (FOH master:
+  6945 against 8700+ per AudioCalc in 2.7 s), and the "most regular" guess then takes an AudioCalc. Find the
+  thread started in the card's ASIO dll and pass `--tid`.
+- The readers on a PC are copies: copy the repo's version there before reading a cut (FOH's `csw_an.py` had no
+  `--period-ms`, 26.11.2026).
+- A rec-trace cut (`dasio-csw.wprp`) has no stacks, so `stk_sig.py` and `csw_stk.py` print nothing for it.
+  That is no proof that there was no PostMessage; only the stack profile shows the posting module.
+- `wpr -setprofint` takes 1221 at the least (0.1221 ms): 1000 fails with 0x80070057, and the trace then runs
+  at the default 1 ms.
 
 ## Two hard rules
 
-- Never run a trace, or start any process, on a DAW PC during a measurement other than the planned one.
+- Never run a trace, or start any process, on a DAW PC during a measurement other than the planned one. That
+  includes a waiting trigger trace (`txev-trigger.ps1`): analyse off the box, or stop the trigger first. Only one
+  kernel trace runs at a time, so a stack probe also stops the trigger, and the trigger is armed again after.
 - Never read or sweep another process's memory on an audio PC (it stopped a production PC on 25.11.2026).

@@ -119,6 +119,57 @@ class Resources(Temp):
         self.assertNotIn(" 800 us", out)
 
 
+    CHAIN = "\n".join([
+        "P,1,100,4,daw.exe",
+        "P,1,4,0,System",
+        "T,1,100,1001,10001000,15,AudioCalc",
+        "T,1,100,1002,30005000,15,MainThread",
+        "T,1,4,4000,FFFFF80000200100,15,",
+        "M,10,100,10000000,100000,\\Device\\HarddiskVolume3\\Program Files\\card\\card_asio.dll",
+        "M,10,4,FFFFF80000000000,100000,\\SystemRoot\\system32\\ntoskrnl.exe",
+        "M,10,4,FFFFF80000200000,100000,\\SystemRoot\\system32\\drivers\\gpu.sys",
+        # the GPU thread runs, waits (Executive), is made ready by nobody the cut knows, runs again
+        "C,1000,10,4000,0,15,0,0,2,0",
+        "C,2000,10,0,4000,0,15,0,5,0",
+        "R,29000,11,4000,4294967295,4294967295,0,1",
+        "C,30000,10,4000,0,15,0,0,2,0",
+        # MainThread runs, then waits on a push lock (28) while it holds the window lock
+        "C,5000,9,1002,0,15,0,0,2,0",
+        "C,8000,9,0,1002,0,15,28,5,0",
+        # the worker runs, then waits on the window lock (WrResource 27)
+        "C,10000,8,1001,0,15,0,0,2,0",
+        "C,20000,8,0,1001,0,15,27,5,0",
+        # the GPU thread makes MainThread ready, MainThread makes the worker ready
+        "R,40000,10,1002,4294967295,4294967295,0,1",
+        "C,41000,9,1002,0,15,0,0,2,0",
+        "R,45000,9,1001,4294967295,4294967295,0,1",
+        "C,46000,8,1001,0,15,0,0,2,0",
+        "C,50000,8,0,1001,0,15,6,5,0",
+        "",
+    ])
+
+    def test_a_long_wait_shows_its_holder_chain(self):
+        _, out = run(csw_res, self.cut_file(self.CHAIN), "--proc", "daw.exe")
+        lines = out.splitlines()
+        i = next(n for n, line in enumerate(lines) if "2600 us at" in line)
+        self.assertIn("WrResource", lines[i])
+        self.assertIn("made ready by daw.exe:1002(MainThread)", lines[i])
+        self.assertIn("holder: daw.exe:1002(MainThread) [start 30005000] had waited WrPushLock 3300 us "
+                      "(0.800 .. 4.100 ms), made ready by System:4000", lines[i + 1])
+        self.assertIn("holder: System:4000 [start gpu.sys+100] had waited Executive 2800 us (0.200 .. 3.000 ms), "
+                      "made ready by ?", lines[i + 2])
+        self.assertNotIn("holder:", lines[i + 3] if i + 3 < len(lines) else "")
+
+    def test_chain_zero_prints_no_holder(self):
+        _, out = run(csw_res, self.cut_file(self.CHAIN), "--proc", "daw.exe", "--chain", "0")
+        self.assertIn("2600 us at", out)
+        self.assertNotIn("holder:", out)
+
+    def test_chain_stops_at_its_step_count(self):
+        _, out = run(csw_res, self.cut_file(self.CHAIN), "--proc", "daw.exe", "--chain", "1")
+        self.assertEqual(out.count("holder:"), 1)
+        self.assertIn("holder: daw.exe:1002(MainThread)", out)
+
     def test_audio_module_option_adds_a_thread_start_to_look_at(self):
         # tid 1002 (MainThread) starts in an address no module holds; without the option it is not an audio thread
         _, out = run(csw_res, CUT, "--proc", "daw.exe")
