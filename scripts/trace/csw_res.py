@@ -5,6 +5,11 @@
 
 Every switch-out of an audio thread (named AudioCalc, or started in an ASIO driver dll) that is not the normal
 wait for work (UserRequest), with how long it stayed out, who made it ready, and the thread's last sample before.
+
+Under each long wait, the lock's holder chain (--chain steps, 0 = off): the thread that made the waiter ready, what
+it had waited on itself just before and who made it ready, and so on back. A lock holder that waits while it holds
+the lock (FOH 26.11.2026: master's MainThread held the window lock and waited 2 ms on a push lock of the GPU
+scheduler's thread, dxgmms2.sys) shows as the next step.
 """
 import argparse
 import bisect
@@ -22,6 +27,8 @@ def main(argv=None) -> int:
     ap.add_argument("--min-us", type=float, default=100.0)
     ap.add_argument("--tids", default="")
     ap.add_argument("--rows", type=int, default=60)
+    ap.add_argument("--chain", type=int, default=3,
+                    help="steps of the holder chain under each long wait (0 = off)")
     cutlib.add_tag_option(ap)
     cutlib.add_audio_option(ap)
     a = ap.parse_args(argv)
@@ -73,6 +80,47 @@ def main(argv=None) -> int:
     for t, cpu, tid, ip in sm:
         if tid in audio:
             smp[tid].append((t, ip))
+    # Every thread's switch-ins, switch-outs and readies, for the holder chain.
+    all_in = collections.defaultdict(list)
+    all_out = collections.defaultdict(list)
+    all_rdy = collections.defaultdict(list)
+    if a.chain > 0:
+        for t, cpu, new, old, npri, opri, reason, state, wt in cs:
+            all_in[new].append(t)
+            all_out[old].append((t, state, reason))
+        for t, cpu, tid, reason, inc in rd:
+            all_rdy[tid].append((t, cpu))
+
+    def holder_chain(tid: int, at: float) -> list:
+        """`tid` made a waiter ready at `at`: what it had waited on itself before it ran, and who made it ready,
+        then the same for that thread, up to --chain steps."""
+        lines, seen = [], set()
+        while len(lines) < a.chain and tid > 0 and tid not in seen:
+            seen.add(tid)
+            ins_t = all_in[tid]
+            i = bisect.bisect_right(ins_t, at) - 1
+            if i < 0:
+                lines.append(f"{who(tid)}: running since before the cut")
+                break
+            back = ins_t[i]
+            outs = all_out[tid]
+            j = bisect.bisect_left(outs, (back,)) - 1
+            start = mod(threads[tid][0], threads[tid][1]) if tid in threads else "?"
+            if j < 0 or outs[j][1] != WAITING:
+                state = "no switch-out before" if j < 0 else STATE.get(outs[j][1], outs[j][1])
+                lines.append(f"{who(tid)} [start {start}] ran from {back:.3f} ms ({state}, not a wait)")
+                break
+            t0, _, reason = outs[j]
+            rr = all_rdy[tid]
+            k = bisect.bisect_right(rr, (back, 1 << 30)) - 1
+            by = running(rr[k][1], rr[k][0]) if k >= 0 and rr[k][0] >= t0 else -1
+            lines.append(f"{who(tid)} [start {start}] had waited {WAIT.get(reason, reason)} "
+                         f"{(back - t0) * 1000.0:.0f} us ({t0:.3f} .. {back:.3f} ms), made ready by "
+                         f"{who(by) if by >= 0 else '?'}")
+            if by <= 0:
+                break
+            tid, at = by, rr[k][0]
+        return lines
 
     kinds = collections.Counter()
     found = []
@@ -86,11 +134,13 @@ def main(argv=None) -> int:
         if dur >= a.min_us or dur < 0:
             j = bisect.bisect_right(rdy[old], (t, 99))
             r = rdy[old][j] if j < len(rdy[old]) else None
-            by = who(running(r[1], r[0])) if r else "?"
+            waker = running(r[1], r[0]) if r else -1
+            by = who(waker) if r else "?"
             s = smp[old]
             q = bisect.bisect_right(s, (t, 1 << 70)) - 1
             last = f"{mod(threads[old][0], s[q][1])} ({(t - s[q][0]):.2f} ms before)" if q >= 0 else "-"
-            found.append((dur, t, who(old), WAIT.get(reason, reason), by, last))
+            chain = holder_chain(waker, r[0]) if r and a.chain > 0 else []
+            found.append((dur, t, who(old), WAIT.get(reason, reason), by, last, chain))
     print("switch-outs of audio threads that are not the wait for work, by reason (long = at least "
           f"{a.min_us:.0f} us):")
     labels = {"long": "long ", "short": "short", "out": "still out at the cut's end"}
@@ -99,10 +149,12 @@ def main(argv=None) -> int:
     done = [f for f in found if f[0] >= 0]
     still = [f for f in found if f[0] < 0]
     print(f"\nthe long ones ({len(done)}), longest first:")
-    for dur, t, w, k, by, last in sorted(done, reverse=True)[: a.rows]:
+    for dur, t, w, k, by, last, chain in sorted(done, key=lambda f: (f[0], f[1]), reverse=True)[: a.rows]:
         print(f"  {dur:9.0f} us at {t:10.3f} ms  {w:28} {k:18} made ready by {by:34} last sample {last}")
+        for line in chain:
+            print(f"      holder: {line}")
     print(f"\nstill out at the cut's end ({len(still)}):")
-    for dur, t, w, k, by, last in sorted(still, key=lambda f: f[1])[: a.rows]:
+    for dur, t, w, k, by, last, chain in sorted(still, key=lambda f: f[1])[: a.rows]:
         print(f"  out at {t:10.3f} ms  {w:28} {k:18} made ready by {by:34} last sample {last}")
     return 0
 
