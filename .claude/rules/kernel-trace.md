@@ -41,7 +41,12 @@ Found why master Ableton clicked (25.11.2026). Tools: `dasio-csw.wprp`, `dasio-c
   `C:\Windows\System32` of the PC it runs on.
 - A long WrResource wait: follow its holder. `csw_res.py` prints the holder chain under each long wait (`--chain`,
   default 3 steps). It names who made the waiter ready, what that thread had waited on itself, and who made it
-  ready. FOH 26.11.2026 (1.60.0, one late master block in 200 record starts), all from one cut with no stacks:
+  ready. The chain also ends early:
+  - at an idle or unknown waker (an interrupt or DPC, or a CPU with no rows);
+  - at a thread already in the chain;
+  - at a holder that was not waiting (preempted: `Ready, not a wait`; or running since before the cut).
+  Switches with one stamp are put to alternate in/out per thread, so a preemption at the stamp of the next
+  switch-in is not read as the older wait. FOH 26.11.2026 (1.60.0, one late master block in 200 record starts), all from one cut with no stacks:
   - master's AudioCalc waited 1455 us on WrResource, made ready by master's MainThread;
   - MainThread had waited 2006 us on WrPushLock, made ready by System 976, started in `dxgmms2.sys` (the GPU
     scheduler);

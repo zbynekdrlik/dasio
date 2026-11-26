@@ -20,6 +20,33 @@ import cutlib
 from cutlib import STATE, WAIT, WAITING, USER_REQUEST
 
 
+def order_switches(ev: list) -> list:
+    """One thread's switches (t, 1 = in / 0 = out, state, reason) in time order, ins and outs alternating.
+
+    Switches with the same stamp have no order of their own (the cut is sorted by its whole rows, CPU first), so
+    within a stamp they are put to alternate after the switch before it: an out-then-in at one stamp is a
+    migration, an in-then-out a run too short to measure. Picking the earlier out of the two would report a wait
+    that ended before the thread ran."""
+    ev = sorted(ev, key=lambda e: e[0])
+    out, i, last = [], 0, None
+    while i < len(ev):
+        j = i
+        while j < len(ev) and ev[j][0] == ev[i][0]:
+            j += 1
+        group = ev[i:j]
+        ins = [e for e in group if e[1] == 1]
+        outs = [e for e in group if e[1] == 0]
+        want = 1 if last == 0 else 0
+        while ins or outs:
+            pick = (outs if want == 0 else ins) or (ins or outs)
+            e = pick.pop(0)
+            out.append(e)
+            last = e[1]
+            want = 1 - e[1]
+        i = j
+    return out
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("cut")
@@ -80,38 +107,49 @@ def main(argv=None) -> int:
     for t, cpu, tid, ip in sm:
         if tid in audio:
             smp[tid].append((t, ip))
-    # Every thread's switch-ins, switch-outs and readies, for the holder chain.
-    all_in = collections.defaultdict(list)
-    all_out = collections.defaultdict(list)
-    all_rdy = collections.defaultdict(list)
-    if a.chain > 0:
+    # Every thread's switches in their own order, and its readies, for the holder chain. Built on the first long
+    # wait only: a real cut has ~1.7 M switch rows.
+    seq: dict = {}
+    seq_t: dict = {}
+    all_rdy: dict = {}
+
+    def build_holder_index() -> None:
+        events = collections.defaultdict(list)
         for t, cpu, new, old, npri, opri, reason, state, wt in cs:
-            all_in[new].append(t)
-            all_out[old].append((t, state, reason))
+            events[new].append((t, 1, 0, 0))
+            events[old].append((t, 0, state, reason))
+        for tid, ev in events.items():
+            seq[tid] = order_switches(ev)
+            seq_t[tid] = [e[0] for e in seq[tid]]
+        rdy_all = collections.defaultdict(list)
         for t, cpu, tid, reason, inc in rd:
-            all_rdy[tid].append((t, cpu))
+            rdy_all[tid].append((t, cpu))
+        all_rdy.update(rdy_all)
 
     def holder_chain(tid: int, at: float) -> list:
         """`tid` made a waiter ready at `at`: what it had waited on itself before it ran, and who made it ready,
-        then the same for that thread, up to --chain steps."""
+        then the same for that thread, up to --chain steps. Stops at an idle or unknown waker, at a thread
+        already in the chain, and at a holder that was not waiting (preempted, or running since before the cut)."""
+        if not seq:
+            build_holder_index()
         lines, seen = [], set()
         while len(lines) < a.chain and tid > 0 and tid not in seen:
             seen.add(tid)
-            ins_t = all_in[tid]
-            i = bisect.bisect_right(ins_t, at) - 1
-            if i < 0:
-                lines.append(f"{who(tid)}: running since before the cut")
-                break
-            back = ins_t[i]
-            outs = all_out[tid]
-            j = bisect.bisect_left(outs, (back,)) - 1
             start = mod(threads[tid][0], threads[tid][1]) if tid in threads else "?"
-            if j < 0 or outs[j][1] != WAITING:
-                state = "no switch-out before" if j < 0 else STATE.get(outs[j][1], outs[j][1])
+            ev = seq.get(tid, [])
+            i = bisect.bisect_right(seq_t.get(tid, []), at) - 1
+            while i >= 0 and ev[i][1] != 1:
+                i -= 1
+            if i < 0:
+                lines.append(f"{who(tid)} [start {start}] running since before the cut")
+                break
+            back = ev[i][0]
+            if i == 0 or ev[i - 1][1] != 0 or ev[i - 1][2] != WAITING:
+                state = "no switch-out before" if i == 0 else STATE.get(ev[i - 1][2], ev[i - 1][2])
                 lines.append(f"{who(tid)} [start {start}] ran from {back:.3f} ms ({state}, not a wait)")
                 break
-            t0, _, reason = outs[j]
-            rr = all_rdy[tid]
+            t0, _, _, reason = ev[i - 1]
+            rr = all_rdy.get(tid, [])
             k = bisect.bisect_right(rr, (back, 1 << 30)) - 1
             by = running(rr[k][1], rr[k][0]) if k >= 0 and rr[k][0] >= t0 else -1
             lines.append(f"{who(tid)} [start {start}] had waited {WAIT.get(reason, reason)} "
@@ -139,7 +177,7 @@ def main(argv=None) -> int:
             s = smp[old]
             q = bisect.bisect_right(s, (t, 1 << 70)) - 1
             last = f"{mod(threads[old][0], s[q][1])} ({(t - s[q][0]):.2f} ms before)" if q >= 0 else "-"
-            chain = holder_chain(waker, r[0]) if r and a.chain > 0 else []
+            chain = holder_chain(waker, r[0]) if r and a.chain > 0 and dur >= 0 else []
             found.append((dur, t, who(old), WAIT.get(reason, reason), by, last, chain))
     print("switch-outs of audio threads that are not the wait for work, by reason (long = at least "
           f"{a.min_us:.0f} us):")
