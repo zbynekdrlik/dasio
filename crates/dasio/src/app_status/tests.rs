@@ -873,6 +873,9 @@ mod bridge_figures;
 /// The start-up window's counts apart from the running ones (dasio#28).
 mod start_up;
 
+/// One look at what keeps a PC from low latency (dasio#237).
+mod readiness;
+
 #[test]
 fn the_bridge_counts_line_logs_the_peak_lateness_beside_the_bins() {
     // dstack v0.6.178 (dstack issues 393, 399): the run's peak lateness

@@ -98,7 +98,11 @@ starts its media only once Windows is calm after a reboot.
   `BRIDGE_STARTUP`.
 - The status JSON's start-up keys come LAST (`,"phase":...`). Older tests
   match runs of keys between `pc_profile_problems` and `kernel_tx`, so a
-  key inserted there splits them.
+  key inserted there splits them. The bridge's runs also reach back from
+  `pc_profile_problems` through the lateness bins and converter delays
+  (`bridge_figures.rs`), so a new bridge key goes after `state`, as
+  `low_latency` does (dasio#237). In the DAW object, `low_latency` sits
+  between `heartbeat_ms` and `pc_profile_problems`.
 - Text guards on the bridge counts line:
   - `app_status/tests.rs`: `late_callbacks = c.late_callbacks,`, then
     `late_bins = ?c.late_bins,` right before `late_max_us = s.late_max_us,`;
