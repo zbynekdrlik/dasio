@@ -187,6 +187,80 @@ fn pc_suffix(problems: Option<u32>) -> String {
     }
 }
 
+/// The RX arrival mean under which the device's media clock likely runs
+/// behind the network's (dasio#237): on 26.11.2026 FOH band read 0.18 ms
+/// and mbc 0.19 ms, alex-nb 0.02 ms behind its USB NIC's lagging PTP
+/// follower (0.00 ms before its silent RX flow, dasio#234).
+pub const CLOCK_SIGN_MEAN_NS: u64 = 50_000;
+
+/// What keeps an instance from low latency, in one look (dasio#237): the
+/// PC profile, the TX path and the clock sign from the RX arrival mean.
+/// Text and a JSON key only: the clock sign never sets the icon (the RX
+/// arrival is a measurement, rx-arrival.md).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Readiness {
+    /// Every item holds.
+    Ok,
+    /// The items that do not, each with its number.
+    Not(Vec<String>),
+    /// Nothing failed, but no RX mean was measured yet.
+    Checking,
+}
+
+impl Readiness {
+    /// The tray line's part: only when an item fails, so a ready PC's line
+    /// stays as it was.
+    fn suffix(&self) -> String {
+        match self {
+            Readiness::Not(items) => format!(" · low latency NOT: {}", items.join(", ")),
+            Readiness::Ok | Readiness::Checking => String::new(),
+        }
+    }
+
+    /// The JSON key's value.
+    pub fn key(&self) -> &'static str {
+        match self {
+            Readiness::Ok => "ok",
+            Readiness::Not(_) => "not",
+            Readiness::Checking => "checking",
+        }
+    }
+}
+
+/// The instance's [`Readiness`] from its PC profile problems (`None`: no
+/// profile, not an item), its TX path and its RX arrival.
+pub fn readiness(
+    pc_problems: Option<u32>,
+    tx: TxPath,
+    rx: Option<crate::rx_arrival::Report>,
+) -> Readiness {
+    let mut not = Vec::new();
+    if let Some(n) = pc_problems.filter(|&n| n > 0) {
+        not.push(format!("PC profile ({n})"));
+    }
+    match tx {
+        TxPath::Kernel {
+            no_slot: 0,
+            failed: 0,
+        } => {}
+        TxPath::Kernel { no_slot, failed } => {
+            not.push(format!("TX ({no_slot} to the socket, {failed} failed)"));
+        }
+        TxPath::Udp => not.push("TX (UDP)".to_string()),
+    }
+    let mean = rx.and_then(|r| r.mean_ns);
+    if let Some(m) = mean.filter(|&m| m < CLOCK_SIGN_MEAN_NS) {
+        not.push(format!("clock (RX mean {:.2} ms)", m as f64 / 1e6));
+    }
+    if !not.is_empty() {
+        Readiness::Not(not)
+    } else if mean.is_none() {
+        Readiness::Checking
+    } else {
+        Readiness::Ok
+    }
+}
+
 fn ms(samples: u32, rate: u32) -> f64 {
     f64::from(samples) * 1000.0 / f64::from(rate.max(1))
 }
@@ -197,8 +271,9 @@ pub fn line(f: &Facts) -> String {
     let tx = f.tx.suffix();
     let rx = crate::rx_arrival::suffix(f.rx);
     let startup = startup_suffix(&f.startup, &DAW_STARTUP);
+    let ready = readiness(f.pc_problems, f.tx, f.rx).suffix();
     format!(
-        "{} · {} @ {} kHz{} · in {:.2} / out {:.2} ms · late {}/min ({} total){startup}{rx}{tx}{pc}",
+        "{} · {} @ {} kHz{} · in {:.2} / out {:.2} ms · late {}/min ({} total){startup}{ready}{rx}{tx}{pc}",
         if f.attached { "DAW attached" } else { "no DAW" },
         f.block,
         f.sample_rate / 1000,
@@ -231,7 +306,7 @@ pub fn json(f: &Facts) -> String {
             "{{\"line\":\"{}\",\"state\":\"{}\",\"daw_attached\":{},\"block\":{},",
             "\"sample_rate\":{},\"latency_in\":{},\"latency_out\":{},\"spare_blocks\":{},",
             "\"late_blocks\":{},\"late_per_min\":{},\"driver_missed\":{},\"stale\":{},",
-            "\"waited\":{},\"heartbeat_ms\":{},\"pc_profile_problems\":{},{}{}{}}}"
+            "\"waited\":{},\"heartbeat_ms\":{},\"low_latency\":\"{}\",\"pc_profile_problems\":{},{}{}{}}}"
         ),
         line,
         state(f),
@@ -247,6 +322,7 @@ pub fn json(f: &Facts) -> String {
         f.stale,
         f.waited,
         f.heartbeat_ms,
+        readiness(f.pc_problems, f.tx, f.rx).key(),
         f.pc_problems.map_or(-1, i64::from),
         crate::rx_arrival::json(f.rx),
         f.tx.json(),
@@ -584,9 +660,10 @@ pub fn bridge_line(f: &BridgeFacts) -> String {
         }
     };
     format!(
-        "bridge to \"{}\": {now}{} · underruns to ASIO {} / from ASIO {} · resets {}{}{}{}{}{}",
+        "bridge to \"{}\": {now}{}{} · underruns to ASIO {} / from ASIO {} · resets {}{}{}{}{}{}",
         f.driver,
         delays_suffix(f),
+        readiness(f.pc_problems, f.tx, f.rx).suffix(),
         f.to_asio_underruns,
         f.from_asio_underruns,
         f.resets,
@@ -643,7 +720,7 @@ pub fn bridge_json(f: &BridgeFacts) -> String {
             "{{\"line\":\"{}\",\"state\":\"{}\",\"kind\":\"bridge\",\"daw_attached\":false,",
             "\"driver\":\"{}\",\"running\":{},\"reason\":\"{}\",\"rate\":{},",
             "\"buffer_frames\":{},\"to_asio_underruns\":{},\"from_asio_underruns\":{},",
-            "\"resets\":{},{}{}{}\"pc_profile_problems\":{},{}{}{}{}{}{}}}"
+            "\"resets\":{},{}{}{}\"low_latency\":\"{}\",\"pc_profile_problems\":{},{}{}{}{}{}{}}}"
         ),
         escaped(&bridge_line(f)),
         bridge_state(f),
@@ -658,6 +735,7 @@ pub fn bridge_json(f: &BridgeFacts) -> String {
         late_bins_json(&f.late_bins),
         delays_json(f),
         converter_json(f.to_asio_converter_delay_ns, f.from_asio_converter_delay_ns),
+        readiness(f.pc_problems, f.tx, f.rx).key(),
         f.pc_problems.map_or(-1, i64::from),
         age_json(f.from_asio_age),
         pull_json(f.from_asio_pull),
