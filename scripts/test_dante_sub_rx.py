@@ -65,5 +65,43 @@ class Describe(unittest.TestCase):
         self.assertIn("not in the result: [2]", lines)
 
 
+class Retries(unittest.TestCase):
+    """mDNS discovery misses the RX device now and then (alex-klavir 26.11.2026: `RX device alex-klavir not
+    found` on 6 of ~14 calls, each found again a few seconds later). A missed device is tried again, a bounded
+    number of times; a device that was found ends the loop with that attempt's own exit code."""
+
+    def attempts(self, outcomes):
+        calls = []
+
+        def attempt():
+            calls.append(1)
+            return outcomes[len(calls) - 1]
+
+        return calls, attempt
+
+    def test_a_device_found_at_once_runs_one_attempt(self):
+        calls, attempt = self.attempts([(0, True)])
+        self.assertEqual(sub.with_retries(attempt, log=lambda m: None), 0)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_missed_device_is_tried_again_and_its_found_attempt_decides(self):
+        calls, attempt = self.attempts([(1, False), (1, False), (1, True)])
+        self.assertEqual(sub.with_retries(attempt, log=lambda m: None), 1)
+        self.assertEqual(len(calls), 3)
+        calls, attempt = self.attempts([(1, False), (0, True)])
+        self.assertEqual(sub.with_retries(attempt, log=lambda m: None), 0)
+        self.assertEqual(len(calls), 2)
+
+    def test_a_device_never_found_stops_after_the_tries_with_exit_1(self):
+        said = []
+        calls, attempt = self.attempts([(0, False)] * 10)
+        self.assertEqual(sub.with_retries(attempt, tries=4, log=said.append), 1)
+        self.assertEqual(len(calls), 4)
+        self.assertIn("not found in 4 tries", said[-1])
+
+    def test_the_default_tries_more_than_once(self):
+        self.assertGreater(sub.FIND_TRIES, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
