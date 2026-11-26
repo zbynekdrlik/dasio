@@ -165,6 +165,85 @@ class Resources(Temp):
         self.assertIn("2600 us at", out)
         self.assertNotIn("holder:", out)
 
+    HEAD = [
+        "P,1,100,4,daw.exe",
+        "P,1,4,0,System",
+        "T,1,100,1001,10001000,15,AudioCalc",
+        "T,1,100,1002,30005000,15,MainThread",
+        "T,1,100,1003,30005000,15,Other",
+        "T,1,4,4000,FFFFF80000200100,15,",
+        "M,10,100,10000000,100000,\\Device\\HarddiskVolume3\\Program Files\\card\\card_asio.dll",
+        "M,10,4,FFFFF80000000000,100000,\\SystemRoot\\system32\\ntoskrnl.exe",
+        "M,10,4,FFFFF80000200000,100000,\\SystemRoot\\system32\\drivers\\gpu.sys",
+        # the worker waits on the window lock 1.0 .. 4.6 ms
+        "C,10000,8,1001,0,15,0,0,2,0",
+        "C,20000,8,0,1001,0,15,27,5,0",
+        "C,46000,8,1001,0,15,0,0,2,0",
+        "C,50000,8,0,1001,0,15,6,5,0",
+    ]
+
+    def chain_out(self, rows, *more):
+        _, out = run(csw_res, self.cut_file("\n".join(self.HEAD + rows + [""])), "--proc", "daw.exe", *more)
+        return [line.strip() for line in out.splitlines() if line.strip().startswith("holder:")]
+
+    def test_a_preemption_at_one_stamp_with_the_switch_in_is_no_wait(self):
+        # MainThread waits 0.8 .. 4.1 ms, runs 4.1 .. 4.3, is preempted at 4.3 and switched in on CPU 7 at the
+        # same stamp. Its switch before the 4.3 switch-in is the preemption, not the wait that ended at 4.1.
+        held = self.chain_out([
+            "C,5000,9,1002,0,15,0,0,2,0",
+            "C,8000,9,0,1002,0,15,28,5,0",
+            "C,30000,10,4000,0,15,0,0,2,0",
+            "R,40000,10,1002,4294967295,4294967295,0,1",
+            "C,41000,9,1002,0,15,0,0,2,0",
+            "C,43000,7,1002,0,15,0,0,2,0",
+            "C,43000,9,0,1002,0,15,32,1,0",
+            "R,45000,7,1001,4294967295,4294967295,0,1",
+        ])
+        self.assertEqual(held, ["holder: daw.exe:1002(MainThread) [start 30005000] ran from 4.300 ms (Ready, not a wait)"])
+
+    def test_the_chain_stops_at_an_idle_waker(self):
+        held = self.chain_out([
+            "C,100,11,0,0,0,0,0,2,0",
+            "C,5000,9,1002,0,15,0,0,2,0",
+            "C,8000,9,0,1002,0,15,28,5,0",
+            "R,40000,11,1002,4294967295,4294967295,0,1",
+            "C,41000,9,1002,0,15,0,0,2,0",
+            "R,45000,9,1001,4294967295,4294967295,0,1",
+        ], "--chain", "5")
+        self.assertEqual(len(held), 1)
+        self.assertTrue(held[0].endswith("made ready by idle"), held[0])
+
+    def test_the_chain_stops_at_a_thread_already_in_it(self):
+        # Other made MainThread ready at 3.0 ms; Other had been made ready by MainThread at 0.15 ms
+        held = self.chain_out([
+            "C,1000,9,1002,0,15,0,0,2,0",
+            "C,500,10,1003,0,15,0,0,2,0",
+            "C,1100,10,0,1003,0,15,27,5,0",
+            "R,1500,9,1003,4294967295,4294967295,0,1",
+            "C,1600,10,1003,0,15,0,0,2,0",
+            "C,2000,9,0,1002,0,15,27,5,0",
+            "R,30000,10,1002,4294967295,4294967295,0,1",
+            "C,31000,9,1002,0,15,0,0,2,0",
+            "R,45000,9,1001,4294967295,4294967295,0,1",
+        ], "--chain", "5")
+        self.assertEqual(len(held), 2, held)
+        self.assertIn("daw.exe:1002(MainThread) [start 30005000] had waited WrResource 2900 us", held[0])
+        self.assertIn("made ready by daw.exe:1003(Other)", held[0])
+        self.assertIn("daw.exe:1003(Other) [start 30005000] had waited WrResource 50 us", held[1])
+        self.assertTrue(held[1].endswith("made ready by daw.exe:1002(MainThread)"), held[1])
+
+    def test_a_ready_from_before_the_wait_is_not_its_waker(self):
+        held = self.chain_out([
+            "C,1000,10,4000,0,15,0,0,2,0",
+            "R,3000,10,1002,4294967295,4294967295,0,1",
+            "C,5000,9,1002,0,15,0,0,2,0",
+            "C,8000,9,0,1002,0,15,28,5,0",
+            "C,41000,9,1002,0,15,0,0,2,0",
+            "R,45000,9,1001,4294967295,4294967295,0,1",
+        ])
+        self.assertEqual(len(held), 1)
+        self.assertTrue(held[0].endswith("(0.800 .. 4.100 ms), made ready by ?"), held[0])
+
     def test_chain_stops_at_its_step_count(self):
         _, out = run(csw_res, self.cut_file(self.CHAIN), "--proc", "daw.exe", "--chain", "1")
         self.assertEqual(out.count("holder:"), 1)
