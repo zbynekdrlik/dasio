@@ -299,6 +299,10 @@ pub(super) fn app_status(
     tuning: crate::Tuning,
     startup: Arc<Mutex<crate::startup::Split<4>>>,
 ) {
+    // dstack #500's TX age view (dasio#237): it takes nothing and locks the
+    // TX table, so it is read here in the status call, never on a media
+    // thread.
+    let tx_table = media.tx.clone();
     media.set_app_status(move || {
         let Ok(c) = current.lock() else {
             return String::new();
@@ -331,6 +335,12 @@ pub(super) fn app_status(
             tx: super::tx_path(tuning.kernel_tx),
             rx: rx_arrival.report(),
             startup: part,
+            tx_age: crate::app_status::worst_tx_age(
+                tx_table
+                    .tx_age_view()
+                    .iter()
+                    .map(|l| (l.receiver.as_str(), l.receiver_latency_ns, l.age_max_10s_ns)),
+            ),
         })
     });
 }
