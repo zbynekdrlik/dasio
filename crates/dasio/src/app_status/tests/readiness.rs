@@ -362,3 +362,70 @@ fn a_receiver_name_keeps_31_bytes_and_cuts_at_a_char_boundary() {
     let fits = format!("{}é", "d".repeat(29));
     assert_eq!(ShortName::new(&fits).as_str(), fits);
 }
+
+#[test]
+fn the_worst_lane_is_by_ratio_not_by_age_or_by_excess() {
+    // a 5 ms packet at a 20 ms receiver (0.25) is older but further from late
+    // than a 3 ms packet at a 4 ms receiver (0.75)
+    let w = worst_tx_age([
+        ("far", 20_000_000, Some(5_000_000)),
+        ("band", 4_000_000, Some(3_000_000)),
+    ])
+    .unwrap();
+    assert_eq!(w.receiver.as_str(), "band");
+    // past the latency: 3 ms at 1 ms (3.0, 2 ms over) before 10 ms at 7 ms
+    // (1.43, 3 ms over)
+    let w = worst_tx_age([
+        ("long", 7_000_000, Some(10_000_000)),
+        ("short", 1_000_000, Some(3_000_000)),
+    ])
+    .unwrap();
+    assert_eq!(w.receiver.as_str(), "short");
+}
+
+#[test]
+fn the_tx_age_item_waits_for_the_start_up_window() {
+    let starting = Facts {
+        tx_age: age("band", 2_000, 1_000),
+        startup: Part {
+            in_window: true,
+            startup: [0; 4],
+        },
+        ..ready_daw()
+    };
+    assert!(!line(&starting).contains("TX age"), "{}", line(&starting));
+    assert!(
+        json(&starting).contains("\"low_latency\":\"ok\","),
+        "{}",
+        json(&starting)
+    );
+    let running = Facts {
+        startup: Part::default(),
+        ..starting
+    };
+    assert!(line(&running).contains("low latency NOT: TX age 2.00 ms over the 1.00 ms of band"));
+}
+
+#[test]
+fn a_tx_age_window_no_late_watch_feeds_does_not_count() {
+    let mut seen = (0, 0);
+    // no look yet: nothing to read
+    assert!(!sub_fed(&mut seen, 0));
+    // the looks move: fed
+    assert!(sub_fed(&mut seen, 1));
+    assert!(sub_fed(&mut seen, 2));
+    // standing still a few calls is timing
+    for _ in 1..TX_AGE_STALE_READS {
+        assert!(sub_fed(&mut seen, 2));
+    }
+    // then it is a dead watch
+    assert!(!sub_fed(&mut seen, 2));
+    assert!(!sub_fed(&mut seen, 2));
+    // and a moving count is fed again at once
+    assert!(sub_fed(&mut seen, 3));
+    assert_eq!(seen, (3, 0));
+}
+
+fn sub_fed(seen: &mut (u64, u32), looks: u64) -> bool {
+    tx_age_fed(seen, looks)
+}

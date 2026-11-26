@@ -83,10 +83,32 @@ pub struct TxAge {
     pub latency_ns: u64,
 }
 
-/// The lane with the largest age against its receiver's latency, from
-/// `(receiver, receiver latency ns, age over the last 10 s ns)` per lane.
-/// A lane counts with one receiver, a known latency and a measured window
-/// only; `None` when none does.
+/// Status calls in a row that may see dstack's TX age window unfed (its
+/// `tx_age_looks` count standing still) before the window counts as stale:
+/// the late watch feeds it once a second and the status hook runs once a
+/// second, so one or two equal reads are timing, five are a dead watch.
+pub const TX_AGE_STALE_READS: u32 = 5;
+
+/// Whether dstack's TX age window is still fed, from its look count `looks`
+/// and this reader's own memory `seen` (the count at its last call, and
+/// how many calls in a row it stood still). A window no late watch feeds
+/// keeps its last peaks: they must not stand as a current age.
+pub fn tx_age_fed(seen: &mut (u64, u32), looks: u64) -> bool {
+    if looks == seen.0 {
+        seen.1 = seen.1.saturating_add(1);
+    } else {
+        *seen = (looks, 0);
+    }
+    looks > 0 && seen.1 < TX_AGE_STALE_READS
+}
+
+/// The lane with the highest age/latency ratio, from `(receiver, receiver
+/// latency ns, age over the last 10 s ns)` per lane: the one nearest to or
+/// furthest past its receiver's latency, whatever that latency is (a 3 ms
+/// packet at a 1 ms receiver before a 10 ms one at a 7 ms receiver). A lane
+/// counts with one receiver, a known latency and a measured window only;
+/// `None` when none does. The window belongs to the slot: a slot that got a
+/// new receiver within 10 s still carries the old receiver's peaks.
 pub fn worst_tx_age<'a>(
     lanes: impl IntoIterator<Item = (&'a str, u64, Option<u64>)>,
 ) -> Option<TxAge> {
@@ -295,6 +317,13 @@ impl Readiness {
     }
 }
 
+/// The TX age the readiness line judges: none during the start-up window
+/// (dasio#28; owner 21.11.2026: start misses do not count), since the
+/// window's first look covers the device's start too.
+fn shown_tx_age(f: &Facts) -> Option<TxAge> {
+    if f.startup.in_window { None } else { f.tx_age }
+}
+
 /// The instance's [`Readiness`] from its PC profile problems (`None`: no
 /// profile, not an item), its TX path, its worst TX lane's age against its
 /// receiver's latency over the last 10 s (`None`: not measured, not an
@@ -352,7 +381,7 @@ pub fn line(f: &Facts) -> String {
     let tx = f.tx.suffix();
     let rx = crate::rx_arrival::suffix(f.rx);
     let startup = startup_suffix(&f.startup, &DAW_STARTUP);
-    let ready = readiness(f.pc_problems, f.tx, f.rx, f.tx_age).suffix();
+    let ready = readiness(f.pc_problems, f.tx, f.rx, shown_tx_age(f)).suffix();
     format!(
         "{} · {} @ {} kHz{} · in {:.2} / out {:.2} ms · late {}/min ({} total){startup}{ready}{rx}{tx}{pc}",
         if f.attached { "DAW attached" } else { "no DAW" },
@@ -403,7 +432,7 @@ pub fn json(f: &Facts) -> String {
         f.stale,
         f.waited,
         f.heartbeat_ms,
-        readiness(f.pc_problems, f.tx, f.rx, f.tx_age).key(),
+        readiness(f.pc_problems, f.tx, f.rx, shown_tx_age(f)).key(),
         f.pc_problems.map_or(-1, i64::from),
         crate::rx_arrival::json(f.rx),
         f.tx.json(),
