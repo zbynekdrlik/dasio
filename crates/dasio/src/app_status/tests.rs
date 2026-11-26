@@ -18,6 +18,7 @@ fn master() -> Facts {
         tx: TxPath::default(),
         rx: None,
         startup: Part::default(),
+        tx_age: None,
     }
 }
 

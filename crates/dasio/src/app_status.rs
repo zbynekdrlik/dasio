@@ -41,6 +41,96 @@ pub struct Facts {
     /// `stale` and `waited` above are its counts while it is on, the
     /// running ones after it, with its own here ([`DAW_STARTUP`] order).
     pub startup: Part<4>,
+    /// The TX lane nearest its receiver's latency over the last 10 s
+    /// ([`worst_tx_age`] over dstack's `tx_age_view`, dasio#237); `None`
+    /// before a lane with one receiver was measured.
+    pub tx_age: Option<TxAge>,
+}
+
+/// A Dante device name inside `Copy` facts: Dante names are at most 31
+/// bytes; a longer one is cut at a char boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ShortName {
+    len: u8,
+    bytes: [u8; 31],
+}
+
+impl ShortName {
+    pub fn new(name: &str) -> Self {
+        let mut end = name.len().min(31);
+        while !name.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut bytes = [0u8; 31];
+        bytes[..end].copy_from_slice(&name.as_bytes()[..end]);
+        ShortName {
+            len: u8::try_from(end).unwrap_or(31),
+            bytes,
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.bytes[..usize::from(self.len)]).unwrap_or("")
+    }
+}
+
+/// One TX lane's oldest packet over the last 10 s and its receiver's
+/// latency (dstack #500's `TxShared::tx_age_view`, dasio#237).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TxAge {
+    pub receiver: ShortName,
+    pub age_ns: u64,
+    pub latency_ns: u64,
+}
+
+/// Status calls in a row that may see dstack's TX age window unfed (its
+/// `tx_age_looks` count standing still) before the window counts as stale:
+/// the late watch feeds it once a second and the status hook runs once a
+/// second, so one or two equal reads are timing, five are a dead watch.
+pub const TX_AGE_STALE_READS: u32 = 5;
+
+/// Whether dstack's TX age window is still fed, from its look count `looks`
+/// and this reader's own memory `seen` (the count at its last call, and
+/// how many calls in a row it stood still). A window no late watch feeds
+/// keeps its last peaks: they must not stand as a current age.
+pub fn tx_age_fed(seen: &mut (u64, u32), looks: u64) -> bool {
+    if looks == seen.0 {
+        seen.1 = seen.1.saturating_add(1);
+    } else {
+        *seen = (looks, 0);
+    }
+    looks > 0 && seen.1 < TX_AGE_STALE_READS
+}
+
+/// The lane with the highest age/latency ratio, from `(receiver, receiver
+/// latency ns, age over the last 10 s ns)` per lane: the one nearest to or
+/// furthest past its receiver's latency, whatever that latency is (a 3 ms
+/// packet at a 1 ms receiver before a 10 ms one at a 7 ms receiver). A lane
+/// counts with one receiver, a known latency and a measured window only;
+/// `None` when none does. The window belongs to the slot: a slot that got a
+/// new receiver within 10 s still carries the old receiver's peaks.
+pub fn worst_tx_age<'a>(
+    lanes: impl IntoIterator<Item = (&'a str, u64, Option<u64>)>,
+) -> Option<TxAge> {
+    let mut worst: Option<TxAge> = None;
+    for (receiver, latency_ns, age) in lanes {
+        let Some(age_ns) = age else { continue };
+        if receiver.is_empty() || latency_ns == 0 {
+            continue;
+        }
+        let further = worst.is_none_or(|w| {
+            u128::from(age_ns) * u128::from(w.latency_ns)
+                > u128::from(w.age_ns) * u128::from(latency_ns)
+        });
+        if further {
+            worst = Some(TxAge {
+                receiver: ShortName::new(receiver),
+                age_ns,
+                latency_ns,
+            });
+        }
+    }
+    worst
 }
 
 /// The DAW kind's start-up counts ([`Facts::startup`]): the status key
@@ -227,12 +317,22 @@ impl Readiness {
     }
 }
 
+/// The TX age the readiness line judges: none during the start-up window
+/// (dasio#28; owner 21.11.2026: start misses do not count), since the
+/// window's first look covers the device's start too.
+fn shown_tx_age(f: &Facts) -> Option<TxAge> {
+    if f.startup.in_window { None } else { f.tx_age }
+}
+
 /// The instance's [`Readiness`] from its PC profile problems (`None`: no
-/// profile, not an item), its TX path and its RX arrival.
+/// profile, not an item), its TX path, its worst TX lane's age against its
+/// receiver's latency over the last 10 s (`None`: not measured, not an
+/// item; dasio#237) and its RX arrival.
 pub fn readiness(
     pc_problems: Option<u32>,
     tx: TxPath,
     rx: Option<crate::rx_arrival::Report>,
+    tx_age: Option<TxAge>,
 ) -> Readiness {
     let mut not = Vec::new();
     if let Some(n) = pc_problems.filter(|&n| n > 0) {
@@ -247,6 +347,16 @@ pub fn readiness(
             not.push(format!("TX ({no_slot} to the socket, {failed} failed)"));
         }
         TxPath::Udp => not.push("TX (UDP)".to_string()),
+    }
+    // Late as dstack's `over_latency` judges it: at the latency itself the
+    // packet still plays.
+    if let Some(t) = tx_age.filter(|t| t.age_ns > t.latency_ns) {
+        not.push(format!(
+            "TX age {:.2} ms over the {:.2} ms of {}",
+            t.age_ns as f64 / 1e6,
+            t.latency_ns as f64 / 1e6,
+            t.receiver.as_str()
+        ));
     }
     let mean = rx.and_then(|r| r.mean_ns);
     if let Some(m) = mean.filter(|&m| m < CLOCK_SIGN_MEAN_NS) {
@@ -271,7 +381,7 @@ pub fn line(f: &Facts) -> String {
     let tx = f.tx.suffix();
     let rx = crate::rx_arrival::suffix(f.rx);
     let startup = startup_suffix(&f.startup, &DAW_STARTUP);
-    let ready = readiness(f.pc_problems, f.tx, f.rx).suffix();
+    let ready = readiness(f.pc_problems, f.tx, f.rx, shown_tx_age(f)).suffix();
     format!(
         "{} · {} @ {} kHz{} · in {:.2} / out {:.2} ms · late {}/min ({} total){startup}{ready}{rx}{tx}{pc}",
         if f.attached { "DAW attached" } else { "no DAW" },
@@ -322,7 +432,7 @@ pub fn json(f: &Facts) -> String {
         f.stale,
         f.waited,
         f.heartbeat_ms,
-        readiness(f.pc_problems, f.tx, f.rx).key(),
+        readiness(f.pc_problems, f.tx, f.rx, shown_tx_age(f)).key(),
         f.pc_problems.map_or(-1, i64::from),
         crate::rx_arrival::json(f.rx),
         f.tx.json(),
@@ -663,7 +773,7 @@ pub fn bridge_line(f: &BridgeFacts) -> String {
         "bridge to \"{}\": {now}{}{} · underruns to ASIO {} / from ASIO {} · resets {}{}{}{}{}{}",
         f.driver,
         delays_suffix(f),
-        readiness(f.pc_problems, f.tx, f.rx).suffix(),
+        readiness(f.pc_problems, f.tx, f.rx, None).suffix(),
         f.to_asio_underruns,
         f.from_asio_underruns,
         f.resets,
@@ -724,7 +834,7 @@ pub fn bridge_json(f: &BridgeFacts) -> String {
         ),
         escaped(&bridge_line(f)),
         bridge_state(f),
-        readiness(f.pc_problems, f.tx, f.rx).key(),
+        readiness(f.pc_problems, f.tx, f.rx, None).key(),
         escaped(&f.driver),
         f.running,
         f.reason_code.unwrap_or(""),
