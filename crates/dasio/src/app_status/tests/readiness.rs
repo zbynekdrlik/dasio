@@ -227,18 +227,17 @@ fn a_bridge_names_its_failing_items_before_its_underruns() {
     assert!(bridge_json(&bridge_running()).contains("\"low_latency\":\"checking\","));
 }
 
-fn age(receiver: &str, age_us: u64, latency_us: u64) -> Option<TxAge> {
+fn age(receiver: &str, age_us: u64, edge_us: u64) -> Option<TxAge> {
     Some(TxAge {
         receiver: ShortName::new(receiver),
         age_ns: age_us * 1_000,
-        latency_ns: latency_us * 1_000,
+        edge_ns: edge_us * 1_000,
     })
 }
 
 #[test]
-fn a_tx_lane_older_than_its_receiver_s_latency_is_the_tx_age_item() {
-    // FOH band 26.11.2026 02:51:56Z: one packet 1021 us old at a receiver
-    // that plays at 250 us (dstack #485)
+fn a_tx_lane_past_its_late_edge_is_the_tx_age_item() {
+    // a packet 1021 us old at an edge of 250 us
     assert_eq!(
         readiness(
             Some(0),
@@ -247,7 +246,7 @@ fn a_tx_lane_older_than_its_receiver_s_latency_is_the_tx_age_item() {
             age("foh-abl-yamaha-accelerator", 1_021, 250)
         ),
         Readiness::Not(vec![
-            "TX age 1.02 ms over the 0.25 ms of foh-abl-yamaha-accelerator".to_string()
+            "TX age 1.02 ms past the 0.25 ms foh-abl-yamaha-accelerator plays it at".to_string()
         ])
     );
     // at the latency itself the packet still plays (dstack's over_latency)
@@ -268,7 +267,7 @@ fn a_tx_lane_older_than_its_receiver_s_latency_is_the_tx_age_item() {
             age("iem-mixer", 1_001, 1_000)
         ),
         Readiness::Not(vec![
-            "TX age 1.00 ms over the 1.00 ms of iem-mixer".to_string()
+            "TX age 1.00 ms past the 1.00 ms iem-mixer plays it at".to_string()
         ])
     );
     // no measured lane is no item, and nothing to wait for
@@ -290,13 +289,14 @@ fn the_tx_age_item_comes_after_the_tx_path_and_before_the_clock() {
         readiness(f.pc_problems, f.tx, f.rx, f.tx_age),
         Readiness::Not(vec![
             "TX (UDP)".to_string(),
-            "TX age 2.00 ms over the 1.00 ms of band".to_string(),
+            "TX age 2.00 ms past the 1.00 ms band plays it at".to_string(),
             "clock (RX mean 0.02 ms)".to_string(),
         ])
     );
     assert!(
-        line(&f)
-            .contains("low latency NOT: TX (UDP), TX age 2.00 ms over the 1.00 ms of band, clock"),
+        line(&f).contains(
+            "low latency NOT: TX (UDP), TX age 2.00 ms past the 1.00 ms band plays it at, clock"
+        ),
         "{}",
         line(&f)
     );
@@ -314,8 +314,8 @@ fn the_tx_age_item_comes_after_the_tx_path_and_before_the_clock() {
 }
 
 #[test]
-fn the_worst_lane_is_the_one_furthest_past_its_receiver_s_latency() {
-    // 3 ms of 4 ms (0.75) is nearer its receiver's latency than 1 ms of 2 ms (0.5)
+fn the_worst_lane_is_the_one_furthest_past_its_late_edge() {
+    // 3 ms of 4 ms (0.75) is nearer its edge than 1 ms of 2 ms (0.5)
     let w = worst_tx_age([
         ("iem-mixer", 2_000_000, Some(1_000_000)),
         ("band", 4_000_000, Some(3_000_000)),
@@ -323,7 +323,7 @@ fn the_worst_lane_is_the_one_furthest_past_its_receiver_s_latency() {
     ])
     .unwrap();
     assert_eq!(
-        (w.receiver.as_str(), w.age_ns, w.latency_ns),
+        (w.receiver.as_str(), w.age_ns, w.edge_ns),
         ("band", 3_000_000, 4_000_000)
     );
     // a later lane only replaces it when it is further, not as far
@@ -403,7 +403,10 @@ fn the_tx_age_item_waits_for_the_start_up_window() {
         startup: Part::default(),
         ..starting
     };
-    assert!(line(&running).contains("low latency NOT: TX age 2.00 ms over the 1.00 ms of band"));
+    assert!(
+        line(&running)
+            .contains("low latency NOT: TX age 2.00 ms past the 1.00 ms band plays it at")
+    );
 }
 
 #[test]
@@ -428,4 +431,59 @@ fn a_tx_age_window_no_late_watch_feeds_does_not_count() {
 
 fn sub_fed(seen: &mut (u64, u32), looks: u64) -> bool {
     tx_age_fed(seen, looks)
+}
+
+fn lane(
+    receiver: &str,
+    receiver_us: u64,
+    threshold_us: Option<u64>,
+    age_us: Option<u64>,
+) -> dstack::media::tx::TxAgeLane {
+    dstack::media::tx::TxAgeLane {
+        slot: 0,
+        receiver: receiver.to_string(),
+        receiver_latency_ns: receiver_us * 1_000,
+        age_max_10s_ns: age_us.map(|a| a * 1_000),
+        over_latency: 0,
+        late_threshold_ns: threshold_us.map(|t| t * 1_000),
+    }
+}
+
+#[test]
+fn a_lane_is_judged_at_dstack_s_late_edge_not_at_its_receiver_s_latency() {
+    // FOH band 26.11.2026 09:05Z: 0.34 ms at iem-mixer, which states
+    // 0.25 ms but plays band's flow at band's 1 ms TX latency plus a packet
+    // and the margin: dstack judges it at ~1.11 ms, so it plays (dasio#237)
+    let foh = worst_lane(&[lane("iem-mixer", 250, Some(1_113), Some(340))]);
+    assert_eq!(
+        readiness(Some(0), TxPath::default(), rx_mean(190_000), foh),
+        Readiness::Ok
+    );
+    // past that edge it is the item
+    let late = worst_lane(&[lane("iem-mixer", 250, Some(1_113), Some(1_200))]);
+    assert!(
+        matches!(
+            readiness(Some(0), TxPath::default(), rx_mean(190_000), late),
+            Readiness::Not(_)
+        ),
+        "{late:?}"
+    );
+    // no edge (no flow, or the receiver's latency unknown): no item
+    assert_eq!(
+        worst_lane(&[lane("iem-mixer", 250, None, Some(5_000))]),
+        None
+    );
+}
+
+#[test]
+fn worst_lane_keeps_the_edge_and_skips_a_lane_without_one() {
+    let w = worst_lane(&[
+        lane("multicast", 0, None, Some(9_000)),
+        lane("iem-mixer", 250, Some(1_113), Some(1_200)),
+    ])
+    .unwrap();
+    assert_eq!(
+        (w.receiver.as_str(), w.age_ns, w.edge_ns),
+        ("iem-mixer", 1_200_000, 1_113_000)
+    );
 }

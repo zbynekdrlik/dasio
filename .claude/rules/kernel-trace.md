@@ -68,4 +68,8 @@ Found why master Ableton clicked (25.11.2026). Tools: `dasio-csw.wprp`, `dasio-c
 - Never run a trace, or start any process, on a DAW PC during a measurement other than the planned one. That
   includes a waiting trigger trace (`txev-trigger.ps1`): analyse off the box, or stop the trigger first. Only one
   kernel trace runs at a time, so a stack probe also stops the trigger, and the trigger is armed again after.
+- During a service, `event-trace.ps1` holds the csw ring on the DAW PC, and mbc runs `tone-trigger.ps1 -Match 'a watched
+  output broke|a watched test tone broke|a watched program output looped'`. The trace is saved once, at the first miss the
+  hall can hear, and then the script ends. The save writes the whole ring to disk, so a run keeps one save. A run
+  counts as no measurement: stop it (`event-trace.stop` flag) before any planned probe or test, and arm it again after.
 - Never read or sweep another process's memory on an audio PC (it stopped a production PC on 25.11.2026).
