@@ -46,9 +46,13 @@ exclude_globs = [
 # systime.rs's calibrate reads timeGetTime: Windows-only, tested on the
 # Windows runner (systime's own test), compiled out here. Mutant names
 # carry the file path and the bare function name, so the pattern does too.
+# stall.rs's Stall::note sets each slot's bit once in a fresh mask: `|=` and
+# `^=` give the same mask (dasio#207); its `|` in `sources` overlaps ticks and
+# is tested.
 exclude_re = [
   "\\bwin::",
   "src/systime\\.rs:.*\\bcalibrate\\b",
   "RotatingLog>::flush",
   "replace \\| with \\^ in (Header::ack_block|paired|filetime|decide)",
+  "replace \\|= with \\^= in Stall::note",
 ]

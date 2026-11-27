@@ -236,7 +236,11 @@ pub fn run(
                     .now_ns()
                     .map(|ns| dstack::clock::to_samples(ns, cfg.sample_rate))
             };
-            watch_reader.tick(w, media_now, cfg.sample_rate);
+            // Each RX slot's lost-packet gaps (dstack's own counters): several
+            // sources losing packets together make the breaks an RX stall.
+            let rx_gaps: [u64; dstack::media::rx::MAX_FLOWS] =
+                std::array::from_fn(|slot| media.rx.lane(slot).gaps);
+            watch_reader.tick(w, media_now, cfg.sample_rate, &rx_gaps);
         }
         if crate::pc_profile::check_due(
             profile_at.map(|t| now.duration_since(t).as_secs()),

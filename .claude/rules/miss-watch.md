@@ -156,6 +156,20 @@ paths:
   shows every second). Equal peaks on a sine mean the same samples again.
   The zero/repeat watch stays quiet on such a loop (one block of lag, 8
   blocks at most, channel above -60 dBFS).
+- An RX stall is not a host miss (0.1.182, `miss_watch/stall.rs`): every 100 ms
+  tick `run.rs` reads each RX flow slot's `gaps` (dstack's own counters, the source
+  of its `RX packets missing ... never reached our socket` line) and `Stall` keeps
+  the slots whose count rose in the last 3 ticks. The zero/repeat breaks are held
+  one tick (dstack confirms a hole a little after the audio shows it); with 2 or
+  more sources in the window they log as `a watched output was cut while RX packets
+  were missing from several sources: an RX stall, not an ASIO host's missed buffer`
+  (the `broke` line's fields + `sources`) instead of `a watched output broke`, so the
+  event trigger (`tone-trigger.ps1`) does not match it. The break is still in the log.
+  Tone, program and loop lines are not held or changed. A counter that goes back (a
+  device restart) is no loss; the first look only takes the counts. 27.11.2026
+  14:36:13Z (an mbc stall) took a service trace as a `broke` line.
+- The event trigger's default (`tone-trigger.ps1 -Match`, 0.1.182) also fires on a
+  loud step: `output jumped` with `peak_dbfs` -45 or louder (`kernel-trace.md`).
 - The log keeps 4 x 10 MB: pull a service's lines the same day.
 - Live's test tone plays only while Live's Settings window is open:
   closing Settings stops it (dasio#207, 25.11.2026: a 200-start run read

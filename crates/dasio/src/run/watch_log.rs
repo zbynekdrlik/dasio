@@ -8,6 +8,7 @@ use tracing::{info, warn};
 
 use crate::miss_watch::program::{self, Tracker};
 use crate::miss_watch::silence::Silence;
+use crate::miss_watch::stall::Stall;
 use crate::miss_watch::{self, Break, Loop, ProgramJump, Setup, ToneBreak, looped, tone};
 
 /// The watch of the instance folder `dir` (its watch.toml) against the
@@ -55,6 +56,10 @@ pub(super) struct Reader {
     loops: Vec<Loop>,
     tone_silence: Silence,
     program_silence: Silence,
+    /// Which RX sources lost packets lately (the device's own counters).
+    stall: Stall,
+    /// The zero and repeat breaks of the last tick, judged one tick later.
+    held: Vec<Break>,
 }
 
 /// A dB figure for the log: to a tenth.
@@ -64,8 +69,17 @@ fn tenth_db(ratio: f64) -> f64 {
 
 impl Reader {
     /// The breaks since the last tick (100 ms), logged; `now` reads the
-    /// media position (samples at `rate`) for their age.
-    pub(super) fn tick(&mut self, w: &Setup, now: impl Fn() -> Option<u64>, rate: u32) {
+    /// media position (samples at `rate`) for their age. `rx_gaps` is each
+    /// RX flow slot's cumulative count of lost-packet gaps: the zero and
+    /// repeat breaks are held one tick and logged as a host's miss, or, with
+    /// several sources losing packets around them, as an RX stall.
+    pub(super) fn tick(
+        &mut self,
+        w: &Setup,
+        now: impl Fn() -> Option<u64>,
+        rate: u32,
+        rx_gaps: &[u64],
+    ) {
         self.breaks.clear();
         let lost = w.events.drain(&mut self.tail, &mut self.breaks);
         if lost > 0 {
@@ -104,7 +118,9 @@ impl Reader {
                 "the loop check lost events: more than its ring holds in 100 ms (dasio#207)"
             );
         }
-        if self.breaks.is_empty()
+        self.stall.note(rx_gaps);
+        let judged = std::mem::replace(&mut self.held, std::mem::take(&mut self.breaks));
+        if judged.is_empty()
             && self.tone_breaks.is_empty()
             && self.program_jumps.is_empty()
             && self.loops.is_empty()
@@ -112,7 +128,23 @@ impl Reader {
             return;
         }
         let now = now();
-        for g in miss_watch::group(&self.breaks, w.cfg.block) {
+        let stalled = self.stall.stalled();
+        for g in miss_watch::group(&judged, w.cfg.block) {
+            if stalled {
+                warn!(
+                    watch = %w.cfg.name,
+                    kind = g.kind.name(),
+                    samples = g.len,
+                    ago_ms = now.map(|n| miss_watch::age_ms(g.at, n, rate)),
+                    channels = %miss_watch::channel_names(&g, &w.cfg),
+                    broke = g.channels.len(),
+                    of = w.cfg.rx.len(),
+                    sources = self.stall.sources(),
+                    "a watched output was cut while RX packets were missing from several \
+                     sources: an RX stall, not an ASIO host's missed buffer (dasio#207)"
+                );
+                continue;
+            }
             warn!(
                 watch = %w.cfg.name,
                 kind = g.kind.name(),

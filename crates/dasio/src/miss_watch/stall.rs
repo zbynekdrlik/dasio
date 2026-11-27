@@ -17,12 +17,10 @@ pub const TICKS: usize = 3;
 pub const SEVERAL: u32 = 2;
 
 /// The flow slots one tick's mask holds.
-#[allow(dead_code)] // the stub of the red commit
 const SLOTS: usize = 32;
 
 /// Which flow slots lost packets in the last [`TICKS`] ticks.
 #[derive(Debug, Default)]
-#[allow(dead_code)] // the stub of the red commit
 pub struct Stall {
     seen: Vec<u64>,
     primed: bool,
@@ -34,12 +32,25 @@ impl Stall {
     /// One tick: each slot's cumulative gap count now. The first look only
     /// takes the counts (a device that ran before the watch has some).
     pub fn note(&mut self, gaps: &[u64]) {
-        let _ = gaps;
+        let gaps = &gaps[..gaps.len().min(SLOTS)];
+        if self.seen.len() < gaps.len() {
+            self.seen.resize(gaps.len(), 0);
+        }
+        let mut mask = 0u32;
+        for (slot, (&now, seen)) in gaps.iter().zip(self.seen.iter_mut()).enumerate() {
+            if self.primed && now > *seen {
+                mask |= 1 << slot;
+            }
+            *seen = now;
+        }
+        self.primed = true;
+        self.at = (self.at + 1) % TICKS;
+        self.recent[self.at] = mask;
     }
 
     /// How many distinct sources lost packets in the last [`TICKS`] ticks.
     pub fn sources(&self) -> u32 {
-        0
+        self.recent.iter().fold(0, |all, m| all | m).count_ones()
     }
 
     /// Whether several sources lost packets together: an RX stall.

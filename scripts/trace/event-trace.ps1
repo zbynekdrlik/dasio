@@ -1,7 +1,7 @@
 # dasio#207 (27.11.2026): a context-switch trace kept in memory during a service, saved once at the first missed
 # buffer the hall can hear. 26.11.2026's sermon had two master misses (HAND 1 sync, 17:03:23Z and 17:18:37Z) and no
 # trace. Run it on the DAW PC; on the PC that watches its outputs run
-#   tone-trigger.ps1 -To <this PC> -Minutes <same> -Match 'a watched output broke|a watched test tone broke|a watched program output looped'
+#   tone-trigger.ps1 -To <this PC> -Minutes <same>      (its default -Match is the service's: breaks, loops, a loud step)
 # At the trigger's UDP packet on -Port the ring is saved (wpr -stop, the last ~14 s) and the script ends: one trace per
 # run, so the save's disk write happens once. No packet in -Minutes: the trace is cancelled, no file. A stop flag
 # (-Flag) cancels too.
