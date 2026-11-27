@@ -241,8 +241,18 @@ impl Reader {
     /// What is still held, logged now (the device loop ends): judged by the
     /// stall state at this last tick.
     pub(super) fn flush(&mut self, w: &Setup, now: impl Fn() -> Option<u64>, rate: u32) {
-        let breaks = self.held_breaks.flush();
-        let jumps = self.held_jumps.flush();
+        let breaks: Vec<Break> = self
+            .held_breaks
+            .flush()
+            .into_iter()
+            .map(|(b, _)| b)
+            .collect();
+        let jumps: Vec<ProgramJump> = self
+            .held_jumps
+            .flush()
+            .into_iter()
+            .map(|(j, _)| j)
+            .collect();
         if breaks.is_empty() && jumps.is_empty() {
             return;
         }

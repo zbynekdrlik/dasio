@@ -494,7 +494,7 @@ class ToneTriggerDefault(unittest.TestCase):
             self.assertTrue(self.hit("WARN dasio " + msg), msg)
 
     def test_a_loud_step_stops_it(self):
-        for peak in ("-45.0", "-45.3", "-30.2", "-9.9", "-0.0", "-12.5", "-30", "-45", "-5"):
+        for peak in ("-45.0", "-45.3", "-30.2", "-9.9", "-0.0", "-12.5", "-30", "-45", "-5", "0.0", "0"):
             line = f"WARN a watched program output jumped: a step in the audio db=40.1 peak_dbfs={peak} grid=3"
             self.assertTrue(self.hit(line), peak)
 

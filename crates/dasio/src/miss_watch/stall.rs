@@ -106,9 +106,13 @@ impl<T> Hold<T> {
         out
     }
 
-    /// Everything still held (the device loop ends).
-    pub fn flush(&mut self) -> Vec<T> {
-        self.queue.drain(..).map(|(_, item)| item).collect()
+    /// Everything still held (the device loop ends), each with the ticks
+    /// it has been held.
+    pub fn flush(&mut self) -> Vec<(T, usize)> {
+        self.queue
+            .drain(..)
+            .map(|(age, item)| (item, age))
+            .collect()
     }
 }
 
@@ -293,7 +297,7 @@ mod tests {
         let mut h: Hold<u32> = Hold::default();
         h.tick([1]);
         h.tick([2, 3]);
-        assert_eq!(h.flush(), vec![1, 2, 3]);
+        assert_eq!(h.flush(), vec![(1, 1), (2, 0), (3, 0)]);
         assert!(h.flush().is_empty());
         assert!(h.tick([]).is_empty());
     }

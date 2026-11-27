@@ -41,6 +41,7 @@
 //! is the instance folder's `watch.toml` ([`config`]), not a `device.toml`
 //! table: dstack's dtray refuses keys it does not know there.
 
+pub mod judge;
 pub mod looped;
 pub mod program;
 pub mod silence;
