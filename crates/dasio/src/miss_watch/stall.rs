@@ -33,9 +33,7 @@ impl Stall {
     /// takes the counts (a device that ran before the watch has some).
     pub fn note(&mut self, gaps: &[u64]) {
         let gaps = &gaps[..gaps.len().min(SLOTS)];
-        if self.seen.len() < gaps.len() {
-            self.seen.resize(gaps.len(), 0);
-        }
+        self.seen.resize(self.seen.len().max(gaps.len()), 0);
         let mut mask = 0u32;
         for (slot, (&now, seen)) in gaps.iter().zip(self.seen.iter_mut()).enumerate() {
             if self.primed && now > *seen {
