@@ -240,7 +240,10 @@ pub fn run(
             // sources losing packets together make the breaks an RX stall.
             let rx_gaps: [u64; dstack::media::rx::MAX_FLOWS] =
                 std::array::from_fn(|slot| media.rx.lane(slot).gaps);
-            watch_reader.tick(w, media_now, cfg.sample_rate, &rx_gaps);
+            let rx_flows: [u64; dstack::media::rx::MAX_FLOWS] = std::array::from_fn(|slot| {
+                crate::miss_watch::stall::flow_id(media.rx.source(slot))
+            });
+            watch_reader.tick(w, media_now, cfg.sample_rate, &rx_gaps, &rx_flows);
         }
         if crate::pc_profile::check_due(
             profile_at.map(|t| now.duration_since(t).as_secs()),

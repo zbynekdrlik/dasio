@@ -79,6 +79,7 @@ impl Reader {
         now: impl Fn() -> Option<u64>,
         rate: u32,
         rx_gaps: &[u64],
+        rx_flows: &[u64],
     ) {
         self.breaks.clear();
         let lost = w.events.drain(&mut self.tail, &mut self.breaks);
@@ -118,7 +119,7 @@ impl Reader {
                 "the loop check lost events: more than its ring holds in 100 ms (dasio#207)"
             );
         }
-        self.stall.note(rx_gaps);
+        self.stall.note(rx_gaps, rx_flows);
         let judged = std::mem::replace(&mut self.held, std::mem::take(&mut self.breaks));
         if judged.is_empty()
             && self.tone_breaks.is_empty()
