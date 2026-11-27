@@ -918,9 +918,17 @@ fn device_in(dir: &std::path::Path) -> dstack::device::DeviceConfig {
 
 #[test]
 fn rx_names_now_are_the_state_file_s_renames_over_the_config_s() {
+    // The folder goes when the test ends, a failed assertion too.
+    struct Gone(std::path::PathBuf);
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
     let dir = std::env::temp_dir().join(format!("dasio-rx-names-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    let _gone = Gone(dir.clone());
     let cfg = device_in(&dir);
     // No state file yet: the config's names.
     assert_eq!(
@@ -948,5 +956,4 @@ fn rx_names_now_are_the_state_file_s_renames_over_the_config_s() {
     std::fs::write(dir.join("state.toml"), "rx = 3\n").unwrap();
     let e = rx_names_now(&cfg).unwrap_err();
     assert!(e.contains("state.toml"), "{e}");
-    std::fs::remove_dir_all(&dir).unwrap();
 }
