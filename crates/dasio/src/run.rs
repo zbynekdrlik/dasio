@@ -940,6 +940,23 @@ pub fn quiet_crashes() -> u32 {
     }
 }
 
+/// Each RX flow slot's lost-packet gaps (dstack's own counters) and flow id
+/// for the output watch's stall check (dasio#207). Two relaxed reads per
+/// slot, not one snapshot: a flow change landing between them pairs the
+/// old id with the new count, which `Stall` reads as no change for one
+/// tick and a change on the next (one tick's error at most).
+fn rx_view(
+    rx: &dstack::media::rx::RxShared,
+) -> (
+    [u64; dstack::media::rx::MAX_FLOWS],
+    [u64; dstack::media::rx::MAX_FLOWS],
+) {
+    (
+        std::array::from_fn(|slot| rx.lane(slot).gaps),
+        std::array::from_fn(|slot| crate::miss_watch::stall::flow_id(rx.source(slot))),
+    )
+}
+
 #[cfg(test)]
 mod quiet_tests {
     use windows_sys::Win32::System::Diagnostics::Debug::{
@@ -957,21 +974,4 @@ mod quiet_tests {
             assert_ne!(mode & bit, 0, "error mode {mode:#x} lacks {bit:#x}");
         }
     }
-}
-
-/// Each RX flow slot's lost-packet gaps (dstack's own counters) and flow id
-/// for the output watch's stall check (dasio#207). Two relaxed reads per
-/// slot, not one snapshot: a flow change landing between them pairs the
-/// old id with the new count, which `Stall` reads as no change for one
-/// tick and a change on the next (one tick's error at most).
-fn rx_view(
-    rx: &dstack::media::rx::RxShared,
-) -> (
-    [u64; dstack::media::rx::MAX_FLOWS],
-    [u64; dstack::media::rx::MAX_FLOWS],
-) {
-    (
-        std::array::from_fn(|slot| rx.lane(slot).gaps),
-        std::array::from_fn(|slot| crate::miss_watch::stall::flow_id(rx.source(slot))),
-    )
 }
