@@ -88,6 +88,41 @@ pub const DEFAULT_PATH: &str = r"C:\ProgramData\dasio\pc-profile.toml";
 /// Seconds between the service's checks.
 pub const CHECK_EVERY_S: u64 = 600;
 
+/// Seconds after the service's first check to its second (dasio#237).
+pub const RECHECK_AFTER_START_S: u64 = 30;
+
+/// Seconds from the service's check number `done` (from 1) to the next:
+/// the second comes [`RECHECK_AFTER_START_S`] after the first, so a
+/// process the keeper had not yet set at start (the instance's own
+/// affinity, dasio#237) is read again once it has; then every
+/// [`CHECK_EVERY_S`].
+pub fn next_check_s(done: u32) -> u64 {
+    if done == 1 {
+        RECHECK_AFTER_START_S
+    } else {
+        CHECK_EVERY_S
+    }
+}
+
+/// Whether the DAW kind's service starts a check now: at once without one
+/// before (`since_s` None), else once [`next_check_s`] of the checks
+/// started so far passed since the last try.
+pub fn check_due(since_s: Option<u64>, done: u32) -> bool {
+    since_s.is_none_or(|s| s >= next_check_s(done))
+}
+
+/// The checks started after a try: a try that did not start (one still
+/// ran) is not counted, so the next try comes after the same gap
+/// (dasio#237: a skipped second check is tried again 30 s later, not
+/// 600 s).
+pub fn checks_after(done: u32, started: bool) -> u32 {
+    if started {
+        done.saturating_add(1)
+    } else {
+        done
+    }
+}
+
 /// One PC's profile.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

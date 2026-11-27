@@ -1340,3 +1340,35 @@ fn power_plan_and_qos_values_name_how_they_take_effect() {
         .contains("gpupdate")
     );
 }
+
+#[test]
+fn the_check_after_the_first_comes_soon_so_the_keeper_s_first_pass_is_seen() {
+    // FOH 26.11.2026 08:53:18Z (and every restart since 24.11): the check at
+    // start read the new instance at affinity 0xFFFF before dasio's keeper
+    // (every 2 s) set 0xF0, and the tray said `PC profile: 1 problem` for
+    // 10 min (dasio#237)
+    assert_eq!(next_check_s(1), RECHECK_AFTER_START_S);
+    // soon, but after several keeper passes (every 2 s): between 10 and 60 s
+    assert!(!check_due(Some(9), 1));
+    assert!(check_due(Some(60), 1));
+    assert_eq!(next_check_s(2), CHECK_EVERY_S);
+    assert_eq!(next_check_s(7), CHECK_EVERY_S);
+}
+
+#[test]
+fn a_check_is_due_at_once_then_30_s_then_600_s_and_a_skipped_one_retries_soon() {
+    assert!(check_due(None, 0));
+    // after the first check
+    assert!(!check_due(Some(RECHECK_AFTER_START_S - 1), 1));
+    assert!(check_due(Some(RECHECK_AFTER_START_S), 1));
+    // after the second
+    assert!(!check_due(Some(RECHECK_AFTER_START_S), 2));
+    assert!(!check_due(Some(CHECK_EVERY_S - 1), 2));
+    assert!(check_due(Some(CHECK_EVERY_S), 2));
+    // a started try counts; one skipped while the first still ran does not,
+    // so the second is tried again after 30 s
+    assert_eq!(checks_after(0, true), 1);
+    assert_eq!(checks_after(1, false), 1);
+    assert_eq!(checks_after(1, true), 2);
+    assert_eq!(checks_after(u32::MAX, true), u32::MAX);
+}
