@@ -1348,7 +1348,9 @@ fn the_check_after_the_first_comes_soon_so_the_keeper_s_first_pass_is_seen() {
     // (every 2 s) set 0xF0, and the tray said `PC profile: 1 problem` for
     // 10 min (dasio#237)
     assert_eq!(next_check_s(1), RECHECK_AFTER_START_S);
-    assert!(RECHECK_AFTER_START_S >= 10 && RECHECK_AFTER_START_S <= 60);
+    // soon, but after several keeper passes (every 2 s): between 10 and 60 s
+    assert!(!check_due(Some(9), 1));
+    assert!(check_due(Some(60), 1));
     assert_eq!(next_check_s(2), CHECK_EVERY_S);
     assert_eq!(next_check_s(7), CHECK_EVERY_S);
 }
