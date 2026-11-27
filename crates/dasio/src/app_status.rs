@@ -42,7 +42,7 @@ pub struct Facts {
     /// running ones after it, with its own here ([`DAW_STARTUP`] order).
     pub startup: Part<4>,
     /// The TX lane nearest its late edge over the last 10 s
-    /// ([`worst_tx_age`] over dstack's `tx_age_view`, dasio#237); `None`
+    /// ([`worst_lane`] over dstack's `tx_age_view`, dasio#237); `None`
     /// before a lane with one receiver was measured.
     pub tx_age: Option<TxAge>,
 }
@@ -339,7 +339,7 @@ fn shown_tx_age(f: &Facts) -> Option<TxAge> {
 
 /// The instance's [`Readiness`] from its PC profile problems (`None`: no
 /// profile, not an item), its TX path, its worst TX lane's age against its
-/// receiver's latency over the last 10 s (`None`: not measured, not an
+/// late edge over the last 10 s (`None`: not measured, not an
 /// item; dasio#237) and its RX arrival.
 pub fn readiness(
     pc_problems: Option<u32>,
@@ -361,7 +361,7 @@ pub fn readiness(
         }
         TxPath::Udp => not.push("TX (UDP)".to_string()),
     }
-    // Late as dstack's `over_latency` judges it: at the latency itself the
+    // Late as dstack's `over_latency` judges it: at the edge itself the
     // packet still plays.
     if let Some(t) = tx_age.filter(|t| t.age_ns > t.edge_ns) {
         not.push(format!(

@@ -227,16 +227,16 @@ fn a_bridge_names_its_failing_items_before_its_underruns() {
     assert!(bridge_json(&bridge_running()).contains("\"low_latency\":\"checking\","));
 }
 
-fn age(receiver: &str, age_us: u64, latency_us: u64) -> Option<TxAge> {
+fn age(receiver: &str, age_us: u64, edge_us: u64) -> Option<TxAge> {
     Some(TxAge {
         receiver: ShortName::new(receiver),
         age_ns: age_us * 1_000,
-        edge_ns: latency_us * 1_000,
+        edge_ns: edge_us * 1_000,
     })
 }
 
 #[test]
-fn a_tx_lane_older_than_its_receiver_s_latency_is_the_tx_age_item() {
+fn a_tx_lane_past_its_late_edge_is_the_tx_age_item() {
     // a packet 1021 us old at an edge of 250 us
     assert_eq!(
         readiness(
@@ -314,8 +314,8 @@ fn the_tx_age_item_comes_after_the_tx_path_and_before_the_clock() {
 }
 
 #[test]
-fn the_worst_lane_is_the_one_furthest_past_its_receiver_s_latency() {
-    // 3 ms of 4 ms (0.75) is nearer its receiver's latency than 1 ms of 2 ms (0.5)
+fn the_worst_lane_is_the_one_furthest_past_its_late_edge() {
+    // 3 ms of 4 ms (0.75) is nearer its edge than 1 ms of 2 ms (0.5)
     let w = worst_tx_age([
         ("iem-mixer", 2_000_000, Some(1_000_000)),
         ("band", 4_000_000, Some(3_000_000)),
@@ -472,5 +472,18 @@ fn a_lane_is_judged_at_dstack_s_late_edge_not_at_its_receiver_s_latency() {
     assert_eq!(
         worst_lane(&[lane("iem-mixer", 250, None, Some(5_000))]),
         None
+    );
+}
+
+#[test]
+fn worst_lane_keeps_the_edge_and_skips_a_lane_without_one() {
+    let w = worst_lane(&[
+        lane("multicast", 0, None, Some(9_000)),
+        lane("iem-mixer", 250, Some(1_113), Some(1_200)),
+    ])
+    .unwrap();
+    assert_eq!(
+        (w.receiver.as_str(), w.age_ns, w.edge_ns),
+        ("iem-mixer", 1_200_000, 1_113_000)
     );
 }

@@ -19,28 +19,32 @@ function Wpr([string[]]$WprArgs) {
 }
 "start $(Get-Date -Format o)" | Set-Content $Log
 if (Test-Path $Flag) { Remove-Item $Flag }
-$u = New-Object Net.Sockets.UdpClient($Port)
-$traced = $false
+$u = $null; $traced = $false
 try {
+  $u = New-Object Net.Sockets.UdpClient($Port)
   $rc = Wpr @('-start', $Profile)
   if ($rc -ne 0) { throw "wpr -start exit $rc" }
   $traced = $true; L 'trace on'
   $end = [DateTime]::UtcNow.AddMinutes($Minutes); $hit = $null
   while ([DateTime]::UtcNow -lt $end -and -not $hit) {
     if (Test-Path $Flag) { L 'flag seen'; break }
-    if ($u.Available -gt 0) { $ep = $null; $hit = [Text.Encoding]::ASCII.GetString($u.Receive([ref]$ep)); break }
+    if ($u.Available -gt 0) {
+      # Only tone-trigger.ps1's packet ('event <log time>') saves the trace; any other packet is logged and skipped.
+      $ep = $null; $got = [Text.Encoding]::ASCII.GetString($u.Receive([ref]$ep))
+      if ($got.StartsWith('event ')) { $hit = "$got from $ep"; break } else { L "skipped a packet from $ep" }
+    }
     Start-Sleep -Milliseconds 25
   }
   if ($hit) {
     L "trigger: $hit"
     $rc = Wpr @('-stop', $Etl, '-skipPdbGen')
-    $traced = $false
-    L "trace saved $Etl exit $rc"
+    # A failed stop leaves the trace running: only an exit of 0 hands it off, else finally cancels it.
+    if ($rc -eq 0) { $traced = $false; L "trace saved $Etl" } else { L "trace stop failed exit $rc" }
   } elseif (-not (Test-Path $Flag)) { L 'no trigger in the window' }
 } catch { L ('FAILED: ' + $_.Exception.Message)
 } finally {
   if ($traced) {
     try { $rc = Wpr @('-cancel'); L "trace cancelled exit $rc" } catch { L ('cancel failed: ' + $_.Exception.Message) }
   }
-  $u.Close(); L 'end'
+  if ($u) { $u.Close() }; L 'end'
 }

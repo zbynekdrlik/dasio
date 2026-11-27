@@ -63,7 +63,8 @@ try {
   if ($got) {
     L "trigger: $($script:hit)"
     $rc = Wpr @('-stop', $Etl, '-skipPdbGen')
-    L "trace saved exit $rc"; $traced = $false
+    # A failed stop leaves the trace running: only an exit of 0 hands it off, else finally cancels it.
+    if ($rc -eq 0) { $traced = $false; L 'trace saved' } else { L "trace stop failed exit $rc" }
   }
   L "cycles $k"
   Send /global/stop; Start-Sleep 1
