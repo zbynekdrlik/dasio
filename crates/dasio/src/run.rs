@@ -229,13 +229,13 @@ pub fn run(
             };
             watch_reader.tick(w, media_now, cfg.sample_rate);
         }
-        if profile_at.is_none_or(|t| {
-            now.duration_since(t)
-                >= Duration::from_secs(crate::pc_profile::next_check_s(profile_checks))
-        }) {
+        if crate::pc_profile::check_due(
+            profile_at.map(|t| now.duration_since(t).as_secs()),
+            profile_checks,
+        ) {
             profile_at = Some(now);
-            profile_checks = profile_checks.saturating_add(1);
-            profile.start(&pc_problems);
+            profile_checks =
+                crate::pc_profile::checks_after(profile_checks, profile.start(&pc_problems));
             if let Some(r) = rx_arrival.report() {
                 crate::rx_arrival::log(&r);
             }

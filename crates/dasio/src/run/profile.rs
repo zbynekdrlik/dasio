@@ -41,9 +41,11 @@ impl ProfileWatch {
     }
 
     /// Starts a check (none while one runs); the count lands in `problems`
-    /// (u32::MAX without a profile).
-    pub(super) fn start(&self, problems: &Arc<std::sync::atomic::AtomicU32>) {
-        self.spawn(problems, child_check);
+    /// (u32::MAX without a profile). Whether a check started: `false` while
+    /// one still runs or when its thread did not start (dasio#237: the
+    /// caller then tries again soon instead of counting it).
+    pub(super) fn start(&self, problems: &Arc<std::sync::atomic::AtomicU32>) -> bool {
+        self.spawn(problems, child_check)
     }
 
     /// The bridge kind's check (dasio#120): in this process, on a thread at
@@ -58,9 +60,9 @@ impl ProfileWatch {
         &self,
         problems: &Arc<std::sync::atomic::AtomicU32>,
         check: fn(usize) -> Result<crate::pc_profile::ChildCheck, String>,
-    ) {
+    ) -> bool {
         if self.busy.swap(true, Ordering::AcqRel) {
-            return;
+            return false;
         }
         let (own, busy, last, must, problems) = (
             self.own,
@@ -107,7 +109,9 @@ impl ProfileWatch {
         if let Err(e) = spawned {
             warn!(%e, "the PC profile check's thread did not start");
             self.busy.store(false, Ordering::Release);
+            return false;
         }
+        true
     }
 }
 

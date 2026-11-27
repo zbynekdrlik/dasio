@@ -104,6 +104,25 @@ pub fn next_check_s(done: u32) -> u64 {
     }
 }
 
+/// Whether the DAW kind's service starts a check now: at once without one
+/// before (`since_s` None), else once [`next_check_s`] of the checks
+/// started so far passed since the last try.
+pub fn check_due(since_s: Option<u64>, done: u32) -> bool {
+    since_s.is_none_or(|s| s >= next_check_s(done))
+}
+
+/// The checks started after a try: a try that did not start (one still
+/// ran) is not counted, so the next try comes after the same gap
+/// (dasio#237: a skipped second check is tried again 30 s later, not
+/// 600 s).
+pub fn checks_after(done: u32, started: bool) -> u32 {
+    if started {
+        done.saturating_add(1)
+    } else {
+        done
+    }
+}
+
 /// One PC's profile.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

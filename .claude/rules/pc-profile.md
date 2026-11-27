@@ -281,8 +281,14 @@ paths:
     went unanswered retried only 18 s later. Its holes lasted 19 s.
 - Check it: `dasio pc-profile check`. Preview and set what differs:
   `dasio pc-profile apply --plan`, then `dasio pc-profile apply`. The
-  service checks it at start, again 30 s later (`pc_profile::next_check_s`: the first check can read the new instance before dasio's keeper set its affinity, dasio#237), then every 10 min: each problem is a WARN line
+  service checks it at start, again 30 s later, then every 10 min: each problem is a WARN line
   in the instance log, and dtray's line shows `PC profile: N problems`.
+  The DAW kind checks again 30 s after its first check (`pc_profile::next_check_s`,
+  `check_due`, `checks_after`, dasio#237): at start the first check can read the new
+  instance before dasio's keeper set its affinity, so a WARN then an INFO that it is
+  fixed is normal there. A try skipped while a check still runs is not counted and
+  comes again after the same gap. The bridge kind's first check is already 60 s in
+  (`PROFILE_FIRST`), so it stays on 10 min.
 - `[[process]]` entries (affinity, priority class) are HELD by dasio's
   process keeper since 0.1.135 (dasio#185, owner 18.11.2026: what Process
   Lasso did, dasio does): `dasio pc-profile keep`, run as the SYSTEM task
