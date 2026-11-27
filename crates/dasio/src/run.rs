@@ -370,6 +370,17 @@ pub fn run(
         }
         std::thread::sleep(Duration::from_millis(100));
     };
+    // The watch's breaks still held for their RX stall check are logged
+    // now, before the device stops (dasio#207).
+    if let Some(w) = watch.as_ref() {
+        let media_now = || {
+            media
+                .clock
+                .now_ns()
+                .map(|ns| dstack::clock::to_samples(ns, cfg.sample_rate))
+        };
+        watch_reader.flush(w, media_now, cfg.sample_rate);
+    }
     // The minute in progress, before anything stops: a stall just before a
     // restart is the minute to keep (dasio#28).
     let (shared, stale, waited) = (

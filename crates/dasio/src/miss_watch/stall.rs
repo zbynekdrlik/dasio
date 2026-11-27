@@ -9,9 +9,10 @@
 //! within the last few ticks.
 
 /// Ticks (100 ms each) a source's loss stays in view: the tick it was read
-/// in and the two before. dstack confirms a hole a little after the audio
-/// shows it, so a break is judged one tick after it was drained.
-pub const TICKS: usize = 3;
+/// in and the three before. dstack confirms a hole a little after the audio
+/// shows it, so an item drained at tick T is judged at T + [`HOLD`] against
+/// ticks T - 1 to T + 2.
+pub const TICKS: usize = 4;
 
 /// Sources that lost packets within [`TICKS`] for a stall: "several".
 pub const SEVERAL: u32 = 2;
@@ -22,26 +23,35 @@ const SLOTS: usize = 32;
 /// Which flow slots lost packets in the last [`TICKS`] ticks.
 #[derive(Debug, Default)]
 pub struct Stall {
-    seen: Vec<u64>,
-    primed: bool,
+    /// Each slot's last gap count and flow id; `None` before its first look.
+    seen: Vec<Option<(u64, u64)>>,
     recent: [u32; TICKS],
     at: usize,
 }
 
 impl Stall {
-    /// One tick: each slot's cumulative gap count now. The first look only
-    /// takes the counts (a device that ran before the watch has some).
-    pub fn note(&mut self, gaps: &[u64], _flows: &[u64]) {
+    /// One tick: each slot's cumulative gap count now and its flow's id
+    /// ([`flow_id`]; a slot past `flows` has id 0). A slot's first look only
+    /// takes its counts (a device that ran before the watch has some). A
+    /// gap is no loss when the slot's counter went down (the device
+    /// restarted) or its flow changed since the last tick: dstack counts the
+    /// open holes as gaps when a slot's flow changes (a re-plan or a new
+    /// subscription), and two slots re-planned together are no RX stall. A
+    /// re-plan to the same transmitter inside one tick shows no change.
+    pub fn note(&mut self, gaps: &[u64], flows: &[u64]) {
         let gaps = &gaps[..gaps.len().min(SLOTS)];
-        self.seen.resize(self.seen.len().max(gaps.len()), 0);
+        self.seen.resize(self.seen.len().max(gaps.len()), None);
         let mut mask = 0u32;
         for (slot, (&now, seen)) in gaps.iter().zip(self.seen.iter_mut()).enumerate() {
-            if self.primed && now > *seen {
+            let flow = flows.get(slot).copied().unwrap_or(0);
+            if let Some((was, flow_was)) = *seen
+                && now > was
+                && flow == flow_was
+            {
                 mask |= 1 << slot;
             }
-            *seen = now;
+            *seen = Some((now, flow));
         }
-        self.primed = true;
         self.at = (self.at + 1) % TICKS;
         self.recent[self.at] = mask;
     }
@@ -61,8 +71,9 @@ impl Stall {
 /// (before a packet of its flow, and after its plan changed), else the
 /// address and port.
 pub fn flow_id(source: Option<std::net::SocketAddrV4>) -> u64 {
-    let _ = source;
-    0
+    source.map_or(0, |a| {
+        (1 << 48) | (u64::from(u32::from(*a.ip())) << 16) | u64::from(a.port())
+    })
 }
 
 /// Items held a few ticks before they are judged against the stall window
@@ -81,13 +92,23 @@ impl<T> Default for Hold<T> {
 impl<T> Hold<T> {
     /// One tick: the items held for [`HOLD`] ticks come out; `new` goes in.
     pub fn tick(&mut self, new: impl IntoIterator<Item = T>) -> Vec<T> {
-        new.into_iter().collect()
+        let mut out = Vec::new();
+        let mut kept = Vec::with_capacity(self.queue.len());
+        for (age, item) in self.queue.drain(..) {
+            if age + 1 >= HOLD {
+                out.push(item);
+            } else {
+                kept.push((age + 1, item));
+            }
+        }
+        kept.extend(new.into_iter().map(|item| (0, item)));
+        self.queue = kept;
+        out
     }
 
     /// Everything still held (the device loop ends).
     pub fn flush(&mut self) -> Vec<T> {
-        let _ = &self.queue;
-        Vec::new()
+        self.queue.drain(..).map(|(_, item)| item).collect()
     }
 }
 
@@ -245,6 +266,7 @@ mod tests {
         use std::net::{Ipv4Addr, SocketAddrV4};
         let a = |o: u8, p: u16| Some(SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, o), p));
         assert_eq!(flow_id(None), 0);
+        assert_eq!(flow_id(a(1, 4321)), (1 << 48) | (0x0A00_0001 << 16) | 4321);
         assert_ne!(flow_id(a(1, 4321)), 0);
         assert_eq!(flow_id(a(1, 4321)), flow_id(a(1, 4321)));
         assert_ne!(flow_id(a(1, 4321)), flow_id(a(2, 4321)));

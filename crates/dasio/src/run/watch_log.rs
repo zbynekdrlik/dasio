@@ -8,7 +8,7 @@ use tracing::{info, warn};
 
 use crate::miss_watch::program::{self, Tracker};
 use crate::miss_watch::silence::Silence;
-use crate::miss_watch::stall::Stall;
+use crate::miss_watch::stall::{Hold, Stall};
 use crate::miss_watch::{self, Break, Loop, ProgramJump, Setup, ToneBreak, looped, tone};
 
 /// The watch of the instance folder `dir` (its watch.toml) against the
@@ -58,8 +58,10 @@ pub(super) struct Reader {
     program_silence: Silence,
     /// Which RX sources lost packets lately (the device's own counters).
     stall: Stall,
-    /// The zero and repeat breaks of the last tick, judged one tick later.
-    held: Vec<Break>,
+    /// The zero and repeat breaks and the program jumps, judged two ticks
+    /// after they were drained (an RX stall's gaps are confirmed late).
+    held_breaks: Hold<Break>,
+    held_jumps: Hold<ProgramJump>,
 }
 
 /// A dB figure for the log: to a tenth.
@@ -71,8 +73,9 @@ impl Reader {
     /// The breaks since the last tick (100 ms), logged; `now` reads the
     /// media position (samples at `rate`) for their age. `rx_gaps` is each
     /// RX flow slot's cumulative count of lost-packet gaps: the zero and
-    /// repeat breaks are held one tick and logged as a host's miss, or, with
-    /// several sources losing packets around them, as an RX stall.
+    /// repeat breaks and the program jumps are held two ticks and logged as
+    /// a host's miss and a jump, or, with several sources losing packets around
+    /// them, as an RX stall's cut.
     pub(super) fn tick(
         &mut self,
         w: &Setup,
@@ -120,17 +123,56 @@ impl Reader {
             );
         }
         self.stall.note(rx_gaps, rx_flows);
-        let judged = std::mem::replace(&mut self.held, std::mem::take(&mut self.breaks));
-        if judged.is_empty()
+        let due_breaks = self.held_breaks.tick(std::mem::take(&mut self.breaks));
+        let due_jumps = self
+            .held_jumps
+            .tick(std::mem::take(&mut self.program_jumps));
+        if due_breaks.is_empty()
+            && due_jumps.is_empty()
             && self.tone_breaks.is_empty()
-            && self.program_jumps.is_empty()
             && self.loops.is_empty()
         {
             return;
         }
         let now = now();
+        self.log_breaks(w, &due_breaks, now, rate);
+        for b in &self.tone_breaks {
+            warn!(
+                watch = %w.cfg.name,
+                channel = %w.cfg.tone.get(b.channel).map_or("?", |(_, n)| n.as_str()),
+                kind = b.kind.name(),
+                at = b.at,
+                samples = b.len,
+                db = tenth_db(b.rel),
+                ago_ms = now.map(|n| miss_watch::age_ms(b.at, n, rate)),
+                "a watched test tone broke: click = samples off the sine (db: the worst residual \
+                 against the tone), level = its level stepped (db: the step) (dasio#207)"
+            );
+        }
+        self.log_jumps(w, &due_jumps, now, rate);
+        for l in looped::lines(&self.loops) {
+            warn!(
+                watch = %w.cfg.name,
+                channels = %miss_watch::program_names(&l.channels, &w.cfg),
+                at = l.at,
+                lag = l.lag,
+                samples = l.len,
+                ms = looped::ms(l.len, rate),
+                peak_dbfs = tenth_db(l.peak),
+                grid = program::grid(l.at, w.cfg.block),
+                ago_ms = now.map(|n| miss_watch::age_ms(l.at, n, rate)),
+                "a watched program output looped: the same samples came again `lag` samples \
+                 later, over `samples` samples (a device replaying its buffer while its host \
+                 does not serve it); peak_dbfs = the loudest repeated sample (dasio#207)"
+            );
+        }
+    }
+
+    /// The zero and repeat breaks due now, as a host's miss or, in an RX
+    /// stall, as its cut (a line the event trigger does not match).
+    fn log_breaks(&self, w: &Setup, due: &[Break], now: Option<u64>, rate: u32) {
         let stalled = self.stall.stalled();
-        for g in miss_watch::group(&judged, w.cfg.block) {
+        for g in miss_watch::group(due, w.cfg.block) {
             if stalled {
                 warn!(
                     watch = %w.cfg.name,
@@ -157,20 +199,27 @@ impl Reader {
                 "a watched output broke like an ASIO host's missed buffer (dasio#207)"
             );
         }
-        for b in &self.tone_breaks {
-            warn!(
-                watch = %w.cfg.name,
-                channel = %w.cfg.tone.get(b.channel).map_or("?", |(_, n)| n.as_str()),
-                kind = b.kind.name(),
-                at = b.at,
-                samples = b.len,
-                db = tenth_db(b.rel),
-                ago_ms = now.map(|n| miss_watch::age_ms(b.at, n, rate)),
-                "a watched test tone broke: click = samples off the sine (db: the worst residual \
-                 against the tone), level = its level stepped (db: the step) (dasio#207)"
-            );
-        }
-        for l in self.program_lines.lines(&self.program_jumps, w.cfg.block) {
+    }
+
+    /// The program jumps due now, as a jump or, in an RX stall, as its cut.
+    fn log_jumps(&mut self, w: &Setup, jumps: &[ProgramJump], now: Option<u64>, rate: u32) {
+        let stalled = self.stall.stalled();
+        for l in self.program_lines.lines(jumps, w.cfg.block) {
+            if stalled {
+                warn!(
+                    watch = %w.cfg.name,
+                    channels = %miss_watch::program_names(&l.channels, &w.cfg),
+                    at = l.at,
+                    db = tenth_db(l.ratio),
+                    peak_dbfs = program::peak_dbfs(l.steps),
+                    grid = l.grid,
+                    ago_ms = now.map(|n| miss_watch::age_ms(l.at, n, rate)),
+                    sources = self.stall.sources(),
+                    "a watched program audio step came while RX packets were missing from several \
+                     sources: an RX stall's cut, not an ASIO host's missed buffer (dasio#207)"
+                );
+                continue;
+            }
             warn!(
                 watch = %w.cfg.name,
                 channels = %miss_watch::program_names(&l.channels, &w.cfg),
@@ -187,22 +236,19 @@ impl Reader {
                  host block (0 = a whole number of blocks, like the host's misses) (dasio#207)"
             );
         }
-        for l in looped::lines(&self.loops) {
-            warn!(
-                watch = %w.cfg.name,
-                channels = %miss_watch::program_names(&l.channels, &w.cfg),
-                at = l.at,
-                lag = l.lag,
-                samples = l.len,
-                ms = looped::ms(l.len, rate),
-                peak_dbfs = tenth_db(l.peak),
-                grid = program::grid(l.at, w.cfg.block),
-                ago_ms = now.map(|n| miss_watch::age_ms(l.at, n, rate)),
-                "a watched program output looped: the same samples came again `lag` samples \
-                 later, over `samples` samples (a device replaying its buffer while its host \
-                 does not serve it); peak_dbfs = the loudest repeated sample (dasio#207)"
-            );
+    }
+
+    /// What is still held, logged now (the device loop ends): judged by the
+    /// stall state at this last tick.
+    pub(super) fn flush(&mut self, w: &Setup, now: impl Fn() -> Option<u64>, rate: u32) {
+        let breaks = self.held_breaks.flush();
+        let jumps = self.held_jumps.flush();
+        if breaks.is_empty() && jumps.is_empty() {
+            return;
         }
+        let now = now();
+        self.log_breaks(w, &breaks, now, rate);
+        self.log_jumps(w, &jumps, now, rate);
     }
 }
 

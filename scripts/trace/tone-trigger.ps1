@@ -3,12 +3,13 @@
 # `a watched program output looped` line it sends a UDP packet to the PC that records (rec-trace.ps1 listens there
 # on -Port) and ends. On CPUs 0-1 (2-3 are dasio's own). The default -Match is the service's (event-trace.ps1):
 # also `a watched output broke` (a host's missed buffer on real program audio, 26.11.2026's sermon), `a watched
-# program output looped`, and a loud step, `output jumped` at -45 dBFS or louder (27.11.2026). An RX stall's cut
-# (`a watched output was cut while RX packets were missing ...`) is none of these. -Match narrows or widens it.
+# program output looped`, and a loud step, `output jumped` with `peak_dbfs` louder than -46 dBFS (-45.x and up, 27.11.2026;
+# tracing prints `-30.0`, the regex takes `-30` too). An RX stall's cuts (`a watched output was cut while RX packets
+# were missing ...`, `a watched program audio step came while RX packets were missing ...`) are none of these. -Match narrows or widens it.
 #   tone-trigger.ps1 -To <host or address of the recording PC> [-Port 39099] [-Minutes 40] [-Match <regex>] [-Out ...] [-Log ...]
 param([Parameter(Mandatory)][string]$To, [int]$Port = 39099, [int]$Minutes = 40, [string]$Out = 'C:\ProgramData\dasio\tmp\tone-trigger.txt',
       [string]$Log = 'C:\ProgramData\dasio\instance-1\dasio.log',
-      [string]$Match = 'a watched output broke|a watched test tone broke|a watched program output looped|output jumped.*peak_dbfs=-([1-3]?[0-9]|4[0-5])\.')
+      [string]$Match = 'a watched output broke|a watched test tone broke|a watched program output looped|output jumped.*peak_dbfs=-([1-3]?[0-9]|4[0-5])(\.|\b)')
 $ErrorActionPreference = 'Stop'
 (Get-Process -Id $PID).ProcessorAffinity = 3
 "start $((Get-Date).ToUniversalTime().ToString('HH:mm:ss.fff'))" | Set-Content $Out
