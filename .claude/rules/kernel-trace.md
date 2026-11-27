@@ -70,9 +70,11 @@ Found why master Ableton clicked (25.11.2026). Tools: `dasio-csw.wprp`, `dasio-c
   kernel trace runs at a time, so a stack probe also stops the trigger, and the trigger is armed again after.
 - During a service, `event-trace.ps1` holds the csw ring on the DAW PC, and mbc runs `tone-trigger.ps1` with its default `-Match`
   (`a watched output broke`, `a watched test tone broke`, `a watched program output looped`, and `output jumped` with
-  `peak_dbfs` louder than -46 dBFS, i.e. -45.x and up, 27.11.2026). An RX stall's cuts (`a watched output was cut while RX
+  `peak_dbfs` louder than -46 dBFS, i.e. -45.x up to a full-scale 0.0, 27.11.2026). An RX stall's cuts (`a watched output was cut while RX
   packets were missing`, `a watched program audio step came while RX packets were missing`, several sources at once) are
   not matched. The trace is saved once, at the first miss the
-  hall can hear, and then the script ends. The save writes the whole ring to disk, so a run keeps one save. A run
-  counts as no measurement: stop it (`event-trace.stop` flag) before any planned probe or test, and arm it again after.
+  hall can hear, and then the script ends. The save writes the whole ring to disk, so a run keeps one save. Without `-Etl` the save is `C:\ProgramData\dasio\tmp\event-<yyyyMMdd-HHmmss>.etl` (UTC,
+  the trigger's moment; the log's `trace saved <path>` line names it) and no existing file is overwritten, an explicit
+  `-Etl` too (`-2`, `-3` appended): 27.11.2026's 20:21Z TX-late trace was lost to the 21:27Z save of a fixed `event.etl`.
+  Read the saved trace off the PC the same day. A run counts as no measurement: stop it (`event-trace.stop` flag) before any planned probe or test, and arm it again after.
 - Never read or sweep another process's memory on an audio PC (it stopped a production PC on 25.11.2026).

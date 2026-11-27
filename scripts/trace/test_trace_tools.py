@@ -513,6 +513,30 @@ class ToneTriggerDefault(unittest.TestCase):
         self.assertFalse(self.hit("INFO a watched test tone over the last 10 s breaks=0"))
 
 
+class EventTraceSave(unittest.TestCase):
+    """Where event-trace.ps1 saves (dasio#207): never over an earlier run's trace."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = (HERE / "event-trace.ps1").read_text(encoding="utf-8")
+
+    def test_no_etl_default_means_a_stamped_utc_name(self):
+        self.assertRegex(self.text, r"\[string\]\$Etl = ''")
+        self.assertRegex(
+            self.text,
+            r"'C:\\ProgramData\\dasio\\tmp\\event-' \+ \(Get-Date\)\.ToUniversalTime\(\)\.ToString\('yyyyMMdd-HHmmss'\) \+ '\.etl'")
+        self.assertNotIn("event.etl'", self.text)
+
+    def test_the_save_never_overwrites_an_existing_file(self):
+        self.assertRegex(self.text, r"if \(-not \(Test-Path \$p\)\) \{ return \$p \}")
+        self.assertRegex(self.text, r'\$c = Join-Path \$d "\$n-\$i\$x"')
+        self.assertRegex(self.text, r"\$save = Free-Path \$save\s")
+        # wpr is told the checked path, and the log names it.
+        self.assertIn("Wpr @('-stop', $save,", self.text)
+        self.assertIn('L "trace saved $save"', self.text)
+        self.assertNotIn("'-stop', $Etl", self.text)
+
+
 class TruncatedAndShuffled(Temp):
     def test_last_row_without_its_newline_is_skipped_even_when_it_parses(self):
         # an S row with all its fields, but cut inside the address: it parses, with a wrong address
