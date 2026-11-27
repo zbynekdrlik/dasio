@@ -256,4 +256,18 @@ mod tests {
         assert_eq!(d.jumps, vec![jump(2)]);
         assert!(d.breaks.is_empty());
     }
+
+    #[test]
+    fn due_is_empty_only_without_breaks_and_without_jumps() {
+        let mut j = Judge::default();
+        j.tick(&g(0, 0), &[], vec![brk(1)], vec![]);
+        j.tick(&g(0, 0), &[], vec![], vec![jump(2)]);
+        let d = j.tick(&g(0, 0), &[], vec![], vec![]);
+        assert!(!d.breaks.is_empty() && d.jumps.is_empty());
+        assert!(!d.is_empty());
+        let d = j.tick(&g(0, 0), &[], vec![], vec![]);
+        assert!(d.breaks.is_empty() && !d.jumps.is_empty());
+        assert!(!d.is_empty());
+        assert!(j.tick(&g(0, 0), &[], vec![], vec![]).is_empty());
+    }
 }
