@@ -253,7 +253,9 @@ pub fn setup(dir: &std::path::Path, device_rx: &[String]) -> Result<Option<Confi
 /// state file's, where a Dante rename (dcontroller) is kept, over the
 /// config's defaults. The watch's names are matched against these.
 pub fn rx_names_now(cfg: &dstack::device::DeviceConfig) -> Result<Vec<String>, String> {
-    Ok(cfg.rx.clone())
+    dstack::device::DeviceState::load_or_default(cfg)
+        .map(|state| state.rx)
+        .map_err(|e| e.to_string())
 }
 
 /// The names of `g`'s channels in the config's words, in config order.
