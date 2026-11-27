@@ -90,8 +90,17 @@ pub fn run(
     let mut rx_arrival = crate::rx_arrival::Watch::default();
     let turnaround = Arc::new(Mutex::new(Turnaround::default()));
     // The watch on received outputs of another ASIO host and on test tones
-    // (dasio#207): the instance folder's watch.toml.
-    let watch = watch_log::start(&minutes_dir, &cfg.rx);
+    // (dasio#207): the instance folder's watch.toml, its names matched
+    // against the RX names as the device lists them (a Dante rename kept
+    // in the state file, not only the config's).
+    let rx_now = crate::miss_watch::rx_names_now(&cfg).unwrap_or_else(|e| {
+        warn!(
+            err = %e,
+            "the output watch matches the config's RX names: the state's do not read (dasio#207)"
+        );
+        cfg.rx.clone()
+    });
+    let watch = watch_log::start(&minutes_dir, &rx_now);
     let mut watch_reader = watch_log::Reader::default();
     let base = Base {
         instance,

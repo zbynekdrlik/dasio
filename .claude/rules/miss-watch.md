@@ -18,7 +18,11 @@ paths:
   program = ["Repro L", "Repro R"]      # real program audio, checked for a splice (no tone needed)
   ```
 
-  Names are the device's RX channel names, 1 to 16 per list; a channel may
+  Names are the device's RX channel names as it lists them now: a Dante
+  rename (dcontroller) kept in state.toml wins over device.toml's `rx`
+  (`miss_watch::rx_names_now`; before 0.1.180 a rename turned the whole watch
+  off at the next start). Names are matched once, at the device's start: a
+  rename while it runs needs a dasio restart. 1 to 16 per list; a channel may
   be in all three lists; `program` is optional (old files still read) and at
   least one of the three lists must be non-empty. A config that does not read leaves the watch off and
   the device running (WARN "the output watch is off").
