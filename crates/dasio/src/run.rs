@@ -236,7 +236,8 @@ pub fn run(
                     .now_ns()
                     .map(|ns| dstack::clock::to_samples(ns, cfg.sample_rate))
             };
-            watch_reader.tick(w, media_now, cfg.sample_rate);
+            let (rx_gaps, rx_flows) = rx_view(&media.rx);
+            watch_reader.tick(w, media_now, cfg.sample_rate, &rx_gaps, &rx_flows);
         }
         if crate::pc_profile::check_due(
             profile_at.map(|t| now.duration_since(t).as_secs()),
@@ -363,6 +364,18 @@ pub fn run(
         }
         std::thread::sleep(Duration::from_millis(100));
     };
+    // The watch's breaks still held for their RX stall check are logged
+    // now, before the device stops (dasio#207).
+    if let Some(w) = watch.as_ref() {
+        let media_now = || {
+            media
+                .clock
+                .now_ns()
+                .map(|ns| dstack::clock::to_samples(ns, cfg.sample_rate))
+        };
+        let (rx_gaps, rx_flows) = rx_view(&media.rx);
+        watch_reader.flush(w, media_now, cfg.sample_rate, &rx_gaps, &rx_flows);
+    }
     // The minute in progress, before anything stops: a stall just before a
     // restart is the minute to keep (dasio#28).
     let (shared, stale, waited) = (
@@ -925,6 +938,23 @@ pub fn quiet_crashes() -> u32 {
         }
         GetErrorMode()
     }
+}
+
+/// Each RX flow slot's lost-packet gaps (dstack's own counters) and flow id
+/// for the output watch's stall check (dasio#207). Two relaxed reads per
+/// slot, not one snapshot: a flow change landing between them pairs the
+/// old id with the new count, which `Stall` reads as no change for one
+/// tick and a change on the next (one tick's error at most).
+fn rx_view(
+    rx: &dstack::media::rx::RxShared,
+) -> (
+    [u64; dstack::media::rx::MAX_FLOWS],
+    [u64; dstack::media::rx::MAX_FLOWS],
+) {
+    (
+        std::array::from_fn(|slot| rx.lane(slot).gaps),
+        std::array::from_fn(|slot| crate::miss_watch::stall::flow_id(rx.source(slot))),
+    )
 }
 
 #[cfg(test)]

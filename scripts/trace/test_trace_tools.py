@@ -472,6 +472,72 @@ class DumpOptions(Temp):
                 csw_dump.main([CUT, "40", "56", "--proc", "daw.exe", "--cpus", bad])
 
 
+class ToneTriggerDefault(unittest.TestCase):
+    """The default -Match of tone-trigger.ps1 (dasio#207): which log lines stop a service's trace."""
+
+    @classmethod
+    def setUpClass(cls):
+        text = (HERE / "tone-trigger.ps1").read_text(encoding="utf-8")
+        found = re.search(r"\[string\]\$Match = '([^']*)'", text)
+        assert found, "no default -Match in tone-trigger.ps1"
+        cls.rx = re.compile(found.group(1))
+
+    def hit(self, line):
+        return self.rx.search(line) is not None
+
+    def test_the_breaks_and_loops_stop_it(self):
+        for msg in (
+            "a watched output broke like an ASIO host's missed buffer (dasio#207)",
+            "a watched test tone broke: click = samples off the sine",
+            "a watched program output looped: the same samples came again",
+        ):
+            self.assertTrue(self.hit("WARN dasio " + msg), msg)
+
+    def test_a_loud_step_stops_it(self):
+        for peak in ("-45.0", "-45.3", "-30.2", "-9.9", "-0.0", "-12.5", "-30", "-45", "-5", "0.0", "0"):
+            line = f"WARN a watched program output jumped: a step in the audio db=40.1 peak_dbfs={peak} grid=3"
+            self.assertTrue(self.hit(line), peak)
+
+    def test_a_quiet_step_does_not(self):
+        for peak in ("-46.0", "-46", "-50.5", "-78.0", "-100.0", "-100", "-120.4"):
+            line = f"WARN a watched program output jumped: a step in the audio db=40.1 peak_dbfs={peak} grid=3"
+            self.assertFalse(self.hit(line), peak)
+
+    def test_an_rx_stall_cut_does_not(self):
+        line = ("WARN a watched output was cut while RX packets were missing from several sources: an RX stall, "
+                "not an ASIO host's missed buffer (dasio#207)")
+        self.assertFalse(self.hit(line))
+
+    def test_the_summary_lines_do_not(self):
+        self.assertFalse(self.hit("INFO a watched program output over the last 10 s jumps=3 worst_db=40.0"))
+        self.assertFalse(self.hit("INFO a watched test tone over the last 10 s breaks=0"))
+
+
+class EventTraceSave(unittest.TestCase):
+    """Where event-trace.ps1 saves (dasio#207): never over an earlier run's trace."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = (HERE / "event-trace.ps1").read_text(encoding="utf-8")
+
+    def test_no_etl_default_means_a_stamped_utc_name(self):
+        self.assertRegex(self.text, r"\[string\]\$Etl = ''")
+        self.assertRegex(
+            self.text,
+            r"'C:\\ProgramData\\dasio\\tmp\\event-' \+ \(Get-Date\)\.ToUniversalTime\(\)\.ToString\('yyyyMMdd-HHmmss', \[Globalization\.CultureInfo\]::InvariantCulture\) \+ '\.etl'")
+        self.assertNotIn("event.etl'", self.text)
+
+    def test_the_save_never_overwrites_an_existing_file(self):
+        self.assertRegex(self.text, r"\$p = \$ExecutionContext\.SessionState\.Path\.GetUnresolvedProviderPathFromPSPath\(\$p\)")
+        self.assertRegex(self.text, r"if \(-not \(Test-Path -LiteralPath \$p\)\) \{ return \$p \}")
+        self.assertRegex(self.text, r'\$c = \[IO\.Path\]::Combine\(\$d, "\$n-\$i\$x"\); if \(-not \(Test-Path -LiteralPath \$c\)\)')
+        self.assertRegex(self.text, r"\$save = Free-Path \$save\s")
+        # wpr is told the checked path, and the log names it.
+        self.assertIn("Wpr @('-stop', $save,", self.text)
+        self.assertIn('L "trace saved $save"', self.text)
+        self.assertNotIn("'-stop', $Etl", self.text)
+
+
 class TruncatedAndShuffled(Temp):
     def test_last_row_without_its_newline_is_skipped_even_when_it_parses(self):
         # an S row with all its fields, but cut inside the address: it parses, with a wrong address

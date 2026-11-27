@@ -6,6 +6,7 @@
 
 use tracing::{info, warn};
 
+use crate::miss_watch::judge::{Due, Judge, Label};
 use crate::miss_watch::program::{self, Tracker};
 use crate::miss_watch::silence::Silence;
 use crate::miss_watch::{self, Break, Loop, ProgramJump, Setup, ToneBreak, looped, tone};
@@ -55,6 +56,8 @@ pub(super) struct Reader {
     loops: Vec<Loop>,
     tone_silence: Silence,
     program_silence: Silence,
+    /// The RX-stall verdict on the held breaks and jumps (`miss_watch::judge`).
+    judge: Judge,
 }
 
 /// A dB figure for the log: to a tenth.
@@ -64,8 +67,19 @@ fn tenth_db(ratio: f64) -> f64 {
 
 impl Reader {
     /// The breaks since the last tick (100 ms), logged; `now` reads the
-    /// media position (samples at `rate`) for their age.
-    pub(super) fn tick(&mut self, w: &Setup, now: impl Fn() -> Option<u64>, rate: u32) {
+    /// media position (samples at `rate`) for their age. `rx_gaps` is each
+    /// RX flow slot's cumulative count of lost-packet gaps: the zero and
+    /// repeat breaks and the program jumps are held two ticks and logged as
+    /// a host's miss and a jump, or, with several sources losing packets around
+    /// them, as an RX stall's cut.
+    pub(super) fn tick(
+        &mut self,
+        w: &Setup,
+        now: impl Fn() -> Option<u64>,
+        rate: u32,
+        rx_gaps: &[u64],
+        rx_flows: &[u64],
+    ) {
         self.breaks.clear();
         let lost = w.events.drain(&mut self.tail, &mut self.breaks);
         if lost > 0 {
@@ -104,26 +118,17 @@ impl Reader {
                 "the loop check lost events: more than its ring holds in 100 ms (dasio#207)"
             );
         }
-        if self.breaks.is_empty()
-            && self.tone_breaks.is_empty()
-            && self.program_jumps.is_empty()
-            && self.loops.is_empty()
-        {
+        let due = self.judge.tick(
+            rx_gaps,
+            rx_flows,
+            std::mem::take(&mut self.breaks),
+            std::mem::take(&mut self.program_jumps),
+        );
+        if due.is_empty() && self.tone_breaks.is_empty() && self.loops.is_empty() {
             return;
         }
         let now = now();
-        for g in miss_watch::group(&self.breaks, w.cfg.block) {
-            warn!(
-                watch = %w.cfg.name,
-                kind = g.kind.name(),
-                samples = g.len,
-                ago_ms = now.map(|n| miss_watch::age_ms(g.at, n, rate)),
-                channels = %miss_watch::channel_names(&g, &w.cfg),
-                broke = g.channels.len(),
-                of = w.cfg.rx.len(),
-                "a watched output broke like an ASIO host's missed buffer (dasio#207)"
-            );
-        }
+        self.log_breaks(w, &due, now, rate);
         for b in &self.tone_breaks {
             warn!(
                 watch = %w.cfg.name,
@@ -137,23 +142,7 @@ impl Reader {
                  against the tone), level = its level stepped (db: the step) (dasio#207)"
             );
         }
-        for l in self.program_lines.lines(&self.program_jumps, w.cfg.block) {
-            warn!(
-                watch = %w.cfg.name,
-                channels = %miss_watch::program_names(&l.channels, &w.cfg),
-                at = l.at,
-                db = tenth_db(l.ratio),
-                peak_dbfs = program::peak_dbfs(l.steps),
-                grid = l.grid,
-                since_prev = l.since_prev,
-                rem = l.rem,
-                ago_ms = now.map(|n| miss_watch::age_ms(l.at, n, rate)),
-                "a watched program output jumped: a step in the audio, db = its peak over the \
-                 quiet around it, peak_dbfs = the peak itself (under about -50 is a step nobody \
-                 hears), grid = at modulo the block (the host's misses share one value), rem = the distance to the channel's previous jump modulo the \
-                 host block (0 = a whole number of blocks, like the host's misses) (dasio#207)"
-            );
-        }
+        self.log_jumps(w, &due, now, rate);
         for l in looped::lines(&self.loops) {
             warn!(
                 watch = %w.cfg.name,
@@ -170,6 +159,97 @@ impl Reader {
                  does not serve it); peak_dbfs = the loudest repeated sample (dasio#207)"
             );
         }
+    }
+
+    /// The zero and repeat breaks due now, as a host's miss or, in an RX
+    /// stall, as its cut (a line the event trigger does not match).
+    fn log_breaks(&self, w: &Setup, due: &Due, now: Option<u64>, rate: u32) {
+        for g in miss_watch::group(&due.breaks, w.cfg.block) {
+            if due.label == Label::Stall {
+                warn!(
+                    watch = %w.cfg.name,
+                    kind = g.kind.name(),
+                    samples = g.len,
+                    ago_ms = now.map(|n| miss_watch::age_ms(g.at, n, rate)),
+                    held_ms = due.break_held_ms,
+                    channels = %miss_watch::channel_names(&g, &w.cfg),
+                    broke = g.channels.len(),
+                    of = w.cfg.rx.len(),
+                    sources = due.sources,
+                    "a watched output was cut while RX packets were missing from several \
+                     sources: an RX stall, not an ASIO host's missed buffer (dasio#207)"
+                );
+                continue;
+            }
+            warn!(
+                watch = %w.cfg.name,
+                kind = g.kind.name(),
+                samples = g.len,
+                ago_ms = now.map(|n| miss_watch::age_ms(g.at, n, rate)),
+                held_ms = due.break_held_ms,
+                channels = %miss_watch::channel_names(&g, &w.cfg),
+                broke = g.channels.len(),
+                of = w.cfg.rx.len(),
+                "a watched output broke like an ASIO host's missed buffer (dasio#207)"
+            );
+        }
+    }
+
+    /// The program jumps due now, as a jump or, in an RX stall, as its cut.
+    fn log_jumps(&mut self, w: &Setup, due: &Due, now: Option<u64>, rate: u32) {
+        for l in self.program_lines.lines(&due.jumps, w.cfg.block) {
+            if due.label == Label::Stall {
+                warn!(
+                    watch = %w.cfg.name,
+                    channels = %miss_watch::program_names(&l.channels, &w.cfg),
+                    at = l.at,
+                    db = tenth_db(l.ratio),
+                    peak_dbfs = program::peak_dbfs(l.steps),
+                    grid = l.grid,
+                    ago_ms = now.map(|n| miss_watch::age_ms(l.at, n, rate)),
+                    held_ms = due.jump_held_ms,
+                    sources = due.sources,
+                    "a watched program audio step came while RX packets were missing from several \
+                     sources: an RX stall's cut, not an ASIO host's missed buffer (dasio#207)"
+                );
+                continue;
+            }
+            warn!(
+                watch = %w.cfg.name,
+                channels = %miss_watch::program_names(&l.channels, &w.cfg),
+                at = l.at,
+                db = tenth_db(l.ratio),
+                peak_dbfs = program::peak_dbfs(l.steps),
+                grid = l.grid,
+                since_prev = l.since_prev,
+                rem = l.rem,
+                ago_ms = now.map(|n| miss_watch::age_ms(l.at, n, rate)),
+                held_ms = due.jump_held_ms,
+                "a watched program output jumped: a step in the audio, db = its peak over the \
+                 quiet around it, peak_dbfs = the peak itself (under about -50 is a step nobody \
+                 hears), grid = at modulo the block (the host's misses share one value), rem = the distance to the channel's previous jump modulo the \
+                 host block (0 = a whole number of blocks, like the host's misses) (dasio#207)"
+            );
+        }
+    }
+
+    /// What is still held, logged now (the device loop ends): one more look
+    /// at the RX gaps and flows first, then judged like any other tick.
+    pub(super) fn flush(
+        &mut self,
+        w: &Setup,
+        now: impl Fn() -> Option<u64>,
+        rate: u32,
+        rx_gaps: &[u64],
+        rx_flows: &[u64],
+    ) {
+        let due = self.judge.flush(rx_gaps, rx_flows);
+        if due.is_empty() {
+            return;
+        }
+        let now = now();
+        self.log_breaks(w, &due, now, rate);
+        self.log_jumps(w, &due, now, rate);
     }
 }
 

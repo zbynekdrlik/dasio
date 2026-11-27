@@ -156,6 +156,43 @@ paths:
   shows every second). Equal peaks on a sine mean the same samples again.
   The zero/repeat watch stays quiet on such a loop (one block of lag, 8
   blocks at most, channel above -60 dBFS).
+- An RX stall is not a host miss (0.1.182, `miss_watch/stall.rs`): every 100 ms
+  tick `run.rs` reads each RX flow slot's `gaps` (dstack's own counters, the source
+  of its `RX packets missing ... never reached our socket` line) and its flow id
+  (`flow_id` of `RxShared::source`, which is `None` after a plan change); `Stall`
+  keeps the slots whose count rose in the last 4 ticks. The zero/repeat breaks AND
+  the program jumps are held two ticks (`Hold`; dstack confirms a hole after the
+  audio shows it, so an item of tick T is judged at T+2 against T-1..T+2); with 2 or
+  more sources in the window they log as `a watched output was cut while RX packets
+  were missing from several sources: an RX stall ...` (the `broke` line's fields +
+  `sources`) and `a watched program audio step came while RX packets were missing
+  from several sources ...` instead of `a watched output broke` / `a watched program
+  output jumped`, so the event trigger (`tone-trigger.ps1`) matches neither. The
+  event is still in the log. Why program jumps too: a zero run's edges are steps
+  (a cut to digital silence is a step, see above), so an RX stall can fire the loud-step
+  trigger as well. Tone and loop lines are not held or changed.
+- The decision is portable and tested (`miss_watch/judge.rs`: `Judge` = `Stall` + two
+  `Hold`s, `verdict`, `Due`); `run/watch_log.rs` (Windows-only, outside the mutation
+  gate) only logs what `Due` says. A held line comes out 200 ms after its event, so it
+  is NOT in log order with tone, loop and 10 s lines: `held_ms` on the line says how
+  long it was held (`ago_ms` is read at log time, so it includes it) and `at` (the
+  media sample) orders lines. At the end of the device loop `Reader::flush` takes one
+  more look at the RX gaps and flows (`Judge::flush`) before judging what is left
+  (`held_ms` = the ticks it was held + that look). `run.rs`'s `rx_view` reads gaps
+  and flow id as two relaxed reads per slot: a flow change landing between them
+  shifts the change by one tick at most.
+- What is no loss to `Stall`: a slot's first look (a base, also a slot first seen
+  later), a counter that went DOWN (device restart, re-based), and a tick where the
+  slot's flow id changed (dstack counts the open holes as gaps when a slot's flow
+  changes, so two slots re-planned together would read as a stall and hide a real
+  host miss). dstack's `RxCounts` has no flow epoch at the pinned tag (v0.6.226): a
+  re-plan to the SAME transmitter inside one tick shows no id change and still
+  counts. A break still held when the device loop ends is logged by
+  `Reader::flush` (judged by the stall state of the last tick). 27.11.2026
+  14:36:13Z (an mbc stall) took a service trace as a `broke` line.
+- The event trigger's default (`tone-trigger.ps1 -Match`, 0.1.182) also fires on a
+  loud step: `output jumped` with `peak_dbfs` louder than -46 dBFS (-45.x up to a
+  full-scale `0.0`; the regex takes `-30` and `0` too) (`kernel-trace.md`).
 - The log keeps 4 x 10 MB: pull a service's lines the same day.
 - Live's test tone plays only while Live's Settings window is open:
   closing Settings stops it (dasio#207, 25.11.2026: a 200-start run read
