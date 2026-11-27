@@ -16,10 +16,13 @@ $ErrorActionPreference = 'Stop'
 (Get-Process -Id $PID).PriorityClass = 'Normal'
 function L([string]$m) { "$((Get-Date).ToUniversalTime().ToString('HH:mm:ss.fff')) $m" | Add-Content $Log }
 # A path for the save that does not exist yet: $p itself, else $p with -2, -3 ... before the extension.
+# A relative -Etl is resolved first (GetDirectoryName of a bare name is '', which Join-Path refuses), and
+# paths are tested literally ([ and * in a name are no wildcards).
 function Free-Path([string]$p) {
-  if (-not (Test-Path $p)) { return $p }
+  $p = [IO.Path]::GetFullPath($p)
+  if (-not (Test-Path -LiteralPath $p)) { return $p }
   $d = [IO.Path]::GetDirectoryName($p); $n = [IO.Path]::GetFileNameWithoutExtension($p); $x = [IO.Path]::GetExtension($p)
-  for ($i = 2; ; $i++) { $c = Join-Path $d "$n-$i$x"; if (-not (Test-Path $c)) { return $c } }
+  for ($i = 2; ; $i++) { $c = [IO.Path]::Combine($d, "$n-$i$x"); if (-not (Test-Path -LiteralPath $c)) { return $c } }
 }
 function Wpr([string[]]$WprArgs) {
   # wpr writes progress to stderr: under Stop that would throw.
@@ -46,7 +49,7 @@ try {
   }
   if ($hit) {
     L "trigger: $hit"
-    $save = if ($Etl) { $Etl } else { 'C:\ProgramData\dasio\tmp\event-' + (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss') + '.etl' }
+    $save = if ($Etl) { $Etl } else { 'C:\ProgramData\dasio\tmp\event-' + (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss', [Globalization.CultureInfo]::InvariantCulture) + '.etl' }
     $save = Free-Path $save
     $rc = Wpr @('-stop', $save, '-skipPdbGen')
     # A failed stop leaves the trace running: only an exit of 0 hands it off, else finally cancels it.
