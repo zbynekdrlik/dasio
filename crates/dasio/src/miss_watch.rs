@@ -44,6 +44,7 @@
 pub mod looped;
 pub mod program;
 pub mod silence;
+pub mod stall;
 pub mod tone;
 
 use std::marker::PhantomData;
