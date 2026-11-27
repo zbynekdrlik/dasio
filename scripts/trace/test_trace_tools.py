@@ -528,7 +528,7 @@ class EventTraceSave(unittest.TestCase):
         self.assertNotIn("event.etl'", self.text)
 
     def test_the_save_never_overwrites_an_existing_file(self):
-        self.assertRegex(self.text, r"\$p = \[IO\.Path\]::GetFullPath\(\$p\)")
+        self.assertRegex(self.text, r"\$p = \$ExecutionContext\.SessionState\.Path\.GetUnresolvedProviderPathFromPSPath\(\$p\)")
         self.assertRegex(self.text, r"if \(-not \(Test-Path -LiteralPath \$p\)\) \{ return \$p \}")
         self.assertRegex(self.text, r'\$c = \[IO\.Path\]::Combine\(\$d, "\$n-\$i\$x"\); if \(-not \(Test-Path -LiteralPath \$c\)\)')
         self.assertRegex(self.text, r"\$save = Free-Path \$save\s")
