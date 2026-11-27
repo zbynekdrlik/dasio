@@ -109,11 +109,18 @@ pub fn tx_age_fed(seen: &mut (u64, u32), looks: u64) -> bool {
 /// counts with one receiver, a known latency and a measured window only;
 /// `None` when none does. The window belongs to the slot: a slot that got a
 /// new receiver within 10 s still carries the old receiver's peaks.
+/// The worst lane of dstack's TX age view (dasio#237), each judged at its
+/// own late edge (`late_threshold_ns`: the flow's latency, at least the
+/// device's TX latency, plus a packet and the margin), the same edge the
+/// lane's `over_latency` counts against. Never at the receiver's stated
+/// latency: a receiver stating 0.25 ms plays a 1 ms sender's flow at 1 ms.
+/// A lane with no edge (no flow, or its receiver's latency unknown) is not
+/// judged.
 pub fn worst_lane(view: &[dstack::media::tx::TxAgeLane]) -> Option<TxAge> {
-    worst_tx_age(
-        view.iter()
-            .map(|l| (l.receiver.as_str(), l.receiver_latency_ns, l.age_max_10s_ns)),
-    )
+    worst_tx_age(view.iter().filter_map(|l| {
+        l.late_threshold_ns
+            .map(|edge| (l.receiver.as_str(), edge, l.age_max_10s_ns))
+    }))
 }
 
 pub fn worst_tx_age<'a>(
