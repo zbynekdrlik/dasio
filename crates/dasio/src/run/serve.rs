@@ -346,11 +346,7 @@ pub(super) fn app_status(
                     tx_table.tx_age_looks(),
                 );
                 if fed {
-                    crate::app_status::worst_tx_age(
-                        tx_table.tx_age_view().iter().map(|l| {
-                            (l.receiver.as_str(), l.receiver_latency_ns, l.age_max_10s_ns)
-                        }),
-                    )
+                    crate::app_status::worst_lane(&tx_table.tx_age_view())
                 } else {
                     None
                 }

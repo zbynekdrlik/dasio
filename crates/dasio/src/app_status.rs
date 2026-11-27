@@ -109,6 +109,13 @@ pub fn tx_age_fed(seen: &mut (u64, u32), looks: u64) -> bool {
 /// counts with one receiver, a known latency and a measured window only;
 /// `None` when none does. The window belongs to the slot: a slot that got a
 /// new receiver within 10 s still carries the old receiver's peaks.
+pub fn worst_lane(view: &[dstack::media::tx::TxAgeLane]) -> Option<TxAge> {
+    worst_tx_age(
+        view.iter()
+            .map(|l| (l.receiver.as_str(), l.receiver_latency_ns, l.age_max_10s_ns)),
+    )
+}
+
 pub fn worst_tx_age<'a>(
     lanes: impl IntoIterator<Item = (&'a str, u64, Option<u64>)>,
 ) -> Option<TxAge> {

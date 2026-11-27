@@ -429,3 +429,45 @@ fn a_tx_age_window_no_late_watch_feeds_does_not_count() {
 fn sub_fed(seen: &mut (u64, u32), looks: u64) -> bool {
     tx_age_fed(seen, looks)
 }
+
+fn lane(
+    receiver: &str,
+    receiver_us: u64,
+    threshold_us: Option<u64>,
+    age_us: Option<u64>,
+) -> dstack::media::tx::TxAgeLane {
+    dstack::media::tx::TxAgeLane {
+        slot: 0,
+        receiver: receiver.to_string(),
+        receiver_latency_ns: receiver_us * 1_000,
+        age_max_10s_ns: age_us.map(|a| a * 1_000),
+        over_latency: 0,
+        late_threshold_ns: threshold_us.map(|t| t * 1_000),
+    }
+}
+
+#[test]
+fn a_lane_is_judged_at_dstack_s_late_edge_not_at_its_receiver_s_latency() {
+    // FOH band 26.11.2026 09:05Z: 0.34 ms at iem-mixer, which states
+    // 0.25 ms but plays band's flow at band's 1 ms TX latency plus a packet
+    // and the margin: dstack judges it at ~1.11 ms, so it plays (dasio#237)
+    let foh = worst_lane(&[lane("iem-mixer", 250, Some(1_113), Some(340))]);
+    assert_eq!(
+        readiness(Some(0), TxPath::default(), rx_mean(190_000), foh),
+        Readiness::Ok
+    );
+    // past that edge it is the item
+    let late = worst_lane(&[lane("iem-mixer", 250, Some(1_113), Some(1_200))]);
+    assert!(
+        matches!(
+            readiness(Some(0), TxPath::default(), rx_mean(190_000), late),
+            Readiness::Not(_)
+        ),
+        "{late:?}"
+    );
+    // no edge (no flow, or the receiver's latency unknown): no item
+    assert_eq!(
+        worst_lane(&[lane("iem-mixer", 250, None, Some(5_000))]),
+        None
+    );
+}
