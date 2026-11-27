@@ -41,7 +41,7 @@ pub struct Facts {
     /// `stale` and `waited` above are its counts while it is on, the
     /// running ones after it, with its own here ([`DAW_STARTUP`] order).
     pub startup: Part<4>,
-    /// The TX lane nearest its receiver's latency over the last 10 s
+    /// The TX lane nearest its late edge over the last 10 s
     /// ([`worst_tx_age`] over dstack's `tx_age_view`, dasio#237); `None`
     /// before a lane with one receiver was measured.
     pub tx_age: Option<TxAge>,
@@ -74,13 +74,13 @@ impl ShortName {
     }
 }
 
-/// One TX lane's oldest packet over the last 10 s and its receiver's
-/// latency (dstack #500's `TxShared::tx_age_view`, dasio#237).
+/// One TX lane's oldest packet over the last 10 s and the late edge its
+/// receiver plays it at (dstack #500's `TxShared::tx_age_view`, dasio#237).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TxAge {
     pub receiver: ShortName,
     pub age_ns: u64,
-    pub latency_ns: u64,
+    pub edge_ns: u64,
 }
 
 /// Status calls in a row that may see dstack's TX age window unfed (its
@@ -102,13 +102,6 @@ pub fn tx_age_fed(seen: &mut (u64, u32), looks: u64) -> bool {
     looks > 0 && seen.1 < TX_AGE_STALE_READS
 }
 
-/// The lane with the highest age/latency ratio, from `(receiver, receiver
-/// latency ns, age over the last 10 s ns)` per lane: the one nearest to or
-/// furthest past its receiver's latency, whatever that latency is (a 3 ms
-/// packet at a 1 ms receiver before a 10 ms one at a 7 ms receiver). A lane
-/// counts with one receiver, a known latency and a measured window only;
-/// `None` when none does. The window belongs to the slot: a slot that got a
-/// new receiver within 10 s still carries the old receiver's peaks.
 /// The worst lane of dstack's TX age view (dasio#237), each judged at its
 /// own late edge (`late_threshold_ns`: the flow's latency, at least the
 /// device's TX latency, plus a packet and the margin), the same edge the
@@ -123,24 +116,30 @@ pub fn worst_lane(view: &[dstack::media::tx::TxAgeLane]) -> Option<TxAge> {
     }))
 }
 
+/// The lane with the highest age/edge ratio, from `(receiver, late edge
+/// ns, age over the last 10 s ns)` per lane: the one nearest to or furthest
+/// past its edge, whatever that edge is (a 3 ms packet at a 1 ms edge
+/// before a 10 ms one at a 7 ms edge). A lane counts with one receiver, a
+/// known edge and a measured window only; `None` when none does. The window
+/// belongs to the slot: a slot that got a new receiver within 10 s still
+/// carries the old receiver's peaks.
 pub fn worst_tx_age<'a>(
     lanes: impl IntoIterator<Item = (&'a str, u64, Option<u64>)>,
 ) -> Option<TxAge> {
     let mut worst: Option<TxAge> = None;
-    for (receiver, latency_ns, age) in lanes {
+    for (receiver, edge_ns, age) in lanes {
         let Some(age_ns) = age else { continue };
-        if receiver.is_empty() || latency_ns == 0 {
+        if receiver.is_empty() || edge_ns == 0 {
             continue;
         }
         let further = worst.is_none_or(|w| {
-            u128::from(age_ns) * u128::from(w.latency_ns)
-                > u128::from(w.age_ns) * u128::from(latency_ns)
+            u128::from(age_ns) * u128::from(w.edge_ns) > u128::from(w.age_ns) * u128::from(edge_ns)
         });
         if further {
             worst = Some(TxAge {
                 receiver: ShortName::new(receiver),
                 age_ns,
-                latency_ns,
+                edge_ns,
             });
         }
     }
@@ -364,11 +363,11 @@ pub fn readiness(
     }
     // Late as dstack's `over_latency` judges it: at the latency itself the
     // packet still plays.
-    if let Some(t) = tx_age.filter(|t| t.age_ns > t.latency_ns) {
+    if let Some(t) = tx_age.filter(|t| t.age_ns > t.edge_ns) {
         not.push(format!(
-            "TX age {:.2} ms over the {:.2} ms of {}",
+            "TX age {:.2} ms past the {:.2} ms {} plays it at",
             t.age_ns as f64 / 1e6,
-            t.latency_ns as f64 / 1e6,
+            t.edge_ns as f64 / 1e6,
             t.receiver.as_str()
         ));
     }

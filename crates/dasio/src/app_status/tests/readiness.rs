@@ -231,14 +231,13 @@ fn age(receiver: &str, age_us: u64, latency_us: u64) -> Option<TxAge> {
     Some(TxAge {
         receiver: ShortName::new(receiver),
         age_ns: age_us * 1_000,
-        latency_ns: latency_us * 1_000,
+        edge_ns: latency_us * 1_000,
     })
 }
 
 #[test]
 fn a_tx_lane_older_than_its_receiver_s_latency_is_the_tx_age_item() {
-    // FOH band 26.11.2026 02:51:56Z: one packet 1021 us old at a receiver
-    // that plays at 250 us (dstack #485)
+    // a packet 1021 us old at an edge of 250 us
     assert_eq!(
         readiness(
             Some(0),
@@ -247,7 +246,7 @@ fn a_tx_lane_older_than_its_receiver_s_latency_is_the_tx_age_item() {
             age("foh-abl-yamaha-accelerator", 1_021, 250)
         ),
         Readiness::Not(vec![
-            "TX age 1.02 ms over the 0.25 ms of foh-abl-yamaha-accelerator".to_string()
+            "TX age 1.02 ms past the 0.25 ms foh-abl-yamaha-accelerator plays it at".to_string()
         ])
     );
     // at the latency itself the packet still plays (dstack's over_latency)
@@ -268,7 +267,7 @@ fn a_tx_lane_older_than_its_receiver_s_latency_is_the_tx_age_item() {
             age("iem-mixer", 1_001, 1_000)
         ),
         Readiness::Not(vec![
-            "TX age 1.00 ms over the 1.00 ms of iem-mixer".to_string()
+            "TX age 1.00 ms past the 1.00 ms iem-mixer plays it at".to_string()
         ])
     );
     // no measured lane is no item, and nothing to wait for
@@ -290,13 +289,14 @@ fn the_tx_age_item_comes_after_the_tx_path_and_before_the_clock() {
         readiness(f.pc_problems, f.tx, f.rx, f.tx_age),
         Readiness::Not(vec![
             "TX (UDP)".to_string(),
-            "TX age 2.00 ms over the 1.00 ms of band".to_string(),
+            "TX age 2.00 ms past the 1.00 ms band plays it at".to_string(),
             "clock (RX mean 0.02 ms)".to_string(),
         ])
     );
     assert!(
-        line(&f)
-            .contains("low latency NOT: TX (UDP), TX age 2.00 ms over the 1.00 ms of band, clock"),
+        line(&f).contains(
+            "low latency NOT: TX (UDP), TX age 2.00 ms past the 1.00 ms band plays it at, clock"
+        ),
         "{}",
         line(&f)
     );
@@ -323,7 +323,7 @@ fn the_worst_lane_is_the_one_furthest_past_its_receiver_s_latency() {
     ])
     .unwrap();
     assert_eq!(
-        (w.receiver.as_str(), w.age_ns, w.latency_ns),
+        (w.receiver.as_str(), w.age_ns, w.edge_ns),
         ("band", 3_000_000, 4_000_000)
     );
     // a later lane only replaces it when it is further, not as far
@@ -403,7 +403,10 @@ fn the_tx_age_item_waits_for_the_start_up_window() {
         startup: Part::default(),
         ..starting
     };
-    assert!(line(&running).contains("low latency NOT: TX age 2.00 ms over the 1.00 ms of band"));
+    assert!(
+        line(&running)
+            .contains("low latency NOT: TX age 2.00 ms past the 1.00 ms band plays it at")
+    );
 }
 
 #[test]
