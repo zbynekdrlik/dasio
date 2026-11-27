@@ -12,6 +12,18 @@ use super::{Break, ProgramJump};
 /// Milliseconds of one tick of the run loop.
 pub const TICK_MS: u64 = 100;
 
+/// `ticks` ticks in ms.
+fn ticks_ms(ticks: usize) -> u64 {
+    ticks as u64 * TICK_MS
+}
+
+/// The items of a flush and how long the oldest was held at this last look
+/// (its ticks in the hold plus the look), ms; 0 for none.
+fn split<T>(held: Vec<(T, usize)>) -> (Vec<T>, u64) {
+    let oldest = held.iter().map(|(_, age)| age + 1).max().unwrap_or(0);
+    (held.into_iter().map(|(t, _)| t).collect(), ticks_ms(oldest))
+}
+
 /// What a due event is logged as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Label {
@@ -24,8 +36,7 @@ pub enum Label {
 /// The label for a judged event given whether the stall window held several
 /// sources.
 pub fn verdict(stalled: bool) -> Label {
-    let _ = stalled;
-    Label::Normal
+    if stalled { Label::Stall } else { Label::Normal }
 }
 
 /// The events due at one tick, all with one label.
@@ -67,24 +78,21 @@ impl Judge {
         breaks: Vec<Break>,
         jumps: Vec<ProgramJump>,
     ) -> Due {
-        let _ = (
-            gaps,
-            flows,
-            breaks,
-            jumps,
-            HOLD,
-            &self.stall,
-            &self.breaks,
-            &self.jumps,
-        );
-        self.due(Vec::new(), Vec::new(), 0, 0)
+        self.stall.note(gaps, flows);
+        let breaks = self.breaks.tick(breaks);
+        let jumps = self.jumps.tick(jumps);
+        let held = |n: usize| if n == 0 { 0 } else { ticks_ms(HOLD) };
+        let (bh, jh) = (held(breaks.len()), held(jumps.len()));
+        self.due(breaks, jumps, bh, jh)
     }
 
     /// The device loop ends: one more look at the gaps and flows, then
     /// everything still held is due.
     pub fn flush(&mut self, gaps: &[u64], flows: &[u64]) -> Due {
-        let _ = (gaps, flows);
-        self.due(Vec::new(), Vec::new(), 0, 0)
+        self.stall.note(gaps, flows);
+        let (breaks, bh) = split(self.breaks.flush());
+        let (jumps, jh) = split(self.jumps.flush());
+        self.due(breaks, jumps, bh, jh)
     }
 
     fn due(
@@ -149,6 +157,7 @@ mod tests {
         assert_eq!(d.label, Label::Normal);
         assert_eq!(d.sources, 0);
         assert_eq!(d.break_held_ms, 200);
+        assert_eq!(d.jump_held_ms, 0);
         assert!(j.tick(&g(0, 0), &[], vec![], vec![]).is_empty());
     }
 
@@ -161,6 +170,7 @@ mod tests {
         assert_eq!(d.jumps, vec![jump(10)]);
         assert_eq!(d.label, Label::Normal);
         assert_eq!(d.jump_held_ms, 200);
+        assert_eq!(d.break_held_ms, 0);
         assert!(d.breaks.is_empty());
     }
 

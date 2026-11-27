@@ -171,6 +171,16 @@ paths:
   event is still in the log. Why program jumps too: a zero run's edges are steps
   (a cut to digital silence is a step, see above), so an RX stall can fire the loud-step
   trigger as well. Tone and loop lines are not held or changed.
+- The decision is portable and tested (`miss_watch/judge.rs`: `Judge` = `Stall` + two
+  `Hold`s, `verdict`, `Due`); `run/watch_log.rs` (Windows-only, outside the mutation
+  gate) only logs what `Due` says. A held line comes out 200 ms after its event, so it
+  is NOT in log order with tone, loop and 10 s lines: `held_ms` on the line says how
+  long it was held (`ago_ms` is read at log time, so it includes it) and `at` (the
+  media sample) orders lines. At the end of the device loop `Reader::flush` takes one
+  more look at the RX gaps and flows (`Judge::flush`) before judging what is left
+  (`held_ms` = the ticks it was held + that look). `run.rs`'s `rx_view` reads gaps
+  and flow id as two relaxed reads per slot: a flow change landing between them
+  shifts the change by one tick at most.
 - What is no loss to `Stall`: a slot's first look (a base, also a slot first seen
   later), a counter that went DOWN (device restart, re-based), and a tick where the
   slot's flow id changed (dstack counts the open holes as gaps when a slot's flow
@@ -181,8 +191,8 @@ paths:
   `Reader::flush` (judged by the stall state of the last tick). 27.11.2026
   14:36:13Z (an mbc stall) took a service trace as a `broke` line.
 - The event trigger's default (`tone-trigger.ps1 -Match`, 0.1.182) also fires on a
-  loud step: `output jumped` with `peak_dbfs` louder than -46 dBFS (-45.x and up;
-  tracing prints `-30.0`, the regex takes `-30` too) (`kernel-trace.md`).
+  loud step: `output jumped` with `peak_dbfs` louder than -46 dBFS (-45.x up to a
+  full-scale `0.0`; the regex takes `-30` and `0` too) (`kernel-trace.md`).
 - The log keeps 4 x 10 MB: pull a service's lines the same day.
 - Live's test tone plays only while Live's Settings window is open:
   closing Settings stops it (dasio#207, 25.11.2026: a 200-start run read

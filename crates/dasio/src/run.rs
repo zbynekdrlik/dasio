@@ -236,13 +236,7 @@ pub fn run(
                     .now_ns()
                     .map(|ns| dstack::clock::to_samples(ns, cfg.sample_rate))
             };
-            // Each RX slot's lost-packet gaps (dstack's own counters): several
-            // sources losing packets together make the breaks an RX stall.
-            let rx_gaps: [u64; dstack::media::rx::MAX_FLOWS] =
-                std::array::from_fn(|slot| media.rx.lane(slot).gaps);
-            let rx_flows: [u64; dstack::media::rx::MAX_FLOWS] = std::array::from_fn(|slot| {
-                crate::miss_watch::stall::flow_id(media.rx.source(slot))
-            });
+            let (rx_gaps, rx_flows) = rx_view(&media.rx);
             watch_reader.tick(w, media_now, cfg.sample_rate, &rx_gaps, &rx_flows);
         }
         if crate::pc_profile::check_due(
@@ -379,7 +373,8 @@ pub fn run(
                 .now_ns()
                 .map(|ns| dstack::clock::to_samples(ns, cfg.sample_rate))
         };
-        watch_reader.flush(w, media_now, cfg.sample_rate);
+        let (rx_gaps, rx_flows) = rx_view(&media.rx);
+        watch_reader.flush(w, media_now, cfg.sample_rate, &rx_gaps, &rx_flows);
     }
     // The minute in progress, before anything stops: a stall just before a
     // restart is the minute to keep (dasio#28).
@@ -962,4 +957,21 @@ mod quiet_tests {
             assert_ne!(mode & bit, 0, "error mode {mode:#x} lacks {bit:#x}");
         }
     }
+}
+
+/// Each RX flow slot's lost-packet gaps (dstack's own counters) and flow id
+/// for the output watch's stall check (dasio#207). Two relaxed reads per
+/// slot, not one snapshot: a flow change landing between them pairs the
+/// old id with the new count, which `Stall` reads as no change for one
+/// tick and a change on the next (one tick's error at most).
+fn rx_view(
+    rx: &dstack::media::rx::RxShared,
+) -> (
+    [u64; dstack::media::rx::MAX_FLOWS],
+    [u64; dstack::media::rx::MAX_FLOWS],
+) {
+    (
+        std::array::from_fn(|slot| rx.lane(slot).gaps),
+        std::array::from_fn(|slot| crate::miss_watch::stall::flow_id(rx.source(slot))),
+    )
 }
