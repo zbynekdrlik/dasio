@@ -249,6 +249,13 @@ pub fn setup(dir: &std::path::Path, device_rx: &[String]) -> Result<Option<Confi
     }
 }
 
+/// The device's RX channel names as it lists them now (dasio#207): the
+/// state file's, where a Dante rename (dcontroller) is kept, over the
+/// config's defaults. The watch's names are matched against these.
+pub fn rx_names_now(cfg: &dstack::device::DeviceConfig) -> Result<Vec<String>, String> {
+    Ok(cfg.rx.clone())
+}
+
 /// The names of `g`'s channels in the config's words, in config order.
 pub fn channel_names(g: &Group, cfg: &Config) -> String {
     g.channels

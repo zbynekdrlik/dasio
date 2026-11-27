@@ -903,3 +903,50 @@ fn a_setup_starts_its_tone_figures_one_per_tone_channel() {
     assert_eq!(set.tones.events.drain(&mut tail, &mut got), 0);
     assert!(got.is_empty());
 }
+
+/// A device whose state file sits in `dir` (no site value).
+fn device_in(dir: &std::path::Path) -> dstack::device::DeviceConfig {
+    let state = dir.join("state.toml");
+    dstack::device::DeviceConfig::from_toml(&format!(
+        "name = \"test-device\"\nmanufacturer = \"dasio\"\nmodel = \"dasio\"\n\
+         sample_rate = 96000\nencoding = 24\nlatency_ns = 1000000\nblock = 64\n\
+         state_file = '{}'\nrx = [\"RX 1\", \"RX 2\"]\ntx = [\"TX 1\"]\n",
+        state.display()
+    ))
+    .expect("the test device is valid")
+}
+
+#[test]
+fn rx_names_now_are_the_state_file_s_renames_over_the_config_s() {
+    let dir = std::env::temp_dir().join(format!("dasio-rx-names-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = device_in(&dir);
+    // No state file yet: the config's names.
+    assert_eq!(
+        rx_names_now(&cfg),
+        Ok(vec!["RX 1".to_string(), "RX 2".to_string()])
+    );
+    // RX 2 renamed in Dante (the state file keeps it): its new name.
+    std::fs::write(
+        dir.join("state.toml"),
+        "name = \"test-device\"\nconfig_name = \"test-device\"\n\
+         rx = [\"RX 1\", \"HAND 1 mic\"]\ntx = [\"TX 1\"]\n",
+    )
+    .unwrap();
+    let now = rx_names_now(&cfg).unwrap();
+    assert_eq!(now, vec!["RX 1".to_string(), "HAND 1 mic".to_string()]);
+    // A watch naming the renamed channel reads against them, at its index.
+    std::fs::write(
+        dir.join(FILE),
+        "name = \"master\"\nblock = 64\nprogram = [\"HAND 1 mic\"]\n",
+    )
+    .unwrap();
+    let c = setup(&dir, &now).unwrap().expect("the watch file is there");
+    assert_eq!(c.program, vec![(1, "HAND 1 mic".to_string())]);
+    // A state file that does not read: an error naming it.
+    std::fs::write(dir.join("state.toml"), "rx = 3\n").unwrap();
+    let e = rx_names_now(&cfg).unwrap_err();
+    assert!(e.contains("state.toml"), "{e}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
