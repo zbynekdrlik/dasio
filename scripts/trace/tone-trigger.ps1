@@ -1,10 +1,12 @@
 # dasio#207 (25.11.2026): the stop trigger of a trace on another PC. Run it on the PC whose dasio plays the watched
 # tone. It tails that dasio.log from its end; at the first `a watched test tone broke` or
 # `a watched program output looped` line it sends a UDP packet to the PC that records (rec-trace.ps1 listens there
-# on -Port) and ends. On CPUs 0-1 (2-3 are dasio's own).
-#   tone-trigger.ps1 -To <host or address of the recording PC> [-Port 39099] [-Minutes 40] [-Out ...] [-Log ...]
+# on -Port) and ends. On CPUs 0-1 (2-3 are dasio's own). -Match widens the lines it stops on: for a service
+# (event-trace.ps1) also `a watched output broke` (a host's missed buffer on real program audio, 26.11.2026's sermon).
+#   tone-trigger.ps1 -To <host or address of the recording PC> [-Port 39099] [-Minutes 40] [-Match <regex>] [-Out ...] [-Log ...]
 param([Parameter(Mandatory)][string]$To, [int]$Port = 39099, [int]$Minutes = 40, [string]$Out = 'C:\ProgramData\dasio\tmp\tone-trigger.txt',
-      [string]$Log = 'C:\ProgramData\dasio\instance-1\dasio.log')
+      [string]$Log = 'C:\ProgramData\dasio\instance-1\dasio.log',
+      [string]$Match = 'a watched test tone broke|a watched program output looped')
 $ErrorActionPreference = 'Stop'
 (Get-Process -Id $PID).ProcessorAffinity = 3
 "start $((Get-Date).ToUniversalTime().ToString('HH:mm:ss.fff'))" | Set-Content $Out
@@ -24,7 +26,7 @@ try {
       $chars = New-Object char[] ($n + 4); $cn = $dec.GetChars($buf, 0, $n, $chars, 0)
       $lines = ($carry + [string]::new($chars, 0, $cn)).Split("`n"); $carry = $lines[$lines.Count - 1]
       for ($i = 0; $i -lt $lines.Count - 1; $i++) {
-        if ($lines[$i] -match 'a watched test tone broke|a watched program output looped') { $hit = $lines[$i]; break }
+        if ($lines[$i] -match $Match) { $hit = $lines[$i]; break }
       }
     } else {
       Start-Sleep -Milliseconds 40

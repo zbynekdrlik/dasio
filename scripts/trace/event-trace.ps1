@@ -1,0 +1,46 @@
+# dasio#207 (27.11.2026): a context-switch trace kept in memory during a service, saved once at the first missed
+# buffer the hall can hear. 26.11.2026's sermon had two master misses (HAND 1 sync, 17:03:23Z and 17:18:37Z) and no
+# trace. Run it on the DAW PC; on the PC that watches its outputs run
+#   tone-trigger.ps1 -To <this PC> -Minutes <same> -Match 'a watched output broke|a watched test tone broke|a watched program output looped'
+# At the trigger's UDP packet on -Port the ring is saved (wpr -stop, the last ~14 s) and the script ends: one trace per
+# run, so the save's disk write happens once. No packet in -Minutes: the trace is cancelled, no file. A stop flag
+# (-Flag) cancels too.
+#   event-trace.ps1 [-Minutes 240] [-Etl ...] [-Profile ...] [-Log ...] [-Flag ...] [-Port 39099]
+param([int]$Minutes = 240, [string]$Etl = 'C:\ProgramData\dasio\tmp\event.etl',
+      [string]$Profile = 'C:\ProgramData\dasio\tmp\dasio-csw.wprp!DasioCsw', [string]$Log = 'C:\ProgramData\dasio\tmp\event-trace.txt',
+      [string]$Flag = 'C:\ProgramData\dasio\tmp\event-trace.stop', [int]$Port = 39099)
+$ErrorActionPreference = 'Stop'
+(Get-Process -Id $PID).PriorityClass = 'Normal'
+function L([string]$m) { "$((Get-Date).ToUniversalTime().ToString('HH:mm:ss.fff')) $m" | Add-Content $Log }
+function Wpr([string[]]$WprArgs) {
+  # wpr writes progress to stderr: under Stop that would throw.
+  $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  try { & wpr.exe @WprArgs 2>&1 | Out-Null; return $LASTEXITCODE } finally { $ErrorActionPreference = $old }
+}
+"start $(Get-Date -Format o)" | Set-Content $Log
+if (Test-Path $Flag) { Remove-Item $Flag }
+$u = New-Object Net.Sockets.UdpClient($Port)
+$traced = $false
+try {
+  $rc = Wpr @('-start', $Profile)
+  if ($rc -ne 0) { throw "wpr -start exit $rc" }
+  $traced = $true; L 'trace on'
+  $end = [DateTime]::UtcNow.AddMinutes($Minutes); $hit = $null
+  while ([DateTime]::UtcNow -lt $end -and -not $hit) {
+    if (Test-Path $Flag) { L 'flag seen'; break }
+    if ($u.Available -gt 0) { $ep = $null; $hit = [Text.Encoding]::ASCII.GetString($u.Receive([ref]$ep)); break }
+    Start-Sleep -Milliseconds 25
+  }
+  if ($hit) {
+    L "trigger: $hit"
+    $rc = Wpr @('-stop', $Etl, '-skipPdbGen')
+    $traced = $false
+    L "trace saved $Etl exit $rc"
+  } elseif (-not (Test-Path $Flag)) { L 'no trigger in the window' }
+} catch { L ('FAILED: ' + $_.Exception.Message)
+} finally {
+  if ($traced) {
+    try { $rc = Wpr @('-cancel'); L "trace cancelled exit $rc" } catch { L ('cancel failed: ' + $_.Exception.Message) }
+  }
+  $u.Close(); L 'end'
+}
