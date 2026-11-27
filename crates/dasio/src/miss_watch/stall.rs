@@ -116,11 +116,12 @@ mod tests {
     #[test]
     fn a_stall_ends_after_the_window() {
         let q: &[u64] = &[1, 1];
-        let s = stall_with(&[&[0, 0], q, q, q]);
+        let s = stall_with(&[&[0, 0], &[1, 1], q, q, q]);
         assert_eq!(s.sources(), 0);
         assert!(!s.stalled());
         let s = stall_with(&[&[0, 0], &[1, 1], q, q]);
         assert_eq!(s.sources(), 2);
+        assert!(s.stalled());
     }
 
     #[test]
