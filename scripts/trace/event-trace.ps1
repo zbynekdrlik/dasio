@@ -16,10 +16,11 @@ $ErrorActionPreference = 'Stop'
 (Get-Process -Id $PID).PriorityClass = 'Normal'
 function L([string]$m) { "$((Get-Date).ToUniversalTime().ToString('HH:mm:ss.fff')) $m" | Add-Content $Log }
 # A path for the save that does not exist yet: $p itself, else $p with -2, -3 ... before the extension.
-# A relative -Etl is resolved first (GetDirectoryName of a bare name is '', which Join-Path refuses), and
+# A relative -Etl is resolved first, against PowerShell's location ($PWD, not the process cwd; wpr then gets the
+# absolute path), since GetDirectoryName of a bare name is '', which Join-Path refuses; and
 # paths are tested literally ([ and * in a name are no wildcards).
 function Free-Path([string]$p) {
-  $p = [IO.Path]::GetFullPath($p)
+  $p = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($p)
   if (-not (Test-Path -LiteralPath $p)) { return $p }
   $d = [IO.Path]::GetDirectoryName($p); $n = [IO.Path]::GetFileNameWithoutExtension($p); $x = [IO.Path]::GetExtension($p)
   for ($i = 2; ; $i++) { $c = [IO.Path]::Combine($d, "$n-$i$x"); if (-not (Test-Path -LiteralPath $c)) { return $c } }
