@@ -88,6 +88,15 @@ pub const DEFAULT_PATH: &str = r"C:\ProgramData\dasio\pc-profile.toml";
 /// Seconds between the service's checks.
 pub const CHECK_EVERY_S: u64 = 600;
 
+/// Seconds after the service's first check to its second (dasio#237).
+pub const RECHECK_AFTER_START_S: u64 = 30;
+
+/// Seconds from the service's check number `done` (from 1) to the next.
+pub fn next_check_s(done: u32) -> u64 {
+    let _ = done;
+    CHECK_EVERY_S
+}
+
 /// One PC's profile.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
