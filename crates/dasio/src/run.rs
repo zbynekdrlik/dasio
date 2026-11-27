@@ -160,6 +160,9 @@ pub fn run(
     .map_err(|e| format!("the CPU sampler: {e}"))?;
     let mut cpu_snap_lost = false;
     let mut profile_at: Option<Instant> = None;
+    // The checks started so far: the second comes soon after the first
+    // (`pc_profile::next_check_s`, dasio#237).
+    let mut profile_checks: u32 = 0;
     // A rate asked that cannot be served: warned once, not tried again.
     let mut refused_rate = 0u32;
     // The pump's lost blocks by cause, published in every section's header
@@ -227,9 +230,11 @@ pub fn run(
             watch_reader.tick(w, media_now, cfg.sample_rate);
         }
         if profile_at.is_none_or(|t| {
-            now.duration_since(t) >= Duration::from_secs(crate::pc_profile::CHECK_EVERY_S)
+            now.duration_since(t)
+                >= Duration::from_secs(crate::pc_profile::next_check_s(profile_checks))
         }) {
             profile_at = Some(now);
+            profile_checks = profile_checks.saturating_add(1);
             profile.start(&pc_problems);
             if let Some(r) = rx_arrival.report() {
                 crate::rx_arrival::log(&r);

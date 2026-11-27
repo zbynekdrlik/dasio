@@ -91,10 +91,17 @@ pub const CHECK_EVERY_S: u64 = 600;
 /// Seconds after the service's first check to its second (dasio#237).
 pub const RECHECK_AFTER_START_S: u64 = 30;
 
-/// Seconds from the service's check number `done` (from 1) to the next.
+/// Seconds from the service's check number `done` (from 1) to the next:
+/// the second comes [`RECHECK_AFTER_START_S`] after the first, so a
+/// process the keeper had not yet set at start (the instance's own
+/// affinity, dasio#237) is read again once it has; then every
+/// [`CHECK_EVERY_S`].
 pub fn next_check_s(done: u32) -> u64 {
-    let _ = done;
-    CHECK_EVERY_S
+    if done == 1 {
+        RECHECK_AFTER_START_S
+    } else {
+        CHECK_EVERY_S
+    }
 }
 
 /// One PC's profile.

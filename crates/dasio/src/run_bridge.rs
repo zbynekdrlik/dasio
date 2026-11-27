@@ -253,6 +253,8 @@ pub fn run(
     // process's threads off the media CPUs (a thread on a media CPU takes
     // the quantum a spin tail yields, dasio#1).
     let mut profile_due = start + PROFILE_FIRST;
+    // The checks started so far (`pc_profile::next_check_s`, dasio#237).
+    let mut profile_checks: u32 = 0;
     let why = loop {
         // The players the pump gave back, freed here, off its thread.
         lock(&shared).collect();
@@ -264,7 +266,9 @@ pub fn run(
             save_seed(&shared, &mut keeper, &seed_path);
         }
         if now >= profile_due {
-            profile_due = now + Duration::from_secs(crate::pc_profile::CHECK_EVERY_S);
+            profile_checks = profile_checks.saturating_add(1);
+            profile_due =
+                now + Duration::from_secs(crate::pc_profile::next_check_s(profile_checks));
             profile.start_in_process(&pc_problems);
             if let Some(r) = rx_arrival.report() {
                 crate::rx_arrival::log(&r);

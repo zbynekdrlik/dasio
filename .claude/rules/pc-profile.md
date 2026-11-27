@@ -281,7 +281,7 @@ paths:
     went unanswered retried only 18 s later. Its holes lasted 19 s.
 - Check it: `dasio pc-profile check`. Preview and set what differs:
   `dasio pc-profile apply --plan`, then `dasio pc-profile apply`. The
-  service checks it at start and every 10 min: each problem is a WARN line
+  service checks it at start, again 30 s later (`pc_profile::next_check_s`: the first check can read the new instance before dasio's keeper set its affinity, dasio#237), then every 10 min: each problem is a WARN line
   in the instance log, and dtray's line shows `PC profile: N problems`.
 - `[[process]]` entries (affinity, priority class) are HELD by dasio's
   process keeper since 0.1.135 (dasio#185, owner 18.11.2026: what Process
