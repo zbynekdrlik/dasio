@@ -838,7 +838,11 @@ unsafe extern "system" fn dispose_buffers(this: *mut c_void) -> ASIOError {
 
 unsafe extern "system" fn control_panel(_this: *mut c_void) -> ASIOError {
     guard(ASE_NOT_PRESENT, || {
-        // dtray's settings window, found beside this DLL (dasio#248).
+        // dtray's settings window, found beside this DLL (dasio#248). The
+        // is_file check and CreateProcess run on the DAW's UI thread and
+        // never wait for the child: an accepted cost, so nobody adds a wait
+        // here later. A second click spawns dtray again: `dtray --settings`
+        // itself decides single-instance (dstack#512), not this driver.
         let dll = own_module_path();
         let p = panel::open(dll.as_deref(), |f| f.is_file(), spawn_detached);
         let mut line = p.describe().into_bytes();
@@ -876,20 +880,62 @@ fn own_module_path() -> Option<std::path::PathBuf> {
     Some(std::ffi::OsString::from_wide(&buf[..n]).into())
 }
 
-/// Starts `program` without a console window and returns at once: nothing
-/// waits for the child, and its handle is closed here.
+/// Starts `program` and returns at once: nothing waits for the child. Not
+/// `std::process::Command`: it always passes bInheritHandles = TRUE, which
+/// would hand the DAW's inheritable handles to dtray. Here none are
+/// inherited, there is no console and no window of its own, the child
+/// leaves the DAW's process group, and it starts in the program's folder.
+/// Both returned handles are closed at once.
 fn spawn_detached(program: &std::path::Path, args: &[&str]) -> std::io::Result<()> {
-    use std::os::windows::process::CommandExt;
-    use std::process::{Command, Stdio};
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    Command::new(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .map(|_child| ())
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CreateProcessW, DETACHED_PROCESS,
+        PROCESS_INFORMATION, STARTUPINFOW,
+    };
+    let wide = |s: &std::ffi::OsStr| -> Vec<u16> { s.encode_wide().chain(Some(0)).collect() };
+    // The command line `"<program>" <args>`; CreateProcessW may write to it.
+    let mut line: Vec<u16> = Vec::new();
+    line.push(u16::from(b'"'));
+    line.extend(program.as_os_str().encode_wide());
+    line.push(u16::from(b'"'));
+    for a in args {
+        line.push(u16::from(b' '));
+        line.extend(a.encode_utf16());
+    }
+    line.push(0);
+    let dir = program.parent().map(|d| wide(d.as_os_str()));
+    // SAFETY: all-zero is a valid STARTUPINFOW / PROCESS_INFORMATION; `cb`
+    // is set as the API requires.
+    let mut si: STARTUPINFOW = unsafe { core::mem::zeroed() };
+    si.cb = core::mem::size_of::<STARTUPINFOW>() as u32;
+    // SAFETY: as above.
+    let mut pi: PROCESS_INFORMATION = unsafe { core::mem::zeroed() };
+    // SAFETY: `line` and `dir` are NUL-terminated and outlive the call; no
+    // security attributes or environment; the out-structs are live.
+    let ok = unsafe {
+        CreateProcessW(
+            core::ptr::null(),
+            line.as_mut_ptr(),
+            core::ptr::null(),
+            core::ptr::null(),
+            0,
+            CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+            core::ptr::null(),
+            dir.as_ref().map_or(core::ptr::null(), |d| d.as_ptr()),
+            &si,
+            &mut pi,
+        )
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: the two handles CreateProcessW just returned.
+    unsafe {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+    Ok(())
 }
 
 unsafe extern "system" fn future(
