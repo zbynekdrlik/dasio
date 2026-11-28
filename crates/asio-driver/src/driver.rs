@@ -890,8 +890,8 @@ fn spawn_detached(program: &std::path::Path, args: &[&str]) -> std::io::Result<(
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{
-        CREATE_NEW_PROCESS_GROUP, CreateProcessW, DETACHED_PROCESS,
-        PROCESS_INFORMATION, STARTUPINFOW,
+        CREATE_NEW_PROCESS_GROUP, CreateProcessW, DETACHED_PROCESS, PROCESS_INFORMATION,
+        STARTUPINFOW,
     };
     let wide = |s: &std::ffi::OsStr| -> Vec<u16> { s.encode_wide().chain(Some(0)).collect() };
     // The command line `"<program>" <args>`; CreateProcessW may write to it.
