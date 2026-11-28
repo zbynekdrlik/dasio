@@ -9,8 +9,9 @@
 # delete it after (armed again within 30 s). More in .claude/rules/kernel-trace.md. Limits (-KeepSaves, -MinFreeGB,
 # -GapMinutes) are passed on to trace-run.ps1. The ring role also opens UDP 39099 inbound in the Windows firewall (a rule
 # for that port only; -Remove takes it away); the trigger's packets reach a SYSTEM task's powershell only through it.
-# -Remove of a ring: the stop flag is made first (kept if the operator had made it), the ring is awaited (30 s), the task is
-# stopped and removed, this role's runner and its children are ended, `wpr -cancel` clears what a hard end leaves.
+# -Remove of a ring: the stop flag is made first (kept if the operator had made it; one made here is always taken back), the
+# ring is awaited (30 s), the task is stopped and removed, this role's runner and its children are ended, `wpr -cancel` clears
+# what a hard end leaves.
 param([Parameter(Mandatory)][ValidateSet('Ring', 'Trigger')][string]$Role, [string]$To = '', [switch]$Remove, [switch]$NoStart,
       [int]$KeepSaves = 6, [int]$MinFreeGB = 20, [int]$GapMinutes = 10, [int]$EveryMinutes = 5,
       [string]$Dir = 'C:\ProgramData\dasio\trace')
@@ -35,38 +36,44 @@ if ($Remove) {
   $runners = Get-TraceProc "trace-run\.ps1.* -Role $Role\b"
   $childRx = if ($Role -eq 'Ring') { 'event-trace\.ps1' } else { 'tone-trigger\.ps1' }
   $kids = @(Get-TraceProc $childRx | Where-Object { $runners.ProcessId -contains $_.ParentProcessId })
-  if ($Role -eq 'Ring') {
-    # Pause the ring through the stop flag first (it cancels its wpr trace itself, the runner does not re-arm), a flag the
-    # operator already made stays.
-    $flag = Join-Path $Tmp 'event-trace.stop'
-    $madeFlag = -not (Test-Path -LiteralPath $flag)
-    if ($madeFlag) { New-Item -ItemType File -Force -Path $flag | Out-Null }
-    function Wait-RingEnd([int[]]$Pids, [int]$Seconds = 30) {
-      $until = (Get-Date).AddSeconds($Seconds)
-      while ((Get-Date) -lt $until) {
-        if (-not $Pids -or -not (Get-Process -Id $Pids -ErrorAction SilentlyContinue)) { return $true }
-        Start-Sleep -Milliseconds 500
+  $flag = Join-Path $Tmp 'event-trace.stop'
+  $madeFlag = $false; $ringEnded = $true
+  try {
+    if ($Role -eq 'Ring') {
+      # Pause the ring through the stop flag first (it cancels its wpr trace itself, the runner does not re-arm), a flag the
+      # operator already made stays. A flag made here is taken back in the finally, whatever fails.
+      $madeFlag = -not (Test-Path -LiteralPath $flag)
+      if ($madeFlag) { New-Item -ItemType File -Force -Path $flag | Out-Null }
+      function Wait-RingEnd([int[]]$Pids, [int]$Seconds = 30) {
+        $until = (Get-Date).AddSeconds($Seconds)
+        while ((Get-Date) -lt $until) {
+          if (-not $Pids -or -not (Get-Process -Id $Pids -ErrorAction SilentlyContinue)) { return $true }
+          Start-Sleep -Milliseconds 500
+        }
+        return $false
       }
-      return $false
+      $kidIds = @($kids | ForEach-Object { $_.ProcessId })
+      $ringEnded = Wait-RingEnd $kidIds
     }
-    $kidIds = @($kids | ForEach-Object { $_.ProcessId })
-    if (-not (Wait-RingEnd $kidIds)) { Say 'the ring did not end in 30 s: ended by force' }
-  }
-  if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
-    Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
-    Unregister-ScheduledTask -TaskName $name -Confirm:$false
-  }
-  Stop-TraceProc $runners; Stop-TraceProc $kids
-  if ($Role -eq 'Ring') {
-    # A ring ended by force leaves its wpr session: clear it (exit code ignored, non-zero = none was running).
-    $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    try { & wpr.exe -cancel 2>&1 | Out-Null; Say "wpr -cancel exit $LASTEXITCODE" } finally { $ErrorActionPreference = $old }
+    if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
+      Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+      Unregister-ScheduledTask -TaskName $name -Confirm:$false
+    }
+    Stop-TraceProc $runners; Stop-TraceProc $kids
+    if (-not $ringEnded) { Say 'the ring did not end in 30 s: ended by force' }
+    if ($Role -eq 'Ring') {
+      # A ring ended by force leaves its wpr session: clear it (exit code ignored, non-zero = none was running).
+      $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+      try { & wpr.exe -cancel 2>&1 | Out-Null; Say "wpr -cancel exit $LASTEXITCODE" } finally { $ErrorActionPreference = $old }
+      if (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue) { Remove-NetFirewallRule -DisplayName $ruleName; Say "firewall rule removed: $ruleName" }
+    }
+    Say "removed ${name}"
+  } finally {
     if ($madeFlag) { Remove-Item -LiteralPath $flag -ErrorAction SilentlyContinue }
-    if (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue) { Remove-NetFirewallRule -DisplayName $ruleName; Say "firewall rule removed: $ruleName" }
   }
-  Say "removed ${name}"; return
+  return
 }
-$files = 'trace-run.ps1', 'event-trace.ps1', 'tone-trigger.ps1'
+$files = 'trace-run.ps1', 'trace-run-lib.ps1', 'event-trace.ps1', 'tone-trigger.ps1'
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
 foreach ($f in $files) { Copy-Item -LiteralPath (Join-Path $here $f) -Destination (Join-Path $Dir $f) -Force }
 # event-trace.ps1's default -Profile is the tmp folder's copy.

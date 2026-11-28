@@ -545,6 +545,7 @@ class ArmEventTrace(unittest.TestCase):
     def setUpClass(cls):
         cls.arm = (HERE / "arm-event-trace.ps1").read_text(encoding="utf-8")
         cls.runner = (HERE / "trace-run.ps1").read_text(encoding="utf-8")
+        cls.lib = (HERE / "trace-run-lib.ps1").read_text(encoding="utf-8")
 
     @staticmethod
     def declared(text):
@@ -564,7 +565,7 @@ class ArmEventTrace(unittest.TestCase):
     def test_the_installer_copies_what_the_runner_starts(self):
         listed = re.search(r"\$files = ([^\n]*)", self.arm).group(1)
         files = re.findall(r"'([^']+)'", listed)
-        self.assertEqual(["trace-run.ps1", "event-trace.ps1", "tone-trigger.ps1"], files)
+        self.assertEqual(["trace-run.ps1", "trace-run-lib.ps1", "event-trace.ps1", "tone-trigger.ps1"], files)
         for name in files + ["dasio-csw.wprp"]:
             self.assertTrue((HERE / name).is_file(), name)
         self.assertIn("'event-trace.ps1'", self.runner)
@@ -585,15 +586,15 @@ class ArmEventTrace(unittest.TestCase):
             self.assertNotRegex(text, r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
 
     def test_the_guards_refuse_and_never_delete(self):
-        self.assertIn("event-trace.stop", self.runner)
-        self.assertRegex(self.runner, r"\$n -ge \$KeepSaves")
-        self.assertRegex(self.runner, r"\$free -lt \$MinFreeGB")
-        self.assertIn("event-*.etl", self.runner)
+        self.assertIn("event-trace.stop", self.lib)
+        self.assertRegex(self.lib, r"\$n -ge \$KeepSaves")
+        self.assertRegex(self.lib, r"\$free -lt \$MinFreeGB")
+        self.assertIn("event-*.etl", self.lib)
         # the stop flag pauses without being removed here: event-trace.ps1 removes it only at its own start,
         # which the refusal precedes.
-        self.assertNotRegex(self.runner, r"Remove-Item")
-        self.assertNotRegex(self.runner, r"\.etl'?\)?\s*\|\s*Remove")
-        self.assertRegex(self.runner, r"(?s)\$why = Refusal\s+if \(\$why\) \{.*?continue\s*\}")
+        self.assertNotRegex(self.runner + self.lib, r"Remove-Item")
+        self.assertNotRegex(self.runner + self.lib, r"\.etl'?\)?\s*\|\s*Remove")
+        self.assertRegex(self.runner, r"(?s)\$why = Get-Refusal[^\n]*\s+if \(\$why\) \{.*?continue\s*\}")
 
     def test_a_hit_waits_the_gap_and_every_child_is_followed_by_a_pause(self):
         self.assertRegex(self.runner, r"if \(\$hit\) \{[^}]*Start-Sleep -Seconds \(\$GapMinutes \* 60\) \}")
@@ -662,7 +663,7 @@ class ArmEventTraceReview(unittest.TestCase):
         self.assertRegex(after, r"(?s)^.*?\$why = Get-Refusal.*?continue.*?L \"start \$script\"")
 
     def test_a_hit_sleeps_the_gap_only_and_a_failed_start_the_pause(self):
-        self.assertRegex(self.runner, r"if \(\$hit\) \{[^}]*Start-Sleep -Seconds \(\$GapMinutes \* 60\) \} "
+        self.assertRegex(self.runner, r"if \(\$hit\) \{[^}]*Start-Sleep -Seconds \(\$GapMinutes \* 60\) \}\s*"
                          r"elseif \(\$ran\.TotalSeconds -ge 60\) \{[^}]*\} else \{ Start-Sleep -Seconds \$PauseSeconds \}")
 
     def test_remove_always_takes_back_the_flag_it_made_and_logs_the_force_after_the_kill(self):
@@ -695,12 +696,9 @@ class ArmEventTraceReview(unittest.TestCase):
         self.assertRegex(self.runner, r"FAILED\|[^'\n]*failed")
 
     def test_a_hit_is_only_read_from_what_this_child_wrote(self):
-        self.assertIn("function Test-Hit", self.runner)
-        self.assertIn("LastWriteTimeUtc", self.runner)
-        self.assertRegex(self.runner, r"'\^start '")
-
-    def test_no_pause_after_a_long_run_so_a_timeout_re_arms_at_once(self):
-        self.assertRegex(self.runner, r"if \(-not \$hit -and \$ran\.TotalSeconds -ge 60\)")
+        self.assertIn("function Test-Hit", self.lib)
+        self.assertIn("LastWriteTimeUtc", self.lib)
+        self.assertRegex(self.lib, r"'\^start '")
 
     def test_the_ring_opens_its_udp_port_in_the_firewall(self):
         self.assertIn("New-NetFirewallRule", self.arm)

@@ -23,36 +23,14 @@ $ErrorActionPreference = 'Stop'
 $Tmp = 'C:\ProgramData\dasio\tmp'
 if ($Role -eq 'Trigger' -and -not $To) { throw '-To (the DAW PC) is required for -Role Trigger' }
 $Run = Join-Path $Tmp "trace-run-$($Role.ToLower()).txt"
-$Flag = Join-Path $Tmp 'event-trace.stop'
 function L([string]$m) { "$((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')) $m" | Add-Content -LiteralPath $Run }
-# Why nothing may be armed now, or '' when all is well.
-function Refusal {
-  if ($Role -ne 'Ring') { return '' }
-  if (Test-Path -LiteralPath $Flag) { return 'the stop flag is there (a planned probe): delete event-trace.stop to arm again' }
-  $n = @(Get-ChildItem -LiteralPath $Tmp -Filter 'event-*.etl' -File -ErrorAction SilentlyContinue).Count
-  if ($n -ge $KeepSaves) { return "$n saved traces (limit $KeepSaves): read them off the PC and remove them, nothing is deleted here" }
-  $free = [Math]::Floor((New-Object IO.DriveInfo((Split-Path -Qualifier (Resolve-Path -LiteralPath $Tmp)))).AvailableFreeSpace / 1GB)
-  if ($free -lt $MinFreeGB) { return "$free GB free (limit $MinFreeGB GB)" }
-  return ''
-}
-# The lines the child wrote in ITS run: none when the file was not written since $Since (a child that failed before it
-# rewrote its log leaves the last run's lines there), else the lines from the last `start` line on.
-function Get-RunLines([string]$Path, [datetime]$Since) {
-  if (-not (Test-Path -LiteralPath $Path)) { return @() }
-  if ((Get-Item -LiteralPath $Path).LastWriteTimeUtc -lt $Since.ToUniversalTime()) { return @() }
-  $lines = @(Get-Content -LiteralPath $Path); $from = 0
-  for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^start ') { $from = $i } }
-  return @($lines[$from..($lines.Count - 1)])
-}
-function Test-Hit([string]$Path, [string]$Rx, [datetime]$Since) {
-  foreach ($l in (Get-RunLines $Path $Since)) { if ($l -match $Rx) { return $true } }
-  return $false
-}
+# What counts as a hit and what refuses to arm are in the library (tested on fixtures by test-trace-run-lib.ps1).
+. (Join-Path $PSScriptRoot 'trace-run-lib.ps1')
 New-Item -ItemType Directory -Force -Path $Tmp | Out-Null
 L "runner start role=$Role keep=$KeepSaves minfreegb=$MinFreeGB gap=$GapMinutes"
 $was = $null
 while ($true) {
-  $why = Refusal
+  $why = Get-Refusal $Role $Tmp $KeepSaves $MinFreeGB
   if ($why) {
     if ($why -ne $was) { L "not armed: $why" }
     $was = $why; Start-Sleep -Seconds $PauseSeconds; continue
@@ -63,6 +41,9 @@ while ($true) {
     # wpr writes progress to stderr: under Stop that would throw.
     $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     try { & wpr.exe -cancel 2>&1 | Out-Null; L "wpr -cancel exit $LASTEXITCODE (0 = a stale session was cancelled)" } finally { $ErrorActionPreference = $old }
+    # A probe may have been planned in the second the cancel took: the checks again, before the ring starts.
+    $why = Get-Refusal $Role $Tmp $KeepSaves $MinFreeGB
+    if ($why) { L "not armed: $why"; $was = $why; Start-Sleep -Seconds $PauseSeconds; continue }
   } else { $script = 'tone-trigger.ps1'; $out = Join-Path $Tmp 'tone-trigger.txt'; $hitRx = '^hit '; $sargs = @('-To', $To) }
   L "start $script"
   $t0 = Get-Date
@@ -73,5 +54,5 @@ while ($true) {
   # Why a start failed (the child's own words), so the runner's log is enough to read.
   foreach ($l in @(Get-RunLines $out $t0 | Where-Object { $_ -match 'FAILED|trace stop failed|stop flag present|flag seen' } | Select-Object -First 3)) { L "child: $l" }
   if ($hit) { L "gap $GapMinutes min before arming again"; Start-Sleep -Seconds ($GapMinutes * 60) }
-  if (-not $hit -and $ran.TotalSeconds -ge 60) { L 'ran to its end: arming again at once' } else { Start-Sleep -Seconds $PauseSeconds }
+  elseif ($ran.TotalSeconds -ge 60) { L 'ran to its end: arming again at once' } else { Start-Sleep -Seconds $PauseSeconds }
 }

@@ -83,14 +83,14 @@ Found why master Ableton clicked (25.11.2026). Tools: `dasio-csw.wprp`, `dasio-c
 
 - Once per PC, as administrator: DAW PC `arm-event-trace.ps1 -Role Ring`; watching PC `arm-event-trace.ps1 -Role Trigger -To <DAW PC>`
   (the address is a parameter, none is in the repo; a host name is resolved at the trigger's start and a name that does not
-  resolve ends it at once with `FAILED:` in `tone-trigger.txt`). It copies the scripts to `C:\ProgramData\dasio\trace` and registers a
+  resolve ends it at once with `FAILED:` in `tone-trigger.txt`). It copies the scripts (and `trace-run-lib.ps1`) to `C:\ProgramData\dasio\trace` and registers a
   SYSTEM task (`dasio-event-trace-ring`, `dasio-tone-trigger`): at boot, plus a repetition every 5 min that only brings back a
   crashed runner (`MultipleInstances IgnoreNew`). The ring role also adds a Windows firewall rule, inbound UDP 39099 only
   (`dasio event trace (UDP 39099)`): the trigger's packets do not reach a SYSTEM task's powershell without it. The installer logs
   what it did to `C:\ProgramData\dasio\tmp\arm-event-trace.txt`.
-- `trace-run.ps1` loops by itself: `event-trace.ps1` (with `-KeepFlag`) / `tone-trigger.ps1` with `-Minutes 1440`. After a run
+- `trace-run.ps1` loops by itself (what is a hit and what refuses to arm are in `trace-run-lib.ps1`): `event-trace.ps1` (with `-KeepFlag`) / `tone-trigger.ps1` with `-Minutes 1440`. After a run
   to its timeout it starts again at once; a child that ended in under 60 s (a failed start) is followed by 30 s; after a hit it
-  waits `-GapMinutes` (10), so one burst does not save twice. A hit counts only from lines the child wrote in its own run (the
+  waits `-GapMinutes` (10) and no more, so one burst does not save twice. A hit counts only from lines the child wrote in its own run (the
   log's last `start` line on, and only if the file was written since the child began). Before every ring start it runs
   `wpr -cancel` (a ring killed hard leaves a session and every later `wpr -start` fails). Log:
   `C:\ProgramData\dasio\tmp\trace-run-ring.txt` / `-trigger.txt`, with the child's `FAILED` lines.
@@ -98,10 +98,15 @@ Found why master Ableton clicked (25.11.2026). Tools: `dasio-csw.wprp`, `dasio-c
   `-KeepSaves` (6) or more `event-*.etl` are in the tmp folder (512 MB each: read them off the PC, remove them by hand,
   and it arms again); under `-MinFreeGB` (20) is free on its drive. `event-trace.ps1 -KeepFlag` ends without arming when the
   flag exists at its start (without `-KeepFlag`, by hand, it still deletes the flag at the start).
-- A planned probe on the DAW PC: create `C:\ProgramData\dasio\tmp\event-trace.stop`, wait until `event-trace.txt` says `end`, probe,
+- A planned probe on the DAW PC: create `C:\ProgramData\dasio\tmp\event-trace.stop`, wait until `event-trace.txt` has been rewritten
+  after the flag was made and says `end` (an `end` from an earlier run is no proof; the runner re-tests the flag after its
+  `wpr -cancel`, but a probe's own trace started in that second is cancelled), probe,
   delete the flag, and the ring is back within 30 s. Without the flag the ring is always on: that is the point.
 - `-Remove`: the stop flag is made first (an operator's own flag stays), the ring is awaited (30 s), the task is stopped and
   removed, then only THIS role's runner and its children are ended, `wpr -cancel`, and the firewall rule goes (ring).
-- CI parses every `scripts/**/*.ps1` in Windows PowerShell 5.1 (job `ps-parse`) and the tests read them for a variable
+- CI parses every `*.ps1` of the repo (not `target/`, `.git/`) in Windows PowerShell 5.1 (job `ps-parse`), and in the same job
+  `test-trace-run-lib.ps1` runs `trace-run-lib.ps1`'s decisions against fixture logs (a stale hit before the last `start` line,
+  a log not written since the child began, a fresh hit; the flag, `-KeepSaves`, `-MinFreeGB` refusals). The python tests read the
+  scripts for a variable
   followed by a colon in a string (`"$name: x"` is a parse error) and for a function named like a built-in alias
-  (`Kill` is shadowed by `kill` = Stop-Process in 5.1). Nothing else runs them in CI (no task scheduler, no ETW).
+  (`Kill` is shadowed by `kill` = Stop-Process in 5.1). The installer, the task and the loop themselves are not run in CI (no task scheduler, no ETW).
