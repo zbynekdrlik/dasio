@@ -607,6 +607,7 @@ if ($changed -contains "dasio.exe") {
 # Each paused instance is listed before its stop, so the finally below starts
 # every one a failed stop may have left down (a running one starts as a no-op).
 $stopped = @()
+$sharedCopied = $false
 try {
     foreach ($s in $paused) {
         Write-Output "stopping $($s.Name) for the new binary"
@@ -617,6 +618,7 @@ try {
         Wait-ServiceProcessExit $s.Name $pausedProc
     }
     foreach ($file in $changed) { Copy-FileRetry (Join-Path $here $file) $bin }
+    $sharedCopied = $true
     if (-not $dllHeld) {
         if (-not (Test-Path $protocolKey)) { New-Item -Path $protocolKey | Out-Null }
         New-ItemProperty -Path $protocolKey -Name ShmProtocol -Value $ShmProtocol -PropertyType DWord -Force | Out-Null
@@ -860,7 +862,11 @@ Start-Service -Name $service
     # The shared files (dasio.exe, the driver) are not rolled back: the paused instances started again on the new
     # shared dasio.exe. Name them, so a mixed state is never a guess.
     $onNew = @($stopped | ForEach-Object { $_.Name })
-    $mixed = if ($onNew.Count -gt 0) { "; on the new shared dasio.exe: $($onNew -join ', ')" } else { "" }
+    $mixed = ""
+    if ($onNew.Count -gt 0) {
+        if ($sharedCopied) { $mixed = "; on the new shared dasio.exe: $($onNew -join ', ')" }
+        else { $mixed = "; restarted on the old shared dasio.exe: $($onNew -join ', ')" }
+    }
     throw "install failed: $failure; instance $Instance rolled back and running as before$mixed"
 }
 Remove-Item -Recurse -Force $rollback -ErrorAction SilentlyContinue
