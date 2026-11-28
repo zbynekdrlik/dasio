@@ -480,16 +480,36 @@ if (-not $TestClock) {
     }
 }
 
-# Stops a service and waits for its PROCESS to end, not only for the SCM's
+# The process behind a service now (id + start time, so a reused id is never
+# mistaken for it), or $null when it does not run.
+function Get-ServiceProcessInfo([string]$Name) {
+    $id = (Get-CimInstance Win32_Service -Filter "Name='$Name'").ProcessId
+    if (-not $id -or $id -le 0) { return $null }
+    $p = Get-Process -Id $id -ErrorAction SilentlyContinue
+    if (-not $p) { return $null }
+    $start = $null
+    try { $start = $p.StartTime } catch { $start = $null }
+    return [pscustomobject]@{ ProcId = $id; Start = $start }
+}
+# Waits for a stopped service's PROCESS to end, not only for the SCM's
 # Stopped: the process can still hold its exe open a moment (dasio#28, CI run
-# 46089759633). Bounded; a process that stays is an error naming its PID.
-function Wait-ServiceProcessExit([string]$Name, [int]$ProcessId) {
-    if ($ProcessId -le 0) { return }
-    $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
-    if (-not $p) { return }
-    Wait-Process -Id $ProcessId -Timeout 15 -ErrorAction SilentlyContinue
-    if (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue) {
-        throw "the process of $Name (pid $ProcessId) did not end within 15 s of its stop"
+# 46089759633). Bounded; the same process (id + start time) still alive
+# after 15 s is an error naming its id.
+function Wait-ServiceProcessExit([string]$Name, $Info) {
+    if (-not $Info) { return }
+    $deadline = (Get-Date).AddSeconds(15)
+    while ($true) {
+        $p = Get-Process -Id $Info.ProcId -ErrorAction SilentlyContinue
+        if (-not $p) { return }
+        if ($Info.Start) {
+            $now = $null
+            try { $now = $p.StartTime } catch { $now = $null }
+            if ($now -and $now -ne $Info.Start) { return }
+        }
+        if ((Get-Date) -gt $deadline) {
+            throw "the process of $Name (pid $($Info.ProcId)) did not end within 15 s of its stop"
+        }
+        Start-Sleep -Milliseconds 200
     }
 }
 # Copies over an exe/dll another process may hold a moment (a scanner, an
@@ -498,6 +518,11 @@ function Copy-FileRetry([string]$From, [string]$To) {
     for ($try = 1; ; $try++) {
         try { Copy-Item $From $To -Force -ErrorAction Stop; return }
         catch {
+            # Only a held file is worth another try; a missing source or a bad path fails at once.
+            $e = $_.Exception
+            $held = ($e -is [System.IO.IOException] -or $e -is [System.UnauthorizedAccessException]) -and
+                -not ($e -is [System.IO.FileNotFoundException] -or $e -is [System.IO.DirectoryNotFoundException])
+            if (-not $held) { throw }
             if ($try -ge 10) { throw "copying $From to $To failed 10 times: $($_.Exception.Message)" }
             Write-Warning "copy to $To failed (try $try of 10): $($_.Exception.Message)"
             Start-Sleep -Milliseconds 500
@@ -508,10 +533,17 @@ function Copy-FileRetry([string]$From, [string]$To) {
 $installed = Join-Path $env:ProgramFiles "dasio\dasio.exe"
 if (Get-Service -Name $service -ErrorAction SilentlyContinue) {
     # The SCM's Stop: the device ends within its stop's 7 s.
-    $servicePid = (Get-CimInstance Win32_Service -Filter "Name='$service'").ProcessId
-    Stop-Service -Name $service
-    (Get-Service -Name $service).WaitForStatus("Stopped", [TimeSpan]::FromSeconds(15))
-    Wait-ServiceProcessExit $service $servicePid
+    # Nothing is changed yet: a stop that fails brings the service back.
+    try {
+        $serviceProc = Get-ServiceProcessInfo $service
+        Stop-Service -Name $service
+        (Get-Service -Name $service).WaitForStatus("Stopped", [TimeSpan]::FromSeconds(15))
+        Wait-ServiceProcessExit $service $serviceProc
+    } catch {
+        $stopFailure = $_.Exception.Message
+        try { Start-Service -Name $service -ErrorAction Stop } catch { $stopFailure += "; starting $service again failed: $($_.Exception.Message)" }
+        throw "stopping $service failed: $stopFailure"
+    }
 }
 if (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue) {
     # An older install's logon task: asked to stop (never killed), then removed.
@@ -567,22 +599,26 @@ if ($changed -contains "dasio.exe") {
     $paused = @(Get-CimInstance Win32_Service -Filter "Name LIKE 'dasio-%'" | Where-Object {
             $_.Name -ne $service -and $_.State -eq "Running" -and $_.PathName -match "$shared`""
         } | ForEach-Object { Get-Service -Name $_.Name })
+}
+# Each paused instance is listed before its stop, so the finally below starts
+# every one a failed stop may have left down (a running one starts as a no-op).
+$stopped = @()
+try {
     foreach ($s in $paused) {
         Write-Output "stopping $($s.Name) for the new binary"
-        $pausedPid = (Get-CimInstance Win32_Service -Filter "Name='$($s.Name)'").ProcessId
+        $pausedProc = Get-ServiceProcessInfo $s.Name
+        $stopped += $s
         Stop-Service -Name $s.Name
         $s.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(15))
-        Wait-ServiceProcessExit $s.Name $pausedPid
+        Wait-ServiceProcessExit $s.Name $pausedProc
     }
-}
-try {
     foreach ($file in $changed) { Copy-FileRetry (Join-Path $here $file) $bin }
     if (-not $dllHeld) {
         if (-not (Test-Path $protocolKey)) { New-Item -Path $protocolKey | Out-Null }
         New-ItemProperty -Path $protocolKey -Name ShmProtocol -Value $ShmProtocol -PropertyType DWord -Force | Out-Null
     }
 } finally {
-    foreach ($s in $paused) {
+    foreach ($s in $stopped) {
         Start-Service -Name $s.Name
         (Get-Service -Name $s.Name).WaitForStatus("Running", [TimeSpan]::FromSeconds(10))
         Write-Output "$($s.Name) runs the new binary"
