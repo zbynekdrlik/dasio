@@ -185,7 +185,7 @@ paths:
   later), a counter that went DOWN (device restart, re-based), and a tick where the
   slot's flow id changed (dstack counts the open holes as gaps when a slot's flow
   changes, so two slots re-planned together would read as a stall and hide a real
-  host miss). dstack's `RxCounts` has no flow epoch at the pinned tag (v0.6.226): a
+  host miss). dstack's `RxCounts` has no flow epoch at the pinned tag (v0.6.231): a
   re-plan to the SAME transmitter inside one tick shows no id change and still
   counts. A break still held when the device loop ends is logged by
   `Reader::flush` (judged by the stall state of the last tick). 27.11.2026
