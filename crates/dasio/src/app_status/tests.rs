@@ -1099,9 +1099,13 @@ fn a_bridge_reports_the_latencies_its_driver_tells_the_host() {
     // dsg: SoundGrid at 96 kHz, 416 frames in, 608 out (dasio#248).
     let j = bridge_json(&bridge_dsg());
     assert!(
-        j.contains("\"daw_attached\":false,\"latency_in\":416,\"latency_out\":608,\"sample_rate\":96000,\"driver\":"),
+        j.contains("\"daw_attached\":false,\"latency_in\":416,\"latency_out\":608,\"driver\":"),
         "{j}"
     );
+    // The frames are at the bridge's `rate` (its driver's rate): no `sample_rate`
+    // key, which the DAW object uses for the Dante device's rate.
+    assert!(j.contains("\"rate\":96000"), "{j}");
+    assert!(!j.contains("\"sample_rate\""), "{j}");
     // Not running, or a latency the driver has not told: no keys.
     let stopped = BridgeFacts {
         running: false,
