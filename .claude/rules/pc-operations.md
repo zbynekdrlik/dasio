@@ -117,6 +117,11 @@ Owner rules from dasio#1. They hold for every change on a PC running dasio.
   that night. On dsg (17.11.2026 22:59Z) the b0127 and b0128 deploy tasks
   both re-ran, `install.ps1` ran twice in parallel, and b0128's bundle
   config replaced the live one (32 converter taps back to 48, dasio#120).
+  A bundle folder can already exist from an earlier deploy with an old
+  `install.done` (mbc bundles\b0182 had one from 13.11): delete
+  `install.done` (or use a fresh folder) before starting the SYSTEM task,
+  or the wait for it ends at once while install.ps1 still runs
+  (28.11.2026).
 - **Remote-shell gotchas (dsg, 17.11.2026):** `& script.ps1` is refused
   (script execution disabled): run a helper with `powershell -NoProfile
   -ExecutionPolicy Bypass -File <ps1>`. A config written with PS 5.1's

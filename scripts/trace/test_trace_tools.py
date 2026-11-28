@@ -538,6 +538,181 @@ class EventTraceSave(unittest.TestCase):
         self.assertNotIn("'-stop', $Etl", self.text)
 
 
+class ArmEventTrace(unittest.TestCase):
+    """arm-event-trace.ps1 + trace-run.ps1 (dasio#207): the trigger and the ring re-arm by themselves."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.arm = (HERE / "arm-event-trace.ps1").read_text(encoding="utf-8")
+        cls.runner = (HERE / "trace-run.ps1").read_text(encoding="utf-8")
+        cls.lib = (HERE / "trace-run-lib.ps1").read_text(encoding="utf-8")
+
+    @staticmethod
+    def declared(text):
+        block = re.search(r"^param\((.*?)\)\n\$ErrorActionPreference", text, re.S | re.M)
+        assert block, "no param block"
+        body = re.sub(r"\[[^\]]*\]", "", block.group(1)).replace("$PSScriptRoot", "")
+        return set(re.findall(r"\$([A-Za-z]+)", body))
+
+    def test_the_installer_passes_only_what_the_runner_declares(self):
+        declared = self.declared(self.runner)
+        self.assertEqual({"Role", "To", "KeepSaves", "MinFreeGB", "GapMinutes", "PauseSeconds", "Dir"}, declared)
+        line = re.search(r'\$arg = "([^\n]*)"', self.arm).group(1) + " " + re.search(r'\$arg \+= " ([^"]*)', self.arm).group(1)
+        passed = set(re.findall(r"(?<![\w$])-([A-Za-z]+)", line.replace("-NoProfile -ExecutionPolicy Bypass -File", "")))
+        self.assertEqual({"Role", "KeepSaves", "MinFreeGB", "GapMinutes", "To"}, passed)
+        self.assertLessEqual(passed, declared)
+
+    def test_the_installer_copies_what_the_runner_starts(self):
+        listed = re.search(r"\$files = ([^\n]*)", self.arm).group(1)
+        files = re.findall(r"'([^']+)'", listed)
+        self.assertEqual(["trace-run.ps1", "trace-run-lib.ps1", "event-trace.ps1", "tone-trigger.ps1"], files)
+        for name in files + ["dasio-csw.wprp"]:
+            self.assertTrue((HERE / name).is_file(), name)
+        self.assertIn("'event-trace.ps1'", self.runner)
+        self.assertIn("'tone-trigger.ps1'", self.runner)
+        self.assertIn("'dasio-csw.wprp'", self.arm)
+
+    def test_the_task_is_a_boot_task_that_never_runs_twice(self):
+        self.assertIn("New-ScheduledTaskTrigger -AtStartup", self.arm)
+        self.assertRegex(self.arm, r"New-ScheduledTaskTrigger -Once -At \(Get-Date\) -RepetitionInterval")
+        self.assertIn("-MultipleInstances IgnoreNew", self.arm)
+        self.assertIn("-ExecutionTimeLimit ([TimeSpan]::Zero)", self.arm)
+        self.assertRegex(self.arm, r"-UserId 'SYSTEM'.*-RunLevel Highest")
+        self.assertIn("-Force", self.arm)  # a second install replaces the task
+
+    def test_the_trigger_needs_the_daw_pc_as_a_parameter_and_no_address_is_in_the_repo(self):
+        for text in (self.arm, self.runner):
+            self.assertRegex(text, r"\$Role -eq 'Trigger' -and .*-not \$To")
+            self.assertNotRegex(text, r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
+
+    def test_the_guards_refuse_and_never_delete(self):
+        self.assertIn("event-trace.stop", self.lib)
+        self.assertRegex(self.lib, r"\$n -ge \$KeepSaves")
+        self.assertRegex(self.lib, r"\$free -lt \$MinFreeGB")
+        self.assertIn("event-*.etl", self.lib)
+        # the stop flag pauses without being removed here: event-trace.ps1 removes it only at its own start,
+        # which the refusal precedes.
+        self.assertNotRegex(self.runner + self.lib, r"Remove-Item")
+        self.assertNotRegex(self.runner + self.lib, r"\.etl'?\)?\s*\|\s*Remove")
+        self.assertRegex(self.runner, r"(?s)\$why = Get-Refusal[^\n]*\s+if \(\$why\) \{.*?continue\s*\}")
+
+    def test_a_hit_waits_the_gap_and_every_child_is_followed_by_a_pause(self):
+        self.assertRegex(self.runner, r"if \(\$hit\) \{[^}]*Start-Sleep -Seconds \(\$GapMinutes \* 60\) \}")
+        self.assertIn("Start-Sleep -Seconds $PauseSeconds", self.runner)
+        # the hit patterns match what the scripts write
+        ring = (HERE / "event-trace.ps1").read_text(encoding="utf-8")
+        self.assertIn('L "trace saved $save"', ring)
+        self.assertIn("'^\\S+ trace saved '", self.runner)
+        self.assertRegex(self.runner, r"\$hitRx = '\^hit '")
+        self.assertIn('"hit $((Get-Date)', (HERE / "tone-trigger.ps1").read_text(encoding="utf-8"))
+
+
+class PowerShellHygiene(unittest.TestCase):
+    """What PowerShell 5.1 refuses or silently does otherwise, found by reading (CI also parses every script, dasio#207)."""
+
+    ALIASES = {"kill", "ps", "sleep", "sort", "select", "where", "echo", "cat", "ls", "dir", "cd", "rm", "cp", "mv", "man",
+               "write", "type", "copy", "move", "del", "diff", "gc", "gl", "gm", "gp", "gs", "gu", "h", "history", "icm",
+               "iex", "ii", "measure", "md", "ni", "oh", "r", "ren", "rd", "sc", "start", "sv", "tee", "wget", "curl"}
+
+    @staticmethod
+    def scripts():
+        root = HERE.parents[1]
+        return sorted(p for p in root.rglob("*.ps1") if not {"target", ".git", "node_modules"} & set(p.relative_to(root).parts))
+
+    def test_every_ps1_of_the_repo_is_read(self):
+        names = {p.relative_to(HERE.parents[1]).as_posix() for p in self.scripts()}
+        self.assertGreater(len(names), 15)
+        self.assertIn("drivers/ndis-pacer/scripts/install.ps1", names)
+        self.assertIn("scripts/trace/trace-run.ps1", names)
+
+    def test_no_string_has_a_variable_followed_by_a_colon(self):
+        # "$name: x" reads $name: as a scope or drive reference, a parse error (arm-event-trace.ps1, 28.11.2026).
+        bad = re.compile(r'"[^"\n]*\$(?!env:|script:|global:|local:|private:|using:)[A-Za-z_]\w*:(?=[\s"])')
+        for path in self.scripts():
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if line.lstrip().startswith("#"):
+                    continue
+                self.assertIsNone(bad.search(line), f"{path.name}:{number}: {line.strip()}")
+
+    def test_no_function_is_shadowed_by_a_builtin_alias(self):
+        for path in self.scripts():
+            for name in re.findall(r"(?im)^\s*function\s+([\w-]+)", path.read_text(encoding="utf-8")):
+                self.assertNotIn(name.lower(), self.ALIASES, f"{path.name}: function {name}")
+
+
+class ArmEventTraceReview(unittest.TestCase):
+    """The review of the first arm-event-trace.ps1 / trace-run.ps1 (dasio#207): what each fix has to show."""
+
+    @classmethod
+    def setUpClass(cls):
+        read = lambda n: (HERE / n).read_text(encoding="utf-8")  # noqa: E731
+        cls.arm, cls.runner, cls.ring, cls.trig, cls.lib = (read(n) for n in
+            ("arm-event-trace.ps1", "trace-run.ps1", "event-trace.ps1", "tone-trigger.ps1", "trace-run-lib.ps1"))
+
+    def test_the_pure_decisions_live_in_a_library_the_runner_dot_sources(self):
+        self.assertRegex(self.runner, r"\. \(Join-Path \$PSScriptRoot 'trace-run-lib\.ps1'\)")
+        for fn in ("Get-RunLines", "Test-Hit", "Get-Refusal"):
+            self.assertIn(f"function {fn}", self.lib)
+            self.assertNotIn(f"function {fn}", self.runner)
+        self.assertNotRegex(self.lib, r"(?m)^\s*while \(")  # no loop: dot-sourcing it must return
+        self.assertIn("'trace-run-lib.ps1'", self.arm.split("$files = ")[1].split("\n")[0])
+        self.assertTrue((HERE / "test-trace-run-lib.ps1").is_file())
+
+    def test_the_stop_flag_is_tested_again_right_after_the_wpr_cancel(self):
+        after = self.runner.split("wpr.exe -cancel")[1]
+        self.assertRegex(after, r"(?s)^.*?\$why = Get-Refusal.*?continue.*?L \"start \$script\"")
+
+    def test_a_hit_sleeps_the_gap_only_and_a_failed_start_the_pause(self):
+        self.assertRegex(self.runner, r"if \(\$hit\) \{[^}]*Start-Sleep -Seconds \(\$GapMinutes \* 60\) \}\s*"
+                         r"elseif \(\$ran\.TotalSeconds -ge 60\) \{[^}]*\} else \{ Start-Sleep -Seconds \$PauseSeconds \}")
+
+    def test_remove_always_takes_back_the_flag_it_made_and_logs_the_force_after_the_kill(self):
+        a = self.arm
+        self.assertRegex(a, r"(?s)\$madeFlag = \$false.*?try \{.*?\} finally \{[^}]*if \(\$madeFlag\) \{ Remove-Item")
+        self.assertLess(a.index("Stop-TraceProc $runners; Stop-TraceProc $kids"), a.index("ended by force"))
+
+    def test_remove_ends_this_roles_runner_and_its_children_only(self):
+        self.assertIn("function Stop-TraceProc", self.arm)
+        self.assertRegex(self.arm, r"trace-run\\\.ps1\.\* -Role \$Role")
+        self.assertIn("ParentProcessId", self.arm)
+        self.assertRegex(self.arm, r"arm-event-trace\\\.ps1")
+        self.assertRegex(self.arm, r"\$_\.ProcessId -ne \$PID")
+
+    def test_remove_of_a_ring_pauses_first_waits_then_stops_the_task_then_cancels_wpr(self):
+        a = self.arm
+        order = [a.index(x) for x in ("$madeFlag", "Wait-RingEnd", "Stop-ScheduledTask", "Unregister-ScheduledTask", "wpr.exe -cancel")]
+        self.assertEqual(order, sorted(order))
+        # only a flag this run made is taken away again
+        self.assertRegex(a, r"if \(\$madeFlag\) \{ Remove-Item")
+        self.assertRegex(a, r"\$madeFlag = -not \(Test-Path -LiteralPath \$flag\)")
+
+    def test_a_flag_made_after_the_runners_check_is_kept(self):
+        self.assertIn("[switch]$KeepFlag", self.ring)
+        self.assertRegex(self.ring, r"if \(\$KeepFlag -and \(Test-Path \$Flag\)\) \{ L '[^']*'; return \}")
+        self.assertRegex(self.runner, r"event-trace\.ps1.*-KeepFlag|\$sargs = @\('-KeepFlag'\)")
+
+    def test_a_stale_wpr_session_is_cancelled_before_a_ring_start_and_a_failure_is_logged(self):
+        self.assertRegex(self.runner, r"wpr\.exe -cancel")
+        self.assertRegex(self.runner, r"FAILED\|[^'\n]*failed")
+
+    def test_a_hit_is_only_read_from_what_this_child_wrote(self):
+        self.assertIn("function Test-Hit", self.lib)
+        self.assertIn("LastWriteTimeUtc", self.lib)
+        self.assertRegex(self.lib, r"'\^start '")
+
+    def test_the_ring_opens_its_udp_port_in_the_firewall(self):
+        self.assertIn("New-NetFirewallRule", self.arm)
+        self.assertRegex(self.arm, r"-Protocol UDP -LocalPort \$Port")
+        self.assertRegex(self.arm, r"Remove-NetFirewallRule")
+        self.assertRegex(self.ring, r"\[int\]\$Port = %s\)" % re.search(r"\$Port = (\d+)", self.arm).group(1))
+
+    def test_the_trigger_resolves_its_target_at_start(self):
+        self.assertRegex(self.trig, r"GetHostAddresses\(\$To\)")
+        self.assertIn("cannot resolve", self.trig)
+        resolve = self.trig.index("GetHostAddresses")
+        self.assertLess(resolve, self.trig.index("while ("))
+
+
 class TruncatedAndShuffled(Temp):
     def test_last_row_without_its_newline_is_skipped_even_when_it_parses(self):
         # an S row with all its fields, but cut inside the address: it parses, with a wrong address
