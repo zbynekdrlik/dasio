@@ -17,8 +17,10 @@
 #   trace-run.ps1 -Role Ring|Trigger [-To <host>] [-KeepSaves 6] [-MinFreeGB 20] [-GapMinutes 10] [-Dir ...]
 param([Parameter(Mandatory)][ValidateSet('Ring', 'Trigger')][string]$Role, [string]$To = '',
       [int]$KeepSaves = 6, [int]$MinFreeGB = 20, [int]$GapMinutes = 10, [int]$PauseSeconds = 30,
-      [string]$Dir = $PSScriptRoot)
+      [string]$Dir = '')
 $ErrorActionPreference = 'Stop'
+# Not a param() default: in this advanced script Windows PowerShell 5.1 leaves $PSScriptRoot empty there (FOH 28.11.2026).
+if (-not $Dir) { $Dir = $PSScriptRoot }
 # The folder the two scripts write to by default (their saves, logs and the stop flag).
 $Tmp = 'C:\ProgramData\dasio\tmp'
 if ($Role -eq 'Trigger' -and -not $To) { throw '-To (the DAW PC) is required for -Role Trigger' }
