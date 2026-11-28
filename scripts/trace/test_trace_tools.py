@@ -634,6 +634,62 @@ class PowerShellHygiene(unittest.TestCase):
                     continue
                 self.assertIsNone(bad.search(line), f"{path.name}:{number}: {line.strip()}")
 
+    @staticmethod
+    def script_param_block(text):
+        """The script's own param(...) body: the first statement after comments and attributes, matched by parenthesis
+        depth (quotes respected, # comments dropped), or None."""
+        lines = [l for l in text.splitlines()]
+        i = 0
+        while i < len(lines) and (not lines[i].strip() or lines[i].lstrip().startswith("#") or lines[i].lstrip().startswith("[")):
+            if lines[i].lstrip().startswith("<#"):
+                while i < len(lines) and "#>" not in lines[i]:
+                    i += 1
+            i += 1
+        rest = "\n".join(lines[i:])
+        m = re.match(r"(?i)\s*param\s*\(", rest)
+        if not m:
+            return None
+        depth, out, q, j = 1, [], None, m.end()
+        while j < len(rest) and depth:
+            c = rest[j]
+            if q:
+                if c == q:
+                    q = None
+            elif c in "'\"":
+                q = c
+            elif c == "#":
+                nl = rest.find("\n", j)
+                j = len(rest) if nl < 0 else nl
+                continue
+            elif c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+                if not depth:
+                    break
+            out.append(c)
+            j += 1
+        return "".join(out)
+
+    def test_script_param_block_reader(self):
+        f = self.script_param_block
+        self.assertEqual(f("# c\n[CmdletBinding()]\nparam([string]$A = (Join-Path 'x' 'y'),\n[string]$B = $PSScriptRoot)\n$x"),
+                         "[string]$A = (Join-Path 'x' 'y'),\n[string]$B = $PSScriptRoot")
+        self.assertNotIn("PSScriptRoot", f("param([string]$A = 'x' # $PSScriptRoot is not used here\n)\n"))
+        self.assertIsNone(f("$x = 1\nfunction F { param($PSScriptRoot) }"))
+        self.assertEqual(f("param([ValidateSet('a', ')')][string]$R)\n"), "[ValidateSet('a', ')')][string]$R")
+
+    def test_no_param_default_reads_an_automatic_path(self):
+        # In an advanced script ([Parameter()], [CmdletBinding()]) Windows PowerShell 5.1 leaves $PSScriptRoot (and
+        # $PSCommandPath, $MyInvocation's path) empty in a param() default: trace-run.ps1's -Dir was '' under its task and
+        # Join-Path refused it (FOH, 28.11.2026). Default to '' and set it in the body.
+        for path in self.scripts():
+            block = self.script_param_block(path.read_text(encoding="utf-8"))
+            if block is None:
+                continue
+            for name in ("$PSScriptRoot", "$PSCommandPath", "$MyInvocation"):
+                self.assertNotIn(name, block, f"{path.name}: {name} in a param() default")
+
     def test_no_function_is_shadowed_by_a_builtin_alias(self):
         for path in self.scripts():
             for name in re.findall(r"(?im)^\s*function\s+([\w-]+)", path.read_text(encoding="utf-8")):

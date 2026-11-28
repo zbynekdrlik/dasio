@@ -122,6 +122,12 @@ Owner rules from dasio#1. They hold for every change on a PC running dasio.
   `install.done` (or use a fresh folder) before starting the SYSTEM task,
   or the wait for it ends at once while install.ps1 still runs
   (28.11.2026).
+- **A stopped service is not an exited process** (dasio#28, PR #257): `Stop-Service` + `WaitForStatus('Stopped')`
+  waits for the SCM state only; the exe can stay open a moment longer (CI 46089759633: `The process cannot access the
+  file ... dasio.exe because it is being used by another process`). install.ps1 reads the service's PID and start time
+  before the stop (`Get-ServiceProcessInfo`), waits for that process to end (`Wait-ServiceProcessExit`, bounded), and
+  copies through `Copy-FileRetry` (sharing/lock violation and access denied only, 10 tries, logged). Any new copy of a
+  file a service runs goes through them; `scripts/test_install_ps1.py` guards it.
 - **Remote-shell gotchas (dsg, 17.11.2026):** `& script.ps1` is refused
   (script execution disabled): run a helper with `powershell -NoProfile
   -ExecutionPolicy Bypass -File <ps1>`. A config written with PS 5.1's
