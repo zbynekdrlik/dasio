@@ -353,6 +353,34 @@ if ((Get-Service "dasio-$instance").Status -ne "Running") { throw "dasio-$instan
 if ((Get-FileHash $installedCfg).Hash -ne $cfgBefore) { throw "the re-install with its installed config changed it" }
 Write-Output "a re-install with the instance's installed config keeps it and runs"
 
+# The shared dasio.exe held open for 2 s (a scanner, a probe still exiting;
+# CI run 46089759633 once failed "being used by another process", dasio#28):
+# the update install retries the copy and succeeds.
+$held = Join-Path $bundles "ci-held"
+New-AdminOnlyFolder $held
+Copy-Item -Force (Join-Path $Bundle "*") $held
+[System.IO.File]::AppendAllText((Join-Path $held "dasio.exe"), "  ")
+$sums = Get-Content (Join-Path $held "SHA256SUMS") | ForEach-Object {
+    $hash, $file = $_ -split "  ", 2
+    "$((Get-FileHash (Join-Path $held $file) -Algorithm SHA256).Hash.ToLower())  $file"
+}
+Set-Content -Path (Join-Path $held "SHA256SUMS") -Value $sums
+$holder = Start-Job -ArgumentList $exe -ScriptBlock {
+    param($path)
+    $h = [System.IO.File]::Open($path, "Open", "Read", "Read")
+    Start-Sleep -Seconds 2
+    $h.Dispose()
+}
+Start-Sleep -Milliseconds 500
+& (Join-Path $held "install.ps1") -Instance $second -Ip $ip -Config $cfg2 -Name "ci-asio-dante-2" -TestClock
+Wait-Job $holder | Out-Null
+Receive-Job $holder | Out-Null
+Remove-Job $holder
+$heldWant = (Get-FileHash (Join-Path $held "dasio.exe")).Hash
+if ((Get-FileHash $exe).Hash -ne $heldWant) { throw "the install did not replace dasio.exe held open for 2 s" }
+if ((Get-Service "dasio-$second").Status -ne "Running") { throw "dasio-$second is not running after the install over a held dasio.exe" }
+Write-Output "an install over a dasio.exe held open for 2 s retries the copy and succeeds"
+
 # Updates back and forth, each instance in turn, as an update of the PC
 # runs them: each new binary pauses the other instance, and the device
 # managing the address stops while the other is a member. No instance may
