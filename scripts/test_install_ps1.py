@@ -4,40 +4,72 @@ import unittest
 from pathlib import Path
 
 INSTALL = (Path(__file__).parent / "install.ps1").read_text(encoding="utf-8")
-CODE = "\n".join(l for l in INSTALL.splitlines() if not l.lstrip().startswith("#"))
+LINES = [l for l in INSTALL.replace("\r\n", "\n").splitlines() if not l.lstrip().startswith("#")]
+CODE = "\n".join(LINES)
+
+# Copies that stay bare: the rollback copies read the old binary and config into the rollback folder
+# (nothing is held there), and the config copy reads the caller's own file.
+BARE_COPY_TARGETS = (r'\(Join-Path \$rollback "instance\.exe"\)', r'\(Join-Path \$rollback "device\.toml"\)', r"\$cfg -Force")
+
+
+def body(name):
+    m = re.search(rf"function {name}\b.*?\n}}\n", CODE, re.S)
+    assert m, f"{name} is missing"
+    return m.group(0)
 
 
 class InstallCopies(unittest.TestCase):
-    def test_retry_function_is_bounded_logged_and_fails_loudly(self):
-        m = re.search(r"function Copy-FileRetry\b.*?\n}\n", CODE, re.S)
-        self.assertIsNotNone(m, "Copy-FileRetry is missing")
-        body = m.group(0)
-        self.assertRegex(body, r"-ge \d+")  # bounded tries
-        self.assertIn("Write-Warning", body)  # each failure logged
-        self.assertIn("throw", body)  # then fail loudly
+    def test_retry_is_bounded_logged_fails_loudly_and_retries_only_io(self):
+        b = body("Copy-FileRetry")
+        self.assertRegex(b, r"-ge \d+")
+        self.assertIn("Write-Warning", b)
+        self.assertIn("IOException", b)
+        self.assertIn("UnauthorizedAccessException", b)
+        self.assertRegex(b, r"if \(-not \$held\) \{ throw \}")  # anything else fails at once
+        self.assertRegex(b, r'throw "copying ')
 
-    def test_exe_copies_use_the_retry(self):
-        # No bare Copy-Item onto the shared bin, an instance exe, the keeper or a restored file.
-        for line in CODE.splitlines():
-            if "Copy-Item" in line:
-                self.assertNotRegex(line, r"\$bin\b|\$instExe|\$keepExe|\$Path|\$beforeExe\b\s*$", f"a bare copy: {line.strip()}")
-        for needle in (r"Copy-FileRetry .*\$bin\b", r"Copy-FileRetry .*\$instExe", r"Copy-FileRetry \$Saved \$Path", r"Copy-FileRetry .*\$keepExe"):
+    def test_every_other_copy_item_is_a_listed_bare_one(self):
+        inside = body("Copy-FileRetry")
+        for line in LINES:
+            if "Copy-Item" in line and line.strip() not in inside:
+                self.assertTrue(
+                    any(re.search(t, line) for t in BARE_COPY_TARGETS),
+                    f"a copy outside Copy-FileRetry: {line.strip()}",
+                )
+
+    def test_the_known_targets_go_through_the_retry(self):
+        for needle in (r"Copy-FileRetry .*\$bin\b", r"Copy-FileRetry .*\$instExe", r"Copy-FileRetry \$Saved \$Path", r"Copy-FileRetry .*\$keepExe", r"Copy-FileRetry \$from \$to"):
             self.assertRegex(CODE, needle)
 
 
 class InstallStops(unittest.TestCase):
-    def test_every_stop_service_waits_for_the_process_to_exit(self):
-        stops = len(re.findall(r"Stop-Service\b", CODE))
-        waits = len(re.findall(r"Wait-ServiceProcessExit\b", CODE)) - 1  # minus the definition
-        self.assertGreaterEqual(stops, 2)
-        self.assertEqual(stops, waits, "each Stop-Service needs its process-exit wait")
+    def stops(self):
+        return [i for i, l in enumerate(LINES) if "Stop-Service" in l]
 
-    def test_process_wait_is_bounded_and_names_the_pid(self):
-        m = re.search(r"function Wait-ServiceProcessExit\b.*?\n}\n", CODE, re.S)
-        self.assertIsNotNone(m, "Wait-ServiceProcessExit is missing")
-        self.assertIn("ProcessId", INSTALL)
-        self.assertRegex(m.group(0), r"Wait-Process .*-Timeout")
-        self.assertIn("throw", m.group(0))
+    def test_each_stop_is_preceded_by_a_process_read_and_followed_by_its_wait(self):
+        stops = self.stops()
+        self.assertGreaterEqual(len(stops), 2)
+        for i in stops:
+            self.assertTrue(any("Get-ServiceProcessInfo" in l for l in LINES[max(0, i - 4) : i]), f"no process read before: {LINES[i].strip()}")
+            self.assertTrue(any("Wait-ServiceProcessExit" in l for l in LINES[i + 1 : i + 4]), f"no process wait after: {LINES[i].strip()}")
+
+    def test_each_stop_is_inside_a_try_that_brings_the_service_back(self):
+        # The instance's stop: a catch that starts it again. The paused ones: the `finally` over `$stopped`.
+        first = self.stops()[0]
+        self.assertTrue(any(l.strip() == "try {" for l in LINES[first - 4 : first]), "the instance's stop is outside a try")
+        after = "\n".join(LINES[first : first + 14])
+        self.assertRegex(after, r"catch \{[\s\S]*Start-Service -Name \$service")
+        second = self.stops()[1]
+        self.assertTrue(any(l.strip() == "try {" for l in LINES[:second][-8:]), "the paused instances' stop is outside a try")
+        self.assertRegex(CODE, r"\$stopped \+= \$s\s*\n\s*Stop-Service -Name \$s\.Name")
+        self.assertRegex(CODE, r"finally \{\s*\n\s*foreach \(\$s in \$stopped\) \{\s*\n\s*Start-Service")
+
+    def test_process_wait_is_bounded_names_the_pid_and_checks_the_start_time(self):
+        b = body("Wait-ServiceProcessExit")
+        self.assertIn("AddSeconds(15)", b)
+        self.assertIn("StartTime", b)
+        self.assertIn("throw", b)
+        self.assertIn("StartTime", body("Get-ServiceProcessInfo"))
 
 
 if __name__ == "__main__":

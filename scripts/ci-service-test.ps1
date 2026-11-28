@@ -353,7 +353,7 @@ if ((Get-Service "dasio-$instance").Status -ne "Running") { throw "dasio-$instan
 if ((Get-FileHash $installedCfg).Hash -ne $cfgBefore) { throw "the re-install with its installed config changed it" }
 Write-Output "a re-install with the instance's installed config keeps it and runs"
 
-# The shared dasio.exe held open for 2 s (a scanner, a probe still exiting;
+# The shared dasio.exe held open (a scanner, a probe still exiting;
 # CI run 46089759633 once failed "being used by another process", dasio#28):
 # the update install retries the copy and succeeds.
 $held = Join-Path $bundles "ci-held"
@@ -365,21 +365,30 @@ $sums = Get-Content (Join-Path $held "SHA256SUMS") | ForEach-Object {
     "$((Get-FileHash (Join-Path $held $file) -Algorithm SHA256).Hash.ToLower())  $file"
 }
 Set-Content -Path (Join-Path $held "SHA256SUMS") -Value $sums
-$holder = Start-Job -ArgumentList $exe -ScriptBlock {
-    param($path)
-    $h = [System.IO.File]::Open($path, "Open", "Read", "Read")
-    Start-Sleep -Seconds 2
-    $h.Dispose()
+# The test holds the handle itself and lets go only after the install's own
+# retry warning shows: the copy has met the held file, whatever the timing.
+$holdLog = Join-Path ([IO.Path]::GetTempPath()) "dasio-held-install.log"
+Remove-Item $holdLog -Force -ErrorAction SilentlyContinue
+$handle = [System.IO.File]::Open($exe, "Open", "Read", "Read")
+try {
+    $installJob = Start-Job -ArgumentList (Join-Path $held "install.ps1"), $second, $ip, $cfg2, $holdLog -ScriptBlock {
+        param($script, $inst, $addr, $config, $log)
+        & $script -Instance $inst -Ip $addr -Config $config -Name "ci-asio-dante-2" -TestClock *> $log
+    }
+    Wait-Until { try { (Test-Path $holdLog) -and ((Get-Content $holdLog -Raw) -match "copy to .* failed \(try 1") } catch { $false } } 90 "the install's retry warning over the held dasio.exe"
+} finally {
+    $handle.Dispose()
 }
-Start-Sleep -Milliseconds 500
-& (Join-Path $held "install.ps1") -Instance $second -Ip $ip -Config $cfg2 -Name "ci-asio-dante-2" -TestClock
-Wait-Job $holder | Out-Null
-Receive-Job $holder | Out-Null
-Remove-Job $holder
+Wait-Job $installJob | Out-Null
+$installLog = Get-Content $holdLog -Raw
+Write-Output $installLog
+Receive-Job $installJob | Out-Null
+Remove-Job $installJob
+if ($installLog -notmatch "copy to .* failed \(try") { throw "the install never met the held dasio.exe" }
 $heldWant = (Get-FileHash (Join-Path $held "dasio.exe")).Hash
-if ((Get-FileHash $exe).Hash -ne $heldWant) { throw "the install did not replace dasio.exe held open for 2 s" }
+if ((Get-FileHash $exe).Hash -ne $heldWant) { throw "the install did not replace dasio.exe held open" }
 if ((Get-Service "dasio-$second").Status -ne "Running") { throw "dasio-$second is not running after the install over a held dasio.exe" }
-Write-Output "an install over a dasio.exe held open for 2 s retries the copy and succeeds"
+Write-Output "an install over a dasio.exe held open retries the copy and succeeds"
 
 # Updates back and forth, each instance in turn, as an update of the PC
 # runs them: each new binary pauses the other instance, and the device
