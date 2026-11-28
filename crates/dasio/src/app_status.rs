@@ -576,14 +576,18 @@ pub fn path_us(d: Option<&Delays>) -> (u32, u32) {
     d.map_or((0, 0), |d| (us(d.asio_to_dante_us), us(d.dante_to_asio_us)))
 }
 
+/// The driver runs and has told its rate and both latencies.
+fn driver_told(f: &BridgeFacts) -> bool {
+    f.running
+        && f.rate != 0
+        && f.driver_input_latency_frames != 0
+        && f.driver_output_latency_frames != 0
+}
+
 /// The bridge's delays while its driver runs and has told its latencies;
 /// `None` otherwise.
 pub fn delays(f: &BridgeFacts) -> Option<Delays> {
-    if !f.running
-        || f.rate == 0
-        || f.driver_input_latency_frames == 0
-        || f.driver_output_latency_frames == 0
-    {
+    if !driver_told(f) {
         return None;
     }
     let frames = |n: u32| u64::from(n) * 1_000_000 / u64::from(f.rate);
@@ -645,6 +649,21 @@ fn delays_json(f: &BridgeFacts) -> String {
         ),
         None => String::new(),
     }
+}
+
+/// The latencies the ASIO host is told, as the DAW object carries them
+/// (dasio#248): a bridge's host is dasio itself and its driver tells it
+/// `latency_in` / `latency_out` (frames at `sample_rate`, the driver's
+/// rate). Only while the driver runs and has told both (never a 0 that
+/// reads as no latency); each key followed by a comma, empty otherwise.
+fn told_json(f: &BridgeFacts) -> String {
+    if !driver_told(f) {
+        return String::new();
+    }
+    format!(
+        "\"latency_in\":{},\"latency_out\":{},\"sample_rate\":{},",
+        f.driver_input_latency_frames, f.driver_output_latency_frames, f.rate
+    )
 }
 
 /// The bridge's from-ASIO keys for its status JSON (dstack #325,
@@ -840,7 +859,7 @@ fn escaped(t: &str) -> String {
 pub fn bridge_json(f: &BridgeFacts) -> String {
     format!(
         concat!(
-            "{{\"line\":\"{}\",\"state\":\"{}\",\"low_latency\":\"{}\",\"kind\":\"bridge\",\"daw_attached\":false,",
+            "{{\"line\":\"{}\",\"state\":\"{}\",\"low_latency\":\"{}\",\"kind\":\"bridge\",\"daw_attached\":false,{}",
             "\"driver\":\"{}\",\"running\":{},\"reason\":\"{}\",\"rate\":{},",
             "\"buffer_frames\":{},\"to_asio_underruns\":{},\"from_asio_underruns\":{},",
             "\"resets\":{},{}{}{}\"pc_profile_problems\":{},{}{}{}{}{}{}}}"
@@ -848,6 +867,7 @@ pub fn bridge_json(f: &BridgeFacts) -> String {
         escaped(&bridge_line(f)),
         bridge_state(f),
         readiness(f.pc_problems, f.tx, f.rx, None).key(),
+        told_json(f),
         escaped(&f.driver),
         f.running,
         f.reason_code.unwrap_or(""),

@@ -1093,3 +1093,34 @@ fn the_bridge_hands_dstack_its_driver_once_and_its_delays_every_counts_tick() {
     // The status JSON reads the same facts.
     once("media.set_app_status(move || crate::app_status::bridge_json(&facts()));");
 }
+
+#[test]
+fn a_bridge_reports_the_latencies_its_driver_tells_the_host() {
+    // dsg: SoundGrid at 96 kHz, 416 frames in, 608 out (dasio#248).
+    let j = bridge_json(&bridge_dsg());
+    assert!(
+        j.contains("\"daw_attached\":false,\"latency_in\":416,\"latency_out\":608,\"sample_rate\":96000,\"driver\":"),
+        "{j}"
+    );
+    // Not running, or a latency the driver has not told: no keys.
+    let stopped = BridgeFacts {
+        running: false,
+        ..bridge_dsg()
+    };
+    assert!(!bridge_json(&stopped).contains("latency_in"));
+    let no_out = BridgeFacts {
+        driver_output_latency_frames: 0,
+        ..bridge_dsg()
+    };
+    assert!(!bridge_json(&no_out).contains("latency_out"));
+    let no_in = BridgeFacts {
+        driver_input_latency_frames: 0,
+        ..bridge_dsg()
+    };
+    assert!(!bridge_json(&no_in).contains("latency_in"));
+    let no_rate = BridgeFacts {
+        rate: 0,
+        ..bridge_dsg()
+    };
+    assert!(!bridge_json(&no_rate).contains("latency_in"));
+}
