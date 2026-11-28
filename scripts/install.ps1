@@ -480,11 +480,74 @@ if (-not $TestClock) {
     }
 }
 
+# The process behind a service now (id + start time, so a reused id is never
+# mistaken for it), or $null when it does not run.
+function Get-ServiceProcessInfo([string]$Name) {
+    $id = (Get-CimInstance Win32_Service -Filter "Name='$Name'").ProcessId
+    if (-not $id -or $id -le 0) { return $null }
+    $p = Get-Process -Id $id -ErrorAction SilentlyContinue
+    if (-not $p) { return $null }
+    $start = $null
+    try { $start = $p.StartTime } catch {
+        $start = $null
+        Write-Warning "the start time of $Name's process (pid $id) cannot be read: its exit is waited for by id only"
+    }
+    return [pscustomobject]@{ ProcId = $id; Start = $start }
+}
+# Waits for a stopped service's PROCESS to end, not only for the SCM's
+# Stopped: the process can still hold its exe open a moment (dasio#28, CI run
+# 46089759633). Bounded; the same process (id + start time) still alive
+# after 15 s is an error naming its id.
+function Wait-ServiceProcessExit([string]$Name, $Info) {
+    if (-not $Info) { return }
+    $deadline = (Get-Date).AddSeconds(15)
+    while ($true) {
+        $p = Get-Process -Id $Info.ProcId -ErrorAction SilentlyContinue
+        if (-not $p) { return }
+        if ($Info.Start) {
+            $now = $null
+            try { $now = $p.StartTime } catch { $now = $null }
+            if ($now -and $now -ne $Info.Start) { return }
+        }
+        if ((Get-Date) -gt $deadline) {
+            throw "the process of $Name (pid $($Info.ProcId)) did not end within 15 s of its stop"
+        }
+        Start-Sleep -Milliseconds 200
+    }
+}
+# Copies over an exe/dll another process may hold a moment (a scanner, an
+# exiting process): a few tries, each failure logged, then fail loudly.
+function Copy-FileRetry([string]$From, [string]$To) {
+    for ($try = 1; ; $try++) {
+        try { Copy-Item $From $To -Force -ErrorAction Stop; return }
+        catch {
+            # Only a held file is worth another try; a missing source or a bad path fails at once.
+            $e = $_.Exception
+            # A sharing (32) or lock (33) violation, or access denied: disk full, a long path, a directory in the way are not.
+            $held = ($e -is [System.UnauthorizedAccessException]) -or
+                (($e -is [System.IO.IOException]) -and (($e.HResult -band 0xFFFF) -in 32, 33))
+            if (-not $held) { throw }
+            if ($try -ge 10) { throw "copying $From to $To failed 10 times: $($_.Exception.Message)" }
+            Write-Warning "copy to $To failed (try $try of 10): $($_.Exception.Message)"
+            Start-Sleep -Milliseconds 500
+        }
+    }
+}
+
 $installed = Join-Path $env:ProgramFiles "dasio\dasio.exe"
 if (Get-Service -Name $service -ErrorAction SilentlyContinue) {
     # The SCM's Stop: the device ends within its stop's 7 s.
-    Stop-Service -Name $service
-    (Get-Service -Name $service).WaitForStatus("Stopped", [TimeSpan]::FromSeconds(15))
+    # Nothing is changed yet: a stop that fails brings the service back.
+    try {
+        $serviceProc = Get-ServiceProcessInfo $service
+        Stop-Service -Name $service
+        (Get-Service -Name $service).WaitForStatus("Stopped", [TimeSpan]::FromSeconds(15))
+        Wait-ServiceProcessExit $service $serviceProc
+    } catch {
+        $stopFailure = $_.Exception.Message
+        try { Start-Service -Name $service -ErrorAction Stop } catch { $stopFailure += "; starting $service again failed: $($_.Exception.Message)" }
+        throw "stopping $service failed: $stopFailure"
+    }
 }
 if (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue) {
     # An older install's logon task: asked to stop (never killed), then removed.
@@ -517,7 +580,7 @@ if ($before) {
 # Puts back `$Saved` over `$Path` when they differ.
 function Restore-File([string]$Saved, [string]$Path) {
     if ((Test-Path $Saved) -and (-not (Test-Path $Path) -or (Get-FileHash $Path).Hash -ne (Get-FileHash $Saved).Hash)) {
-        Copy-Item $Saved $Path -Force
+        Copy-FileRetry $Saved $Path
     }
 }
 try {
@@ -540,23 +603,47 @@ if ($changed -contains "dasio.exe") {
     $paused = @(Get-CimInstance Win32_Service -Filter "Name LIKE 'dasio-%'" | Where-Object {
             $_.Name -ne $service -and $_.State -eq "Running" -and $_.PathName -match "$shared`""
         } | ForEach-Object { Get-Service -Name $_.Name })
+}
+# Each paused instance is listed before its stop, so the finally below starts
+# every one a failed stop may have left down (a running one starts as a no-op).
+$stopped = @()
+$sharedCopied = $false
+try {
     foreach ($s in $paused) {
         Write-Output "stopping $($s.Name) for the new binary"
+        $pausedProc = Get-ServiceProcessInfo $s.Name
+        $stopped += $s
         Stop-Service -Name $s.Name
         $s.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(15))
+        Wait-ServiceProcessExit $s.Name $pausedProc
     }
-}
-try {
-    foreach ($file in $changed) { Copy-Item (Join-Path $here $file) $bin -Force }
+    foreach ($file in $changed) { Copy-FileRetry (Join-Path $here $file) $bin }
+    $sharedCopied = $true
     if (-not $dllHeld) {
         if (-not (Test-Path $protocolKey)) { New-Item -Path $protocolKey | Out-Null }
         New-ItemProperty -Path $protocolKey -Name ShmProtocol -Value $ShmProtocol -PropertyType DWord -Force | Out-Null
     }
+} catch {
+    $copyFailure = $_.Exception.Message
+    throw
 } finally {
-    foreach ($s in $paused) {
-        Start-Service -Name $s.Name
-        (Get-Service -Name $s.Name).WaitForStatus("Running", [TimeSpan]::FromSeconds(10))
-        Write-Output "$($s.Name) runs the new binary"
+    # Every stopped instance gets its own try: one that will not start never
+    # leaves the others down, and one message carries every failure and the
+    # error that brought us here.
+    $restartFailures = @()
+    foreach ($s in $stopped) {
+        try {
+            Start-Service -Name $s.Name -ErrorAction Stop
+            (Get-Service -Name $s.Name).WaitForStatus("Running", [TimeSpan]::FromSeconds(10))
+            Write-Output "$($s.Name) runs the new binary"
+        } catch {
+            $restartFailures += "$($s.Name): $($_.Exception.Message)"
+        }
+    }
+    if ($restartFailures.Count -gt 0) {
+        $message = "starting the paused instances again failed: " + ($restartFailures -join "; ")
+        if ($copyFailure) { $message += "; the error before it: $copyFailure" }
+        throw $message
     }
 }
 # The process keeper (dasio#185): dasio-keep.exe, its own copy of dasio.exe
@@ -588,11 +675,7 @@ try {
         }
         Start-Sleep -Milliseconds 250
     }
-    # A scanner can hold a just-ended exe a moment: a few tries, then fail.
-    for ($try = 1; ; $try++) {
-        try { Copy-Item (Join-Path $here "dasio.exe") $keepExe -Force -ErrorAction Stop; break }
-        catch { if ($try -ge 10) { throw "copying dasio-keep.exe failed 10 times: $($_.Exception.Message)" }; Start-Sleep -Milliseconds 500 }
-    }
+    Copy-FileRetry (Join-Path $here "dasio.exe") $keepExe
     $keepAction = New-ScheduledTaskAction -Execute $keepExe -Argument "pc-profile keep"
     $keepTriggers = @(
         (New-ScheduledTaskTrigger -AtStartup),
@@ -633,7 +716,7 @@ foreach ($exe in "dtray.exe", "dtray-cli.exe") {
     $from = Join-Path $here $exe
     if (-not (Test-Path $to) -or (Get-FileHash $to).Hash -ne (Get-FileHash $from).Hash) {
         if (Test-Path $to) { Move-Item $to "$to.old-$(Get-Date -Format yyyyMMddHHmmss)" -Force }
-        Copy-Item $from $to -Force
+        Copy-FileRetry $from $to
         Write-Output "installed $exe"
     }
 }
@@ -678,7 +761,7 @@ if ($deviceName) {
 }
 # The instance's own binary (its service is stopped).
 if (-not (Test-Path $instExe) -or (Get-FileHash $instExe).Hash -ne (Get-FileHash (Join-Path $bin "dasio.exe")).Hash) {
-    Copy-Item (Join-Path $bin "dasio.exe") $instExe -Force
+    Copy-FileRetry (Join-Path $bin "dasio.exe") $instExe
 }
 # A re-install may be given the instance's own installed config: Copy-Item
 # refuses to copy a file onto itself (dasio#148), and there is nothing to copy.
@@ -776,7 +859,15 @@ Start-Service -Name $service
     } catch {
         throw "install failed: $failure; rolling instance $Instance back failed too: $($_.Exception.Message)"
     }
-    throw "install failed: $failure; instance $Instance rolled back and running as before"
+    # The shared files (dasio.exe, the driver) are not rolled back: the paused instances started again on the new
+    # shared dasio.exe. Name them, so a mixed state is never a guess.
+    $onNew = @($stopped | ForEach-Object { $_.Name })
+    $mixed = ""
+    if ($onNew.Count -gt 0) {
+        if ($sharedCopied) { $mixed = "; on the new shared dasio.exe: $($onNew -join ', ')" }
+        else { $mixed = "; restarted on the old shared dasio.exe: $($onNew -join ', ')" }
+    }
+    throw "install failed: $failure; instance $Instance rolled back and running as before$mixed"
 }
 Remove-Item -Recurse -Force $rollback -ErrorAction SilentlyContinue
 

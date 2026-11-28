@@ -664,9 +664,7 @@ fn install_ps1_restarts_the_process_keeper_around_its_copy() {
     let stop = at("Set-Content -Path $keepStop -Value \"install\"");
     let kill =
         at("Get-Process -Name \"dasio-keep\" -ErrorAction SilentlyContinue | Stop-Process -Force");
-    let copy = at(
-        "try { Copy-Item (Join-Path $here \"dasio.exe\") $keepExe -Force -ErrorAction Stop; break }",
-    );
+    let copy = at("Copy-FileRetry (Join-Path $here \"dasio.exe\") $keepExe");
     let register = at("Register-ScheduledTask -TaskName $keepTask");
     let finally = at(
         "} finally {\n    if (Test-Path $keepStop) { Remove-Item $keepStop }\n    if (Get-ScheduledTask -TaskName $keepTask -ErrorAction SilentlyContinue) {\n        Enable-ScheduledTask -TaskName $keepTask | Out-Null\n        Start-ScheduledTask -TaskName $keepTask",
