@@ -1,6 +1,7 @@
 ---
 paths:
   - "crates/asio-driver/tests/**"
+  - "crates/asio-driver/src/panel.rs"
   - "crates/dasio/tests/e2e.rs"
   - "crates/dasio/src/probe.rs"
   - "crates/dasio/src/host_stall.rs"
@@ -17,3 +18,4 @@ paths:
 - windows-sys gates some Threading functions on other features. For example, `CreateWaitableTimerExW` needs `Win32_Security`. Check `#[cfg(feature = ...)]` in the registry source before you push.
 - An e2e timing failure on the Windows runner: read the device log the test prints (each second's `engine pump lost or overran blocks` line with `cause=late`/`behind_max_us`/`max_process_us`, and the `counts` line) beside the probe's `Report` before calling it a defect. `cause=late` with a small `max_process_us` is the runner taking the pump's CPU (dasio#114, #162). Judge runner vs device with figures from the event's own window (the injected stall's `stall_*` fields), never whole-run totals: a late loss elsewhere in the run must not excuse the device.
 - Passing tests print nothing (output is captured), so a green rerun gives no figures to compare: keep the failing attempt's log (`gh api repos/<repo>/actions/runs/<id>/attempts/1/jobs`, then `.../actions/jobs/<job>/logs`).
+- `controlPanel()` (the DAW's Hardware Setup button, dasio#248) starts `dtray.exe --settings` found beside the driver's own module (`panel.rs` decides: dll dir -> `dtray.exe`, `ASE_OK` once started, `ASE_NOT_PRESENT` when missing or the start fails; `driver.rs` has the Windows glue and writes one line to `OutputDebugString`). dtray's `--settings` takes no instance: the window lists them. In a host test the "driver module" is the test binary, so `control_panel_opens_dtrays_settings_beside_the_driver` (instance 1) puts a copy of that binary there as `dtray.exe` and removes it after; the stand-in ends on the unknown option.

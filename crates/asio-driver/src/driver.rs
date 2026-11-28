@@ -26,6 +26,11 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use shm::{HostUse, Shape, Shared};
+use windows_sys::Win32::System::Diagnostics::Debug::OutputDebugStringA;
+use windows_sys::Win32::System::LibraryLoader::{
+    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+    GetModuleFileNameW, GetModuleHandleExW,
+};
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 
 use crate::abi::*;
@@ -33,6 +38,7 @@ use crate::com::OBJECTS;
 use crate::guard::{guard, join_within, lock};
 use crate::ident::{driver_name, instance_of};
 use crate::liveness::Verdict;
+use crate::panel;
 use crate::rate::{self, Step};
 use crate::systime;
 
@@ -831,8 +837,59 @@ unsafe extern "system" fn dispose_buffers(this: *mut c_void) -> ASIOError {
 }
 
 unsafe extern "system" fn control_panel(_this: *mut c_void) -> ASIOError {
-    // The settings live in the instance's tray icon.
-    ASE_OK
+    guard(ASE_NOT_PRESENT, || {
+        // dtray's settings window, found beside this DLL (dasio#248).
+        let dll = own_module_path();
+        let p = panel::open(dll.as_deref(), |f| f.is_file(), spawn_detached);
+        let mut line = p.describe().into_bytes();
+        line.push(0);
+        // SAFETY: a NUL-terminated string.
+        unsafe { OutputDebugStringA(line.as_ptr()) };
+        p.ase()
+    })
+}
+
+/// The path of the module this code is in (the driver's DLL, or the test
+/// binary that links it); `None` when Windows does not say.
+fn own_module_path() -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    let mut module = core::ptr::null_mut();
+    // SAFETY: an address in this module; the refcount stays as it is, so
+    // there is nothing to release.
+    let found = unsafe {
+        GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            control_panel as *const () as *const u16,
+            &mut module,
+        )
+    };
+    if found == 0 {
+        return None;
+    }
+    let mut buf = vec![0u16; 32_768];
+    // SAFETY: `buf` holds `buf.len()` units.
+    let n = unsafe { GetModuleFileNameW(module, buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    // 0 is a failure; a full buffer is a path cut short.
+    if n == 0 || n >= buf.len() {
+        return None;
+    }
+    Some(std::ffi::OsString::from_wide(&buf[..n]).into())
+}
+
+/// Starts `program` without a console window and returns at once: nothing
+/// waits for the child, and its handle is closed here.
+fn spawn_detached(program: &std::path::Path, args: &[&str]) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map(|_child| ())
 }
 
 unsafe extern "system" fn future(

@@ -1077,7 +1077,11 @@ fn control_panel_opens_dtrays_settings_beside_the_driver() {
         );
         std::fs::copy(&exe, &dtray).unwrap();
         let t = Instant::now();
-        assert_eq!((vt(d).controlPanel)(d), ASE_OK, "dtray.exe beside the driver");
+        assert_eq!(
+            (vt(d).controlPanel)(d),
+            ASE_OK,
+            "dtray.exe beside the driver"
+        );
         assert!(
             t.elapsed() < Duration::from_secs(5),
             "controlPanel waited for the child"
