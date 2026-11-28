@@ -653,16 +653,20 @@ fn delays_json(f: &BridgeFacts) -> String {
 
 /// The latencies the ASIO host is told, as the DAW object carries them
 /// (dasio#248): a bridge's host is dasio itself and its driver tells it
-/// `latency_in` / `latency_out` (frames at `sample_rate`, the driver's
-/// rate). Only while the driver runs and has told both (never a 0 that
-/// reads as no latency); each key followed by a comma, empty otherwise.
+/// `latency_in` / `latency_out`, in frames at the bridge's `rate` (the
+/// driver's rate, which can differ from the Dante device's behind the
+/// converter; no `sample_rate` key, which the DAW object uses for the
+/// device's rate). The driver's own latency only, not the bridge's whole
+/// Dante<->ASIO delay (`bridge_*_us`). Only while the driver runs and has
+/// told both (never a 0 that reads as no latency); each key followed by a
+/// comma, empty otherwise.
 fn told_json(f: &BridgeFacts) -> String {
     if !driver_told(f) {
         return String::new();
     }
     format!(
-        "\"latency_in\":{},\"latency_out\":{},\"sample_rate\":{},",
-        f.driver_input_latency_frames, f.driver_output_latency_frames, f.rate
+        "\"latency_in\":{},\"latency_out\":{},",
+        f.driver_input_latency_frames, f.driver_output_latency_frames
     )
 }
 
