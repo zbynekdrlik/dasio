@@ -857,7 +857,11 @@ Start-Service -Name $service
     } catch {
         throw "install failed: $failure; rolling instance $Instance back failed too: $($_.Exception.Message)"
     }
-    throw "install failed: $failure; instance $Instance rolled back and running as before"
+    # The shared files (dasio.exe, the driver) are not rolled back: the paused instances started again on the new
+    # shared dasio.exe. Name them, so a mixed state is never a guess.
+    $onNew = @($stopped | ForEach-Object { $_.Name })
+    $mixed = if ($onNew.Count -gt 0) { "; on the new shared dasio.exe: $($onNew -join ', ')" } else { "" }
+    throw "install failed: $failure; instance $Instance rolled back and running as before$mixed"
 }
 Remove-Item -Recurse -Force $rollback -ErrorAction SilentlyContinue
 

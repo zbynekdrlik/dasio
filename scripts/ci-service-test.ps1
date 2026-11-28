@@ -377,19 +377,20 @@ try {
     }
     Wait-Until { try { (Test-Path $holdLog) -and ((Get-Content $holdLog -Raw) -match "copy to .* failed \(try 1") } catch { $false } } 90 "the install's retry warning over the held dasio.exe"
 } catch {
-    if ($installJob) { Stop-Job $installJob }
+    if ($installJob) { Stop-Job $installJob; Remove-Job $installJob -Force }
     $why = $_.Exception.Message
     throw "$why`n$(Get-Content $holdLog -Raw -ErrorAction SilentlyContinue)"
 } finally {
     $handle.Dispose()
 }
 if (-not (Wait-Job $installJob -Timeout 120)) {
-    Stop-Job $installJob
+    Stop-Job $installJob; Remove-Job $installJob -Force
     throw "the install over the held dasio.exe did not end within 120 s:`n$(Get-Content $holdLog -Raw)"
 }
 $installLog = Get-Content $holdLog -Raw
 Write-Output $installLog
 Receive-Job $installJob | Out-Null
+Remove-Job $installJob -Force
 Remove-Job $installJob
 if ($installLog -notmatch "copy to .* failed \(try") { throw "the install never met the held dasio.exe" }
 $heldWant = (Get-FileHash (Join-Path $held "dasio.exe")).Hash
