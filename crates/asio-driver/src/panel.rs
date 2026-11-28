@@ -89,12 +89,14 @@ mod tests {
         PathBuf::from("/opt/dasio/dasio_driver.dll")
     }
 
+    /// The dtray path the driver above gets (the separator is the OS's).
+    fn dtray() -> PathBuf {
+        PathBuf::from("/opt/dasio").join("dtray.exe")
+    }
+
     #[test]
     fn dtray_is_in_the_dlls_folder() {
-        assert_eq!(
-            dtray_beside(&dll()),
-            Some(PathBuf::from("/opt/dasio/dtray.exe"))
-        );
+        assert_eq!(dtray_beside(&dll()), Some(dtray()));
         assert_eq!(
             dtray_beside(Path::new("dasio_driver.dll")),
             None,
@@ -108,7 +110,7 @@ mod tests {
         let seen = RefCell::new(None);
         let p = open(
             Some(&dll()),
-            |f| f == Path::new("/opt/dasio/dtray.exe"),
+            |f| f == dtray(),
             |path, args| {
                 *seen.borrow_mut() = Some((
                     path.to_path_buf(),
@@ -117,18 +119,15 @@ mod tests {
                 Ok(())
             },
         );
-        assert!(matches!(&p, Panel::Opened(f) if f == Path::new("/opt/dasio/dtray.exe")));
+        assert!(matches!(&p, Panel::Opened(f) if *f == dtray()));
         assert_eq!(p.ase(), ASE_OK);
         assert_eq!(
             seen.into_inner(),
-            Some((
-                PathBuf::from("/opt/dasio/dtray.exe"),
-                vec!["--settings".to_string()]
-            ))
+            Some((dtray(), vec!["--settings".to_string()]))
         );
         assert_eq!(
             p.describe(),
-            "dasio controlPanel: started /opt/dasio/dtray.exe"
+            format!("dasio controlPanel: started {}", dtray().display())
         );
     }
 
@@ -143,12 +142,12 @@ mod tests {
                 Ok(())
             },
         );
-        assert!(matches!(&p, Panel::Missing(f) if f == Path::new("/opt/dasio/dtray.exe")));
+        assert!(matches!(&p, Panel::Missing(f) if *f == dtray()));
         assert_eq!(p.ase(), ASE_NOT_PRESENT);
         assert!(!started.into_inner());
         assert_eq!(
             p.describe(),
-            "dasio controlPanel: /opt/dasio/dtray.exe is missing"
+            format!("dasio controlPanel: {} is missing", dtray().display())
         );
     }
 
@@ -163,7 +162,10 @@ mod tests {
         assert_eq!(p.ase(), ASE_NOT_PRESENT);
         assert_eq!(
             p.describe(),
-            "dasio controlPanel: /opt/dasio/dtray.exe did not start: access denied"
+            format!(
+                "dasio controlPanel: {} did not start: access denied",
+                dtray().display()
+            )
         );
     }
 

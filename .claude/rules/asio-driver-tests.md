@@ -9,7 +9,7 @@ paths:
 
 # Driver host tests
 
-- The host tests build only on Windows (`#![cfg(windows)]`) and there is no local cargo: a compile error shows up only in CI. Read these two traps before pushing:
+- The host tests build only on Windows (`#![cfg(windows)]`). Local `cargo clippy --target x86_64-pc-windows-gnu --all-targets` compiles them (it found dasio#248's function-cast lint); the tests run only in CI. Read these two traps before pushing:
   - The ABI structs in `src/abi.rs` are `repr(C, packed(4))`. A reference to a field aligned above 4 is error E0793, and `assert_eq!`, `assert_ne!`, `format!` and `.iter()` all take one. `ASIOBufferInfo::buffers` (pointers) is such a field: copy it first (`let [a, b] = info.buffers;`).
   - Most ABI structs derive nothing. `[S { .. }; N]` needs `Copy`; use `core::array::from_fn`.
 - Each test owns its instance number (1 to 16; shared memory and events are named `Global\dasio-<n>-*`, so two tests on one number collide across test binaries). Taken: 3 conformance, 1, 2, 4-12 and 16 host tests, 13 and 15 the e2e test, 14 the service test. Update the list in `crates/dasio/tests/e2e.rs` when you take one.
