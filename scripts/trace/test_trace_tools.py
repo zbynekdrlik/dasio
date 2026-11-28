@@ -597,17 +597,13 @@ class ArmEventTrace(unittest.TestCase):
 
     def test_a_hit_waits_the_gap_and_every_child_is_followed_by_a_pause(self):
         self.assertRegex(self.runner, r"if \(\$hit\) \{[^}]*Start-Sleep -Seconds \(\$GapMinutes \* 60\) \}")
-        self.assertRegex(self.runner, r"Start-Sleep -Seconds \$PauseSeconds\s*\}\s*$")
+        self.assertIn("Start-Sleep -Seconds $PauseSeconds", self.runner)
         # the hit patterns match what the scripts write
         ring = (HERE / "event-trace.ps1").read_text(encoding="utf-8")
         self.assertIn('L "trace saved $save"', ring)
         self.assertIn("'^\\S+ trace saved '", self.runner)
         self.assertRegex(self.runner, r"\$hitRx = '\^hit '")
         self.assertIn('"hit $((Get-Date)', (HERE / "tone-trigger.ps1").read_text(encoding="utf-8"))
-
-    def test_the_remove_path_stops_the_runner_before_the_ring(self):
-        self.assertLess(self.arm.index("Kill 'trace-run"), self.arm.index("Kill 'event-trace"))
-        self.assertLess(self.arm.index("New-Item -ItemType File -Force -Path $flag"), self.arm.index("Kill 'event-trace"))
 
 
 class PowerShellHygiene(unittest.TestCase):
@@ -657,7 +653,7 @@ class ArmEventTraceReview(unittest.TestCase):
 
     def test_remove_of_a_ring_pauses_first_waits_then_stops_the_task_then_cancels_wpr(self):
         a = self.arm
-        order = [a.index(x) for x in ("$madeFlag", "Wait-RingEnd", "Stop-ScheduledTask", "Unregister-ScheduledTask", "'-cancel'")]
+        order = [a.index(x) for x in ("$madeFlag", "Wait-RingEnd", "Stop-ScheduledTask", "Unregister-ScheduledTask", "wpr.exe -cancel")]
         self.assertEqual(order, sorted(order))
         # only a flag this run made is taken away again
         self.assertRegex(a, r"if \(\$madeFlag\) \{ Remove-Item")

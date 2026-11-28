@@ -8,9 +8,12 @@
 #   - Ring: the stop flag (event-trace.stop) exists: a planned probe. Delete the flag to arm again.
 #   - Ring: -KeepSaves or more event-*.etl in the tmp folder: read them off the PC and remove them by hand.
 #   - Ring: less than -MinFreeGB free on the tmp folder's drive (a save writes the whole ring, 512 MB).
-# After a hit (Ring: the log says `trace saved`; Trigger: the out file has a `hit` line) it waits -GapMinutes, so one
-# burst does not save twice. A pause after every child (-PauseSeconds) keeps a failing start (wpr: another trace runs)
-# from becoming a tight loop. The scripts are run as they are, beside this file.
+# After a hit (Ring: the log says `trace saved`; Trigger: the out file has a `hit` line, both read only from what THIS
+# child wrote) it waits -GapMinutes, so one burst does not save twice. A child that ended before 60 s (a failed start: wpr
+# says another trace runs, a name that does not resolve) is followed by a pause (-PauseSeconds), so it is no tight loop; one
+# that ran to its timeout is started again at once. Before every ring start a stale wpr session is cancelled (a ring killed
+# hard leaves one, and every later start would fail). The ring is started with -KeepFlag (a flag made after the check
+# above is not wiped). The scripts are run as they are, beside this file.
 #   trace-run.ps1 -Role Ring|Trigger [-To <host>] [-KeepSaves 6] [-MinFreeGB 20] [-GapMinutes 10] [-Dir ...]
 param([Parameter(Mandatory)][ValidateSet('Ring', 'Trigger')][string]$Role, [string]$To = '',
       [int]$KeepSaves = 6, [int]$MinFreeGB = 20, [int]$GapMinutes = 10, [int]$PauseSeconds = 30,
@@ -32,6 +35,19 @@ function Refusal {
   if ($free -lt $MinFreeGB) { return "$free GB free (limit $MinFreeGB GB)" }
   return ''
 }
+# The lines the child wrote in ITS run: none when the file was not written since $Since (a child that failed before it
+# rewrote its log leaves the last run's lines there), else the lines from the last `start` line on.
+function Get-RunLines([string]$Path, [datetime]$Since) {
+  if (-not (Test-Path -LiteralPath $Path)) { return @() }
+  if ((Get-Item -LiteralPath $Path).LastWriteTimeUtc -lt $Since.ToUniversalTime()) { return @() }
+  $lines = @(Get-Content -LiteralPath $Path); $from = 0
+  for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^start ') { $from = $i } }
+  return @($lines[$from..($lines.Count - 1)])
+}
+function Test-Hit([string]$Path, [string]$Rx, [datetime]$Since) {
+  foreach ($l in (Get-RunLines $Path $Since)) { if ($l -match $Rx) { return $true } }
+  return $false
+}
 New-Item -ItemType Directory -Force -Path $Tmp | Out-Null
 L "runner start role=$Role keep=$KeepSaves minfreegb=$MinFreeGB gap=$GapMinutes"
 $was = $null
@@ -42,13 +58,20 @@ while ($true) {
     $was = $why; Start-Sleep -Seconds $PauseSeconds; continue
   }
   if ($was) { L 'armed again' }; $was = $null
-  if ($Role -eq 'Ring') { $script = 'event-trace.ps1'; $out = Join-Path $Tmp 'event-trace.txt'; $hitRx = '^\S+ trace saved '; $sargs = @() }
-  else { $script = 'tone-trigger.ps1'; $out = Join-Path $Tmp 'tone-trigger.txt'; $hitRx = '^hit '; $sargs = @('-To', $To) }
+  if ($Role -eq 'Ring') {
+    $script = 'event-trace.ps1'; $out = Join-Path $Tmp 'event-trace.txt'; $hitRx = '^\S+ trace saved '; $sargs = @('-KeepFlag')
+    # wpr writes progress to stderr: under Stop that would throw.
+    $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try { & wpr.exe -cancel 2>&1 | Out-Null; L "wpr -cancel exit $LASTEXITCODE (0 = a stale session was cancelled)" } finally { $ErrorActionPreference = $old }
+  } else { $script = 'tone-trigger.ps1'; $out = Join-Path $Tmp 'tone-trigger.txt'; $hitRx = '^hit '; $sargs = @('-To', $To) }
   L "start $script"
+  $t0 = Get-Date
   & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Dir $script) @sargs -Minutes 1440 | Out-Null
-  $rc = $LASTEXITCODE
-  $hit = (Test-Path -LiteralPath $out) -and [bool](Select-String -LiteralPath $out -Pattern $hitRx -Quiet)
-  L "$script ended exit $rc hit=$hit"
+  $rc = $LASTEXITCODE; $ran = (Get-Date) - $t0
+  $hit = Test-Hit $out $hitRx $t0
+  L "$script ended exit $rc after $([int]$ran.TotalSeconds) s hit=$hit"
+  # Why a start failed (the child's own words), so the runner's log is enough to read.
+  foreach ($l in @(Get-RunLines $out $t0 | Where-Object { $_ -match 'FAILED|trace stop failed|stop flag present|flag seen' } | Select-Object -First 3)) { L "child: $l" }
   if ($hit) { L "gap $GapMinutes min before arming again"; Start-Sleep -Seconds ($GapMinutes * 60) }
-  Start-Sleep -Seconds $PauseSeconds
+  if (-not $hit -and $ran.TotalSeconds -ge 60) { L 'ran to its end: arming again at once' } else { Start-Sleep -Seconds $PauseSeconds }
 }

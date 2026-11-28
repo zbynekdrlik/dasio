@@ -6,6 +6,8 @@
 # program output looped`, and a loud step, `output jumped` with `peak_dbfs` louder than -46 dBFS (-45.x up to 0.0, 27.11.2026;
 # tracing prints `-30.0`, the regex takes `-30` too). An RX stall's cuts (`a watched output was cut while RX packets
 # were missing ...`, `a watched program audio step came while RX packets were missing ...`) are none of these. -Match narrows or widens it.
+# -To is resolved (IPv4) at the start: a name that does not resolve ends the script at once with `FAILED: ...` in -Out, not at the
+# first hit.
 #   tone-trigger.ps1 -To <host or address of the recording PC> [-Port 39099] [-Minutes 40] [-Match <regex>] [-Out ...] [-Log ...]
 param([Parameter(Mandatory)][string]$To, [int]$Port = 39099, [int]$Minutes = 40, [string]$Out = 'C:\ProgramData\dasio\tmp\tone-trigger.txt',
       [string]$Log = 'C:\ProgramData\dasio\instance-1\dasio.log',
@@ -20,6 +22,9 @@ $fs = $null; $buf = New-Object byte[] 65536; $carry = ''; $hit = $null; $turns =
 $dec = [Text.Encoding]::UTF8.GetDecoder()
 $end = [DateTime]::UtcNow.AddMinutes($Minutes)
 try {
+  $ip = [Net.Dns]::GetHostAddresses($To) | Where-Object { $_.AddressFamily -eq 'InterNetwork' } | Select-Object -First 1
+  if (-not $ip) { throw "cannot resolve $To to an IPv4 address" }
+  "target $To = $ip" | Add-Content $Out
   $fs = New-Object IO.FileStream($Log, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
   $pos = $fs.Length
   while ([DateTime]::UtcNow -lt $end -and -not $hit) {
@@ -41,7 +46,7 @@ try {
   }
   if ($hit) {
     $m = [Text.Encoding]::ASCII.GetBytes('event ' + $hit.Substring(0, [Math]::Min(27, $hit.Length)))
-    1..3 | ForEach-Object { [void]$u.Send($m, $m.Length, $To, $Port); Start-Sleep -Milliseconds 20 }
+    1..3 | ForEach-Object { [void]$u.Send($m, $m.Length, $ip.ToString(), $Port); Start-Sleep -Milliseconds 20 }
     "hit $((Get-Date).ToUniversalTime().ToString('HH:mm:ss.fff')) $hit" | Add-Content $Out
   } else { 'timeout' | Add-Content $Out }
 } catch { "FAILED: $_" | Add-Content $Out
