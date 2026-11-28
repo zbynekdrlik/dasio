@@ -109,7 +109,7 @@ class RollbackNamesMixedState(unittest.TestCase):
         # only after the shared copy finished; a failed copy left them on the old exe
         self.assertRegex(INSTALL, r"foreach \(\$file in \$changed\) \{ Copy-FileRetry \(Join-Path \$here \$file\) \$bin \}\s*\n\s*\$sharedCopied = \$true")
         self.assertIn("$sharedCopied = $false", INSTALL)
-        self.assertRegex(INSTALL, r"if \(\$sharedCopied\) \{ \$onNew = ")
+        self.assertRegex(INSTALL, r"if \(\$sharedCopied\) \{ \$mixed = ")
         self.assertIn('"; on the new shared dasio.exe: $($onNew -join \', \')"', INSTALL)
         self.assertIn('"; restarted on the old shared dasio.exe: $($onNew -join \', \')"', INSTALL)
         self.assertRegex(INSTALL, r'throw "install failed: \$failure; instance \$Instance rolled back and running as before\$mixed"')
