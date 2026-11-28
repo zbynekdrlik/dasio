@@ -634,6 +634,16 @@ class PowerShellHygiene(unittest.TestCase):
                     continue
                 self.assertIsNone(bad.search(line), f"{path.name}:{number}: {line.strip()}")
 
+    def test_no_param_default_reads_psscriptroot(self):
+        # In an advanced script ([Parameter()], [CmdletBinding()]) Windows PowerShell 5.1 leaves $PSScriptRoot empty in
+        # a param() default: trace-run.ps1's -Dir was '' under its task and Join-Path refused it (FOH, 28.11.2026).
+        # Default to '' and set it in the body.
+        for path in self.scripts():
+            text = path.read_text(encoding="utf-8")
+            m = re.search(r"(?is)^\s*(?:\[CmdletBinding[^\]]*\]\s*)?param\s*\((.*?)\)\s*\n(?=\S)", text, re.M)
+            if m:
+                self.assertNotIn("$PSScriptRoot", m.group(1), f"{path.name}: $PSScriptRoot in a param() default")
+
     def test_no_function_is_shadowed_by_a_builtin_alias(self):
         for path in self.scripts():
             for name in re.findall(r"(?im)^\s*function\s+([\w-]+)", path.read_text(encoding="utf-8")):
