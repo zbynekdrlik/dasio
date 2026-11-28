@@ -615,10 +615,14 @@ class PowerShellHygiene(unittest.TestCase):
 
     @staticmethod
     def scripts():
-        return sorted((HERE.parent).rglob("*.ps1"))
+        root = HERE.parents[1]
+        return sorted(p for p in root.rglob("*.ps1") if not {"target", ".git", "node_modules"} & set(p.relative_to(root).parts))
 
-    def test_there_are_scripts_to_read(self):
-        self.assertGreater(len(self.scripts()), 5)
+    def test_every_ps1_of_the_repo_is_read(self):
+        names = {p.relative_to(HERE.parents[1]).as_posix() for p in self.scripts()}
+        self.assertGreater(len(names), 15)
+        self.assertIn("drivers/ndis-pacer/scripts/install.ps1", names)
+        self.assertIn("scripts/trace/trace-run.ps1", names)
 
     def test_no_string_has_a_variable_followed_by_a_colon(self):
         # "$name: x" reads $name: as a scope or drive reference, a parse error (arm-event-trace.ps1, 28.11.2026).
@@ -641,8 +645,30 @@ class ArmEventTraceReview(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         read = lambda n: (HERE / n).read_text(encoding="utf-8")  # noqa: E731
-        cls.arm, cls.runner, cls.ring, cls.trig = (read(n) for n in
-            ("arm-event-trace.ps1", "trace-run.ps1", "event-trace.ps1", "tone-trigger.ps1"))
+        cls.arm, cls.runner, cls.ring, cls.trig, cls.lib = (read(n) for n in
+            ("arm-event-trace.ps1", "trace-run.ps1", "event-trace.ps1", "tone-trigger.ps1", "trace-run-lib.ps1"))
+
+    def test_the_pure_decisions_live_in_a_library_the_runner_dot_sources(self):
+        self.assertRegex(self.runner, r"\. \(Join-Path \$PSScriptRoot 'trace-run-lib\.ps1'\)")
+        for fn in ("Get-RunLines", "Test-Hit", "Get-Refusal"):
+            self.assertIn(f"function {fn}", self.lib)
+            self.assertNotIn(f"function {fn}", self.runner)
+        self.assertNotRegex(self.lib, r"(?m)^\s*while \(")  # no loop: dot-sourcing it must return
+        self.assertIn("'trace-run-lib.ps1'", self.arm.split("$files = ")[1].split("\n")[0])
+        self.assertTrue((HERE / "test-trace-run-lib.ps1").is_file())
+
+    def test_the_stop_flag_is_tested_again_right_after_the_wpr_cancel(self):
+        after = self.runner.split("wpr.exe -cancel")[1]
+        self.assertRegex(after, r"(?s)^.*?\$why = Get-Refusal.*?continue.*?L \"start \$script\"")
+
+    def test_a_hit_sleeps_the_gap_only_and_a_failed_start_the_pause(self):
+        self.assertRegex(self.runner, r"if \(\$hit\) \{[^}]*Start-Sleep -Seconds \(\$GapMinutes \* 60\) \} "
+                         r"elseif \(\$ran\.TotalSeconds -ge 60\) \{[^}]*\} else \{ Start-Sleep -Seconds \$PauseSeconds \}")
+
+    def test_remove_always_takes_back_the_flag_it_made_and_logs_the_force_after_the_kill(self):
+        a = self.arm
+        self.assertRegex(a, r"(?s)\$madeFlag = \$false.*?try \{.*?\} finally \{[^}]*if \(\$madeFlag\) \{ Remove-Item")
+        self.assertLess(a.index("Stop-TraceProc $runners; Stop-TraceProc $kids"), a.index("ended by force"))
 
     def test_remove_ends_this_roles_runner_and_its_children_only(self):
         self.assertIn("function Stop-TraceProc", self.arm)
