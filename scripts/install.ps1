@@ -480,11 +480,38 @@ if (-not $TestClock) {
     }
 }
 
+# Stops a service and waits for its PROCESS to end, not only for the SCM's
+# Stopped: the process can still hold its exe open a moment (dasio#28, CI run
+# 46089759633). Bounded; a process that stays is an error naming its PID.
+function Wait-ServiceProcessExit([string]$Name, [int]$ProcessId) {
+    if ($ProcessId -le 0) { return }
+    $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if (-not $p) { return }
+    Wait-Process -Id $ProcessId -Timeout 15 -ErrorAction SilentlyContinue
+    if (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue) {
+        throw "the process of $Name (pid $ProcessId) did not end within 15 s of its stop"
+    }
+}
+# Copies over an exe/dll another process may hold a moment (a scanner, an
+# exiting process): a few tries, each failure logged, then fail loudly.
+function Copy-FileRetry([string]$From, [string]$To) {
+    for ($try = 1; ; $try++) {
+        try { Copy-Item $From $To -Force -ErrorAction Stop; return }
+        catch {
+            if ($try -ge 10) { throw "copying $From to $To failed 10 times: $($_.Exception.Message)" }
+            Write-Warning "copy to $To failed (try $try of 10): $($_.Exception.Message)"
+            Start-Sleep -Milliseconds 500
+        }
+    }
+}
+
 $installed = Join-Path $env:ProgramFiles "dasio\dasio.exe"
 if (Get-Service -Name $service -ErrorAction SilentlyContinue) {
     # The SCM's Stop: the device ends within its stop's 7 s.
+    $servicePid = (Get-CimInstance Win32_Service -Filter "Name='$service'").ProcessId
     Stop-Service -Name $service
     (Get-Service -Name $service).WaitForStatus("Stopped", [TimeSpan]::FromSeconds(15))
+    Wait-ServiceProcessExit $service $servicePid
 }
 if (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue) {
     # An older install's logon task: asked to stop (never killed), then removed.
@@ -517,7 +544,7 @@ if ($before) {
 # Puts back `$Saved` over `$Path` when they differ.
 function Restore-File([string]$Saved, [string]$Path) {
     if ((Test-Path $Saved) -and (-not (Test-Path $Path) -or (Get-FileHash $Path).Hash -ne (Get-FileHash $Saved).Hash)) {
-        Copy-Item $Saved $Path -Force
+        Copy-FileRetry $Saved $Path
     }
 }
 try {
@@ -542,12 +569,14 @@ if ($changed -contains "dasio.exe") {
         } | ForEach-Object { Get-Service -Name $_.Name })
     foreach ($s in $paused) {
         Write-Output "stopping $($s.Name) for the new binary"
+        $pausedPid = (Get-CimInstance Win32_Service -Filter "Name='$($s.Name)'").ProcessId
         Stop-Service -Name $s.Name
         $s.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(15))
+        Wait-ServiceProcessExit $s.Name $pausedPid
     }
 }
 try {
-    foreach ($file in $changed) { Copy-Item (Join-Path $here $file) $bin -Force }
+    foreach ($file in $changed) { Copy-FileRetry (Join-Path $here $file) $bin }
     if (-not $dllHeld) {
         if (-not (Test-Path $protocolKey)) { New-Item -Path $protocolKey | Out-Null }
         New-ItemProperty -Path $protocolKey -Name ShmProtocol -Value $ShmProtocol -PropertyType DWord -Force | Out-Null
@@ -588,11 +617,7 @@ try {
         }
         Start-Sleep -Milliseconds 250
     }
-    # A scanner can hold a just-ended exe a moment: a few tries, then fail.
-    for ($try = 1; ; $try++) {
-        try { Copy-Item (Join-Path $here "dasio.exe") $keepExe -Force -ErrorAction Stop; break }
-        catch { if ($try -ge 10) { throw "copying dasio-keep.exe failed 10 times: $($_.Exception.Message)" }; Start-Sleep -Milliseconds 500 }
-    }
+    Copy-FileRetry (Join-Path $here "dasio.exe") $keepExe
     $keepAction = New-ScheduledTaskAction -Execute $keepExe -Argument "pc-profile keep"
     $keepTriggers = @(
         (New-ScheduledTaskTrigger -AtStartup),
@@ -633,7 +658,7 @@ foreach ($exe in "dtray.exe", "dtray-cli.exe") {
     $from = Join-Path $here $exe
     if (-not (Test-Path $to) -or (Get-FileHash $to).Hash -ne (Get-FileHash $from).Hash) {
         if (Test-Path $to) { Move-Item $to "$to.old-$(Get-Date -Format yyyyMMddHHmmss)" -Force }
-        Copy-Item $from $to -Force
+        Copy-FileRetry $from $to
         Write-Output "installed $exe"
     }
 }
@@ -678,7 +703,7 @@ if ($deviceName) {
 }
 # The instance's own binary (its service is stopped).
 if (-not (Test-Path $instExe) -or (Get-FileHash $instExe).Hash -ne (Get-FileHash (Join-Path $bin "dasio.exe")).Hash) {
-    Copy-Item (Join-Path $bin "dasio.exe") $instExe -Force
+    Copy-FileRetry (Join-Path $bin "dasio.exe") $instExe
 }
 # A re-install may be given the instance's own installed config: Copy-Item
 # refuses to copy a file onto itself (dasio#148), and there is nothing to copy.
