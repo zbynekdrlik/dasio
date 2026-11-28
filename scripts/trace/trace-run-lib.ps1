@@ -7,6 +7,7 @@ function Get-RunLines([string]$Path, [datetime]$Since) {
   if (-not (Test-Path -LiteralPath $Path)) { return @() }
   if ((Get-Item -LiteralPath $Path).LastWriteTimeUtc -lt $Since.ToUniversalTime()) { return @() }
   $lines = @(Get-Content -LiteralPath $Path); $from = 0
+  if ($lines.Count -eq 0) { return @() }
   for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^start ') { $from = $i } }
   return @($lines[$from..($lines.Count - 1)])
 }
