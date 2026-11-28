@@ -391,7 +391,6 @@ $installLog = Get-Content $holdLog -Raw
 Write-Output $installLog
 Receive-Job $installJob | Out-Null
 Remove-Job $installJob -Force
-Remove-Job $installJob
 if ($installLog -notmatch "copy to .* failed \(try") { throw "the install never met the held dasio.exe" }
 $heldWant = (Get-FileHash (Join-Path $held "dasio.exe")).Hash
 if ((Get-FileHash $exe).Hash -ne $heldWant) { throw "the install did not replace dasio.exe held open" }
