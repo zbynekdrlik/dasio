@@ -19,6 +19,7 @@ pub mod abi;
 pub mod guard;
 pub mod ident;
 pub mod liveness;
+pub mod panel;
 pub mod rate;
 pub mod reset;
 pub mod systime;

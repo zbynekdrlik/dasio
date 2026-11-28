@@ -1,6 +1,7 @@
 ---
 paths:
   - "crates/asio-driver/tests/**"
+  - "crates/asio-driver/src/panel.rs"
   - "crates/dasio/tests/e2e.rs"
   - "crates/dasio/src/probe.rs"
   - "crates/dasio/src/host_stall.rs"
@@ -11,9 +12,10 @@ paths:
 - The host tests build only on Windows (`#![cfg(windows)]`) and there is no local cargo: a compile error shows up only in CI. Read these two traps before pushing:
   - The ABI structs in `src/abi.rs` are `repr(C, packed(4))`. A reference to a field aligned above 4 is error E0793, and `assert_eq!`, `assert_ne!`, `format!` and `.iter()` all take one. `ASIOBufferInfo::buffers` (pointers) is such a field: copy it first (`let [a, b] = info.buffers;`).
   - Most ABI structs derive nothing. `[S { .. }; N]` needs `Copy`; use `core::array::from_fn`.
-- Each test owns its instance number (1 to 16; shared memory and events are named `Global\dasio-<n>-*`, so two tests on one number collide across test binaries). Taken: 3 conformance, 2, 4-12 and 16 host tests, 13 and 15 the e2e test, 14 the service test. Update the list in `crates/dasio/tests/e2e.rs` when you take one.
+- Each test owns its instance number (1 to 16; shared memory and events are named `Global\dasio-<n>-*`, so two tests on one number collide across test binaries). Taken: 3 conformance, 1, 2, 4-12 and 16 host tests, 13 and 15 the e2e test, 14 the service test. Update the list in `crates/dasio/tests/e2e.rs` when you take one.
 - `tests/common/mod.rs` is compiled into every test binary that declares `mod common;`. Each such binary must use all of its pub functions, or `dead_code` fails clippy `-D warnings`.
 - To measure the driver's worker thread (its CPU, say), record `GetCurrentThreadId()` in the test's bufferSwitch callback: it runs on the worker. `Rt::worker_tid` is private. Use `GetThreadTimes` on that tid, not `GetProcessTimes`: the other tests in the binary run in parallel and add noise to the process figure (dasio#87).
 - windows-sys gates some Threading functions on other features. For example, `CreateWaitableTimerExW` needs `Win32_Security`. Check `#[cfg(feature = ...)]` in the registry source before you push.
 - An e2e timing failure on the Windows runner: read the device log the test prints (each second's `engine pump lost or overran blocks` line with `cause=late`/`behind_max_us`/`max_process_us`, and the `counts` line) beside the probe's `Report` before calling it a defect. `cause=late` with a small `max_process_us` is the runner taking the pump's CPU (dasio#114, #162). Judge runner vs device with figures from the event's own window (the injected stall's `stall_*` fields), never whole-run totals: a late loss elsewhere in the run must not excuse the device.
 - Passing tests print nothing (output is captured), so a green rerun gives no figures to compare: keep the failing attempt's log (`gh api repos/<repo>/actions/runs/<id>/attempts/1/jobs`, then `.../actions/jobs/<job>/logs`).
+- `controlPanel()` (the DAW's Hardware Setup button, dasio#248) starts `dtray.exe --settings` found beside the driver's own module (`panel.rs` decides: dll dir -> `dtray.exe`, `ASE_OK` once started, `ASE_NOT_PRESENT` when missing or the start fails; `driver.rs` has the Windows glue and writes one line to `OutputDebugString`). dtray's `--settings` takes no instance: the window lists them. In a host test the "driver module" is the test binary, so `control_panel_opens_dtrays_settings_beside_the_driver` (instance 1) puts a copy of that binary there as `dtray.exe` and removes it after; the stand-in ends on the unknown option.

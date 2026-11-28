@@ -1057,3 +1057,41 @@ fn a_rate_the_host_sets_is_served_by_the_device_s_next_section() {
         (vt(d).Release)(d);
     }
 }
+
+// controlPanel() starts dtray's settings window, found beside the driver's
+// module (here the test binary): ASE_NOT_PRESENT without a dtray.exe there,
+// ASE_OK with one (a copy of this binary stands in; it fails on the unknown
+// `--settings` option and ends). The call never waits for the child.
+#[test]
+fn control_panel_opens_dtrays_settings_beside_the_driver() {
+    let exe = std::env::current_exe().unwrap();
+    let dtray = exe.with_file_name("dtray.exe");
+    let _ = std::fs::remove_file(&dtray);
+    let d = driver(1);
+    // SAFETY: as a host.
+    unsafe {
+        assert_eq!(
+            (vt(d).controlPanel)(d),
+            ASE_NOT_PRESENT,
+            "no dtray.exe beside the driver"
+        );
+        std::fs::copy(&exe, &dtray).unwrap();
+        let t = Instant::now();
+        assert_eq!(
+            (vt(d).controlPanel)(d),
+            ASE_OK,
+            "dtray.exe beside the driver"
+        );
+        assert!(
+            t.elapsed() < Duration::from_secs(5),
+            "controlPanel waited for the child"
+        );
+        (vt(d).Release)(d);
+    }
+    for _ in 0..50 {
+        if std::fs::remove_file(&dtray).is_ok() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
