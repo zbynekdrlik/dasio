@@ -301,7 +301,8 @@ jobs:
       - run: python3 scripts/check_version.py origin/${{ github.base_ref }}
 
   bundle:
-    needs: [fmt, test]
+    # ps-parse too: no bundle is built from a script Windows PowerShell cannot parse (PR #256 review).
+    needs: [fmt, test, ps-parse]
     runs-on: windows-2025
     timeout-minutes: 30
     steps:

@@ -27,6 +27,9 @@ try {
   Check 'a log not written since the child began is no hit' (-not (Test-Hit $old $ringRx $since))
   Check 'a log not written since the child began has no lines' ((Get-RunLines $old $since).Count -eq 0)
   Check 'a missing log is no hit' (-not (Test-Hit (Join-Path $root 'nothing.txt') $ringRx $since))
+  $empty = Fixture 'ring-empty.txt' @() 1
+  Check 'an empty log has no lines' ((Get-RunLines $empty $since).Count -eq 0)
+  Check 'an empty log is no hit' (-not (Test-Hit $empty $ringRx $since))
   $trig = Fixture 'trigger-hit.txt' @('start 10:00:00.000', 'target mbc = 10.0.0.1', 'hit 10:01:00.000 a watched test tone broke', 'end') 1
   Check 'a trigger hit line is a hit' (Test-Hit $trig '^hit ' $since)
   $trigTimeout = Fixture 'trigger-timeout.txt' @('start 10:00:00.000', 'target mbc = 10.0.0.1', 'timeout', 'end') 1
