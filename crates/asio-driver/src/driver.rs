@@ -890,7 +890,7 @@ fn spawn_detached(program: &std::path::Path, args: &[&str]) -> std::io::Result<(
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{
-        CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CreateProcessW, DETACHED_PROCESS,
+        CREATE_NEW_PROCESS_GROUP, CreateProcessW, DETACHED_PROCESS,
         PROCESS_INFORMATION, STARTUPINFOW,
     };
     let wide = |s: &std::ffi::OsStr| -> Vec<u16> { s.encode_wide().chain(Some(0)).collect() };
@@ -904,7 +904,17 @@ fn spawn_detached(program: &std::path::Path, args: &[&str]) -> std::io::Result<(
         line.extend(a.encode_utf16());
     }
     line.push(0);
-    let dir = program.parent().map(|d| wide(d.as_os_str()));
+    // The child starts in the program's own folder; a program without one is refused
+    // (panel::dtray_beside never gives one, so this only guards a future caller).
+    let dir = match program.parent() {
+        Some(d) if !d.as_os_str().is_empty() => wide(d.as_os_str()),
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the program has no folder to start in",
+            ));
+        }
+    };
     // SAFETY: all-zero is a valid STARTUPINFOW / PROCESS_INFORMATION; `cb`
     // is set as the API requires.
     let mut si: STARTUPINFOW = unsafe { core::mem::zeroed() };
@@ -920,9 +930,10 @@ fn spawn_detached(program: &std::path::Path, args: &[&str]) -> std::io::Result<(
             core::ptr::null(),
             core::ptr::null(),
             0,
-            CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+            // DETACHED_PROCESS: no console at all (CREATE_NO_WINDOW is ignored with it).
+            DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
             core::ptr::null(),
-            dir.as_ref().map_or(core::ptr::null(), |d| d.as_ptr()),
+            dir.as_ptr(),
             &si,
             &mut pi,
         )
