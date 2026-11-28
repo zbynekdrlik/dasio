@@ -488,7 +488,10 @@ function Get-ServiceProcessInfo([string]$Name) {
     $p = Get-Process -Id $id -ErrorAction SilentlyContinue
     if (-not $p) { return $null }
     $start = $null
-    try { $start = $p.StartTime } catch { $start = $null }
+    try { $start = $p.StartTime } catch {
+        $start = $null
+        Write-Warning "the start time of $Name's process (pid $id) cannot be read: its exit is waited for by id only"
+    }
     return [pscustomobject]@{ ProcId = $id; Start = $start }
 }
 # Waits for a stopped service's PROCESS to end, not only for the SCM's
@@ -520,8 +523,9 @@ function Copy-FileRetry([string]$From, [string]$To) {
         catch {
             # Only a held file is worth another try; a missing source or a bad path fails at once.
             $e = $_.Exception
-            $held = ($e -is [System.IO.IOException] -or $e -is [System.UnauthorizedAccessException]) -and
-                -not ($e -is [System.IO.FileNotFoundException] -or $e -is [System.IO.DirectoryNotFoundException])
+            # A sharing (32) or lock (33) violation, or access denied: disk full, a long path, a directory in the way are not.
+            $held = ($e -is [System.UnauthorizedAccessException]) -or
+                (($e -is [System.IO.IOException]) -and (($e.HResult -band 0xFFFF) -in 32, 33))
             if (-not $held) { throw }
             if ($try -ge 10) { throw "copying $From to $To failed 10 times: $($_.Exception.Message)" }
             Write-Warning "copy to $To failed (try $try of 10): $($_.Exception.Message)"
@@ -617,11 +621,27 @@ try {
         if (-not (Test-Path $protocolKey)) { New-Item -Path $protocolKey | Out-Null }
         New-ItemProperty -Path $protocolKey -Name ShmProtocol -Value $ShmProtocol -PropertyType DWord -Force | Out-Null
     }
+} catch {
+    $copyFailure = $_.Exception.Message
+    throw
 } finally {
+    # Every stopped instance gets its own try: one that will not start never
+    # leaves the others down, and one message carries every failure and the
+    # error that brought us here.
+    $restartFailures = @()
     foreach ($s in $stopped) {
-        Start-Service -Name $s.Name
-        (Get-Service -Name $s.Name).WaitForStatus("Running", [TimeSpan]::FromSeconds(10))
-        Write-Output "$($s.Name) runs the new binary"
+        try {
+            Start-Service -Name $s.Name -ErrorAction Stop
+            (Get-Service -Name $s.Name).WaitForStatus("Running", [TimeSpan]::FromSeconds(10))
+            Write-Output "$($s.Name) runs the new binary"
+        } catch {
+            $restartFailures += "$($s.Name): $($_.Exception.Message)"
+        }
+    }
+    if ($restartFailures.Count -gt 0) {
+        $message = "starting the paused instances again failed: " + ($restartFailures -join "; ")
+        if ($copyFailure) { $message += "; the error before it: $copyFailure" }
+        throw $message
     }
 }
 # The process keeper (dasio#185): dasio-keep.exe, its own copy of dasio.exe

@@ -376,10 +376,17 @@ try {
         & $script -Instance $inst -Ip $addr -Config $config -Name "ci-asio-dante-2" -TestClock *> $log
     }
     Wait-Until { try { (Test-Path $holdLog) -and ((Get-Content $holdLog -Raw) -match "copy to .* failed \(try 1") } catch { $false } } 90 "the install's retry warning over the held dasio.exe"
+} catch {
+    if ($installJob) { Stop-Job $installJob }
+    $why = $_.Exception.Message
+    throw "$why`n$(Get-Content $holdLog -Raw -ErrorAction SilentlyContinue)"
 } finally {
     $handle.Dispose()
 }
-Wait-Job $installJob | Out-Null
+if (-not (Wait-Job $installJob -Timeout 120)) {
+    Stop-Job $installJob
+    throw "the install over the held dasio.exe did not end within 120 s:`n$(Get-Content $holdLog -Raw)"
+}
 $installLog = Get-Content $holdLog -Raw
 Write-Output $installLog
 Receive-Job $installJob | Out-Null

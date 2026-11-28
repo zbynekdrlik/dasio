@@ -69,7 +69,7 @@ class InstallStops(unittest.TestCase):
         second = self.stops()[1]
         self.assertTrue(any(l.strip() == "try {" for l in LINES[:second][-8:]), "the paused instances' stop is outside a try")
         self.assertRegex(CODE, r"\$stopped \+= \$s\s*\n\s*Stop-Service -Name \$s\.Name")
-        fin = re.search(r"\} finally \{\s*\n\s*foreach \(\$s in \$stopped\) \{(.*?)\n    \}\n(.*?)\n\}\n", CODE, re.S)
+        fin = re.search(r"\} finally \{\s*\n\s*\$restartFailures = @\(\)\s*\n\s*foreach \(\$s in \$stopped\) \{(.*?)\n    \}\n(.*?)\n\}\n", CODE, re.S)
         self.assertIsNotNone(fin, "no finally over $stopped")
         loop, tail = fin.groups()
         # Each restart has its own try/catch; failures are collected and ONE message is thrown, original error kept.
@@ -93,10 +93,11 @@ class CiHeldCase(unittest.TestCase):
     def test_the_install_job_wait_is_bounded_and_the_job_is_stopped(self):
         self.assertRegex(CI_TEST, r"Wait-Job \$installJob -Timeout \d+")
         self.assertIn("Stop-Job $installJob", CI_TEST)
-        # stopped also when the early wait throws: the finally holds it
-        fin = re.search(r"\} finally \{(.*?)\n\}", CI_TEST[CI_TEST.index("$installJob = Start-Job") - 400 :], re.S)
-        self.assertIsNotNone(fin)
-        self.assertIn("Stop-Job", fin.group(1))
+        # stopped also when the early wait throws: the catch around it holds the stop
+        early = CI_TEST[CI_TEST.index("$installJob = Start-Job") :]
+        catch = re.search(r"\} catch \{(.*?)\} finally", early, re.S)
+        self.assertIsNotNone(catch)
+        self.assertIn("Stop-Job $installJob", catch.group(1))
 
 
 if __name__ == "__main__":
