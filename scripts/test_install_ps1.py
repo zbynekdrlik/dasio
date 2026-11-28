@@ -98,6 +98,16 @@ class CiHeldCase(unittest.TestCase):
         catch = re.search(r"\} catch \{(.*?)\} finally", early, re.S)
         self.assertIsNotNone(catch)
         self.assertIn("Stop-Job $installJob", catch.group(1))
+        # and removed on every path, so no job is left behind on the runner
+        self.assertIn("Remove-Job $installJob -Force", catch.group(1))
+        self.assertEqual(CI_TEST.count("Remove-Job $installJob -Force"), 3)
+
+
+class RollbackNamesMixedState(unittest.TestCase):
+    def test_a_rollback_names_the_instances_left_on_the_new_shared_exe(self):
+        # the shared dasio.exe is not rolled back: the paused instances it restarted run it
+        self.assertIn('"; on the new shared dasio.exe: $($onNew -join \', \')"', INSTALL)
+        self.assertRegex(INSTALL, r'throw "install failed: \$failure; instance \$Instance rolled back and running as before\$mixed"')
 
 
 if __name__ == "__main__":
