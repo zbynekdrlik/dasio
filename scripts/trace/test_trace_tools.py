@@ -538,6 +538,78 @@ class EventTraceSave(unittest.TestCase):
         self.assertNotIn("'-stop', $Etl", self.text)
 
 
+class ArmEventTrace(unittest.TestCase):
+    """arm-event-trace.ps1 + trace-run.ps1 (dasio#207): the trigger and the ring re-arm by themselves."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.arm = (HERE / "arm-event-trace.ps1").read_text(encoding="utf-8")
+        cls.runner = (HERE / "trace-run.ps1").read_text(encoding="utf-8")
+
+    @staticmethod
+    def declared(text):
+        block = re.search(r"^param\((.*?)\)\n\$ErrorActionPreference", text, re.S | re.M)
+        assert block, "no param block"
+        body = re.sub(r"\[[^\]]*\]", "", block.group(1)).replace("$PSScriptRoot", "")
+        return set(re.findall(r"\$([A-Za-z]+)", body))
+
+    def test_the_installer_passes_only_what_the_runner_declares(self):
+        declared = self.declared(self.runner)
+        self.assertEqual({"Role", "To", "KeepSaves", "MinFreeGB", "GapMinutes", "PauseSeconds", "Dir"}, declared)
+        line = re.search(r'\$arg = "([^\n]*)"', self.arm).group(1) + " " + re.search(r'\$arg \+= " ([^"]*)', self.arm).group(1)
+        passed = set(re.findall(r"(?<![\w$])-([A-Za-z]+)", line.replace("-NoProfile -ExecutionPolicy Bypass -File", "")))
+        self.assertEqual({"Role", "KeepSaves", "MinFreeGB", "GapMinutes", "To"}, passed)
+        self.assertLessEqual(passed, declared)
+
+    def test_the_installer_copies_what_the_runner_starts(self):
+        listed = re.search(r"\$files = ([^\n]*)", self.arm).group(1)
+        files = re.findall(r"'([^']+)'", listed)
+        self.assertEqual(["trace-run.ps1", "event-trace.ps1", "tone-trigger.ps1"], files)
+        for name in files + ["dasio-csw.wprp"]:
+            self.assertTrue((HERE / name).is_file(), name)
+        self.assertIn("'event-trace.ps1'", self.runner)
+        self.assertIn("'tone-trigger.ps1'", self.runner)
+        self.assertIn("'dasio-csw.wprp'", self.arm)
+
+    def test_the_task_is_a_boot_task_that_never_runs_twice(self):
+        self.assertIn("New-ScheduledTaskTrigger -AtStartup", self.arm)
+        self.assertRegex(self.arm, r"New-ScheduledTaskTrigger -Once -At \(Get-Date\) -RepetitionInterval")
+        self.assertIn("-MultipleInstances IgnoreNew", self.arm)
+        self.assertIn("-ExecutionTimeLimit ([TimeSpan]::Zero)", self.arm)
+        self.assertRegex(self.arm, r"-UserId 'SYSTEM'.*-RunLevel Highest")
+        self.assertIn("-Force", self.arm)  # a second install replaces the task
+
+    def test_the_trigger_needs_the_daw_pc_as_a_parameter_and_no_address_is_in_the_repo(self):
+        for text in (self.arm, self.runner):
+            self.assertRegex(text, r"\$Role -eq 'Trigger' -and .*-not \$To")
+            self.assertNotRegex(text, r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
+
+    def test_the_guards_refuse_and_never_delete(self):
+        self.assertIn("event-trace.stop", self.runner)
+        self.assertRegex(self.runner, r"\$n -ge \$KeepSaves")
+        self.assertRegex(self.runner, r"\$free -lt \$MinFreeGB")
+        self.assertIn("event-*.etl", self.runner)
+        # the stop flag pauses without being removed here: event-trace.ps1 removes it only at its own start,
+        # which the refusal precedes.
+        self.assertNotRegex(self.runner, r"Remove-Item")
+        self.assertNotRegex(self.runner, r"\.etl'?\)?\s*\|\s*Remove")
+        self.assertRegex(self.runner, r"(?s)\$why = Refusal\s+if \(\$why\) \{.*?continue\s*\}")
+
+    def test_a_hit_waits_the_gap_and_every_child_is_followed_by_a_pause(self):
+        self.assertRegex(self.runner, r"if \(\$hit\) \{[^}]*Start-Sleep -Seconds \(\$GapMinutes \* 60\) \}")
+        self.assertRegex(self.runner, r"Start-Sleep -Seconds \$PauseSeconds\s*\}\s*$")
+        # the hit patterns match what the scripts write
+        ring = (HERE / "event-trace.ps1").read_text(encoding="utf-8")
+        self.assertIn('L "trace saved $save"', ring)
+        self.assertIn("'^\\S+ trace saved '", self.runner)
+        self.assertRegex(self.runner, r"\$hitRx = '\^hit '")
+        self.assertIn('"hit $((Get-Date)', (HERE / "tone-trigger.ps1").read_text(encoding="utf-8"))
+
+    def test_the_remove_path_stops_the_runner_before_the_ring(self):
+        self.assertLess(self.arm.index("Kill 'trace-run"), self.arm.index("Kill 'event-trace"))
+        self.assertLess(self.arm.index("New-Item -ItemType File -Force -Path $flag"), self.arm.index("Kill 'event-trace"))
+
+
 class TruncatedAndShuffled(Temp):
     def test_last_row_without_its_newline_is_skipped_even_when_it_parses(self):
         # an S row with all its fields, but cut inside the address: it parses, with a wrong address

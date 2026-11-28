@@ -6,7 +6,7 @@ paths:
 # Kernel trace of an audio thread (`scripts/trace/`, dasio#207)
 
 Found why master Ableton clicked (25.11.2026). Tools: `dasio-csw.wprp`, `dasio-csw-stk.wprp`, `rec-trace.ps1`
-(+ `ableset-osc.ps1`), `tone-trigger.ps1`, `etl-cut.ps1`, readers `csw_an.py` `csw_res.py` `csw_smp.py` `csw_stk.py`
+(+ `ableset-osc.ps1`), `tone-trigger.ps1`, `arm-event-trace.ps1` + `trace-run.ps1`, `etl-cut.ps1`, readers `csw_an.py` `csw_res.py` `csw_smp.py` `csw_stk.py`
 `csw_dump.py` (shared `cutlib.py`). Tests: `python3 -m unittest discover -s scripts/trace` (a synthetic cut,
 `fixtures/mini.cut`; CI has no ETW). No site data in the files: process images, tags, addresses, song indexes are arguments.
 
@@ -76,5 +76,25 @@ Found why master Ableton clicked (25.11.2026). Tools: `dasio-csw.wprp`, `dasio-c
   hall can hear, and then the script ends. The save writes the whole ring to disk, so a run keeps one save. Without `-Etl` the save is `C:\ProgramData\dasio\tmp\event-<yyyyMMdd-HHmmss>.etl` (UTC,
   the trigger's moment; the log's `trace saved <path>` line names it) and no existing file is overwritten, an explicit
   `-Etl` too (`-2`, `-3` appended): 27.11.2026's 20:21Z TX-late trace was lost to the 21:27Z save of a fixed `event.etl`.
-  Read the saved trace off the PC the same day. A run counts as no measurement: stop it (`event-trace.stop` flag) before any planned probe or test, and arm it again after.
+  Read the saved trace off the PC the same day. A run counts as no measurement: stop it (`event-trace.stop` flag) before any planned probe or test, and arm it again after (installed as below: delete the flag).
 - Never read or sweep another process's memory on an audio PC (it stopped a production PC on 25.11.2026).
+
+## Armed by itself (`arm-event-trace.ps1`, `trace-run.ps1`, 0.1.183)
+
+- Once per PC, as administrator: DAW PC `arm-event-trace.ps1 -Role Ring`; watching PC `arm-event-trace.ps1 -Role Trigger -To <DAW PC>`
+  (the address is a parameter, none is in the repo). `-Remove` takes it away (the saved traces stay). It copies the scripts
+  to `C:\ProgramData\dasio\trace` and registers a SYSTEM task (`dasio-event-trace-ring`, `dasio-tone-trigger`): at boot, plus a
+  repetition every 5 min that only brings back a crashed runner (`MultipleInstances IgnoreNew`). `trace-run.ps1` loops by itself:
+  `event-trace.ps1` / `tone-trigger.ps1` with `-Minutes 1440`, again after a timeout at once, after a hit after `-GapMinutes` (10)
+  so one burst does not save twice. Its log: `C:\ProgramData\dasio\tmp\trace-run-ring.txt` / `-trigger.txt`.
+- A reboot of either PC: the task starts at boot. A ring that is up while a PC boots is gone with the boot, and the new one
+  starts with the task (tens of seconds).
+- The ring refuses to arm (logged once per change, re-checked every 30 s, nothing is deleted) while: `event-trace.stop` exists;
+  `-KeepSaves` (6) or more `event-*.etl` are in the tmp folder (512 MB each: read them off the PC, remove them by hand,
+  and it arms again); under `-MinFreeGB` (20) is free on its drive.
+- A planned probe on the DAW PC: create `C:\ProgramData\dasio\tmp\event-trace.stop`, wait until `event-trace.txt` says `end`, probe,
+  delete the flag, and the ring is back within 30 s. Without the flag the ring is always on: that is the point.
+- A hard kill of a ring (not through the flag) leaves `wpr` tracing, and every new start then fails (`wpr -start exit`) every
+  30 s: `wpr -cancel` once.
+- The tests read the scripts as text (no Windows task scheduler in CI): the installer passes only parameters the runner declares,
+  copies every file the runner starts, and the guards never delete.
