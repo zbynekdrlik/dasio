@@ -128,6 +128,14 @@ Owner rules from dasio#1. They hold for every change on a PC running dasio.
   before the stop (`Get-ServiceProcessInfo`), waits for that process to end (`Wait-ServiceProcessExit`, bounded), and
   copies through `Copy-FileRetry` (sharing/lock violation and access denied only, 10 tries, logged). Any new copy of a
   file a service runs goes through them; `scripts/test_install_ps1.py` guards it.
+- **An advanced script's param() default never reads `$PSScriptRoot`** (FOH 28.11.2026, PR #258): with
+  `[Parameter()]` or `[CmdletBinding()]` in its param block, Windows PowerShell 5.1 leaves `$PSScriptRoot`
+  (and `$PSCommandPath`) empty there, so trace-run.ps1 under its SYSTEM task failed at `Join-Path` (`Cannot bind
+  argument to parameter 'Path' because it is an empty string`), while a plain script's default works. Default to ''
+  and set it in the body; `PowerShellHygiene` in scripts/trace/test_trace_tools.py guards every repo .ps1.
+- **A script that loops forever is never run in the MCP shell's foreground**: the call times out after its limit
+  and leaves the script's side effects (trace-run's `wpr -cancel` cancelled the hand-run ring, 28.11.2026). Start it
+  detached with output to a file, or through its task.
 - **Remote-shell gotchas (dsg, 17.11.2026):** `& script.ps1` is refused
   (script execution disabled): run a helper with `powershell -NoProfile
   -ExecutionPolicy Bypass -File <ps1>`. A config written with PS 5.1's
