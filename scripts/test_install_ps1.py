@@ -3,8 +3,10 @@ import re
 import unittest
 from pathlib import Path
 
+CI_TEST = (Path(__file__).parent / "ci-service-test.ps1").read_text(encoding="utf-8")
+
 INSTALL = (Path(__file__).parent / "install.ps1").read_text(encoding="utf-8")
-LINES = [l for l in INSTALL.replace("\r\n", "\n").splitlines() if not l.lstrip().startswith("#")]
+LINES = [l for l in INSTALL.replace("\r\n", "\n").replace("`\n", " ").splitlines() if not l.lstrip().startswith("#")]
 CODE = "\n".join(LINES)
 
 # Copies that stay bare: the rollback copies read the old binary and config into the rollback folder
@@ -26,6 +28,9 @@ class InstallCopies(unittest.TestCase):
         self.assertIn("IOException", b)
         self.assertIn("UnauthorizedAccessException", b)
         self.assertRegex(b, r"if \(-not \$held\) \{ throw \}")  # anything else fails at once
+        # Only a sharing or lock violation is a held file: 32 and 33 of the low HResult word.
+        self.assertRegex(b, r"HResult -band 0xFFFF")
+        self.assertRegex(b, r"-in 32, ?33|-eq 32 -or .* -eq 33")
         self.assertRegex(b, r'throw "copying ')
 
     def test_every_other_copy_item_is_a_listed_bare_one(self):
@@ -58,18 +63,40 @@ class InstallStops(unittest.TestCase):
         first = self.stops()[0]
         self.assertTrue(any(l.strip() == "try {" for l in LINES[first - 4 : first]), "the instance's stop is outside a try")
         after = "\n".join(LINES[first : first + 14])
-        self.assertRegex(after, r"catch \{[\s\S]*Start-Service -Name \$service")
+        catch = re.search(r"\} catch \{(.*?)\n    \}\n", after, re.S)
+        self.assertIsNotNone(catch, "the instance's stop has no catch")
+        self.assertIn("Start-Service -Name $service", catch.group(1))
         second = self.stops()[1]
         self.assertTrue(any(l.strip() == "try {" for l in LINES[:second][-8:]), "the paused instances' stop is outside a try")
         self.assertRegex(CODE, r"\$stopped \+= \$s\s*\n\s*Stop-Service -Name \$s\.Name")
-        self.assertRegex(CODE, r"finally \{\s*\n\s*foreach \(\$s in \$stopped\) \{\s*\n\s*Start-Service")
+        fin = re.search(r"\} finally \{\s*\n\s*foreach \(\$s in \$stopped\) \{(.*?)\n    \}\n(.*?)\n\}\n", CODE, re.S)
+        self.assertIsNotNone(fin, "no finally over $stopped")
+        loop, tail = fin.groups()
+        # Each restart has its own try/catch; failures are collected and ONE message is thrown, original error kept.
+        self.assertIn("try {", loop)
+        self.assertIn("catch {", loop)
+        self.assertIn("throw", tail)
+        self.assertRegex(CODE, r"catch \{\s*\n\s*\$copyFailure = \$_\.Exception\.Message\s*\n\s*throw")
+        self.assertIn("$copyFailure", tail)
 
     def test_process_wait_is_bounded_names_the_pid_and_checks_the_start_time(self):
         b = body("Wait-ServiceProcessExit")
         self.assertIn("AddSeconds(15)", b)
         self.assertIn("StartTime", b)
         self.assertIn("throw", b)
-        self.assertIn("StartTime", body("Get-ServiceProcessInfo"))
+        info = body("Get-ServiceProcessInfo")
+        self.assertIn("StartTime", info)
+        self.assertIn("Write-Warning", info)  # an unreadable start time is logged: the wait is by id only
+
+
+class CiHeldCase(unittest.TestCase):
+    def test_the_install_job_wait_is_bounded_and_the_job_is_stopped(self):
+        self.assertRegex(CI_TEST, r"Wait-Job \$installJob -Timeout \d+")
+        self.assertIn("Stop-Job $installJob", CI_TEST)
+        # stopped also when the early wait throws: the finally holds it
+        fin = re.search(r"\} finally \{(.*?)\n\}", CI_TEST[CI_TEST.index("$installJob = Start-Job") - 400 :], re.S)
+        self.assertIsNotNone(fin)
+        self.assertIn("Stop-Job", fin.group(1))
 
 
 if __name__ == "__main__":
